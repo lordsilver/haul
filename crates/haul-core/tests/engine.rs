@@ -453,7 +453,15 @@ async fn pause_resume_and_remove() {
         s.items.len() == 1 && s.hosts[0].active == 0
     })
     .await;
-    assert!(!t.partial(&g).exists(), "a removed row's partial file goes");
+    // The attempt deletes it right after giving its slot back.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while t.partial(&g).exists() {
+        assert!(
+            Instant::now() < deadline,
+            "a removed row's partial file goes"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     assert!(engine.item_action(&f, ItemAction::Resume));
     wait_for(&engine, "done", all_done).await;
