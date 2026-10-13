@@ -1,0 +1,181 @@
+//! One row of the queue: a file and every mirror it can come from.
+
+use std::{collections::HashSet, time::Instant};
+
+use serde::{Deserialize, Deserializer, Serialize};
+use tokio_util::sync::CancellationToken;
+
+use crate::hosts::{Entry, guess_name};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    Queued,
+    Resolving,
+    Downloading,
+    Waiting,
+    Paused,
+    /// Every remaining mirror needs a person (captcha or browser step).
+    Captcha,
+    Done,
+    Error,
+}
+
+impl Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Queued => "queued",
+            Status::Resolving => "resolving",
+            Status::Downloading => "downloading",
+            Status::Waiting => "waiting",
+            Status::Paused => "paused",
+            Status::Captcha => "captcha",
+            Status::Done => "done",
+            Status::Error => "error",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Item {
+    pub id: String,
+    pub mirrors: Vec<String>,
+    pub failed: HashSet<String>,
+    /// Mirrors that need a person before they can be used.
+    pub manual_urls: HashSet<String>,
+    /// `pre` came from the user (a pasted or captured link).
+    pub manual: bool,
+    pub name: Option<String>,
+    pub package: String,
+    /// An already resolved entry: from a folder listing (`pre_for` names the
+    /// folder link it belongs to) or from the user (`pre_for` is `None`).
+    pub pre: Option<Entry>,
+    pub pre_for: Option<String>,
+    /// The name is known, so there is nothing to look up before scheduling.
+    pub probed: bool,
+    pub status: Status,
+    pub error: String,
+    pub size: u64,
+    pub done: u64,
+    pub speed: f64,
+    /// Progress reported by an external program when the size is unknown.
+    pub percent: Option<f32>,
+    pub host: String,
+    pub not_before: Option<Instant>,
+    /// Resumes after broken transfers since the last success.
+    pub retries: u32,
+    /// Where the finished file went.
+    pub path: Option<String>,
+    /// Cancels the running attempt; present exactly while one runs.
+    pub task: Option<CancellationToken>,
+}
+
+impl Item {
+    pub fn new(urls: Vec<String>, name: Option<String>, package: String) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().simple().to_string()[..10].to_string(),
+            mirrors: urls,
+            failed: HashSet::new(),
+            manual_urls: HashSet::new(),
+            manual: false,
+            probed: name.is_some(),
+            name,
+            package,
+            pre: None,
+            pre_for: None,
+            status: Status::Queued,
+            error: String::new(),
+            size: 0,
+            done: 0,
+            speed: 0.0,
+            percent: None,
+            host: String::new(),
+            not_before: None,
+            retries: 0,
+            path: None,
+            task: None,
+        }
+    }
+
+    pub fn running(&self) -> bool {
+        self.task.is_some()
+    }
+
+    /// The name used to recognise the same file on other hosts.
+    pub fn key_name(&self) -> Option<String> {
+        self.name
+            .clone()
+            .or_else(|| self.mirrors.first().and_then(|m| guess_name(m)))
+    }
+
+    /// Whether this row holds the file `name` of `size` bytes (0 = unknown):
+    /// the names match, and so do the sizes when both are known.
+    pub fn same_file(&self, name: &str, size: u64) -> bool {
+        self.key_name().as_deref() == Some(name)
+            && (self.size == 0 || size == 0 || self.size == size)
+    }
+
+    pub fn saved(&self) -> Saved {
+        Saved {
+            mirrors: self.mirrors.clone(),
+            name: self.name.clone(),
+            package: Some(self.package.clone()),
+            status: self.status,
+            error: self.error.clone(),
+            pre: self.pre.clone(),
+            size: Some(self.size),
+            pre_for: self.pre_for.clone(),
+            manual: self.manual,
+            path: self.path.clone(),
+        }
+    }
+
+    /// Rebuilds a saved row. Anything that was in flight is queued again; the
+    /// partial file on disk lets it resume.
+    pub fn restore(id: String, s: Saved) -> Self {
+        let mut it = Item::new(s.mirrors, s.name, s.package.unwrap_or_default());
+        it.id = id;
+        it.probed = it.name.is_some() || s.pre.is_some();
+        it.pre = s.pre;
+        it.pre_for = s.pre_for;
+        it.manual = s.manual;
+        it.size = s.size.unwrap_or(0);
+        it.error = s.error;
+        it.path = s.path;
+        it.status = match s.status {
+            Status::Done | Status::Paused | Status::Error => s.status,
+            _ => Status::Queued,
+        };
+        it
+    }
+}
+
+/// The on-disk form of an item in `queue.json`, compatible with the queue
+/// files of the original Python version.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Saved {
+    pub mirrors: Vec<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub package: Option<String>,
+    #[serde(deserialize_with = "lenient_status")]
+    pub status: Status,
+    #[serde(default)]
+    pub error: String,
+    #[serde(default)]
+    pub pre: Option<Entry>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_for: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manual: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+fn lenient_status<'de, D: Deserializer<'de>>(d: D) -> Result<Status, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(serde_json::from_value(serde_json::Value::String(s)).unwrap_or(Status::Queued))
+}

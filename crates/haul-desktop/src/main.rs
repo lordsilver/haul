@@ -1,0 +1,317 @@
+//! Haul desktop app: the engine and its web UI in a native window, with a
+//! tray icon, notifications, and an in-app browser for hosts that need a
+//! person.
+//!
+//! The UI is the same page the headless server serves, loaded from the local
+//! server this app runs; that server also keeps the HTTP API available to
+//! other local tools while the app is open.
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod browser;
+mod tray;
+
+use std::{
+    net::Ipv4Addr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+
+use haul_core::{Engine, Event, Options, Theme, paths};
+use tauri::{
+    AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    webview::NewWindowResponse,
+};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_notification::NotificationExt;
+use tokio::{net::TcpListener, sync::broadcast::error::RecvError};
+
+pub const MAIN: &str = "main";
+
+/// The port browser integrations expect; another free one when it is taken.
+const PORT: u16 = 8765;
+
+fn main() {
+    let data_dir = paths::data_dir();
+    init_logging(&data_dir);
+    let app = tauri::Builder::default()
+        // First, so a second launch hands over its arguments and quits early.
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            handle_args(app, args.into_iter().skip(1), Path::new(&cwd));
+            show_main(app);
+        }))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            if let Err(message) = tauri::async_runtime::block_on(start(&handle, data_dir)) {
+                tracing::error!("{message}");
+                app.dialog()
+                    .message(message)
+                    .title("Haul cannot start")
+                    .kind(MessageDialogKind::Error)
+                    .show(|_| {
+                        std::process::exit(1);
+                    });
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Closing the main window keeps downloading from the tray.
+            if let WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == MAIN
+            {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("building the app");
+    app.run(|app, event| {
+        if let RunEvent::Exit = event
+            && let Some(engine) = app.try_state::<Engine>()
+        {
+            tauri::async_runtime::block_on(engine.shutdown());
+        }
+    });
+}
+
+/// Logs to `haul.log` in the data directory, since a windowed app has no
+/// console. `RUST_LOG` picks the level.
+fn init_logging(data_dir: &Path) {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let file = std::fs::create_dir_all(data_dir)
+        .and_then(|()| std::fs::File::create(data_dir.join("haul.log")));
+    match file {
+        Ok(file) => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .with_writer(file)
+            .init(),
+        Err(_) => tracing_subscriber::fmt().with_env_filter(filter).init(),
+    }
+}
+
+async fn start(app: &AppHandle, data_dir: PathBuf) -> Result<(), String> {
+    let engine = Engine::start(Options {
+        data_dir,
+        download_dir: None,
+        config: None,
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let port = std::env::var("HAUL_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(PORT);
+    let listener = match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!("port {port}: {e}; using another one");
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .await
+                .map_err(|e| e.to_string())?
+        }
+    };
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    tracing::info!("UI and API on http://127.0.0.1:{port}/");
+
+    let browser = browser::Browser::start(app.clone(), engine.clone()).await;
+    tauri::async_runtime::spawn(haul_web::serve(
+        listener,
+        engine.clone(),
+        Some(Arc::new(browser)),
+    ));
+    app.manage(engine.clone());
+    main_window(app, port, engine.theme()).map_err(|e| e.to_string())?;
+    tray::create(app, &engine).map_err(|e| e.to_string())?;
+    spawn_notifications(app.clone(), &engine);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    handle_args(app, std::env::args().skip(1), &cwd);
+    Ok(())
+}
+
+/// The window frame's theme; `None` follows the system.
+pub fn window_theme(theme: Theme) -> Option<tauri::Theme> {
+    match theme {
+        Theme::System => None,
+        Theme::Light => Some(tauri::Theme::Light),
+        Theme::Dark => Some(tauri::Theme::Dark),
+    }
+}
+
+fn main_window(app: &AppHandle, port: u16, theme: Theme) -> tauri::Result<()> {
+    let home = format!("http://127.0.0.1:{port}/");
+    let own = home.clone();
+    WebviewWindowBuilder::new(
+        app,
+        MAIN,
+        WebviewUrl::External(home.parse().expect("valid URL")),
+    )
+    .title("Haul")
+    .theme(window_theme(theme))
+    .inner_size(1180.0, 820.0)
+    .min_inner_size(640.0, 480.0)
+    // Lets the page take dropped .dlc files and links itself.
+    .disable_drag_drop_handler()
+    // Anything that is not the UI opens in the user's own browser.
+    .on_navigation(move |url| {
+        if url.as_str().starts_with(&own) {
+            return true;
+        }
+        open_outside(url);
+        false
+    })
+    .on_new_window(|url, _| {
+        open_outside(&url);
+        NewWindowResponse::Deny
+    })
+    .build()?;
+    Ok(())
+}
+
+fn open_outside(url: &tauri::Url) {
+    if matches!(url.scheme(), "http" | "https") {
+        let _ = open::that_detached(url.as_str());
+    }
+}
+
+pub fn show_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+pub fn notify(app: &AppHandle, title: &str, body: &str) {
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+        tracing::debug!("notification: {e}");
+    }
+}
+
+/// Links and container files given on the command line, or by the file
+/// association for `.dlc`.
+fn handle_args(app: &AppHandle, args: impl IntoIterator<Item = String>, cwd: &Path) {
+    let Some(engine) = app.try_state::<Engine>().map(|e| e.inner().clone()) else {
+        return;
+    };
+    let mut links = String::new();
+    for arg in args {
+        if arg.starts_with("http://") || arg.starts_with("https://") {
+            links.push_str(&arg);
+            links.push('\n');
+            continue;
+        }
+        let path = cwd.join(&arg);
+        if arg.starts_with('-') || !path.is_file() {
+            continue;
+        }
+        let (engine, app) = (engine.clone(), app.clone());
+        tauri::async_runtime::spawn(async move {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let result = match tokio::fs::read(&path).await {
+                Ok(bytes) => engine.import(&name, &bytes).await,
+                Err(e) => Err(e.to_string()),
+            };
+            match result {
+                Ok(added) => tracing::info!("imported {name}: {added:?}"),
+                Err(e) => notify(&app, &format!("Could not import {name}"), &e),
+            }
+        });
+    }
+    if !links.is_empty() {
+        engine.add_text(&links, "");
+    }
+}
+
+/// Desktop notifications for finished, failed and stuck downloads, gathered
+/// over two seconds and skipped while the window has focus.
+fn spawn_notifications(app: AppHandle, engine: &Engine) {
+    let mut events = engine.subscribe();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let first = match events.recv().await {
+                Ok(e) => e,
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => return,
+            };
+            let mut batch = vec![first];
+            let window = tokio::time::sleep(Duration::from_secs(2));
+            tokio::pin!(window);
+            loop {
+                tokio::select! {
+                    _ = &mut window => break,
+                    next = events.recv() => match next {
+                        Ok(e) => batch.push(e),
+                        Err(RecvError::Lagged(_)) => {}
+                        Err(RecvError::Closed) => break,
+                    },
+                }
+            }
+            let focused = app
+                .get_webview_window(MAIN)
+                .is_some_and(|w| w.is_focused().unwrap_or(false));
+            if !focused {
+                for (title, body) in summarize(&batch) {
+                    notify(&app, &title, &body);
+                }
+            }
+        }
+    });
+}
+
+fn summarize(events: &[Event]) -> Vec<(String, String)> {
+    let mut finished = Vec::new();
+    let mut waiting = Vec::new();
+    let mut failed = Vec::new();
+    for e in events {
+        match e {
+            Event::Finished { name, .. } => finished.push(name.as_str()),
+            Event::NeedsUser { name, .. } => waiting.push(name.as_str()),
+            Event::Failed { name, error, .. } => failed.push(format!("{name}: {error}")),
+        }
+    }
+    let list = |names: &[&str]| {
+        let shown = names.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+        if names.len() > 3 {
+            format!("{shown} and {} more", names.len() - 3)
+        } else {
+            shown
+        }
+    };
+    let mut out = Vec::new();
+    match finished.len() {
+        0 => {}
+        1 => out.push(("Downloaded".into(), finished[0].to_string())),
+        n => out.push((format!("{n} downloads finished"), list(&finished))),
+    }
+    if !waiting.is_empty() {
+        out.push((
+            "Needs you".into(),
+            format!(
+                "{}: open it in Haul to solve the host's page",
+                list(&waiting)
+            ),
+        ));
+    }
+    match failed.len() {
+        0 => {}
+        1 => out.push(("Download failed".into(), failed[0].clone())),
+        n => out.push((
+            format!("{n} downloads failed"),
+            failed
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )),
+    }
+    out
+}

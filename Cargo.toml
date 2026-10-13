@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# The desktop app needs WebKitGTK on Linux, so plain `cargo build` and
+# `cargo test` cover the engine and the web server; add `--workspace` for all.
+default-members = ["crates/haul-core", "crates/haul-web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+repository = "https://github.com/garysassano/haul"

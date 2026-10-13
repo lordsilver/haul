@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Haul</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/theme.js"></script>
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="app">
+      <nav class="pane" aria-label="Views">
+        <div class="brand">
+          <img src="/icon.svg" alt="" width="20" height="20" />
+          <span class="label">Haul</span>
+        </div>
+        <div id="nav" class="nav"></div>
+        <div class="nav-spacer"></div>
+        <div id="nav-footer" class="nav"></div>
+      </nav>
+
+      <main class="content">
+        <header class="page-head">
+          <h1 id="title">Downloads</h1>
+          <div id="commands" class="commands"></div>
+        </header>
+
+        <section id="view-downloads" class="view" aria-labelledby="title">
+          <div id="banner"></div>
+          <ul id="list" class="list"></ul>
+          <div id="empty" class="empty" hidden></div>
+        </section>
+
+        <section id="view-hosts" class="view" aria-labelledby="title" hidden>
+          <p class="lead">Hosts are ranked by measured speed. Slots cap how many files download from one host at a time.</p>
+          <div id="hosts" class="cards"></div>
+          <div id="no-hosts" class="empty" hidden></div>
+        </section>
+
+        <section id="view-settings" class="view" aria-labelledby="title" hidden>
+          <div id="settings" class="settings"></div>
+        </section>
+      </main>
+
+      <footer id="status" class="statusbar"></footer>
+    </div>
+
+    <dialog id="add-dialog" class="dialog" aria-labelledby="add-title">
+      <form method="dialog" id="add-form">
+        <div class="dialog-body">
+          <h2 id="add-title">Add links</h2>
+          <label class="field-label" for="add-text">Links, or any text with links in it</label>
+          <textarea id="add-text" rows="7" spellcheck="false" placeholder="https://pixeldrain.com/u/…&#10;https://gofile.io/d/…"></textarea>
+          <label class="field-label" for="add-package">Package <span class="hint">optional subfolder</span></label>
+          <input id="add-package" type="text" autocomplete="off" />
+          <p class="hint">Tip: paste anywhere in Haul, or drop links and .dlc / .txt files on the window.</p>
+        </div>
+        <div class="dialog-foot">
+          <label class="button" id="add-import"><input id="add-file" type="file" accept=".dlc,.txt,.crawljob" multiple hidden /></label>
+          <span class="grow"></span>
+          <button type="submit" class="button accent" id="add-submit" value="add">Add</button>
+          <button type="button" class="button" id="add-cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+    <div id="drop" class="drop" hidden><div class="drop-card"></div></div>
+  </body>
+</html>

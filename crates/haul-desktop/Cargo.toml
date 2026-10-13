@@ -1,0 +1,22 @@
+[package]
+name = "haul-desktop"
+description = "Haul desktop app: the web UI in a native window, with a tray icon, notifications and an in-app browser for hosts that need a person"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.7.2", features = [] }
+
+[dependencies]
+haul-core = { version = "0.1.0", path = "../haul-core" }
+haul-web = { version = "0.1.0", path = "../haul-web" }
+open = "5.4.4"
+tauri = { version = "2.12.3", features = ["tray-icon"] }
+tauri-plugin-dialog = "2.8.2"
+tauri-plugin-notification = "2.6.0"
+tauri-plugin-single-instance = "2.5.3"
+tokio = { version = "1.53.2", features = ["fs", "net", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
