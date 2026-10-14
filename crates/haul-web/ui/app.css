@@ -558,11 +558,15 @@ input[type="number"] {
   background: var(--card-hover);
 }
 
+.row {
+  --row-gap: 16px;
+}
+
 .row-main {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) minmax(160px, 260px) 96px auto;
   align-items: center;
-  gap: 16px;
+  gap: var(--row-gap);
   min-height: 64px;
   padding: 8px 8px 8px 16px;
 }
@@ -756,6 +760,19 @@ input[type="number"] {
 
 .infobar .hint {
   grid-column: 2;
+}
+
+.infobar.plain {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.infobar.plain > * {
+  grid-column: 1;
+}
+
+/* under the row's glyph column, its text in line with the file name */
+.row .infobar {
+  margin-left: calc(20px + var(--row-gap));
 }
 
 #banner .infobar {
@@ -1147,15 +1164,22 @@ input.wide {
     background: var(--caution);
   }
 
+  .nav-item.critical::after {
+    background: var(--critical);
+  }
+
   .page-head,
   .view {
     padding-left: 16px;
     padding-right: 16px;
   }
 
+  .row {
+    --row-gap: 12px;
+  }
+
   .row-main {
     grid-template-columns: 20px minmax(0, 1fr) auto;
-    gap: 12px;
   }
 
   .row-main .progress {

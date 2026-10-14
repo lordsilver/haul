@@ -79,6 +79,9 @@ function duration(seconds) {
 
 const isWebLink = (url) => /^https?:\/\//i.test(url);
 
+// The host a row names: the one in use, else the first mirror's.
+const shownHost = (it) => it.host || it.mirrors[0] || "";
+
 // Errors arrive as "host: message"; the host is on screen already.
 function withoutHost(message, host) {
   return host && message.startsWith(`${host}: `) ? message.slice(host.length + 2) : message;
@@ -283,6 +286,7 @@ function renderNav(s) {
     setText(item.badge, count ? String(count) : "");
     item.badge.className = `badge${count && item.spec.badge ? ` ${item.spec.badge}` : ""}`;
     item.node.classList.toggle("attention", count > 0 && Boolean(item.spec.badge));
+    item.node.classList.toggle("critical", count > 0 && item.spec.badge === "critical");
   }
 }
 
@@ -332,21 +336,22 @@ function renderHead(s) {
   );
 }
 
+// Without a glyph the bar has no icon, like WinUI's IsIconVisible="False": inside a row, the row's glyph says it already.
 function infobar(kind, glyph, title, message, actions = []) {
   return el(
     "div",
-    { class: `infobar ${kind}`, role: kind === "critical" ? "alert" : undefined },
-    icon(glyph),
-    el("div", { class: "message" }, el("b", {}, title), message),
+    { class: `infobar ${kind}${glyph ? "" : " plain"}`, role: kind === "critical" ? "alert" : undefined },
+    glyph ? icon(glyph) : null,
+    el("div", { class: "message" }, title ? el("b", {}, title) : null, message),
     actions.length ? el("div", { class: "bar-actions" }, actions) : null,
   );
 }
 
 let bannerKey = null;
 
+// App-wide state only. A download that needs you has its own row and the Needs you badge.
 function renderBanner(s) {
-  const waiting = s.items.filter((i) => i.status === "captcha").length;
-  const key = `${offline}|${s.paused}|${waiting}|${view}|${s.config_error}`;
+  const key = `${offline}|${s.paused}|${s.config_error}`;
   if (key === bannerKey) return;
   bannerKey = key;
   const bars = [];
@@ -364,14 +369,6 @@ function renderBanner(s) {
     bars.push(
       infobar("info", "pause-circle", "Downloads are paused.", "Nothing new starts until you resume.", [
         button("Resume all", { icon: "play", onclick: () => api("/api/global/resume").catch(report) }),
-      ]),
-    );
-  }
-  if (waiting && view !== "attention") {
-    const what = waiting === 1 ? "1 download needs you." : `${waiting} downloads need you.`;
-    bars.push(
-      infobar("caution", "warning", what, "Its host wants a captcha or a browser step.", [
-        button("Show", { onclick: () => go("attention") }),
       ]),
     );
   }
@@ -503,7 +500,7 @@ function helpBar(r, it, s) {
   const hint = s.desktop
     ? "Open here, solve the page and press its download button: Haul takes the download over."
     : "Open the page, solve it, then copy the final download link and paste it here.";
-  const bar = infobar("caution", "warning", "This host needs you.", withoutHost(it.error, it.host), actions);
+  const bar = infobar("caution", null, null, withoutHost(it.error, shownHost(it)), actions);
   bar.append(el("p", { class: "hint" }, hint));
   return bar;
 }
@@ -544,10 +541,10 @@ function updateRow(r, it, s) {
   setText(r.name, it.name);
   r.name.title = it.name;
 
-  const sub = [it.host || it.mirrors[0] || ""];
+  const sub = [shownHost(it)];
   if (it.mirrors.length > 1) sub.push(`${it.mirrors.length} mirrors`);
   if (it.package) sub.push(it.package);
-  const error = ["error", "waiting"].includes(it.status) ? withoutHost(it.error, it.host) : "";
+  const error = ["error", "waiting"].includes(it.status) ? withoutHost(it.error, sub[0]) : "";
   const subKey = `${sub.join(" · ")}|${error}`;
   if (r.sub.dataset.key !== subKey) {
     r.sub.dataset.key = subKey;
