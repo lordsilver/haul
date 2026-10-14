@@ -42,6 +42,12 @@ Account secrets are part of the settings, but they never ride the state stream t
 
 Errors are sorted by what retrying can achieve. A dead link or a refusal fails its mirror at once, so the next mirror takes over without delay. Network trouble (a dropped connection, a timeout, an unreachable host) is retried on the same mirror with growing pauses, because the host usually comes back and the bytes already downloaded are kept. Failures lower a host's rank with a ten-minute half-life, so one bad minute does not exile a host for the rest of the session. A download whose mirrors all failed is tried again after a while, three times at most, since hosts that are down tend to come back and the cost of another attempt is small.
 
+## Choosing among mirrors
+
+A file with mirrors downloads from a host the user prefers when one has it, in the order the user starred them; otherwise from the host with the best measured speed, where recent failures count against a host and a host never measured gets a turn. A preferred host that is only busy is waited for, since a user who stars a host (often one they hold an account with) wants the file from it; one that is cooling down or has failed for the file is passed over, so a preference never stalls a download for good.
+
+Speeds come from real downloads and are remembered in `hosts.json` for a week. Haul does not test mirrors by downloading a piece of each: file hosts count every download start toward free-mode limits and wait timers, so a test can cost the real download. Nor does it switch mirrors in the middle of a file: without a checksum there is no telling whether two mirrors hold the same bytes, and resuming one from the other's offset would corrupt the file silently.
+
 ## Removing downloads and host folders
 
 Removing a download from the list leaves its file alone unless the user turns on `recycle_on_remove`; then the file goes to the Recycle Bin rather than being deleted, so a slip can be undone. Only the remove button of a finished download does that: **Clear completed** never touches files, because one click there would empty a folder of finished work into the bin. A file that cannot be moved (open in another program, say) keeps its row, so the user sees why and can try again. Files megatools downloads are left alone, since Haul only knows the folder it shares with other downloads.

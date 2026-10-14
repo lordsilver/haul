@@ -311,6 +311,13 @@ async fn settings_round_trip_and_secrets_stay_out_of_the_stream() {
         .post("/api/host/example.com/folder", json!({"folder": "Example"}))
         .await;
     assert_eq!(folder.status(), StatusCode::OK);
+    let preferred = s
+        .post(
+            "/api/host/example.com/preferred",
+            json!({"preferred": true}),
+        )
+        .await;
+    assert_eq!(preferred.status(), StatusCode::OK);
     let missing = s.post("/api/host/example.com/folder", json!({})).await;
     assert!(missing.status().is_client_error(), "{}", missing.status());
     let gone = s.post("/api/item/no-such-id/remove", json!({})).await;

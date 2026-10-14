@@ -202,6 +202,8 @@ pub struct HostView {
     pub cooldown: u64,
     /// Subfolder of the download folder for its files; empty for none.
     pub folder: String,
+    /// Where it stands among the preferred hosts, 0 being the first.
+    pub preferred: Option<usize>,
 }
 
 struct HostStats {
@@ -210,6 +212,8 @@ struct HostStats {
     cooldown: Option<Instant>,
     /// Smoothed bytes per second of one stream.
     ema: f64,
+    /// When `ema` last changed, in seconds since 1970.
+    measured: u64,
     fails: u32,
     /// Failures weighed by age: each halves every [`PENALTY_HALF_LIFE`].
     penalty: f64,
@@ -220,6 +224,16 @@ struct HostStats {
 }
 
 const PENALTY_HALF_LIFE: f64 = 600.0;
+
+/// Saved host speeds older than this are forgotten, so a host that had a bad
+/// day gets measured again.
+const SPEED_MEMORY: u64 = 7 * 24 * 3600;
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
 
 impl HostStats {
     fn penalty(&self, now: Instant) -> f64 {
@@ -240,8 +254,51 @@ impl HostStats {
         speed / (1.0 + self.penalty(now) * 0.5)
     }
 
+    fn cooling(&self, now: Instant) -> bool {
+        self.cooldown.is_some_and(|c| now < c)
+    }
+
     fn free(&self, now: Instant) -> bool {
-        self.active < self.limit && self.cooldown.is_none_or(|c| now >= c)
+        self.active < self.limit && !self.cooling(now)
+    }
+
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            active: 0,
+            cooldown: None,
+            ema: 0.0,
+            measured: 0,
+            fails: 0,
+            penalty: 0.0,
+            penalty_at: Instant::now(),
+            ok: 0,
+            bytes: 0,
+            blocked: false,
+        }
+    }
+
+    /// What was learned in an earlier run.
+    fn restore(limit: usize, saved: &store::SavedHost, now: u64) -> Self {
+        let fresh = now.saturating_sub(saved.measured) < SPEED_MEMORY;
+        Self {
+            ema: if fresh { saved.speed as f64 } else { 0.0 },
+            measured: if fresh { saved.measured } else { 0 },
+            ok: saved.ok,
+            fails: saved.fails,
+            bytes: saved.bytes,
+            ..Self::new(limit)
+        }
+    }
+
+    fn saved(&self) -> store::SavedHost {
+        store::SavedHost {
+            speed: self.ema.round() as u64,
+            measured: self.measured,
+            ok: self.ok,
+            fails: self.fails,
+            bytes: self.bytes,
+        }
     }
 }
 
@@ -260,18 +317,7 @@ impl State {
     fn host(&mut self, name: &str, cfg: &Config) -> &mut HostStats {
         self.hosts
             .entry(name.to_string())
-            .or_insert_with(|| HostStats {
-                limit: cfg.limit_for(name),
-                active: 0,
-                cooldown: None,
-                ema: 0.0,
-                fails: 0,
-                penalty: 0.0,
-                penalty_at: Instant::now(),
-                ok: 0,
-                bytes: 0,
-                blocked: false,
-            })
+            .or_insert_with(|| HostStats::new(cfg.limit_for(name)))
     }
 }
 
@@ -411,6 +457,14 @@ impl Engine {
         let clients = Clients::new(&cfg).map_err(StartError::Proxy)?;
 
         let saved = store::load_queue(&data_dir)?;
+        let now = unix_now();
+        let hosts: IndexMap<String, HostStats> = store::load_hosts(&data_dir)
+            .iter()
+            .map(|(name, saved)| {
+                let stats = HostStats::restore(cfg.limit_for(name), saved, now);
+                (name.clone(), stats)
+            })
+            .collect();
         let routes = cfg.routes.clone();
         let items: IndexMap<String, Item> = saved
             .into_iter()
@@ -425,7 +479,7 @@ impl Engine {
         let engine = Engine(Arc::new(Inner {
             state: Mutex::new(State {
                 items,
-                hosts: IndexMap::new(),
+                hosts,
                 routes,
                 paused: false,
                 moving: false,
@@ -783,8 +837,26 @@ impl Engine {
             }
             return None;
         }
-        let mut best: Option<(String, f64)> = None;
         let cfg = self.cfg();
+        // Preferred hosts first, in the user's order. One that is only busy
+        // is waited for; one cooling down is passed over like any other.
+        let mut preferred: Vec<(usize, String)> = Vec::new();
+        for m in &candidates {
+            let name = hosts::host_of(m);
+            if let Some(rank) = cfg.preference(&name)
+                && !st.host(&name, &cfg).cooling(now)
+            {
+                preferred.push((rank, m.clone()));
+            }
+        }
+        if !preferred.is_empty() {
+            preferred.sort_by_key(|(rank, _)| *rank);
+            return preferred
+                .into_iter()
+                .find(|(_, m)| st.host(&hosts::host_of(m), &cfg).free(now))
+                .map(|(_, m)| m);
+        }
+        let mut best: Option<(String, f64)> = None;
         for m in candidates {
             let host = st.host(&hosts::host_of(&m), &cfg);
             if !host.free(now) {
@@ -1243,6 +1315,7 @@ impl Engine {
                     h.bytes += chunk.len() as u64;
                     if let Some(speed) = speed {
                         h.ema = if h.ema == 0.0 { speed } else { h.ema * 0.7 + speed * 0.3 };
+                        h.measured = unix_now();
                     }
                 }
             }
@@ -1637,9 +1710,16 @@ impl Engine {
                     .cooldown
                     .map_or(0, |c| c.saturating_duration_since(now).as_secs()),
                 folder: cfg.folder_for(name).display().to_string(),
+                preferred: cfg.preference(name),
             })
             .collect();
-        hosts.sort_by(|a, b| b.speed.total_cmp(&a.speed));
+        // In the order downloads pick them: preferred, then fastest.
+        hosts.sort_by(|a, b| {
+            let rank = |h: &HostView| h.preferred.unwrap_or(usize::MAX);
+            rank(a)
+                .cmp(&rank(b))
+                .then_with(|| b.speed.total_cmp(&a.speed))
+        });
         Snapshot {
             speed: items.iter().map(|i| i.speed).sum(),
             items,
@@ -1679,20 +1759,29 @@ impl Engine {
 
     fn save(&self, force: bool) {
         let _guard = self.0.save_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let queue: IndexMap<String, _> = {
+        let (queue, hosts): (IndexMap<String, _>, BTreeMap<String, _>) = {
             let mut st = self.lock();
             if !st.dirty && !force {
                 return;
             }
             st.dirty = false;
-            st.items
-                .iter()
-                .map(|(k, v)| (k.clone(), v.saved()))
-                .collect()
+            (
+                st.items
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.saved()))
+                    .collect(),
+                st.hosts
+                    .iter()
+                    .map(|(k, h)| (k.clone(), h.saved()))
+                    .collect(),
+            )
         };
         if let Err(e) = store::write(&self.0.data_dir, store::QUEUE, &queue) {
             tracing::error!("saving the queue: {e}");
             self.lock().dirty = true;
+        }
+        if let Err(e) = store::write(&self.0.data_dir, store::HOSTS, &hosts) {
+            tracing::error!("saving the host speeds: {e}");
         }
     }
 
@@ -1771,6 +1860,27 @@ fn display_name(it: &Item) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::{HostStats, SPEED_MEMORY, store};
+
+    #[test]
+    fn old_speeds_are_forgotten() {
+        let saved = |measured| store::SavedHost {
+            speed: 5_000_000,
+            measured,
+            ok: 3,
+            fails: 1,
+            bytes: 9,
+        };
+        let now = 10 * SPEED_MEMORY;
+        let fresh = HostStats::restore(4, &saved(now - 60), now);
+        assert_eq!((fresh.ema, fresh.ok, fresh.limit), (5e6, 3, 4));
+        let stale = HostStats::restore(4, &saved(now - SPEED_MEMORY - 1), now);
+        assert_eq!(
+            (stale.ema, stale.measured, stale.ok, stale.fails),
+            (0.0, 0, 3, 1)
+        );
+    }
+
     /// The system's own bin, on the platforms that can list it: the file
     /// leaves its folder for the bin, and the test empties exactly that item.
     #[test]

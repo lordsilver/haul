@@ -287,6 +287,25 @@ impl Engine {
         self.write_and_apply(cfg, vec![write])
     }
 
+    /// Adds `host` to the end of the preferred hosts, or takes it out; a host
+    /// already preferred keeps its place.
+    pub fn set_preferred(&self, host: &str, preferred: bool) -> Result<(), String> {
+        let mut cfg = (*self.cfg()).clone();
+        if preferred == cfg.preference(host).is_some() {
+            return Ok(());
+        }
+        if preferred {
+            cfg.preferred_hosts.push(host.to_string());
+        } else {
+            cfg.preferred_hosts
+                .retain(|h| !h.eq_ignore_ascii_case(host));
+        }
+        let list = (!cfg.preferred_hosts.is_empty()).then(|| {
+            toml_edit::Value::Array(cfg.preferred_hosts.iter().map(String::as_str).collect())
+        });
+        self.write_and_apply(cfg, vec![top("preferred_hosts", list)])
+    }
+
     /// The user's choice of route for one host. `Direct` leaves the proxy and
     /// uses the real address, so it is never chosen automatically.
     pub fn set_route(&self, host: &str, route: Route) -> Result<(), String> {

@@ -55,6 +55,8 @@ pub struct Config {
     pub routes: BTreeMap<String, Route>,
     /// Subfolder of the download folder for the files from a host.
     pub folders: BTreeMap<String, String>,
+    /// Hosts a file with mirrors downloads from first, in this order.
+    pub preferred_hosts: Vec<String>,
     #[serde(rename = "1fichier_key")]
     pub onefichier_key: Option<String>,
     pub pixeldrain_key: Option<String>,
@@ -88,6 +90,7 @@ impl Default for Config {
             limits: BTreeMap::new(),
             routes: BTreeMap::new(),
             folders: BTreeMap::new(),
+            preferred_hosts: Vec::new(),
             onefichier_key: None,
             pixeldrain_key: None,
             rapidgator_user: None,
@@ -187,6 +190,13 @@ impl Config {
     /// The proxy, if one is configured.
     pub fn proxy(&self) -> Option<&str> {
         secret(&self.proxy)
+    }
+
+    /// Where `host` stands among the preferred hosts, 0 being the first.
+    pub fn preference(&self, host: &str) -> Option<usize> {
+        self.preferred_hosts
+            .iter()
+            .position(|h| h.eq_ignore_ascii_case(host))
     }
 
     /// The subfolder for files from `host`, relative to the download folder;
@@ -434,6 +444,12 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # megatools for mega.nz links (default: found on PATH).
 # megatools = "C:/Tools/megatools/megatools.exe"
 
+# Hosts a file with mirrors downloads from first, in this order; the rest
+# follow by measured speed. A file waits for a free slot on a preferred host
+# rather than starting on another one, unless the preferred host is cooling
+# down or has failed for that file.
+# preferred_hosts = ["rapidgator.net", "pixeldrain.com"]
+
 # Sent to hosts with every request.
 # user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0"
 
@@ -497,6 +513,7 @@ mod tests {
             retry_failed_minutes = 0
             proxy = "socks5://u:p@host:1080"
             1fichier_key = "k1"
+            preferred_hosts = ["B.example", "a.example"]
             [limits]
             "1fichier.com" = 1
             [routes]
@@ -515,6 +532,11 @@ mod tests {
         assert_eq!(cfg.limit_for("other.example"), FALLBACK_LIMIT);
         assert_eq!(cfg.routes.get("a.example"), Some(&Route::Direct));
         assert!(cfg.recycle_on_remove);
+        assert_eq!(
+            (cfg.preference("b.example"), cfg.preference("a.example")),
+            (Some(0), Some(1))
+        );
+        assert_eq!(cfg.preference("c.example"), None);
         assert_eq!(cfg.folder_for("a.example"), Path::new("Hosts").join("a"));
         assert_eq!(cfg.folder_for("other.example"), PathBuf::new());
         assert_eq!(cfg.user_agent, DEFAULT_USER_AGENT);

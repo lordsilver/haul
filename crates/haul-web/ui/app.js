@@ -650,6 +650,10 @@ function setRoute(name, route) {
   return api(`/api/host/${encodeURIComponent(name)}/route/${route}`);
 }
 
+function setPreferred(name, preferred) {
+  api(`/api/host/${encodeURIComponent(name)}/preferred`, { preferred }).catch(report);
+}
+
 function setLimit(name, delta) {
   const host = state?.hosts.find((h) => h.name === name);
   if (host) api(`/api/host/${encodeURIComponent(name)}/limit/${Math.max(1, host.limit + delta)}`).catch(report);
@@ -713,7 +717,8 @@ function editFolder(c, name) {
 }
 
 function makeHostCard(name) {
-  const c = { key: null };
+  const c = { key: null, preferred: false };
+  c.star = button("Prefer this host", { icon: "star", kind: "subtle small", iconOnly: true, onclick: () => setPreferred(name, !c.preferred) });
   c.stats = el("div", { class: "sub" });
   c.pills = el("span", { class: "controls" });
   c.slots = el("output");
@@ -730,6 +735,7 @@ function makeHostCard(name) {
       c.slots,
       button("More slots", { icon: "add", kind: "subtle small", iconOnly: true, onclick: () => setLimit(name, 1) }),
     ),
+    c.star,
     button("Folder for this host's files", { icon: "folder", kind: "subtle small", iconOnly: true, onclick: () => editFolder(c, name) }),
   );
   return c;
@@ -757,6 +763,8 @@ function renderHosts(s) {
   const box = $("hosts");
   let previous = null;
   const seen = new Set();
+  const fastest = s.hosts.reduce((a, h) => (h.speed > (a?.speed ?? 0) ? h : a), null)?.name;
+  const preferredCount = s.hosts.filter((h) => h.preferred !== null).length;
   s.hosts.forEach((h, index) => {
     seen.add(h.name);
     let c = hostCards.get(h.name);
@@ -764,16 +772,23 @@ function renderHosts(s) {
       c = makeHostCard(h.name);
       hostCards.set(h.name, c);
     }
-    const stats = [`${bytes(h.speed)}/s per file`, `${h.ok} done`, `${h.fails} failed`, `${bytes(h.bytes)} total`];
+    const stats = [h.speed ? `${bytes(h.speed)}/s per file` : "Speed not measured yet", `${h.ok} done`, `${h.fails} failed`, `${bytes(h.bytes)} total`];
     if (h.cooldown) stats.push(`cooling down ${duration(h.cooldown)}`);
     setText(c.stats, stats.join(" · "));
     setText(c.slots, `${h.active} / ${h.limit}`);
-    const best = index === 0 && h.speed > 0;
-    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}`;
+    const best = h.name === fastest;
+    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}`;
     if (c.key !== key) {
       c.key = key;
       c.node.classList.toggle("best", best);
       const pills = [];
+      c.preferred = h.preferred !== null;
+      const starTitle = c.preferred ? "Preferred: click to stop preferring it" : "Prefer this host";
+      c.star.replaceChildren(icon(c.preferred ? "star-filled" : "star"));
+      c.star.title = starTitle;
+      c.star.setAttribute("aria-label", starTitle);
+      c.star.setAttribute("aria-pressed", String(c.preferred));
+      if (c.preferred) pills.push(el("span", { class: "pill preferred" }, icon("star-filled"), preferredCount > 1 ? `Preferred · ${h.preferred + 1}` : "Preferred"));
       if (best) pills.push(el("span", { class: "pill success" }, "Fastest"));
       if (h.folder) pills.push(el("span", { class: "pill", title: "Its files go to this subfolder" }, icon("folder"), h.folder));
       if (s.proxy) pills.push(el("span", { class: `pill${h.route === "direct" ? " caution" : ""}` }, icon("shield"), `via ${h.route}`));

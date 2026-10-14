@@ -499,10 +499,15 @@ async fn folder_expands_in_place() {
 
 /// Starts from `config.toml` in the data folder, as the apps do.
 async fn start_from_file(t: &Setup) -> Engine {
-    let options = || Options {
+    start_when_free(|| Options {
         config: None,
         ..t.options()
-    };
+    })
+    .await
+}
+
+/// Starts once the previous engine on the same data folder has let go of it.
+async fn start_when_free(options: impl Fn() -> Options) -> Engine {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match Engine::start(options()).await {
@@ -810,4 +815,65 @@ async fn host_folders_and_the_recycle_bin() {
     engine.add_text(&format!("{}/files/e.bin", t.name), "");
     wait_for(&engine, "done", all_done).await;
     assert_eq!(t.downloaded("e.bin"), content("e.bin", SIZE));
+}
+
+#[tokio::test]
+async fn preferred_hosts_go_first_and_are_waited_for() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_preferred("localhost", true).unwrap();
+    engine.set_host_limit("localhost", 1);
+    let both = |name: &str| format!("{}/slow/{name} {}/slow/{name}", t.ip, t.name);
+    engine.add_text(&format!("{} {}", both("q1.bin"), both("q2.bin")), "");
+    let s = wait_for(&engine, "done", |s| s.items.len() == 2 && all_done(s)).await;
+    let ok = |name: &str| s.hosts.iter().find(|h| h.name == name).map_or(0, |h| h.ok);
+    assert_eq!(
+        (ok("localhost"), ok("127.0.0.1")),
+        (2, 0),
+        "the second file waited for the preferred host's only slot: {:#?}",
+        s.hosts
+    );
+    assert_eq!(
+        (s.hosts[0].name.as_str(), s.hosts[0].preferred),
+        ("localhost", Some(0)),
+        "listed first"
+    );
+    assert_eq!(t.downloaded("q2.bin"), content("q2.bin", SIZE));
+
+    engine.set_preferred("localhost", false).unwrap();
+    assert!(
+        engine
+            .snapshot()
+            .hosts
+            .iter()
+            .all(|h| h.preferred.is_none())
+    );
+}
+
+#[tokio::test]
+async fn host_speeds_survive_a_restart() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/slow/s.bin", t.ip), "");
+    wait_for(&engine, "done", all_done).await;
+    let host = |e: &Engine| {
+        e.snapshot()
+            .hosts
+            .into_iter()
+            .find(|h| h.name == "127.0.0.1")
+    };
+    let before = host(&engine).unwrap();
+    assert_eq!((before.ok, before.bytes), (1, SIZE as u64));
+    engine.shutdown().await;
+    drop(engine);
+
+    let engine = start_when_free(|| t.options()).await;
+    let after = host(&engine).expect("remembered");
+    assert_eq!((after.ok, after.bytes), (before.ok, before.bytes));
+    assert!(
+        (after.speed - before.speed).abs() < 1.0,
+        "{} then {}",
+        before.speed,
+        after.speed
+    );
 }

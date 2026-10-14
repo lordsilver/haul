@@ -129,6 +129,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/item/{id}/{action}", post(item))
         .route("/api/host/{name}/limit/{n}", post(host_limit))
         .route("/api/host/{name}/folder", post(host_folder))
+        .route("/api/host/{name}/preferred", post(host_preferred))
         .route("/api/host/{name}/route/{mode}", post(host_route))
         .route("/api/global/{action}", post(global))
         .route("/api/settings", get(settings).post(update_settings))
@@ -352,6 +353,23 @@ async fn host_folder(
     Json(body): Json<Folder>,
 ) -> Response {
     match app.engine.set_host_folder(&name, &body.folder) {
+        Ok(()) => ok(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct Preferred {
+    preferred: bool,
+}
+
+/// Adds a host to the end of the preferred hosts, or takes it out.
+async fn host_preferred(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    Json(body): Json<Preferred>,
+) -> Response {
+    match app.engine.set_preferred(&name, body.preferred) {
         Ok(()) => ok(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }

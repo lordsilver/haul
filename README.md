@@ -1,6 +1,6 @@
 # Haul
 
-A download manager for file hosts. Paste links, or drop a `.dlc` or `.txt` file, and Haul resolves each host's page into the actual file, merges mirrors of the same file across hosts, picks the fastest one, and downloads with resume, a shared speed limit and an optional proxy. When a host wants a person (a captcha, a timer, a click), the download waits for you instead of failing, and the desktop app's built-in browser hands the download back to Haul once you have dealt with the page.
+A download manager for file hosts. Paste links, or drop a `.dlc` or `.txt` file, and Haul resolves each host's page into the actual file, merges mirrors of the same file across hosts, picks the host you prefer or the fastest one, and downloads with resume, a shared speed limit and an optional proxy. When a host wants a person (a captcha, a timer, a click), the download waits for you instead of failing, and the desktop app's built-in browser hands the download back to Haul once you have dealt with the page.
 
 It comes as a Windows desktop app (a Tauri 2 shell around the engine) and as `haul`, a headless server with the same web UI for any browser.
 
@@ -9,6 +9,7 @@ It comes as a Windows desktop app (a Tauri 2 shell around the engine) and as `ha
 Early. Working today:
 
 - Queue with mirrors: the same file name on several hosts becomes one row; links that hide the name are looked up first (name and size), so they merge before anything downloads.
+- Preferred hosts: a file with mirrors downloads from the hosts you star, in that order, and otherwise from the fastest; speeds come from earlier downloads and are remembered for a week.
 - Per-host slots, cooldowns when a host answers 429 or 503, and failover to the next mirror. Dropped connections and unreachable hosts are retried with growing pauses before a mirror counts as failed, a host's failures weigh less as they age, and failed downloads are tried again on their own after a while.
 - Resume through HTTP ranges; partial files survive restarts and pauses, and move along when you change the download folder.
 - One global speed limit across every transfer, parallel downloads and per-host slots, all changeable while downloads run.
@@ -40,7 +41,7 @@ cd crates/haul-desktop && npx @tauri-apps/cli@2 build   # installers in target/r
 
 - **Add links**: paste anywhere in the window (Ctrl+V), use **Add links**, drop links or `.dlc` / `.txt` files on the window, or pass them on the command line: `Haul.exe <link or file>…`. A second launch hands its links to the running app.
 - **Needs you**: a host that wants a captcha or a browser step parks its download under **Needs you**. In the desktop app, **Open here** opens the page in Haul's own browser window: solve it and press the host's download button, and Haul takes the download over (with the page's cookies, through your proxy if the host uses it). Anywhere else, **Open page** and **Paste link** do the same by hand.
-- **Hosts**: transfer speed per host, slots (files downloaded from it at once), the folder its files go to (a subfolder of the download folder), and the proxy route. A host that looks blocked through the proxy offers **Allow direct**, which needs a second click because it reveals your real IP address to that host.
+- **Hosts**: transfer speed per host, the star that makes it preferred, slots (files downloaded from it at once), the folder its files go to (a subfolder of the download folder), and the proxy route. A host that looks blocked through the proxy offers **Allow direct**, which needs a second click because it reveals your real IP address to that host.
 - **Removing**: the ✕ on a row takes the download off the list and leaves its file alone, unless **Settings › Move removed files to the Recycle Bin** is on; then a finished download's file goes to the Recycle Bin. **Clear completed** only tidies the list.
 - **Headless**: `haul --port 8765 --dir D:\Downloads`, then open <http://127.0.0.1:8765/>. `haul --help` lists the options.
 - **From any page**: this bookmarklet opens Haul's Add dialog with the page you are on (adding still takes your click): `javascript:location.href='http://127.0.0.1:8765/#/add/'+encodeURIComponent(location.href)`
@@ -59,6 +60,7 @@ recycle_on_remove = false              # removing a finished download also moves
 resume_attempts = 3                    # retries per mirror after network trouble
 retry_failed_minutes = 15              # retry failed downloads (up to 3 times), 0 = never
 proxy = "socks5://user:pass@host:1080" # every host goes through it unless allowed direct
+preferred_hosts = ["rapidgator.net"]     # downloaded from first, in this order
 
 # Accounts
 1fichier_key = ""
@@ -86,7 +88,7 @@ Environment variables: `HAUL_PROXY` replaces `proxy`; `HAUL_1FICHIER_KEY`, `HAUL
 
 ## Files
 
-The data folder is `%LOCALAPPDATA%\haul` on Windows and `~/.local/share/haul` on Linux. It holds `config.toml`, the queue (`queue.json`), the desktop app's log (`haul.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish.
+The data folder is `%LOCALAPPDATA%\haul` on Windows and `~/.local/share/haul` on Linux. It holds `config.toml`, the queue (`queue.json`), what Haul measured per host (`hosts.json`), the desktop app's log (`haul.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish.
 
 ## Coming from the Python prototype
 

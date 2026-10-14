@@ -952,6 +952,11 @@ input.wide {
   flex-basis: 100%;
 }
 
+.card .button[aria-pressed="true"] .icon,
+.pill.preferred .icon {
+  color: var(--accent-text);
+}
+
 /* ToggleSwitch: "On"/"Off" beside a pill with a sliding knob */
 .toggle {
   display: inline-flex;
