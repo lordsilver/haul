@@ -436,6 +436,7 @@ async fn global(State(app): State<App>, Path(action): Path<String>) -> Response 
         "resume" => app.engine.set_paused(false),
         "retry_failed" => app.engine.retry_failed(),
         "clear_done" => app.engine.clear_done(),
+        "clear_failed" => app.engine.clear_failed(),
         _ => return error(StatusCode::BAD_REQUEST, "unknown action"),
     }
     ok()

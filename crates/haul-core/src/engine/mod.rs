@@ -1851,6 +1851,25 @@ impl Engine {
         self.touch(&mut st);
     }
 
+    /// Takes every failed download off the list, with its partial file.
+    pub fn clear_failed(&self) {
+        let gone: Vec<String> = {
+            let mut st = self.lock();
+            let gone = st
+                .items
+                .values()
+                .filter(|i| i.status == Status::Error && !i.running())
+                .map(|i| i.id.clone())
+                .collect::<Vec<_>>();
+            for id in &gone {
+                st.items.shift_remove(id);
+            }
+            self.touch(&mut st);
+            gone
+        };
+        self.discard_parts(gone);
+    }
+
     /// Where a finished item was saved.
     pub fn item_path(&self, id: &str) -> Option<PathBuf> {
         self.lock().items.get(id)?.path.as_ref().map(PathBuf::from)

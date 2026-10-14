@@ -194,7 +194,9 @@ function go(name) {
 
 addEventListener("hashchange", () => {
   takeAddRoute();
-  view = currentView();
+  const next = currentView();
+  if (next !== view) selected.clear();
+  view = next;
   if (state) render(state);
 });
 
@@ -307,13 +309,31 @@ function renderHead(s) {
   const spec = LISTS[view] ?? PAGES[view];
   setText($("title"), view === "all" ? "Downloads" : spec.label);
   $("commands").hidden = !(view in LISTS);
-  const failed = s.items.some((i) => i.status === "error");
+  const failed = s.items.filter((i) => i.status === "error");
   const done = s.items.some((i) => i.status === "done");
-  const key = `${s.paused}|${failed}|${done}`;
+  const picked = s.items.filter((i) => selected.has(i.id));
+  const key = `${s.paused}|${failed.length}|${done}|${view}|${picked.map((i) => `${i.id}:${i.status}`).join(",")}`;
   if (key === commandsKey) return;
   commandsKey = key;
   if (!commandButtons) makeCommands();
   // Only the buttons are rebuilt, so typing in the search box keeps focus.
+  if (picked.length) {
+    commandButtons.replaceChildren(...selectionCommands(picked, s).filter(Boolean));
+    return;
+  }
+  // In the Failed view the broom clears failed downloads, partial files and
+  // all, so it asks for a second click; elsewhere it tidies finished ones.
+  const clear =
+    view === "failed"
+      ? failed.length
+        ? confirmButton("Clear failed", `Clear ${plural(failed.length, "download")}?`, () => api("/api/global/clear_failed"), { icon: "broom", kind: "subtle" })
+        : button("Clear failed", { icon: "broom", kind: "subtle", disabled: true })
+      : button("Clear completed", {
+          icon: "broom",
+          kind: "subtle",
+          disabled: !done,
+          onclick: () => api("/api/global/clear_done").catch(report),
+        });
   commandButtons.replaceChildren(
     button("Add links", { icon: "add", kind: "accent", onclick: () => openAdd() }),
     button(s.paused ? "Resume all" : "Pause all", {
@@ -324,16 +344,90 @@ function renderHead(s) {
     button("Retry failed", {
       icon: "arrow-clockwise",
       kind: "subtle",
-      disabled: !failed,
+      disabled: !failed.length,
       onclick: () => api("/api/global/retry_failed").catch(report),
     }),
-    button("Clear completed", {
-      icon: "broom",
-      kind: "subtle",
-      disabled: !done,
-      onclick: () => api("/api/global/clear_done").catch(report),
-    }),
+    clear,
   );
+}
+
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+// ---- selection: rows picked in the current view, Windows style
+
+const selected = new Set();
+let anchor = null; // where a Shift+click range starts
+
+function visibleIds() {
+  const spec = LISTS[view];
+  return spec && state ? state.items.filter((i) => spec.test(i) && matchesQuery(i)).map((i) => i.id) : [];
+}
+
+function pick(id, { toggle = false, range = false } = {}) {
+  const ids = visibleIds();
+  if (range && anchor && ids.includes(anchor)) {
+    const [a, b] = [ids.indexOf(anchor), ids.indexOf(id)].sort((x, y) => x - y);
+    if (!toggle) selected.clear();
+    for (const each of ids.slice(a, b + 1)) selected.add(each);
+  } else if (toggle) {
+    if (selected.has(id)) selected.delete(id);
+    else selected.add(id);
+    anchor = id;
+  } else {
+    selected.clear();
+    selected.add(id);
+    anchor = id;
+  }
+  if (state) render(state);
+}
+
+function clearSelection() {
+  if (!selected.size) return;
+  selected.clear();
+  anchor = null;
+  if (state) render(state);
+}
+
+// Each action on every picked row it applies to; one report if any fail.
+async function bulk(items, action) {
+  const results = await Promise.allSettled(items.map((i) => api(`/api/item/${encodeURIComponent(i.id)}/${action}`)));
+  const failure = results.find((r) => r.status === "rejected");
+  if (failure) report(failure.reason);
+  return results.filter((r) => r.status === "fulfilled").length;
+}
+
+function selectionCommands(picked, s) {
+  const where = (test) => picked.filter(test);
+  const retry = where((i) => i.status === "error");
+  const pause = where((i) => ACTIVE.includes(i.status));
+  const resume = where((i) => i.status === "paused");
+  // Unfinished downloads lose their partial files, so that asks twice.
+  const losing = where((i) => i.status !== "done" && i.done > 0).length;
+  const recycling = s.recycle_on_remove ? where((i) => i.status === "done" && i.path && !i.existing).length : 0;
+  const remove = async () => {
+    const n = await bulk(picked, "remove");
+    clearSelection();
+    toast(recycling ? `Removed ${plural(n, "download")}, files to the ${s.bin}` : `Removed ${plural(n, "download")}`, "success");
+  };
+  const removeLabel = `Remove ${picked.length}`;
+  const removeButton =
+    losing || recycling
+      ? confirmButton(removeLabel, losing ? `Delete ${plural(losing, "partial file")}?` : `Move ${plural(recycling, "file")} to the ${s.bin}?`, remove, {
+          icon: "delete",
+          kind: "subtle",
+        })
+      : button(removeLabel, { icon: "delete", kind: "subtle", onclick: () => remove().catch(report) });
+  removeButton.dataset.role = "remove";
+  return [
+    el("span", { class: "picked", role: "status" }, `${picked.length} selected`),
+    retry.length ? button("Retry", { icon: "arrow-clockwise", kind: "subtle", onclick: () => bulk(retry, "retry") }) : null,
+    pause.length ? button("Pause", { icon: "pause", kind: "subtle", onclick: () => bulk(pause, "pause") }) : null,
+    resume.length ? button("Resume", { icon: "play", kind: "subtle", onclick: () => bulk(resume, "resume") }) : null,
+    removeButton,
+    button("Clear selection", { icon: "dismiss", kind: "subtle", iconOnly: true, onclick: clearSelection }),
+  ];
 }
 
 // Without a glyph the bar has no icon, like WinUI's IsIconVisible="False": inside a row, the row's glyph says it already.
@@ -514,6 +608,7 @@ function helpBar(r, it, s) {
 function makeRow() {
   const r = { actionsKey: null, helpKey: null, glyphKey: null, editing: false, bar: null };
   r.glyph = el("span", { class: "glyph" });
+  r.check = el("span", { class: "check", role: "checkbox", "aria-checked": "false", "aria-label": "Select" }, icon("checkmark"));
   r.name = el("div", { class: "name" });
   r.sub = el("div", { class: "sub" });
   r.fill = el("i");
@@ -526,18 +621,31 @@ function makeRow() {
     el(
       "div",
       { class: "row-main" },
-      r.glyph,
+      el("span", { class: "lead" }, r.glyph, r.check),
       el("div", { class: "title" }, r.name, r.sub),
       el("div", { class: "progress" }, el("div", { class: "bar" }, r.fill), r.caption),
       r.rate,
       r.actions,
     ),
   );
+  // A click picks the row (Ctrl adds or drops it, Shift picks a range); the
+  // row's own buttons, links and forms keep their clicks.
+  r.node.addEventListener("mousedown", (e) => {
+    if (e.shiftKey) e.preventDefault(); // no text selection on Shift+click
+  });
+  r.node.addEventListener("click", (e) => {
+    if (e.target.closest("button, a, input, textarea, form")) return;
+    const viaCheck = Boolean(e.target.closest(".check"));
+    pick(r.node.dataset.id, { toggle: viaCheck || e.ctrlKey || e.metaKey, range: e.shiftKey });
+  });
   return r;
 }
 
 function updateRow(r, it, s) {
-  const rowClass = `row s-${it.status}`;
+  r.node.dataset.id = it.id;
+  const picked = selected.has(it.id);
+  r.check.setAttribute("aria-checked", String(picked));
+  const rowClass = `row s-${it.status}${picked ? " selected" : ""}`;
   if (r.node.className !== rowClass) r.node.className = rowClass;
   if (r.glyphKey !== it.status) {
     r.glyphKey = it.status;
@@ -616,6 +724,10 @@ function renderList(s) {
       rows.delete(id);
     }
   }
+  // Rows that left the view (removed, finished elsewhere, filtered out) drop
+  // out of the selection.
+  for (const id of selected) if (!seen.has(id)) selected.delete(id);
+  list.classList.toggle("selecting", selected.size > 0);
   renderEmpty(s, visible.length);
 }
 
@@ -668,17 +780,18 @@ function setLimit(name, delta) {
 }
 
 // A button that wants a second click within a few seconds.
-function confirmButton(label, confirmLabel, action) {
-  const node = button(label, {});
+function confirmButton(label, confirmLabel, action, options = {}) {
+  const node = button(label, options);
+  const plain = node.className;
   let timer = null;
   const reset = () => {
     timer = null;
-    node.className = "button";
+    node.className = plain;
     node.lastChild.textContent = label;
   };
   node.addEventListener("click", () => {
     if (!timer) {
-      node.className = "button danger";
+      node.className = `${plain} danger`;
       node.lastChild.textContent = confirmLabel;
       timer = setTimeout(reset, 4000);
       return;
@@ -1259,10 +1372,26 @@ document.addEventListener("paste", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "/" && !e.target.closest?.("input, textarea") && !dialog.open && view in LISTS) {
+  const typing = e.target.closest?.("input, textarea");
+  if (typing || dialog.open || !(view in LISTS)) return;
+  if (e.key === "/") {
     e.preventDefault();
     $("search")?.focus();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+    e.preventDefault();
+    for (const id of visibleIds()) selected.add(id);
+    if (state) render(state);
+  } else if (e.key === "Escape" && selected.size) {
+    clearSelection();
+  } else if (e.key === "Delete" && selected.size) {
+    // Same as the Remove button, second press included where it asks.
+    commandButtons?.querySelector("[data-role='remove']")?.click();
   }
+});
+
+// A click on the list's empty space, outside any row, drops the selection.
+$("list").parentElement.addEventListener("click", (e) => {
+  if (!e.target.closest(".row, button, input, a, .infobar")) clearSelection();
 });
 
 // Drop links or container files anywhere.

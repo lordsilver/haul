@@ -582,6 +582,67 @@ input[type="number"] {
   height: 20px;
 }
 
+/* ---- selection: the status glyph's place holds a checkbox (WinUI's: 20 px,
+   the strong control stroke, accent when checked), shown on hover and on
+   every row once one is picked. */
+
+.row .lead {
+  display: grid;
+  place-items: center;
+}
+
+.row .lead > * {
+  grid-area: 1 / 1;
+}
+
+.row .check {
+  display: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--text-3);
+  border-radius: 4px;
+  background: var(--control);
+  color: var(--on-accent);
+}
+
+.row .check .icon {
+  width: 14px;
+  height: 14px;
+  visibility: hidden;
+}
+
+.row:hover .check,
+.list.selecting .row .check {
+  display: grid;
+}
+
+.row:hover .glyph,
+.list.selecting .row .glyph {
+  visibility: hidden;
+}
+
+.row.selected {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--stroke));
+  background: color-mix(in srgb, var(--accent) 10%, var(--card));
+}
+
+.row.selected .check {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.row.selected .check .icon {
+  visibility: visible;
+}
+
+.commands .picked {
+  align-self: center;
+  padding: 0 8px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .row.s-downloading .glyph {
   color: var(--accent-text);
 }

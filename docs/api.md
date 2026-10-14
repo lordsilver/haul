@@ -42,14 +42,14 @@ The UI also opens its Add dialog, filled in, at `/#/add/<url-encoded links>`; no
 
 ## Hosts and settings
 
-| Method and path                               | Body                  | Does                                                                                                                                                      |
-| --------------------------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/host/{name}/limit/{n}`             |                       | Files downloaded from this host at once (1 to 32); saved under `[limits]` in `config.toml`.                                                               |
-| `POST /api/host/{name}/folder`                | `{"folder": "…"}`     | The subfolder of the download folder for this host's files, saved under `[folders]` in `config.toml`; empty puts them back in the download folder itself. |
-| `POST /api/host/{name}/preferred`             | `{"preferred": true}` | Adds the host to the end of `preferred_hosts` in `config.toml`, or takes it out; a host already preferred keeps its place.                                |
-| `POST /api/host/{name}/route/{direct\|proxy}` |                       | The user's route choice for a host when a proxy is configured; saved under `[routes]` in `config.toml`.                                                   |
-| `POST /api/global/{action}`                   |                       | `pause` (also pauses running transfers), `resume`, `retry_failed`, `clear_done`.                                                                          |
-| `POST /api/open/{downloads\|data\|config}`    |                       | Opens the download folder, the data folder, or `config.toml` (created from a commented template when missing).                                            |
+| Method and path                               | Body                  | Does                                                                                                                                                               |
+| --------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /api/host/{name}/limit/{n}`             |                       | Files downloaded from this host at once (1 to 32); saved under `[limits]` in `config.toml`.                                                                        |
+| `POST /api/host/{name}/folder`                | `{"folder": "…"}`     | The subfolder of the download folder for this host's files, saved under `[folders]` in `config.toml`; empty puts them back in the download folder itself.          |
+| `POST /api/host/{name}/preferred`             | `{"preferred": true}` | Adds the host to the end of `preferred_hosts` in `config.toml`, or takes it out; a host already preferred keeps its place.                                         |
+| `POST /api/host/{name}/route/{direct\|proxy}` |                       | The user's route choice for a host when a proxy is configured; saved under `[routes]` in `config.toml`.                                                            |
+| `POST /api/global/{action}`                   |                       | `pause` (also pauses running transfers), `resume`, `retry_failed`, `clear_done`, `clear_failed` (takes every failed download off the list, with its partial file). |
+| `POST /api/open/{downloads\|data\|config}`    |                       | Opens the download folder, the data folder, or `config.toml` (created from a commented template when missing).                                                     |
 
 ## Settings
 

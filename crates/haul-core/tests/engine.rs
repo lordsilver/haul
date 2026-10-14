@@ -1152,3 +1152,37 @@ async fn progress_starts_the_retry_count_over() {
         .count();
     assert_eq!(resumed, 2, "{:?}", t.server.requests("/drip/d.bin"));
 }
+
+#[tokio::test]
+async fn clearing_failed_downloads_keeps_the_rest() {
+    let t = Setup::new().await;
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            retry_failed_minutes: 0,
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.add_text(
+        &format!(
+            "{0}/files/kept.bin {0}/api/file/missing-a {0}/api/file/missing-b",
+            t.ip
+        ),
+        "",
+    );
+    wait_for(&engine, "two failures and one file", |s| {
+        s.items.len() == 3
+            && s.items.iter().filter(|i| i.status == "error").count() == 2
+            && s.items.iter().any(|i| i.status == "done")
+    })
+    .await;
+    engine.clear_failed();
+    let s = engine.snapshot();
+    assert_eq!(
+        s.items.iter().map(|i| i.status).collect::<Vec<_>>(),
+        ["done"],
+        "only the finished download is left"
+    );
+}
