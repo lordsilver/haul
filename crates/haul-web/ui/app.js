@@ -365,7 +365,7 @@ function visibleIds() {
   if (!spec || !state) return [];
   const visible = state.items.filter((i) => spec.test(i) && matchesQuery(i));
   // Display order, with an archive's parts together even while folded.
-  return entriesOf(visible).flatMap((e) => (e.members ? e.members.map((i) => i.id) : [e.it.id]));
+  return entriesOf(visible, state.items).flatMap((e) => (e.members ? e.members.map((i) => i.id) : [e.it.id]));
 }
 
 function pick(id, options) {
@@ -745,7 +745,7 @@ function renderList(s) {
     shownRows.add(it.id);
     place(r.node);
   };
-  for (const entry of entriesOf(visible)) {
+  for (const entry of entriesOf(visible, s.items)) {
     if (!entry.members) {
       show(entry.it, false);
       continue;
@@ -758,7 +758,7 @@ function renderList(s) {
     updateGroupRow(g, entry);
     shownGroups.add(entry.key);
     place(g.node);
-    if (expanded.has(entry.key)) for (const it of entry.members) show(it, true);
+    if (isOpen(entry.key)) for (const it of entry.members) show(it, true);
   }
   for (const [id, r] of rows) {
     if (!shownRows.has(id)) {
@@ -806,32 +806,41 @@ function archivePart(name) {
 }
 
 // The list in display order: single rows, and each archive with two parts or
-// more as one entry at the place of its first part, parts in order. Archives
-// in different packages never mix.
-function entriesOf(visible) {
+// more in the whole queue as one entry, at the place of its first part shown.
+// An entry has every part of its archive (`parts`, which its row sums up in
+// every view) and the parts this view shows (`members`), both in part order.
+// Archives in different packages never mix.
+function entriesOf(visible, items) {
+  const keyOf = new Map();
   const sets = new Map();
-  const setOf = (it) => {
+  for (const it of items) {
     const p = archivePart(it.name);
-    return p && { key: `${it.package}\u0000${p.archive}`, archive: p.archive, part: p.part };
-  };
-  for (const it of visible) {
-    const p = setOf(it);
     if (!p) continue;
-    if (!sets.has(p.key)) sets.set(p.key, { key: p.key, archive: p.archive, parts: [] });
-    sets.get(p.key).parts.push({ it, part: p.part });
+    const key = `${it.package}\u0000${p.archive}`;
+    keyOf.set(it.id, key);
+    if (!sets.has(key)) sets.set(key, { key, archive: p.archive, parts: [] });
+    sets.get(key).parts.push({ it, part: p.part });
   }
   const out = [];
-  const placed = new Set();
+  const placed = new Map();
   for (const it of visible) {
-    const p = setOf(it);
-    const set = p && sets.get(p.key);
+    const set = sets.get(keyOf.get(it.id));
     if (!set || set.parts.length < 2) {
       out.push({ it });
-    } else if (!placed.has(set.key)) {
-      placed.add(set.key);
-      set.parts.sort((a, b) => a.part - b.part);
-      out.push({ key: set.key, archive: set.archive, members: set.parts.map((x) => x.it) });
+      continue;
     }
+    let entry = placed.get(set.key);
+    if (!entry) {
+      set.parts.sort((a, b) => a.part - b.part);
+      entry = { key: set.key, archive: set.archive, parts: set.parts.map((x) => x.it), members: [] };
+      placed.set(set.key, entry);
+      out.push(entry);
+    }
+    entry.members.push(it);
+  }
+  for (const entry of placed.values()) {
+    const order = new Map(entry.parts.map((it, i) => [it.id, i]));
+    entry.members.sort((a, b) => order.get(a.id) - order.get(b.id));
   }
   return out;
 }
@@ -846,6 +855,11 @@ const expanded = new Set(
     }
   })(),
 );
+
+// A search opens every archive, so the parts it found show.
+function isOpen(key) {
+  return Boolean(query) || expanded.has(key);
+}
 
 function toggleGroup(key) {
   if (expanded.has(key)) expanded.delete(key);
@@ -896,11 +910,13 @@ function makeGroupRow(key) {
   return g;
 }
 
+// The row sums up the whole archive in every view; a click picks the parts
+// this view shows.
 function updateGroupRow(g, entry) {
-  const parts = entry.members;
-  g.members = parts.map((i) => i.id);
-  const picked = parts.filter((i) => selected.has(i.id)).length;
-  const all = picked === parts.length;
+  const parts = entry.parts;
+  g.members = entry.members.map((i) => i.id);
+  const picked = entry.members.filter((i) => selected.has(i.id)).length;
+  const all = picked === entry.members.length;
   g.check.setAttribute("aria-checked", all ? "true" : picked ? "mixed" : "false");
   const status = URGENCY.find((st) => parts.some((i) => i.status === st)) ?? "queued";
   const complete = parts.every((i) => i.status === "done");
@@ -935,7 +951,8 @@ function updateGroupRow(g, entry) {
     g.rate.replaceChildren(...(shown ? [el("b", {}, shown), left ? `${left} left` : ""] : []));
   }
 
-  const open = expanded.has(entry.key);
+  const open = isOpen(entry.key);
+  g.toggle.hidden = Boolean(query);
   if (g.toggle.getAttribute("aria-expanded") !== String(open)) {
     const label = open ? "Hide the parts" : "Show the parts";
     g.toggle.setAttribute("aria-expanded", String(open));
