@@ -627,13 +627,38 @@ input[type="number"] {
   background: color-mix(in srgb, var(--accent) 10%, var(--card));
 }
 
-.row.selected .check {
+/* Checked, or for an archive's row "some of its parts" (a dash). */
+.row .check[aria-checked="true"],
+.row .check[aria-checked="mixed"] {
   border-color: var(--accent);
   background: var(--accent);
 }
 
-.row.selected .check .icon {
+.row .check .icon {
+  grid-area: 1 / 1;
+}
+
+.row .check[aria-checked="true"] .icon:first-child,
+.row .check[aria-checked="mixed"] .icon:last-child {
   visibility: visible;
+}
+
+/* ---- archive groups: a row for the archive, its parts indented under it */
+
+.row.group .group-name {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin-left: -8px;
+}
+
+.row.group .group-name .name {
+  min-width: 0;
+}
+
+.row.member {
+  margin-left: 32px;
 }
 
 .commands .picked {
@@ -720,6 +745,16 @@ input[type="number"] {
 
 .row.s-error .bar > i {
   background: var(--critical);
+}
+
+/* An archive's glyph shows what needs attention first; its bar shows how far
+   the parts have come, green once all are done. */
+.row.group .bar > i {
+  background: var(--accent);
+}
+
+.row.group.complete .bar > i {
+  background: var(--success);
 }
 
 .progress .caption,
@@ -1238,6 +1273,10 @@ input.wide {
 /* ---- narrow windows: compact pane, fewer columns */
 
 @media (max-width: 860px) {
+  .row.member {
+    margin-left: 16px;
+  }
+
   /* The folder keeps its icon; the path is in its tooltip. */
   .status-label {
     display: none;

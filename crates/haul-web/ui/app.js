@@ -362,23 +362,35 @@ let anchor = null; // where a Shift+click range starts
 
 function visibleIds() {
   const spec = LISTS[view];
-  return spec && state ? state.items.filter((i) => spec.test(i) && matchesQuery(i)).map((i) => i.id) : [];
+  if (!spec || !state) return [];
+  const visible = state.items.filter((i) => spec.test(i) && matchesQuery(i));
+  // Display order, with an archive's parts together even while folded.
+  return entriesOf(visible).flatMap((e) => (e.members ? e.members.map((i) => i.id) : [e.it.id]));
 }
 
-function pick(id, { toggle = false, range = false } = {}) {
-  const ids = visibleIds();
-  if (range && anchor && ids.includes(anchor)) {
-    const [a, b] = [ids.indexOf(anchor), ids.indexOf(id)].sort((x, y) => x - y);
+function pick(id, options) {
+  pickMany([id], options);
+}
+
+// Picks rows: alone (a plain click), added or dropped together (Ctrl), or a
+// range from the last pick through them (Shift).
+function pickMany(ids, { toggle = false, range = false } = {}) {
+  const order = visibleIds();
+  if (range && anchor && order.includes(anchor)) {
+    const spots = [anchor, ...ids].map((id) => order.indexOf(id)).filter((i) => i >= 0);
     if (!toggle) selected.clear();
-    for (const each of ids.slice(a, b + 1)) selected.add(each);
+    for (const each of order.slice(Math.min(...spots), Math.max(...spots) + 1)) selected.add(each);
   } else if (toggle) {
-    if (selected.has(id)) selected.delete(id);
-    else selected.add(id);
-    anchor = id;
+    const all = ids.every((id) => selected.has(id));
+    for (const id of ids) {
+      if (all) selected.delete(id);
+      else selected.add(id);
+    }
+    anchor = ids.at(-1);
   } else {
     selected.clear();
-    selected.add(id);
-    anchor = id;
+    for (const id of ids) selected.add(id);
+    anchor = ids.at(-1);
   }
   if (state) render(state);
 }
@@ -641,11 +653,11 @@ function makeRow() {
   return r;
 }
 
-function updateRow(r, it, s) {
+function updateRow(r, it, s, member = false) {
   r.node.dataset.id = it.id;
   const picked = selected.has(it.id);
   r.check.setAttribute("aria-checked", String(picked));
-  const rowClass = `row s-${it.status}${picked ? " selected" : ""}`;
+  const rowClass = `row s-${it.status}${picked ? " selected" : ""}${member ? " member" : ""}`;
   if (r.node.className !== rowClass) r.node.className = rowClass;
   if (r.glyphKey !== it.status) {
     r.glyphKey = it.status;
@@ -700,35 +712,267 @@ function matchesQuery(it) {
   return [it.name, it.package, it.host, ...it.mirrors].some((v) => v?.toLowerCase().includes(query));
 }
 
+function rowFor(id) {
+  let r = rows.get(id);
+  if (!r) {
+    r = makeRow();
+    rows.set(id, r);
+  }
+  return r;
+}
+
 function renderList(s) {
   const list = $("list");
   const spec = LISTS[view];
   const visible = s.items.filter((i) => spec.test(i) && matchesQuery(i));
-  const seen = new Set();
+  const shownRows = new Set();
+  const shownGroups = new Set();
   let previous = null;
-  for (const it of visible) {
-    seen.add(it.id);
-    let r = rows.get(it.id);
-    if (!r) {
-      r = makeRow();
-      rows.set(it.id, r);
+  const place = (node) => {
+    const want = previous ? previous.nextSibling : list.firstChild;
+    if (want !== node) list.insertBefore(node, want);
+    previous = node;
+  };
+  const show = (it, member) => {
+    const r = rowFor(it.id);
+    updateRow(r, it, s, member);
+    shownRows.add(it.id);
+    place(r.node);
+  };
+  for (const entry of entriesOf(visible)) {
+    if (!entry.members) {
+      show(entry.it, false);
+      continue;
     }
-    updateRow(r, it, s);
-    const want = previous ? previous.node.nextSibling : list.firstChild;
-    if (want !== r.node) list.insertBefore(r.node, want);
-    previous = r;
+    let g = groupRows.get(entry.key);
+    if (!g) {
+      g = makeGroupRow(entry.key);
+      groupRows.set(entry.key, g);
+    }
+    updateGroupRow(g, entry);
+    shownGroups.add(entry.key);
+    place(g.node);
+    if (expanded.has(entry.key)) for (const it of entry.members) show(it, true);
   }
   for (const [id, r] of rows) {
-    if (!seen.has(id)) {
+    if (!shownRows.has(id)) {
       r.node.remove();
       rows.delete(id);
     }
   }
-  // Rows that left the view (removed, finished elsewhere, filtered out) drop
-  // out of the selection.
-  for (const id of selected) if (!seen.has(id)) selected.delete(id);
+  for (const [key, g] of groupRows) {
+    if (!shownGroups.has(key)) {
+      g.node.remove();
+      groupRows.delete(key);
+    }
+  }
+  // Downloads that left the view (removed, finished elsewhere, filtered out)
+  // drop out of the selection; folded parts stay in it.
+  const inView = new Set(visible.map((i) => i.id));
+  for (const id of selected) if (!inView.has(id)) selected.delete(id);
   list.classList.toggle("selecting", selected.size > 0);
   renderEmpty(s, visible.length);
+}
+
+// ---- archive groups: the parts of one multi-part archive under a row of
+// their own, like JDownloader's packages
+
+// The archive a file is a part of, and which part: name.part01.rar, name.rar
+// with name.r00 and on, name.zip with name.z01 and on, or name.7z.001 (any
+// name.NNN). Null for anything else.
+function archivePart(name) {
+  const forms = [
+    [/^(.+)\.part0*(\d+)\.rar$/i, (m) => [`${m[1]}.rar`, Number(m[2])]],
+    [/^(.+)\.r(\d{2})$/i, (m) => [`${m[1]}.rar`, Number(m[2]) + 2]],
+    [/^(.+)\.rar$/i, (m) => [`${m[1]}.rar`, 1]],
+    [/^(.+)\.z(\d{2})$/i, (m) => [`${m[1]}.zip`, Number(m[2])]],
+    [/^(.+)\.zip$/i, (m) => [`${m[1]}.zip`, 100]],
+    [/^(.+)\.(\d{3})$/, (m) => [m[1], Number(m[2])]],
+  ];
+  for (const [form, read] of forms) {
+    const m = name?.match(form);
+    if (m) {
+      const [archive, part] = read(m);
+      return { archive, part };
+    }
+  }
+  return null;
+}
+
+// The list in display order: single rows, and each archive with two parts or
+// more as one entry at the place of its first part, parts in order. Archives
+// in different packages never mix.
+function entriesOf(visible) {
+  const sets = new Map();
+  const setOf = (it) => {
+    const p = archivePart(it.name);
+    return p && { key: `${it.package}\u0000${p.archive}`, archive: p.archive, part: p.part };
+  };
+  for (const it of visible) {
+    const p = setOf(it);
+    if (!p) continue;
+    if (!sets.has(p.key)) sets.set(p.key, { key: p.key, archive: p.archive, parts: [] });
+    sets.get(p.key).parts.push({ it, part: p.part });
+  }
+  const out = [];
+  const placed = new Set();
+  for (const it of visible) {
+    const p = setOf(it);
+    const set = p && sets.get(p.key);
+    if (!set || set.parts.length < 2) {
+      out.push({ it });
+    } else if (!placed.has(set.key)) {
+      placed.add(set.key);
+      set.parts.sort((a, b) => a.part - b.part);
+      out.push({ key: set.key, archive: set.archive, members: set.parts.map((x) => x.it) });
+    }
+  }
+  return out;
+}
+
+// Archives the user opened, in this browser only; folded is the default.
+const expanded = new Set(
+  (() => {
+    try {
+      return JSON.parse(prefs.get("expanded") ?? "[]");
+    } catch {
+      return [];
+    }
+  })(),
+);
+
+function toggleGroup(key) {
+  if (expanded.has(key)) expanded.delete(key);
+  else expanded.add(key);
+  prefs.set("expanded", JSON.stringify([...expanded].slice(-200)));
+  if (state) render(state);
+}
+
+const groupRows = new Map();
+
+// The glyph shows what needs attention first among the parts.
+const URGENCY = ["error", "captcha", "downloading", "resolving", "waiting", "checking", "queued", "paused", "done"];
+
+function makeGroupRow(key) {
+  const g = { actionsKey: null, glyphKey: null, members: [] };
+  g.glyph = el("span", { class: "glyph" });
+  g.check = el("span", { class: "check", role: "checkbox", "aria-checked": "false", "aria-label": "Select its parts" }, icon("checkmark"), icon("subtract"));
+  g.toggle = button("Show the parts", { icon: "chevron-right", kind: "subtle small", iconOnly: true, onclick: () => toggleGroup(key) });
+  g.toggle.setAttribute("aria-expanded", "false");
+  g.name = el("div", { class: "name" });
+  g.sub = el("div", { class: "sub" });
+  g.fill = el("i");
+  g.caption = el("div", { class: "caption" });
+  g.rate = el("div", { class: "rate" });
+  g.actions = el("div", { class: "actions" });
+  g.node = el(
+    "li",
+    { class: "row group" },
+    el(
+      "div",
+      { class: "row-main" },
+      el("span", { class: "lead" }, g.glyph, g.check),
+      el("div", { class: "title" }, el("div", { class: "group-name" }, g.toggle, g.name), g.sub),
+      el("div", { class: "progress" }, el("div", { class: "bar" }, g.fill), g.caption),
+      g.rate,
+      g.actions,
+    ),
+  );
+  // A click picks every part, with Ctrl and Shift as on single rows.
+  g.node.addEventListener("mousedown", (e) => {
+    if (e.shiftKey) e.preventDefault();
+  });
+  g.node.addEventListener("click", (e) => {
+    if (e.target.closest("button, a, input")) return;
+    const viaCheck = Boolean(e.target.closest(".check"));
+    pickMany(g.members, { toggle: viaCheck || e.ctrlKey || e.metaKey, range: e.shiftKey });
+  });
+  return g;
+}
+
+function updateGroupRow(g, entry) {
+  const parts = entry.members;
+  g.members = parts.map((i) => i.id);
+  const picked = parts.filter((i) => selected.has(i.id)).length;
+  const all = picked === parts.length;
+  g.check.setAttribute("aria-checked", all ? "true" : picked ? "mixed" : "false");
+  const status = URGENCY.find((st) => parts.some((i) => i.status === st)) ?? "queued";
+  const complete = parts.every((i) => i.status === "done");
+  const rowClass = `row group s-${status}${complete ? " complete" : ""}${all ? " selected" : ""}`;
+  if (g.node.className !== rowClass) g.node.className = rowClass;
+  if (g.glyphKey !== status) {
+    g.glyphKey = status;
+    g.glyph.replaceChildren(icon(GLYPHS[status] ?? "clock"));
+  }
+  setText(g.name, entry.archive);
+  g.name.title = entry.archive;
+
+  const size = parts.reduce((n, i) => n + i.size, 0);
+  const done = parts.reduce((n, i) => n + (i.status === "done" ? i.size : Math.min(i.done, i.size || i.done)), 0);
+  const hosts = [...new Set(parts.map((i) => shownHost(i)))];
+  setText(g.sub, [`${parts.length} parts`, size ? bytes(size) : null, ...hosts, parts[0].package || null].filter(Boolean).join(" · "));
+
+  // By bytes when every unfinished part's size is known, by parts otherwise.
+  const sized = parts.every((i) => i.size > 0 || i.status === "done");
+  const finished = parts.filter((i) => i.status === "done").length;
+  const share = sized && size ? done / size : finished / parts.length;
+  const width = `${Math.min(100, share * 100).toFixed(1)}%`;
+  if (g.fill.style.width !== width) g.fill.style.width = width;
+  setText(g.caption, partsSummary(parts));
+  g.caption.title = size ? `${bytes(done)} of ${bytes(size)}` : "";
+
+  const speed = parts.reduce((n, i) => n + (i.speed || 0), 0);
+  const rateKey = speed ? `${bytes(speed)}/s|${size > done ? duration((size - done) / speed) : ""}` : "";
+  if (g.rate.dataset.key !== rateKey) {
+    g.rate.dataset.key = rateKey;
+    const [shown, left] = rateKey.split("|");
+    g.rate.replaceChildren(...(shown ? [el("b", {}, shown), left ? `${left} left` : ""] : []));
+  }
+
+  const open = expanded.has(entry.key);
+  if (g.toggle.getAttribute("aria-expanded") !== String(open)) {
+    const label = open ? "Hide the parts" : "Show the parts";
+    g.toggle.setAttribute("aria-expanded", String(open));
+    g.toggle.title = label;
+    g.toggle.setAttribute("aria-label", label);
+    g.toggle.replaceChildren(icon(open ? "chevron-down" : "chevron-right"));
+  }
+
+  const actionsKey = parts.map((i) => i.status).join(",");
+  if (g.actionsKey !== actionsKey) {
+    g.actionsKey = actionsKey;
+    g.actions.replaceChildren(...groupActions(parts));
+  }
+}
+
+// "12 of 18 done · 3 downloading · 3 failed"
+function partsSummary(parts) {
+  const count = (test) => parts.filter(test).length;
+  const out = [`${count((i) => i.status === "done")} of ${parts.length} done`];
+  for (const [n, label] of [
+    [count((i) => i.status === "downloading"), "downloading"],
+    [count((i) => ["queued", "waiting", "checking", "resolving"].includes(i.status)), "waiting"],
+    [count((i) => i.status === "paused"), "paused"],
+    [count((i) => i.status === "captcha"), "need you"],
+    [count((i) => i.status === "error"), "failed"],
+  ]) {
+    if (n) out.push(`${n} ${label}`);
+  }
+  return out.join(" · ");
+}
+
+// Pause, resume or retry the parts together. Removing them goes through the
+// selection: a click on the group picks them all.
+function groupActions(parts) {
+  const subtle = (label, name, onclick) => button(label, { icon: name, kind: "subtle small", iconOnly: true, onclick });
+  const active = parts.filter((i) => ACTIVE.includes(i.status));
+  const paused = parts.filter((i) => i.status === "paused");
+  const failed = parts.filter((i) => i.status === "error");
+  return [
+    active.length ? subtle("Pause the parts", "pause", () => bulk(active, "pause")) : null,
+    !active.length && paused.length ? subtle("Resume the parts", "play", () => bulk(paused, "resume")) : null,
+    failed.length ? subtle("Retry the failed parts", "arrow-clockwise", () => bulk(failed, "retry")) : null,
+  ].filter(Boolean);
 }
 
 let emptyKey = null;
