@@ -151,6 +151,8 @@ pub struct Snapshot {
     pub watch_clipboard: bool,
     /// Removing a finished download moves its file to the [`BIN`].
     pub recycle_on_remove: bool,
+    /// Dropped links and files are added at once, without the Add dialog.
+    pub skip_add_dialog: bool,
     /// [`BIN`], for the views to name it.
     pub bin: &'static str,
     /// Moves whenever a setting changes, so views can fetch them again.
@@ -681,18 +683,27 @@ impl Engine {
 
     /// Adds the links in a `.dlc` or text container.
     pub async fn import(&self, filename: &str, bytes: &[u8]) -> Result<Added, String> {
+        let links = self.read_container(filename, bytes).await?;
+        Ok(self.add_links(links))
+    }
+
+    /// The links in a `.dlc` or text container, without adding them.
+    pub async fn read_container(
+        &self,
+        filename: &str,
+        bytes: &[u8],
+    ) -> Result<Vec<container::Link>, String> {
         let http = {
             let st = self.lock();
             self.http_for("service.jdownloader.org", &st)
         };
-        let links = container::read(
+        container::read(
             &http.client,
             &self.cfg().endpoints.dlc_service,
             filename,
             bytes,
         )
-        .await?;
-        Ok(self.add_links(links))
+        .await
     }
 
     /// Learns the name and size up front, so the same file on several hosts
@@ -1820,6 +1831,7 @@ impl Engine {
             theme: cfg.theme,
             watch_clipboard: cfg.watch_clipboard,
             recycle_on_remove: cfg.recycle_on_remove,
+            skip_add_dialog: cfg.skip_add_dialog,
             bin: BIN,
             config_version: self.0.config_version.load(Ordering::Relaxed),
             config_error: self

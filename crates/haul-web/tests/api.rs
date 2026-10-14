@@ -141,13 +141,34 @@ async fn adds_imports_and_controls_items() {
         json!({"added": 1, "merged": 1, "duplicates": 0, "invalid": 0})
     );
 
-    let form = reqwest::multipart::Form::new().part(
-        "file",
-        reqwest::multipart::Part::bytes(
-            b"https://c.example/two.zip\nhttps://a.example/f/one.rar".to_vec(),
+    let links_file = || {
+        reqwest::multipart::Form::new().part(
+            "file",
+            reqwest::multipart::Part::bytes(
+                b"https://c.example/two.zip\nhttps://a.example/f/one.rar".to_vec(),
+            )
+            .file_name("links.txt"),
         )
-        .file_name("links.txt"),
+    };
+    // Read for the Add dialog: the links come back and nothing is added.
+    let before = s.state().await["items"].as_array().unwrap().len();
+    let r: Value = s
+        .http
+        .post(format!("{}/api/container/read", s.base))
+        .multipart(links_file())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        r,
+        json!({"links": ["https://c.example/two.zip", "https://a.example/f/one.rar"], "package": ""})
     );
+    assert_eq!(s.state().await["items"].as_array().unwrap().len(), before);
+
+    let form = links_file();
     let r: Value = s
         .http
         .post(format!("{}/api/container", s.base))

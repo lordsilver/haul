@@ -204,6 +204,7 @@ fn handle_args(app: &AppHandle, args: impl IntoIterator<Item = String>, cwd: &Pa
         return;
     };
     let mut links = String::new();
+    let mut files = Vec::new();
     for arg in args {
         if arg.starts_with("http://") || arg.starts_with("https://") {
             links.push_str(&arg);
@@ -211,28 +212,70 @@ fn handle_args(app: &AppHandle, args: impl IntoIterator<Item = String>, cwd: &Pa
             continue;
         }
         let path = cwd.join(&arg);
-        if arg.starts_with('-') || !path.is_file() {
-            continue;
+        if !arg.starts_with('-') && path.is_file() {
+            files.push(path);
         }
-        let (engine, app) = (engine.clone(), app.clone());
-        tauri::async_runtime::spawn(async move {
+    }
+    if links.is_empty() && files.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Like links and files dropped on the window: into the Add dialog,
+        // unless the settings say to add them at once.
+        let review = !engine.cfg().skip_add_dialog;
+        for path in files {
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let result = match tokio::fs::read(&path).await {
-                Ok(bytes) => engine.import(&name, &bytes).await,
-                Err(e) => Err(e.to_string()),
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    notify(&app, &format!("Could not import {name}"), &e.to_string());
+                    continue;
+                }
             };
-            match result {
-                Ok(added) => tracing::info!("imported {name}: {added:?}"),
-                Err(e) => notify(&app, &format!("Could not import {name}"), &e),
+            if review {
+                match engine.read_container(&name, &bytes).await {
+                    Ok(found) => {
+                        for link in found {
+                            links.push_str(&link.url);
+                            links.push('\n');
+                        }
+                    }
+                    Err(e) => notify(&app, &format!("Could not import {name}"), &e),
+                }
+            } else {
+                match engine.import(&name, &bytes).await {
+                    Ok(added) => tracing::info!("imported {name}: {added:?}"),
+                    Err(e) => notify(&app, &format!("Could not import {name}"), &e),
+                }
             }
-        });
+        }
+        if !links.is_empty() {
+            if review {
+                open_add_dialog(&app, &links);
+            } else {
+                engine.add_text(&links, "");
+            }
+        }
+    });
+}
+
+/// Shows the main window with its Add dialog filled in with `links`.
+fn open_add_dialog(app: &AppHandle, links: &str) {
+    let Some(window) = app.get_webview_window(MAIN) else {
+        return;
+    };
+    let opened = window.url().and_then(|mut url| {
+        url.set_fragment(Some(&haul_web::add_route(links)));
+        window.navigate(url)
+    });
+    if let Err(e) = opened {
+        tracing::warn!("opening the Add dialog: {e}");
     }
-    if !links.is_empty() {
-        engine.add_text(&links, "");
-    }
+    show_main(app);
 }
 
 /// Keeps every window frame on the theme chosen in the app or the file.

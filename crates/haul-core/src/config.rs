@@ -39,6 +39,9 @@ pub struct Config {
     /// Removing a finished download from the list also moves its file to the
     /// Recycle Bin.
     pub recycle_on_remove: bool,
+    /// Links and files dropped on the window, or opened with Haul, are added
+    /// at once instead of filling the Add dialog first.
+    pub skip_add_dialog: bool,
     /// Automatic retries of a mirror after a dropped connection or a
     /// network error, before it counts as failed.
     pub resume_attempts: u32,
@@ -83,6 +86,7 @@ impl Default for Config {
             theme: Theme::System,
             watch_clipboard: false,
             recycle_on_remove: false,
+            skip_add_dialog: false,
             resume_attempts: 3,
             retry_failed_minutes: 15,
             proxy: None,
@@ -420,6 +424,10 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # Recycle Bin (the trash outside Windows). Clear completed never does.
 # recycle_on_remove = false
 
+# Links and files dropped on the window, or opened with Haul, are added at once
+# instead of opening in the Add dialog first.
+# skip_add_dialog = false
+
 # Retries of a mirror after a dropped connection or a network error.
 # resume_attempts = 3
 
@@ -510,6 +518,7 @@ mod tests {
             rate_limit_mbps = 2.5
             watch_clipboard = true
             recycle_on_remove = true
+            skip_add_dialog = true
             retry_failed_minutes = 0
             proxy = "socks5://u:p@host:1080"
             1fichier_key = "k1"
@@ -531,7 +540,7 @@ mod tests {
         assert_eq!(cfg.limit_for("1fichier.com"), 1);
         assert_eq!(cfg.limit_for("other.example"), FALLBACK_LIMIT);
         assert_eq!(cfg.routes.get("a.example"), Some(&Route::Direct));
-        assert!(cfg.recycle_on_remove);
+        assert!(cfg.recycle_on_remove && cfg.skip_add_dialog);
         assert_eq!(
             (cfg.preference("b.example"), cfg.preference("a.example")),
             (Some(0), Some(1))

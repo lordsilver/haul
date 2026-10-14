@@ -32,6 +32,7 @@ pub struct SettingsView {
     pub theme: Theme,
     pub watch_clipboard: bool,
     pub recycle_on_remove: bool,
+    pub skip_add_dialog: bool,
     pub resume_attempts: u32,
     pub retry_failed_minutes: u64,
     pub proxy: String,
@@ -85,6 +86,7 @@ impl Engine {
             theme: cfg.theme,
             watch_clipboard: cfg.watch_clipboard,
             recycle_on_remove: cfg.recycle_on_remove,
+            skip_add_dialog: cfg.skip_add_dialog,
             resume_attempts: cfg.resume_attempts,
             retry_failed_minutes: cfg.retry_failed_minutes,
             proxy: shown(&cfg.proxy),
@@ -186,6 +188,11 @@ impl Engine {
                         .as_bool()
                         .ok_or("recycle_on_remove is true or false")?;
                     cfg.recycle_on_remove = on;
+                    writes.push(top(key, Some(on.into())));
+                }
+                "skip_add_dialog" => {
+                    let on = value.as_bool().ok_or("skip_add_dialog is true or false")?;
+                    cfg.skip_add_dialog = on;
                     writes.push(top(key, Some(on.into())));
                 }
                 "resume_attempts" => {

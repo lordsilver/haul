@@ -40,7 +40,7 @@ cd crates/haul-desktop && npx @tauri-apps/cli@2 build   # installers in target/r
 
 ## Use
 
-- **Add links**: paste anywhere in the window (Ctrl+V), use **Add links**, drop links or `.dlc` / `.txt` files on the window, or pass them on the command line: `Haul.exe <link or file>…`. A second launch hands its links to the running app.
+- **Add links**: paste anywhere in the window (Ctrl+V), use **Add links**, drop links or `.dlc` / `.txt` files on the window, or pass them on the command line: `Haul.exe <link or file>…`. A second launch hands its links to the running app. Each way fills the Add dialog, so nothing downloads until you click **Add**; **Settings › Add dropped links and files right away** skips the dialog for dropped and opened ones.
 - **Needs you**: a host that wants a captcha or a browser step parks its download under **Needs you**. In the desktop app, **Open here** opens the page in Haul's own browser window: solve it and press the host's download button, and Haul takes the download over (with the page's cookies, through your proxy if the host uses it). Anywhere else, **Open page** and **Paste link** do the same by hand.
 - **Hosts**: transfer speed per host, the star that makes it preferred, slots (files downloaded from it at once), the folder its files go to (a subfolder of the download folder), and the proxy route. A host that looks blocked through the proxy offers **Allow direct**, which needs a second click because it reveals your real IP address to that host.
 - **Removing**: the ✕ on a row takes the download off the list and leaves its file alone, unless **Settings › Move removed files to the Recycle Bin** is on; then a finished download's file goes to the Recycle Bin. **Clear completed** only tidies the list.

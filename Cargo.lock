@@ -1873,6 +1873,7 @@ dependencies = [
  "futures-util",
  "haul-core",
  "open",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",

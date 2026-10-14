@@ -1021,6 +1021,12 @@ function renderSettings(s) {
       "When you remove a finished download from the list, its file goes too. Clear completed only tidies the list.",
       toggleSwitch("recycle_on_remove", d.recycle_on_remove, `Move removed files to the ${s.bin}`),
     ),
+    settingCard(
+      "arrow-download",
+      "Add dropped links and files right away",
+      "Off: links and .dlc / .txt files you drop on the window, or open with Haul, fill the Add dialog first, so you can check them before anything downloads.",
+      toggleSwitch("skip_add_dialog", d.skip_add_dialog, "Add dropped links and files right away"),
+    ),
     s.desktop
       ? settingCard(
           "clipboard-link",
@@ -1180,12 +1186,33 @@ async function addText(text, pkg = "") {
   }
 }
 
-async function importFiles(files) {
-  if (!files.length) return;
+function filesForm(files) {
   const form = new FormData();
   for (const file of files) form.append("file", file, file.name);
+  return form;
+}
+
+async function importFiles(files) {
+  if (!files.length) return;
   try {
-    toast(addedMessage(await api("/api/container", form)), "success");
+    toast(addedMessage(await api("/api/container", filesForm(files))), "success");
+  } catch (error) {
+    toast(`Import failed: ${error.message}`, "error");
+  }
+}
+
+// The links in .dlc and text files go into the Add dialog; nothing is added
+// until the user confirms there.
+async function readFiles(files) {
+  if (!files.length) return;
+  try {
+    const r = await api("/api/container/read", filesForm(files));
+    if (!r.links.length) {
+      toast("No links in that file", "info");
+      return;
+    }
+    if (r.package && !$("add-package").value.trim()) $("add-package").value = r.package;
+    openAdd(r.links.join("\n"));
   } catch (error) {
     toast(`Import failed: ${error.message}`, "error");
   }
@@ -1207,9 +1234,8 @@ $("add-text").addEventListener("keydown", (e) => {
   }
 });
 $("add-file").addEventListener("change", async (e) => {
-  await importFiles(e.target.files);
+  await readFiles(e.target.files);
   e.target.value = "";
-  dialog.close();
 });
 
 // Paste links anywhere outside a text field.
@@ -1256,15 +1282,19 @@ addEventListener("dragleave", () => {
   if (!dragDepth) endDrag();
 });
 addEventListener("dragover", (e) => e.preventDefault());
+// Dropped links and files fill the Add dialog, like pasted ones, unless the
+// settings say to add them at once.
 addEventListener("drop", (e) => {
   endDrag();
   const data = e.dataTransfer;
+  const now = Boolean(state?.skip_add_dialog);
   if (data.files.length) {
     e.preventDefault();
-    importFiles(data.files);
+    (now ? importFiles : readFiles)(data.files);
   } else if (!e.target.closest?.("textarea, input")) {
     e.preventDefault();
-    addText(data.getData("text/uri-list") || data.getData("text/plain"));
+    const text = data.getData("text/uri-list") || data.getData("text/plain");
+    now ? addText(text) : openAdd(text);
   }
 });
 

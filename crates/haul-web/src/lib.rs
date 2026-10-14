@@ -123,6 +123,10 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
             "/api/container",
             post(container).layer(DefaultBodyLimit::max(64 << 20)),
         )
+        .route(
+            "/api/container/read",
+            post(read_container).layer(DefaultBodyLimit::max(64 << 20)),
+        )
         .route("/api/item/{id}/direct", post(direct))
         .route("/api/item/{id}/browse", post(browse))
         .route("/api/item/{id}/reveal", post(reveal))
@@ -244,19 +248,24 @@ async fn add(State(app): State<App>, Json(body): Json<AddBody>) -> Json<Added> {
     Json(app.engine.add_text(&body.text, body.package.trim()))
 }
 
-async fn container(State(app): State<App>, mut form: Multipart) -> Response {
-    let mut total = Added::default();
-    loop {
-        let field = match form.next_field().await {
-            Ok(Some(field)) => field,
-            Ok(None) => break,
-            Err(e) => return error(StatusCode::BAD_REQUEST, e.body_text()),
-        };
+/// The files in a multipart upload, by name; the reason when it is malformed.
+async fn uploaded(mut form: Multipart) -> Result<Vec<(String, Bytes)>, String> {
+    let mut files = Vec::new();
+    while let Some(field) = form.next_field().await.map_err(|e| e.body_text())? {
         let name = field.file_name().unwrap_or_default().to_string();
-        let bytes = match field.bytes().await {
-            Ok(b) => b,
-            Err(e) => return error(StatusCode::BAD_REQUEST, e.body_text()),
-        };
+        let bytes = field.bytes().await.map_err(|e| e.body_text())?;
+        files.push((name, bytes));
+    }
+    Ok(files)
+}
+
+async fn container(State(app): State<App>, form: Multipart) -> Response {
+    let files = match uploaded(form).await {
+        Ok(files) => files,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+    let mut total = Added::default();
+    for (name, bytes) in files {
         match app.engine.import(&name, &bytes).await {
             Ok(a) => {
                 total.added += a.added;
@@ -268,6 +277,36 @@ async fn container(State(app): State<App>, mut form: Multipart) -> Response {
         }
     }
     Json(total).into_response()
+}
+
+/// The links in uploaded container files, for the Add dialog: nothing is
+/// added. `package` is the package they all share, empty when they differ.
+async fn read_container(State(app): State<App>, form: Multipart) -> Response {
+    let files = match uploaded(form).await {
+        Ok(files) => files,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+    let mut links = Vec::new();
+    for (name, bytes) in files {
+        match app.engine.read_container(&name, &bytes).await {
+            Ok(found) => links.extend(found),
+            Err(e) => return error(StatusCode::BAD_REQUEST, format!("{name}: {e}")),
+        }
+    }
+    let package = links
+        .first()
+        .map(|l| l.package.clone())
+        .filter(|p| links.iter().all(|l| &l.package == p))
+        .unwrap_or_default();
+    let urls: Vec<String> = links.into_iter().map(|l| l.url).collect();
+    Json(json!({"links": urls, "package": package})).into_response()
+}
+
+/// The UI's route that opens the Add dialog filled in with `links`, for the
+/// desktop app to show files and links it was asked to open.
+pub fn add_route(links: &str) -> String {
+    let encoded = percent_encoding::utf8_percent_encode(links, percent_encoding::NON_ALPHANUMERIC);
+    format!("/add/{encoded}")
 }
 
 #[derive(Deserialize)]
@@ -478,5 +517,26 @@ async fn open_place(State(app): State<App>, Path(place): Path<String>) -> Respon
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("{}: {e}", path.display()),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::add_route;
+
+    #[test]
+    fn the_add_route_carries_links_intact() {
+        let links = "https://a.example/x y?z=1&b=%20\nhttps://b.example/ü";
+        let route = add_route(links);
+        let encoded = route.strip_prefix("/add/").unwrap();
+        assert!(
+            encoded
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'%')
+        );
+        let back = percent_encoding::percent_decode_str(encoded)
+            .decode_utf8()
+            .unwrap();
+        assert_eq!(back, links, "decodeURIComponent gets the links back");
     }
 }
