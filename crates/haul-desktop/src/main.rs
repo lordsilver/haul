@@ -36,6 +36,7 @@ const PORT: u16 = 8765;
 fn main() {
     let data_dir = paths::data_dir();
     init_logging(&data_dir);
+    paths::adopt_old_data(&data_dir);
     let app = tauri::Builder::default()
         // First, so a second launch hands over its arguments and quits early.
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
@@ -337,4 +338,17 @@ fn summarize(events: &[Event]) -> Vec<(String, String)> {
         )),
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_data_folder_follows_the_app_identifier() {
+        let conf = include_str!("../tauri.conf.json");
+        let id = format!("\"identifier\": \"{}\"", haul_core::paths::APP_ID);
+        assert!(
+            conf.contains(&id),
+            "tauri.conf.json and paths::APP_ID disagree"
+        );
+    }
 }

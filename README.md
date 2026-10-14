@@ -88,7 +88,7 @@ Environment variables: `HAUL_PROXY` replaces `proxy`; `HAUL_1FICHIER_KEY`, `HAUL
 
 ## Files
 
-The data folder is `%LOCALAPPDATA%\haul` on Windows and `~/.local/share/haul` on Linux. It holds `config.toml`, the queue (`queue.json`), what Haul measured per host (`hosts.json`), the desktop app's log (`haul.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish.
+The data folder is `%LOCALAPPDATA%\io.github.garysassano.haul` on Windows, which the uninstaller deletes when you ask it to remove the app's data, and `~/.local/share/haul` on Linux. Versions up to 0.3 kept it in `%LOCALAPPDATA%\Haul`, next to the program; 0.4 moves it over the first time it starts. It holds `config.toml`, the queue (`queue.json`), what Haul measured per host (`hosts.json`), the desktop app's log (`haul.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish.
 
 ## Coming from the Python prototype
 

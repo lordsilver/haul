@@ -54,6 +54,10 @@ Removing a download from the list leaves its file alone unless the user turns on
 
 A host's folder is decided when a file finishes, by the host that delivered it: a file merged from several mirrors goes where the mirror that won sends it, and a changed folder applies to downloads already running. Folder names are cleaned like file names and cannot climb out of the download folder.
 
+## The data folder on Windows
+
+The installer puts Haul in `%LOCALAPPDATA%\Haul` for the current user, and up to 0.3 the data folder was `%LOCALAPPDATA%\haul`: the same folder, since Windows ignores case. The queue and settings sat next to the program, and the uninstaller's option to delete the app's data, which removes `%LOCALAPPDATA%\<identifier>`, missed them. The data folder is now `%LOCALAPPDATA%\io.github.garysassano.haul`, where WebView2 already keeps the app's browser data. At start, Haul moves its own files from the old folder (never the program) unless the new folder has a queue or settings already, or an older Haul still holds the old one. On Linux nothing shares `~/.local/share/haul`, so it stays.
+
 ## People, not bypasses
 
 Haul uses public APIs, guest tokens and the user's own accounts. It does not solve captchas, skip wait timers or rotate addresses to evade host limits. When a host needs a person, the download waits for one; the desktop app makes that step short by catching the download the user starts in its own browser window. That window goes through the same proxy as the downloads (by way of a local, credential-free SOCKS5 bridge, because browser engines cannot pass proxy credentials), so opening a page does not reveal the real address that the proxy hides.

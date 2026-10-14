@@ -37,8 +37,10 @@ async fn main() -> ExitCode {
         )
         .init();
     let cli = Cli::parse();
+    let data_dir = cli.data_dir.unwrap_or_else(paths::data_dir);
+    paths::adopt_old_data(&data_dir);
     let options = Options {
-        data_dir: cli.data_dir.unwrap_or_else(paths::data_dir),
+        data_dir,
         download_dir: cli.dir,
         config: None,
         recycle_bin: None,
