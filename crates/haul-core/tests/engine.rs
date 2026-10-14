@@ -336,10 +336,15 @@ async fn resumes_after_a_broken_connection() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     engine.add_text(&format!("{}/flaky/b.bin", t.ip), "");
-    wait_for(&engine, "a retry", |s| {
-        s.items[0].status == "waiting" && s.items[0].error.contains("trying again")
+    let s = wait_for(&engine, "a retry", |s| {
+        s.items[0].status == "waiting" && !s.items[0].error.is_empty()
     })
     .await;
+    assert!(
+        !s.items[0].error.contains("trying again"),
+        "the countdown is the views' job: {}",
+        s.items[0].error
+    );
     wait_for(&engine, "done", all_done).await;
     assert_eq!(t.downloaded("b.bin"), content("b.bin", SIZE));
     let gets = t.server.requests("/flaky/b.bin");

@@ -404,7 +404,7 @@ function caption(it) {
     case "resolving":
       return "Starting…";
     case "waiting":
-      return it.wait ? `Waiting ${duration(it.wait)}` : "Waiting";
+      return it.wait ? `Retrying in ${duration(it.wait)}` : "Waiting";
     case "paused":
       return of ? `Paused · ${of}` : "Paused";
     case "captcha":

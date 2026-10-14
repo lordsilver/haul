@@ -359,7 +359,7 @@ impl From<reqwest::Error> for Fail {
     fn from(e: reqwest::Error) -> Self {
         // A host that cannot be reached right now may well be back shortly.
         let network = e.is_connect() || e.is_timeout();
-        let message = e.without_url().to_string();
+        let message = hosts::error_text(e);
         if network {
             Fail::Transient(message)
         } else {
@@ -1146,7 +1146,8 @@ impl Engine {
                     let wait = (2u64 << (it.retries - 1).min(5)).min(60);
                     it.status = Status::Waiting;
                     it.not_before = Some(now + Duration::from_secs(wait));
-                    it.error = format!("{host}: {message}; trying again in {wait}s");
+                    // The views count the wait down themselves.
+                    it.error = format!("{host}: {message}");
                 }
                 Err(Fail::Error(message) | Fail::Transient(message)) => {
                     if let Some(e) = self.fail_mirror(&mut st, id, url, host, message) {
@@ -1384,7 +1385,7 @@ impl Engine {
                     let chunk = tokio::select! {
                         biased;
                         _ = cancel.cancelled() => return Err(Fail::Cancelled),
-                        c = resp.chunk() => c.map_err(|e| Fail::Transient(e.without_url().to_string()))?,
+                        c = resp.chunk() => c.map_err(|e| Fail::Transient(hosts::error_text(e)))?,
                     };
                     let Some(chunk) = chunk else { return Ok(()) };
                     file.write_all(&chunk).await?;
@@ -1405,7 +1406,11 @@ impl Engine {
                     let h = st.host(host, &self.cfg());
                     h.bytes += chunk.len() as u64;
                     if let Some(speed) = speed {
-                        h.ema = if h.ema == 0.0 { speed } else { h.ema * 0.7 + speed * 0.3 };
+                        h.ema = if h.ema == 0.0 {
+                            speed
+                        } else {
+                            h.ema * 0.7 + speed * 0.3
+                        };
                         h.measured = unix_now();
                     }
                 }

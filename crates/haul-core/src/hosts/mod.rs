@@ -194,11 +194,28 @@ impl ResolveError {
     }
 }
 
+/// reqwest's message and the root cause under it, since "error sending
+/// request" alone does not say whether DNS, the connection or TLS failed. The
+/// URL is left out: it can carry account credentials in its query.
+pub(crate) fn error_text(e: reqwest::Error) -> String {
+    let e = e.without_url();
+    let top = e.to_string();
+    let mut cause: &dyn std::error::Error = &e;
+    while let Some(next) = cause.source() {
+        cause = next;
+    }
+    let root = cause.to_string();
+    if root == top || top.ends_with(&root) {
+        top
+    } else {
+        format!("{top}: {root}")
+    }
+}
+
 impl From<reqwest::Error> for ResolveError {
     fn from(e: reqwest::Error) -> Self {
         let network = e.is_connect() || e.is_timeout();
-        // The URL can carry account credentials in its query.
-        let message = e.without_url().to_string();
+        let message = error_text(e);
         if network {
             Self::Network(message)
         } else {
@@ -570,5 +587,21 @@ mod tests {
         }
         let zeros = Checksum::from_hex(Algo::Sha256, &"0".repeat(64)).unwrap();
         assert!(!zeros.matches(&file).unwrap());
+    }
+
+    #[tokio::test]
+    async fn network_errors_say_what_failed() {
+        // Nothing listens on port 1.
+        let e = reqwest::get("http://127.0.0.1:1/file?key=secret")
+            .await
+            .unwrap_err();
+        assert!(e.is_connect());
+        let text = error_text(e);
+        assert!(text.starts_with("error sending request: "), "{text}");
+        assert!(text.len() > "error sending request: ".len() + 5, "{text}");
+        assert!(
+            !text.contains("secret") && !text.contains("127.0.0.1"),
+            "{text}"
+        );
     }
 }
