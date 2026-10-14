@@ -1,8 +1,22 @@
 //! Default locations and file-name hygiene.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::LazyLock,
+};
 
 use crate::{config, store};
+
+/// The user's own folder (`C:\Users\<name>`, `/home/<name>`), empty when
+/// unknown.
+pub fn home() -> &'static str {
+    static HOME: LazyLock<String> = LazyLock::new(|| {
+        dirs::home_dir()
+            .map(|h| h.display().to_string())
+            .unwrap_or_default()
+    });
+    &HOME
+}
 
 /// The desktop app's identifier, as in `tauri.conf.json`.
 pub const APP_ID: &str = "io.github.garysassano.haul";

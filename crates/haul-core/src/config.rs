@@ -64,6 +64,8 @@ pub struct Config {
     /// Proxy every host goes through unless the user approves a direct route
     /// for it, such as `socks5://user:pass@host:1080`.
     pub proxy: Option<String>,
+    /// Off: the proxy stays configured, but every host connects directly.
+    pub use_proxy: bool,
     pub user_agent: String,
     /// Parallel downloads per host; unlisted hosts get [`FALLBACK_LIMIT`].
     pub limits: BTreeMap<String, usize>,
@@ -107,6 +109,7 @@ impl Default for Config {
             min_speed_seconds: 60,
             retry_failed_minutes: 15,
             proxy: None,
+            use_proxy: true,
             user_agent: DEFAULT_USER_AGENT.into(),
             limits: BTreeMap::new(),
             routes: BTreeMap::new(),
@@ -208,9 +211,9 @@ impl Config {
             .clamp(1, FALLBACK_LIMIT)
     }
 
-    /// The proxy, if one is configured.
+    /// The proxy in use: configured, and not switched off.
     pub fn proxy(&self) -> Option<&str> {
-        secret(&self.proxy)
+        secret(&self.proxy).filter(|_| self.use_proxy)
     }
 
     /// Where `host` stands among the preferred hosts, 0 being the first.
@@ -473,6 +476,8 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # Every host goes through this proxy unless you allow a direct route for it
 # in Hosts. HAUL_PROXY overrides it.
 # proxy = "socks5://user:pass@host:1080"
+# false keeps the proxy above but connects every host directly.
+# use_proxy = true
 
 # Accounts. HAUL_<KEY> environment variables (HAUL_1FICHIER_KEY, ...) fill
 # the keys left unset here.
@@ -588,6 +593,13 @@ mod tests {
         let typo = Config::parse("max_totl = 3").unwrap_err();
         assert!(typo.contains("max_totl"), "{typo}");
         assert_eq!(Config::parse(TEMPLATE).unwrap(), Config::default());
+    }
+
+    #[test]
+    fn a_proxy_switched_off_stays_configured() {
+        let cfg = Config::parse("proxy = \"socks5://h:1\"\nuse_proxy = false").unwrap();
+        assert_eq!(cfg.proxy.as_deref(), Some("socks5://h:1"));
+        assert_eq!(cfg.proxy(), None);
     }
 
     #[test]

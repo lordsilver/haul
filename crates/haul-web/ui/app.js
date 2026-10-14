@@ -275,6 +275,7 @@ function renderNav(s) {
       $("nav-footer").append(item.node);
     }
   }
+  renderFolderNav(s);
   for (const [key, item] of navItems) {
     const selected = key === view;
     if (selected) item.node.setAttribute("aria-current", "page");
@@ -289,6 +290,25 @@ function renderNav(s) {
     item.badge.className = `badge${count && item.spec.badge ? ` ${item.spec.badge}` : ""}`;
     item.node.classList.toggle("attention", count > 0 && Boolean(item.spec.badge));
     item.node.classList.toggle("critical", count > 0 && item.spec.badge === "critical");
+  }
+}
+
+// The download folder, above Hosts and Settings: where files go, opened with
+// one click.
+let folderNav = null;
+
+function renderFolderNav(s) {
+  if (!folderNav) {
+    const label = el("span", { class: "label" });
+    const node = el("button", { type: "button", class: "nav-item", onclick: () => openPlace("downloads") }, icon("folder-open"), label);
+    $("nav-footer").prepend(node);
+    folderNav = { node, label };
+  }
+  setText(folderNav.label, folderLabel(s.download_dir, s.home));
+  const title = `Open the download folder: ${s.download_dir}`;
+  if (folderNav.node.title !== title) {
+    folderNav.node.title = title;
+    folderNav.node.setAttribute("aria-label", `Open the download folder, ${s.download_dir}`);
   }
 }
 
@@ -1281,7 +1301,11 @@ function textField(key, value, { label, placeholder = "", secret = false, wide =
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") input.blur();
   });
-  if (!secret) return input;
+  return secret ? withReveal(input) : input;
+}
+
+// A password field with a button that shows what it holds.
+function withReveal(input) {
   const reveal = button("Show", {
     icon: "eye",
     kind: "subtle small",
@@ -1308,11 +1332,16 @@ function toggleSwitch(key, on, label) {
   );
 }
 
-// The last two parts of a folder's path, which are enough to recognise it.
-function shortPath(path) {
-  const sep = path.includes("\\") ? "\\" : "/";
-  const parts = path.split(/[\\/]+/).filter(Boolean);
-  return parts.length > 2 ? parts.slice(-2).join(sep) : path;
+// A folder as the left bar shows it: from the user's own folder on when inside
+// it (Downloads\\Haul, ~/Downloads/Haul), in full elsewhere (D:\\Downloads\\Haul).
+function folderLabel(path, home) {
+  const windows = path.includes("\\");
+  const base = (home ?? "").replace(/[\\/]+$/, "");
+  const head = path.slice(0, base.length);
+  const inside = base && /^[\\/]./.test(path.slice(base.length)) && (windows ? head.toLowerCase() === base.toLowerCase() : head === base);
+  if (!inside) return path;
+  const rest = path.slice(base.length + 1);
+  return windows ? rest : `~/${rest}`;
 }
 
 function openPlace(place) {
@@ -1462,6 +1491,7 @@ function renderSettings(s) {
       "Proxy",
       envNote("proxy") ?? "Every host goes through it unless you allow it direct under Hosts. Leave empty to connect directly.",
       textField("proxy", d.proxy, { label: "Proxy", placeholder: "socks5://user:pass@host:1080", secret: true, wide: true }),
+      d.proxy ? toggleSwitch("use_proxy", d.use_proxy, "Use the proxy") : null,
     ),
     el("h2", {}, "Accounts"),
     settingCard("key", "1fichier", envNote("1fichier_key") ?? "API key: no free-mode wait or captcha.", accountField("1fichier_key", "API key")),
@@ -1517,49 +1547,22 @@ function renderStatus(s) {
   const downloading = s.items.filter((i) => i.status === "downloading").length;
   const queued = s.items.filter((i) => ["queued", "waiting", "checking", "resolving"].includes(i.status)).length;
   const clipboard = s.desktop && s.watch_clipboard;
-  const key = JSON.stringify([bytes(s.speed), downloading, queued, s.rate, s.proxy, theme, s.paused, clipboard, s.download_dir]);
+  const key = JSON.stringify([bytes(s.speed), downloading, queued, s.rate, s.proxy, theme, s.paused, clipboard]);
   if (key === statusKey) return;
   statusKey = key;
   const themeSpec = THEMES.find(([value]) => value === theme) ?? THEMES[0];
   const next = THEMES[(THEMES.indexOf(themeSpec) + 1) % THEMES.length][0];
+  // Items that change a setting open a flyout with it.
+  const flyoutItem = (key, title, open, ...content) =>
+    el("button", { type: "button", class: `status-item${(key === "proxy" && s.proxy) || key === "clipboard" ? " on" : ""}`, title, "aria-haspopup": "dialog", onclick: (e) => open(e.currentTarget) }, ...content);
   fill(
     $("status"),
-    // Where the files go, on every page; one click opens it.
-    el(
-      "button",
-      {
-        type: "button",
-        class: "status-item",
-        title: `Open the download folder: ${s.download_dir}`,
-        "aria-label": `Open the download folder, ${s.download_dir}`,
-        onclick: () => openPlace("downloads"),
-      },
-      icon("folder-open"),
-      el("span", { class: "status-label" }, shortPath(s.download_dir)),
-    ),
     el("span", { class: `status-item${s.speed ? " on" : ""}` }, icon("arrow-download"), `${bytes(s.speed)}/s`),
     el("span", { class: "status-item" }, s.paused ? "Paused" : `${downloading} downloading · ${queued} waiting`),
     el("span", { class: "grow" }),
-    clipboard
-      ? el(
-          "button",
-          { type: "button", class: "status-item on", title: "Links you copy are added (Settings)", onclick: () => go("settings") },
-          icon("clipboard-link"),
-          "Watching the clipboard",
-        )
-      : null,
-    el(
-      "button",
-      { type: "button", class: "status-item", title: "Speed limit (Settings)", onclick: () => go("settings") },
-      icon("top-speed"),
-      s.rate ? `${(s.rate / 1e6).toFixed(1)} MB/s cap` : "No speed limit",
-    ),
-    el(
-      "button",
-      { type: "button", class: `status-item${s.proxy ? " on" : ""}`, title: "Proxy (Settings)", onclick: () => go("settings") },
-      icon("shield"),
-      s.proxy ? "Proxy on" : "Proxy off",
-    ),
+    clipboard ? flyoutItem("clipboard", "Links you copy are added", clipboardFlyout, icon("clipboard-link"), "Watching the clipboard") : null,
+    flyoutItem("speed", "Speed limit", speedFlyout, icon("top-speed"), s.rate ? `${(s.rate / 1e6).toFixed(1)} MB/s cap` : "No speed limit"),
+    flyoutItem("proxy", "Proxy", proxyFlyout, icon("shield"), s.proxy ? "Proxy on" : "Proxy off"),
     el(
       "button",
       { type: "button", class: "status-item", title: `Theme: ${themeSpec[1]} (click for ${next})`, onclick: () => setTheme(next) },
@@ -1567,6 +1570,125 @@ function renderStatus(s) {
       themeSpec[1],
     ),
   );
+}
+
+// ---- flyouts: small panels over the status bar that change a setting in place
+
+const flyout = el("div", { class: "flyout", popover: "auto", role: "dialog" });
+document.body.append(flyout);
+let flyoutFor = null;
+let flyoutClosed = { key: null, at: 0 };
+flyout.addEventListener("beforetoggle", (e) => {
+  if (e.newState === "closed") flyoutClosed = { key: flyoutFor, at: performance.now() };
+});
+
+// Opens the flyout `key` above `anchor`, filled by `build` from the current
+// settings. A click on its item while it is open closes it, as light dismiss
+// does just before the click arrives.
+async function openFlyout(key, anchor, title, build) {
+  if (typeof flyout.showPopover !== "function") return go("settings");
+  if (flyoutClosed.key === key && performance.now() - flyoutClosed.at < 400) return;
+  const rect = anchor.getBoundingClientRect();
+  let d;
+  try {
+    const res = await fetch("/api/settings");
+    if (!res.ok) throw new Error(`Settings: HTTP ${res.status}`);
+    d = await res.json();
+  } catch (error) {
+    return report(error);
+  }
+  flyoutFor = key;
+  flyout.setAttribute("aria-label", title);
+  fill(flyout, el("div", { class: "flyout-title" }, title), build(d));
+  if (!flyout.matches(":popover-open")) flyout.showPopover();
+  flyout.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - flyout.offsetWidth - 8))}px`;
+  flyout.style.top = `${Math.max(8, rect.top - flyout.offsetHeight - 8)}px`;
+  flyout.querySelector("input:not([disabled]), button:not([disabled])")?.focus();
+}
+
+function closeFlyout() {
+  if (flyout.matches(":popover-open")) flyout.hidePopover();
+}
+
+const fromEnv = (d, key) => (d.from_env[key] ? `Set by the ${d.from_env[key]} environment variable.` : null);
+
+// A switch that flips at once and saves; `change` answers whether it saved.
+function flyoutSwitch(label, on, change, disabled = false) {
+  const text = el("span", { class: "toggle-text" });
+  const node = el("button", { type: "button", role: "switch", class: "toggle", "aria-label": label, disabled }, text, el("span", { class: "track" }, el("span", { class: "knob" })));
+  const show = (value) => {
+    node.setAttribute("aria-checked", String(value));
+    setText(text, value ? "On" : "Off");
+  };
+  show(on);
+  node.addEventListener("click", async () => {
+    const next = node.getAttribute("aria-checked") !== "true";
+    show(next);
+    if (!(await change(next))) show(!next);
+  });
+  return el("div", { class: "flyout-row" }, el("span", { class: "grow" }, label), node);
+}
+
+function speedFlyout(anchor) {
+  openFlyout("speed", anchor, "Speed limit", (d) => {
+    const fixed = fromEnv(d, "rate_limit_mbps");
+    const input = el("input", { type: "number", min: 0, step: 0.5, value: d.rate_limit_mbps || "", placeholder: "None", "aria-label": "Speed limit in MB/s", disabled: Boolean(fixed) });
+    const apply = async (mbps) => {
+      if (await save({ rate_limit_mbps: mbps }, null)) closeFlyout();
+    };
+    const set = () => {
+      const n = input.value.trim() === "" ? 0 : Number(input.value);
+      if (Number.isFinite(n) && n >= 0) apply(n);
+      else input.focus();
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") set();
+    });
+    return [
+      el("p", { class: "hint" }, fixed ?? "For all downloads together."),
+      el("div", { class: "flyout-row" }, el("span", { class: "with-unit grow" }, input, el("span", { class: "hint" }, "MB/s")), button("Set", { kind: "accent", onclick: set, disabled: Boolean(fixed) })),
+      d.rate_limit_mbps > 0 && !fixed ? button("Remove the limit", { kind: "subtle", onclick: () => apply(0) }) : null,
+    ];
+  });
+}
+
+function proxyFlyout(anchor) {
+  openFlyout("proxy", anchor, "Proxy", (d) => {
+    const fixed = fromEnv(d, "proxy");
+    let use = flyoutSwitch("Use the proxy", Boolean(d.proxy) && d.use_proxy, (on) => save({ use_proxy: on }, null), !d.proxy);
+    const address = el("input", {
+      type: "password",
+      value: d.proxy ?? "",
+      placeholder: "socks5://user:pass@host:1080",
+      "aria-label": "Proxy address",
+      autocomplete: "off",
+      spellcheck: "false",
+      disabled: Boolean(fixed),
+    });
+    // A new address is meant to be used.
+    address.addEventListener("change", async () => {
+      const value = address.value.trim();
+      if (!(await save(value ? { proxy: value, use_proxy: true } : { proxy: "" }, null))) return;
+      const next = flyoutSwitch("Use the proxy", Boolean(value), (on) => save({ use_proxy: on }, null), !value);
+      use.replaceWith(next);
+      use = next;
+    });
+    address.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") address.blur();
+    });
+    return [use, withReveal(address), el("p", { class: "hint" }, fixed ?? "Every host goes through it unless you allow it direct under Hosts.")];
+  });
+}
+
+function clipboardFlyout(anchor) {
+  openFlyout("clipboard", anchor, "Clipboard", (d) => [
+    el("p", { class: "hint" }, "Links to known hosts and files that you copy anywhere are added."),
+    flyoutSwitch("Watch the clipboard", d.watch_clipboard, async (on) => {
+      const saved = await save({ watch_clipboard: on }, null);
+      if (saved && !on) closeFlyout();
+      return saved;
+    }),
+  ]);
 }
 
 // ---- adding links

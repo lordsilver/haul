@@ -40,6 +40,7 @@ pub struct SettingsView {
     pub min_speed_seconds: u64,
     pub retry_failed_minutes: u64,
     pub proxy: String,
+    pub use_proxy: bool,
     pub user_agent: String,
     pub default_user_agent: &'static str,
     /// Account keys by their name in the file; empty when unset.
@@ -98,6 +99,7 @@ impl Engine {
             min_speed_seconds: cfg.min_speed_seconds,
             retry_failed_minutes: cfg.retry_failed_minutes,
             proxy: shown(&cfg.proxy),
+            use_proxy: cfg.use_proxy,
             user_agent: cfg.user_agent.clone(),
             default_user_agent: config::DEFAULT_USER_AGENT,
             accounts: ACCOUNTS
@@ -249,6 +251,11 @@ impl Engine {
                     }
                     writes.push(top(key, (!proxy.is_empty()).then(|| proxy.as_str().into())));
                     cfg.proxy = (!proxy.is_empty()).then_some(proxy);
+                }
+                "use_proxy" => {
+                    let on = value.as_bool().ok_or("use_proxy is true or false")?;
+                    cfg.use_proxy = on;
+                    writes.push(top(key, Some(on.into())));
                 }
                 "user_agent" => {
                     let agent = text(value, key)?;

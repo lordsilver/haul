@@ -339,6 +339,71 @@ button.status-item:hover {
   color: var(--text);
 }
 
+/* ---- flyouts over the status bar */
+
+.flyout {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: 320px;
+  padding: 16px;
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+  background: var(--dialog);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+
+.flyout:popover-open {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.flyout-title {
+  font-weight: 600;
+}
+
+.flyout .hint {
+  margin: 0;
+}
+
+.flyout-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flyout-row .grow {
+  flex: 1;
+}
+
+.flyout .with-unit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flyout .with-unit input {
+  flex: 1;
+  min-width: 0;
+}
+
+.flyout .secret {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.flyout .secret input {
+  flex: 1;
+  min-width: 0;
+}
+
+.flyout > .button.subtle {
+  align-self: flex-start;
+}
+
 /* ---- controls */
 
 .button {
@@ -1275,11 +1340,6 @@ input.wide {
 @media (max-width: 860px) {
   .row.member {
     margin-left: 16px;
-  }
-
-  /* The folder keeps its icon; the path is in its tooltip. */
-  .status-label {
-    display: none;
   }
 
   .app {
