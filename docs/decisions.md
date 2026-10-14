@@ -30,9 +30,15 @@ The UI follows Fluent design as Windows 11 apps do: navigation pane, command bar
 
 Loopback-only servers are still reachable from any page the user visits. The API therefore checks `Host` (against DNS rebinding) and refuses state-changing requests whose `Origin` is not its own, and the UI forbids framing. There are no tokens to manage, and scripts without an `Origin` keep working.
 
-## Settings written back to `config.toml`
+## One settings file, two editors
 
-Changes made in the app (theme, parallel downloads, speed limit, host slots) are written into `config.toml` with `toml_edit`, which keeps the user's comments and layout. There is one settings file, never a second one that silently overrides it.
+Every setting can be changed in the app, and every setting lives in `config.toml`: the app writes each change into the file with `toml_edit`, which keeps the user's comments and layout (a cleared value is commented out, not deleted, so its explanation stays), and it reloads the file within a second of an edit on disk. A file that does not parse leaves the previous settings in effect and the app shows the error until it is fixed. There is never a second store that silently overrides the file; per-host route choices moved there from `routes.json` for that reason.
+
+Account secrets are part of the settings, but they never ride the state stream that every open view receives: the settings view fetches them separately when it opens. Values an environment variable sets are shown as such and cannot change in the app, since the file would not win anyway.
+
+## Retries
+
+Errors are sorted by what retrying can achieve. A dead link or a refusal fails its mirror at once, so the next mirror takes over without delay. Network trouble (a dropped connection, a timeout, an unreachable host) is retried on the same mirror with growing pauses, because the host usually comes back and the bytes already downloaded are kept. Failures lower a host's rank with a ten-minute half-life, so one bad minute does not exile a host for the rest of the session. A download whose mirrors all failed is tried again after a while, three times at most, since hosts that are down tend to come back and the cost of another attempt is small.
 
 ## People, not bypasses
 

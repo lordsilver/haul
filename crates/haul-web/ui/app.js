@@ -32,6 +32,11 @@ function el(tag, props = {}, ...children) {
   return node;
 }
 
+// replaceChildren without the sections a condition left out.
+function fill(node, ...children) {
+  node.replaceChildren(...children.flat().filter((c) => c !== null && c !== undefined && c !== false));
+}
+
 function setText(node, text) {
   const value = text ?? "";
   if (node.textContent !== value) node.textContent = value;
@@ -341,12 +346,19 @@ let bannerKey = null;
 
 function renderBanner(s) {
   const waiting = s.items.filter((i) => i.status === "captcha").length;
-  const key = `${offline}|${s.paused}|${waiting}|${view}`;
+  const key = `${offline}|${s.paused}|${waiting}|${view}|${s.config_error}`;
   if (key === bannerKey) return;
   bannerKey = key;
   const bars = [];
   if (offline) {
     bars.push(infobar("critical", "error-circle", "Lost the connection to Haul.", "Reconnecting…"));
+  }
+  if (s.config_error) {
+    bars.push(
+      infobar("critical", "error-circle", "The settings file has an error.", "The previous settings stay in effect until it is fixed.", [
+        button("Show", { onclick: () => go("settings") }),
+      ]),
+    );
   }
   if (s.paused) {
     bars.push(
@@ -403,7 +415,7 @@ function caption(it) {
     case "done":
       return `Completed${it.size ? ` · ${bytes(it.size)}` : ""}`;
     case "error":
-      return "Failed";
+      return it.retry_in ? `Failed · retrying in ${duration(it.retry_in)}` : "Failed";
     default:
       return it.status;
   }
@@ -750,6 +762,34 @@ function renderHosts(s) {
 // ---- settings
 
 let settingsKey = null;
+let settingsData = null;
+let settingsVersion = null;
+
+// Every setting, account secrets included: fetched for this page only, never
+// part of the live state.
+async function loadSettings() {
+  try {
+    const res = await fetch("/api/settings");
+    if (res.ok) settingsData = await res.json();
+  } catch (error) {
+    report(error);
+  }
+  settingsKey = null;
+  if (state && view === "settings") render(state);
+}
+
+async function save(changes, saved = "Saved") {
+  try {
+    await api("/api/settings", changes);
+    if (saved) toast(saved, "success");
+    return true;
+  } catch (error) {
+    report(error);
+    settingsKey = null;
+    if (state) render(state);
+    return false;
+  }
+}
 
 function settingCard(glyph, title, description, ...controls) {
   return el(
@@ -761,24 +801,131 @@ function settingCard(glyph, title, description, ...controls) {
   );
 }
 
-function numberInput(value, { min, step = 1, label, onchange }) {
-  const input = el("input", { type: "number", min, step, value, "aria-label": label });
+// Why a key cannot change here, when an environment variable sets it.
+function envNote(...keys) {
+  const variable = keys.map((k) => settingsData.from_env[k]).find(Boolean);
+  return variable ? `Set by the ${variable} environment variable.` : null;
+}
+
+function numberField(key, value, { min, max, step = 1, label, unit }) {
+  const input = el("input", { type: "number", min, max, step, value, "aria-label": label });
   input.addEventListener("change", () => {
     const n = Number(input.value);
-    if (Number.isFinite(n) && n >= min) onchange(n);
-    else input.value = value;
+    if (!Number.isFinite(n) || n < min || (max !== undefined && n > max)) {
+      input.value = value;
+      return;
+    }
+    save({ [key]: n });
   });
-  return input;
+  return unit ? el("span", { class: "with-unit" }, input, el("span", { class: "hint" }, unit)) : input;
+}
+
+function textField(key, value, { label, placeholder = "", secret = false, wide = false }) {
+  const input = el("input", {
+    type: secret ? "password" : "text",
+    value,
+    placeholder,
+    "aria-label": label,
+    autocomplete: "off",
+    spellcheck: "false",
+    disabled: Boolean(settingsData.from_env[key]),
+    class: wide ? "wide" : undefined,
+  });
+  input.addEventListener("change", () => save({ [key]: input.value.trim() }));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") input.blur();
+  });
+  if (!secret) return input;
+  const reveal = button("Show", {
+    icon: "eye",
+    kind: "subtle small",
+    iconOnly: true,
+    onclick: () => {
+      const hidden = input.type === "password";
+      input.type = hidden ? "text" : "password";
+      reveal.replaceChildren(icon(hidden ? "eye-off" : "eye"));
+      reveal.title = hidden ? "Hide" : "Show";
+    },
+  });
+  return el("span", { class: "secret" }, input, reveal);
+}
+
+const accountField = (key, label, secret = true) =>
+  textField(key, settingsData.accounts[key] ?? "", { label, placeholder: label, secret });
+
+function toggleSwitch(key, on, label) {
+  return el(
+    "button",
+    { type: "button", role: "switch", class: "toggle", "aria-checked": String(on), "aria-label": label, onclick: () => save({ [key]: !on }, null) },
+    el("span", { class: "toggle-text" }, on ? "On" : "Off"),
+    el("span", { class: "track" }, el("span", { class: "knob" })),
+  );
 }
 
 function openPlace(place) {
   return api(`/api/open/${place}`).catch(report);
 }
 
+async function changeFolder(card, s) {
+  if (s.desktop) {
+    try {
+      const r = await api("/api/settings/download-dir/pick");
+      if (!r.cancelled) toast("Download folder changed; unfinished downloads moved along", "success");
+    } catch (error) {
+      report(error);
+    }
+    return;
+  }
+  // A browser cannot show this machine's folders: type the path instead.
+  if (card.querySelector("form")) return;
+  const input = el("input", { type: "text", value: settingsData.download_dir, class: "wide", "aria-label": "Download folder" });
+  const form = el(
+    "form",
+    {
+      class: "inline-form",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        if (await save({ download_dir: input.value.trim() }, "Download folder changed")) form.remove();
+      },
+    },
+    input,
+    el("button", { type: "submit", class: "button accent" }, "Save"),
+    button("Cancel", { onclick: () => form.remove() }),
+  );
+  card.append(form);
+  input.focus();
+}
+
+function folderCard(s) {
+  const d = settingsData;
+  const description = el(
+    "span",
+    {},
+    el("span", { class: "mono" }, d.download_dir),
+    d.download_dir_fixed ? el("span", {}, el("br"), "Given on the command line with --dir.") : null,
+  );
+  const card = settingCard(
+    "folder-open",
+    "Download folder",
+    description,
+    d.download_dir_fixed ? null : button("Change…", { onclick: () => changeFolder(card, s) }),
+    button("Open folder", { onclick: () => openPlace("downloads") }),
+  );
+  card.classList.add("with-bar");
+  return card;
+}
+
 function renderSettings(s) {
-  const key = JSON.stringify([s.theme, s.max_total, s.rate, s.proxy, s.download_dir, s.data_dir, s.config_file, s.desktop]);
-  // Leave the controls alone while one is being edited.
-  if (key === settingsKey || $("settings").contains(document.activeElement)) return;
+  if (s.config_version !== settingsVersion) {
+    settingsVersion = s.config_version;
+    loadSettings();
+  }
+  const d = settingsData;
+  if (!d) return;
+  const key = JSON.stringify([d, s.desktop, theme, s.config_error, s.version]);
+  // Leave the page alone while a field is being edited.
+  const active = document.activeElement;
+  if (key === settingsKey || ($("settings").contains(active) && active.matches("input"))) return;
   settingsKey = key;
   const themes = el(
     "div",
@@ -787,45 +934,95 @@ function renderSettings(s) {
       el("button", { type: "button", "aria-pressed": String(theme === value), onclick: () => setTheme(value) }, icon(glyph), label),
     ),
   );
-  const proxyText = s.proxy
-    ? "Every host goes through the proxy from the settings file, unless you allow it direct under Hosts."
-    : "Connections go direct. Set proxy in the settings file to route every host through one.";
-  $("settings").replaceChildren(
+  fill(
+    $("settings"),
+    s.config_error
+      ? infobar("critical", "error-circle", "The settings file has an error.", `The previous settings stay in effect until it is fixed. ${s.config_error}`, [
+          button("Open the file", { onclick: () => openPlace("config") }),
+        ])
+      : null,
     el("h2", {}, "Appearance"),
     settingCard("dark-theme", "App theme", "Follow Windows, or pick one.", themes),
     el("h2", {}, "Downloads"),
-    settingCard(
-      "arrow-download",
-      "Parallel downloads",
-      "Files downloaded at the same time.",
-      numberInput(s.max_total, { min: 1, label: "Parallel downloads", onchange: (n) => api("/api/settings", { max_total: n }).catch(report) }),
-    ),
+    settingCard("arrow-download", "Parallel downloads", "Files downloaded at the same time.", numberField("max_total", d.max_total, { min: 1, max: 64, label: "Parallel downloads" })),
     settingCard(
       "top-speed",
       "Speed limit",
-      "Shared by every transfer, in MB/s. 0 means no limit.",
-      numberInput(Number((s.rate / 1e6).toFixed(2)), {
-        min: 0,
-        step: 0.5,
-        label: "Speed limit in MB/s",
-        onchange: (n) => api("/api/settings", { rate_mbps: n }).catch(report),
-      }),
+      "Shared by every transfer. 0 means no limit.",
+      numberField("rate_limit_mbps", d.rate_limit_mbps, { min: 0, step: 0.5, label: "Speed limit", unit: "MB/s" }),
     ),
-    settingCard("folder-open", "Download folder", el("span", { class: "mono" }, s.download_dir), button("Open folder", { onclick: () => openPlace("downloads") })),
+    folderCard(s),
+    s.desktop
+      ? settingCard(
+          "clipboard-link",
+          "Watch the clipboard",
+          "Links you copy anywhere are added, when they point at a supported host or a file.",
+          toggleSwitch("watch_clipboard", d.watch_clipboard, "Watch the clipboard"),
+        )
+      : null,
+    el("h2", {}, "When something fails"),
+    settingCard(
+      "arrow-clockwise",
+      "Retries after network trouble",
+      "Per mirror, after a dropped connection or an unreachable host; then the next mirror takes over.",
+      numberField("resume_attempts", d.resume_attempts, { min: 0, max: 20, label: "Retries", unit: "times" }),
+    ),
+    settingCard(
+      "clock",
+      "Retry failed downloads",
+      "Tries a failed download again after this many minutes, up to three times. 0 turns it off.",
+      numberField("retry_failed_minutes", d.retry_failed_minutes, { min: 0, max: 1440, label: "Minutes", unit: "min" }),
+    ),
     el("h2", {}, "Network"),
-    settingCard("shield", "Proxy", proxyText, el("span", { class: `pill${s.proxy ? " success" : ""}` }, s.proxy ? "On" : "Off")),
+    settingCard(
+      "shield",
+      "Proxy",
+      envNote("proxy") ?? "Every host goes through it unless you allow it direct under Hosts. Leave empty to connect directly.",
+      textField("proxy", d.proxy, { label: "Proxy", placeholder: "socks5://user:pass@host:1080", secret: true, wide: true }),
+    ),
+    el("h2", {}, "Accounts"),
+    settingCard("key", "1fichier", envNote("1fichier_key") ?? "API key: no free-mode wait or captcha.", accountField("1fichier_key", "API key")),
+    settingCard("key", "pixeldrain", envNote("pixeldrain_key") ?? "API key.", accountField("pixeldrain_key", "API key")),
+    settingCard("key", "gofile", envNote("gofile_token") ?? "Account token: guests cannot use the API for every file.", accountField("gofile_token", "Account token")),
+    settingCard(
+      "key",
+      "rapidgator",
+      envNote("rapidgator_user", "rapidgator_pass") ?? "Premium account.",
+      accountField("rapidgator_user", "Username", false),
+      accountField("rapidgator_pass", "Password"),
+    ),
+    settingCard(
+      "key",
+      "nitroflare",
+      envNote("nitroflare_user", "nitroflare_key") ?? "Premium account.",
+      accountField("nitroflare_user", "User", false),
+      accountField("nitroflare_key", "Premium key"),
+    ),
+    el("h2", {}, "Advanced"),
+    settingCard(
+      "wrench",
+      "megatools",
+      "For mega.nz links. Leave empty to find it on PATH.",
+      textField("megatools", d.megatools, { label: "megatools", placeholder: "C:\\Tools\\megatools\\megatools.exe", wide: true }),
+    ),
+    settingCard(
+      "globe",
+      "User agent",
+      "Sent to hosts. Leave empty for Haul's default.",
+      textField("user_agent", d.user_agent === d.default_user_agent ? "" : d.user_agent, { label: "User agent", placeholder: d.default_user_agent, wide: true }),
+    ),
     el("h2", {}, "Files"),
-    s.config_file
+    d.config_file
       ? settingCard(
           "document",
           "Settings file",
-          el("span", {}, el("span", { class: "mono" }, s.config_file), el("br"), "Proxy, accounts and API keys live here. Restart Haul after editing."),
+          el("span", {}, el("span", { class: "mono" }, d.config_file), el("br"), "Every setting on this page is stored here. Edits saved in a text editor apply within a second."),
           button("Open", { onclick: () => openPlace("config") }),
         )
       : null,
     settingCard("folder-open", "Data folder", el("span", { class: "mono" }, s.data_dir), button("Open folder", { onclick: () => openPlace("data") })),
     el("h2", {}, "About"),
-    settingCard("info", `Haul ${s.version}`, s.desktop ? "Multi-host download manager, desktop app." : "Multi-host download manager, web UI."),
+    settingCard("info", `Haul ${s.version}`, s.desktop ? "Download manager for file hosts, desktop app." : "Download manager for file hosts, web UI."),
   );
 }
 
@@ -836,15 +1033,25 @@ let statusKey = null;
 function renderStatus(s) {
   const downloading = s.items.filter((i) => i.status === "downloading").length;
   const queued = s.items.filter((i) => ["queued", "waiting", "checking", "resolving"].includes(i.status)).length;
-  const key = JSON.stringify([bytes(s.speed), downloading, queued, s.rate, s.proxy, theme, s.paused]);
+  const clipboard = s.desktop && s.watch_clipboard;
+  const key = JSON.stringify([bytes(s.speed), downloading, queued, s.rate, s.proxy, theme, s.paused, clipboard]);
   if (key === statusKey) return;
   statusKey = key;
   const themeSpec = THEMES.find(([value]) => value === theme) ?? THEMES[0];
   const next = THEMES[(THEMES.indexOf(themeSpec) + 1) % THEMES.length][0];
-  $("status").replaceChildren(
+  fill(
+    $("status"),
     el("span", { class: `status-item${s.speed ? " on" : ""}` }, icon("arrow-download"), `${bytes(s.speed)}/s`),
     el("span", { class: "status-item" }, s.paused ? "Paused" : `${downloading} downloading · ${queued} waiting`),
     el("span", { class: "grow" }),
+    clipboard
+      ? el(
+          "button",
+          { type: "button", class: "status-item on", title: "Links you copy are added (Settings)", onclick: () => go("settings") },
+          icon("clipboard-link"),
+          "Watching the clipboard",
+        )
+      : null,
     el(
       "button",
       { type: "button", class: "status-item", title: "Speed limit (Settings)", onclick: () => go("settings") },

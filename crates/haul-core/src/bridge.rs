@@ -8,7 +8,7 @@
 use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -73,25 +73,51 @@ impl Upstream {
     }
 }
 
-/// Starts the bridge on an ephemeral loopback port and returns its address.
-pub async fn start(proxy: &str) -> io::Result<SocketAddr> {
-    let upstream = Arc::new(Upstream::parse(proxy)?);
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let addr = listener.local_addr()?;
-    tokio::spawn(async move {
-        loop {
-            let Ok((client, _)) = listener.accept().await else {
-                continue;
-            };
-            let upstream = upstream.clone();
-            tokio::spawn(async move {
-                if let Err(e) = serve(client, &upstream).await {
-                    tracing::debug!("bridge connection: {e}");
-                }
-            });
-        }
-    });
-    Ok(addr)
+/// The running bridge. Its port stays the same for its whole life (browser
+/// profiles remember it), while the proxy behind it can change.
+pub struct Bridge {
+    addr: SocketAddr,
+    upstream: Arc<RwLock<Option<Arc<Upstream>>>>,
+}
+
+impl Bridge {
+    /// Listens on an ephemeral loopback port, forwarding nowhere until
+    /// [`Bridge::set_upstream`]. Must run inside a Tokio runtime.
+    pub fn start() -> io::Result<Self> {
+        let std_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        std_listener.set_nonblocking(true)?;
+        let addr = std_listener.local_addr()?;
+        let listener = TcpListener::from_std(std_listener)?;
+        let upstream: Arc<RwLock<Option<Arc<Upstream>>>> = Arc::new(RwLock::new(None));
+        let current = upstream.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((client, _)) = listener.accept().await else {
+                    continue;
+                };
+                let up = current.read().unwrap_or_else(|e| e.into_inner()).clone();
+                // Without a proxy there is nowhere to go: drop the connection.
+                let Some(up) = up else { continue };
+                tokio::spawn(async move {
+                    if let Err(e) = serve(client, &up).await {
+                        tracing::debug!("bridge connection: {e}");
+                    }
+                });
+            }
+        });
+        Ok(Self { addr, upstream })
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Sends new connections through `proxy`, or nowhere.
+    pub fn set_upstream(&self, proxy: Option<&str>) -> io::Result<()> {
+        let up = proxy.map(Upstream::parse).transpose()?.map(Arc::new);
+        *self.upstream.write().unwrap_or_else(|e| e.into_inner()) = up;
+        Ok(())
+    }
 }
 
 const REPLY_OK: [u8; 10] = [5, 0, 0, 1, 0, 0, 0, 0, 0, 0];
@@ -279,9 +305,18 @@ mod tests {
             s.write_all(&buf).await.unwrap();
         });
         let up = upstream_with_auth("me", "p@ss").await;
-        let bridge = start(&format!("socks5://me:p%40ss@{up}")).await.unwrap();
+        let bridge = Bridge::start().unwrap();
+        assert!(
+            Socks5Stream::connect(bridge.addr(), ("echo.test", echo_port))
+                .await
+                .is_err(),
+            "no proxy yet, so nothing goes through"
+        );
+        bridge
+            .set_upstream(Some(&format!("socks5://me:p%40ss@{up}")))
+            .unwrap();
 
-        let mut s = Socks5Stream::connect(bridge, ("echo.test", echo_port))
+        let mut s = Socks5Stream::connect(bridge.addr(), ("echo.test", echo_port))
             .await
             .unwrap();
         s.write_all(b"hello").await.unwrap();

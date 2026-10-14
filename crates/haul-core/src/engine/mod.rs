@@ -10,13 +10,16 @@ use std::{
     fs::File,
     path::{Path, PathBuf},
     str::FromStr,
-    sync::{Arc, Mutex, MutexGuard},
-    time::{Duration, Instant},
+    sync::{
+        Arc, Mutex, MutexGuard, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant, SystemTime},
 };
 
 use indexmap::IndexMap;
 use reqwest::header::RANGE;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
     sync::{Notify, Semaphore, broadcast, watch},
@@ -24,13 +27,20 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    config::{self, Config, Setting, Theme},
+    config::{self, Config, Route, Theme},
     container::{self, Link},
     hosts::{self, Cx, Entry, Http, ResolveError, Tokens},
     item::{Item, Status},
     limiter::Limiter,
     paths, store,
 };
+
+mod settings;
+
+pub use settings::SettingsView;
+
+/// Automatic retries of a failed download, when `retry_failed_minutes` is on.
+const AUTO_RETRIES: u32 = 3;
 
 pub struct Options {
     /// Holds `config.toml`, the queue and the instance lock.
@@ -56,14 +66,6 @@ pub enum StartError {
     Config { path: PathBuf, message: String },
     #[error("{0}")]
     Proxy(String),
-}
-
-/// How a host is reached when a proxy is configured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Route {
-    Proxy,
-    Direct,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +109,8 @@ pub enum Event {
         name: String,
         error: String,
     },
+    /// The theme changed, in the app or in the settings file.
+    ThemeChanged(Theme),
 }
 
 /// What adding links did.
@@ -134,6 +138,11 @@ pub struct Snapshot {
     pub rate: f64,
     pub proxy: bool,
     pub theme: Theme,
+    pub watch_clipboard: bool,
+    /// Moves whenever a setting changes, so views can fetch them again.
+    pub config_version: u64,
+    /// Why the settings file on disk is not in effect.
+    pub config_error: Option<String>,
     pub download_dir: String,
     pub data_dir: String,
     /// The settings file, when the engine was started from one.
@@ -156,6 +165,8 @@ pub struct ItemView {
     pub mirrors: Vec<String>,
     /// Seconds until a waiting item may try again.
     pub wait: u64,
+    /// Seconds until a failed item is tried again on its own; 0 when never.
+    pub retry_in: u64,
     /// Mirrors a person has to open.
     pub open_urls: Vec<String>,
     /// Where the finished file was saved.
@@ -184,16 +195,33 @@ struct HostStats {
     /// Smoothed bytes per second of one stream.
     ema: f64,
     fails: u32,
+    /// Failures weighed by age: each halves every [`PENALTY_HALF_LIFE`].
+    penalty: f64,
+    penalty_at: Instant,
     ok: u32,
     bytes: u64,
     blocked: bool,
 }
 
+const PENALTY_HALF_LIFE: f64 = 600.0;
+
 impl HostStats {
-    /// Unknown hosts score high, so each gets tried and the ranking learns.
-    fn score(&self) -> f64 {
+    fn penalty(&self, now: Instant) -> f64 {
+        let age = now.saturating_duration_since(self.penalty_at).as_secs_f64();
+        self.penalty * 0.5f64.powf(age / PENALTY_HALF_LIFE)
+    }
+
+    fn penalize(&mut self, now: Instant) {
+        self.penalty = self.penalty(now) + 1.0;
+        self.penalty_at = now;
+        self.fails += 1;
+    }
+
+    /// Unknown hosts score high, so each gets tried and the ranking learns;
+    /// recent failures weigh more than old ones.
+    fn score(&self, now: Instant) -> f64 {
         let speed = if self.ema > 0.0 { self.ema } else { 1e6 };
-        speed / (1.0 + f64::from(self.fails) * 0.5)
+        speed / (1.0 + self.penalty(now) * 0.5)
     }
 
     fn free(&self, now: Instant) -> bool {
@@ -206,6 +234,8 @@ struct State {
     hosts: IndexMap<String, HostStats>,
     routes: BTreeMap<String, Route>,
     paused: bool,
+    /// The download folder is changing: start nothing new.
+    moving: bool,
     max_total: usize,
     dirty: bool,
 }
@@ -220,6 +250,8 @@ impl State {
                 cooldown: None,
                 ema: 0.0,
                 fails: 0,
+                penalty: 0.0,
+                penalty_at: Instant::now(),
                 ok: 0,
                 bytes: 0,
                 blocked: false,
@@ -246,14 +278,12 @@ enum Fail {
     Transient(String),
 }
 
-/// Resumes after a broken transfer before the mirror counts as failed.
-const MAX_RETRIES: u32 = 3;
-
 impl From<ResolveError> for Fail {
     fn from(e: ResolveError) -> Self {
         match e {
             ResolveError::Wait { seconds, message } => Fail::Wait { seconds, message },
             ResolveError::NeedsUser(m) => Fail::NeedsUser(m),
+            ResolveError::Network(m) => Fail::Transient(m),
             ResolveError::Failed(m) => Fail::Error(m),
         }
     }
@@ -261,7 +291,14 @@ impl From<ResolveError> for Fail {
 
 impl From<reqwest::Error> for Fail {
     fn from(e: reqwest::Error) -> Self {
-        Fail::Error(e.without_url().to_string())
+        // A host that cannot be reached right now may well be back shortly.
+        let network = e.is_connect() || e.is_timeout();
+        let message = e.without_url().to_string();
+        if network {
+            Fail::Transient(message)
+        } else {
+            Fail::Error(message)
+        }
     }
 }
 
@@ -282,16 +319,40 @@ async fn or_cancel<T>(cancel: &CancellationToken, fut: impl Future<Output = T>) 
 #[derive(Clone)]
 pub struct Engine(Arc<Inner>);
 
-struct Inner {
-    state: Mutex<State>,
-    cfg: Config,
-    /// `config.toml`, which settings changed in the app are written back to.
-    config_path: Option<PathBuf>,
-    theme: Mutex<Theme>,
-    data_dir: PathBuf,
-    download_dir: PathBuf,
+/// HTTP clients for both routes, rebuilt when the proxy or user agent changes.
+struct Clients {
     direct: Http,
     proxy: Option<Http>,
+}
+
+impl Clients {
+    fn new(cfg: &Config) -> Result<Self, String> {
+        Ok(Self {
+            direct: Http::new(None, &cfg.user_agent)?,
+            proxy: cfg
+                .proxy()
+                .map(|p| Http::new(Some(p), &cfg.user_agent))
+                .transpose()?,
+        })
+    }
+}
+
+struct Inner {
+    state: Mutex<State>,
+    /// The settings in effect, replaced whole when they change.
+    cfg: RwLock<Arc<Config>>,
+    /// `config.toml`, which settings changed in the app are written back to.
+    config_path: Option<PathBuf>,
+    /// The file's modification time and length when last read or written.
+    config_seen: Mutex<Option<(SystemTime, u64)>>,
+    /// Why the file on disk is not in effect, when it does not parse.
+    config_error: Mutex<Option<String>>,
+    config_version: AtomicU64,
+    data_dir: PathBuf,
+    download_dir: RwLock<PathBuf>,
+    /// Given on the command line, so the settings do not move it.
+    download_dir_fixed: bool,
+    clients: RwLock<Arc<Clients>>,
     tokens: Tokens,
     limiter: Limiter,
     wake: Notify,
@@ -325,19 +386,15 @@ impl Engine {
                 (cfg, Some(path))
             }
         };
+        let download_dir_fixed = opts.download_dir.is_some();
         let download_dir = opts
             .download_dir
             .or_else(|| cfg.download_dir.clone())
             .unwrap_or_else(paths::download_dir);
-        let direct = Http::new(None, &cfg.user_agent).map_err(StartError::Proxy)?;
-        let proxy = cfg
-            .proxy()
-            .map(|p| Http::new(Some(p), &cfg.user_agent))
-            .transpose()
-            .map_err(StartError::Proxy)?;
+        let clients = Clients::new(&cfg).map_err(StartError::Proxy)?;
 
         let saved = store::load_queue(&data_dir)?;
-        let routes = store::load_routes(&data_dir)?;
+        let routes = cfg.routes.clone();
         let items: IndexMap<String, Item> = saved
             .into_iter()
             .map(|(id, s)| (id.clone(), Item::restore(id, s)))
@@ -354,17 +411,20 @@ impl Engine {
                 hosts: IndexMap::new(),
                 routes,
                 paused: false,
+                moving: false,
                 max_total: cfg.max_total.max(1),
                 dirty: false,
             }),
             limiter: Limiter::new(cfg.rate_limit_mbps * 1e6),
-            theme: Mutex::new(cfg.theme),
-            cfg,
+            config_seen: Mutex::new(config_path.as_deref().and_then(settings::stamp)),
+            cfg: RwLock::new(Arc::new(cfg)),
             config_path,
+            config_error: Mutex::new(None),
+            config_version: AtomicU64::new(0),
             data_dir,
-            download_dir,
-            direct,
-            proxy,
+            download_dir: RwLock::new(download_dir),
+            download_dir_fixed,
+            clients: RwLock::new(Arc::new(clients)),
             tokens: Tokens::default(),
             wake: Notify::new(),
             version: watch::Sender::new(0),
@@ -375,11 +435,23 @@ impl Engine {
             shutdown: CancellationToken::new(),
             _lock: lock,
         }));
+        {
+            // Failed rows from the last run get their automatic retries again.
+            let mut st = engine.lock();
+            let now = Instant::now();
+            for it in st.items.values_mut() {
+                if it.status == Status::Error {
+                    engine.plan_auto_retry(it, now);
+                }
+            }
+        }
+        engine.migrate_routes();
         for id in unprobed {
             tokio::spawn(engine.clone().probe(id));
         }
         tokio::spawn(engine.clone().scheduler());
         tokio::spawn(engine.clone().saver());
+        tokio::spawn(engine.clone().watch_config());
         Ok(engine)
     }
 
@@ -393,10 +465,24 @@ impl Engine {
         self.0.version.send_modify(|v| *v += 1);
     }
 
+    /// The settings in effect.
+    pub fn cfg(&self) -> Arc<Config> {
+        self.0.cfg.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn clients(&self) -> Arc<Clients> {
+        self.0
+            .clients
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     fn http_for(&self, host: &str, st: &State) -> Http {
-        match &self.0.proxy {
+        let clients = self.clients();
+        match &clients.proxy {
             Some(proxy) if st.routes.get(host) != Some(&Route::Direct) => proxy.clone(),
-            _ => self.0.direct.clone(),
+            _ => clients.direct.clone(),
         }
     }
 
@@ -404,20 +490,24 @@ impl Engine {
         &self.0.data_dir
     }
 
-    pub fn download_dir(&self) -> &Path {
-        &self.0.download_dir
+    pub fn download_dir(&self) -> PathBuf {
+        self.0
+            .download_dir
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The configured proxy.
-    pub fn proxy(&self) -> Option<&str> {
-        self.0.cfg.proxy()
+    pub fn proxy(&self) -> Option<String> {
+        self.cfg().proxy().map(str::to_string)
     }
 
     /// The proxy that `host` is reached through: the configured one, unless
     /// the user approved a direct route for that host.
-    pub fn proxy_for(&self, host: &str) -> Option<&str> {
+    pub fn proxy_for(&self, host: &str) -> Option<String> {
         let direct = self.lock().routes.get(host) == Some(&Route::Direct);
-        if direct { None } else { self.0.cfg.proxy() }
+        if direct { None } else { self.proxy() }
     }
 
     /// A counter that moves whenever the queue changes.
@@ -441,6 +531,24 @@ impl Engine {
                 package: package.to_string(),
             })
             .collect();
+        self.add_links(links)
+    }
+
+    /// Adds the links in copied text that point at a known host or a file;
+    /// links to ordinary web pages are left alone.
+    pub fn add_from_clipboard(&self, text: &str) -> Added {
+        let links = container::extract_urls(text)
+            .into_iter()
+            .filter(|url| hosts::is_download_link(url))
+            .map(|url| Link {
+                url,
+                name: None,
+                package: String::new(),
+            })
+            .collect::<Vec<_>>();
+        if links.is_empty() {
+            return Added::default();
+        }
         self.add_links(links)
     }
 
@@ -503,7 +611,7 @@ impl Engine {
         };
         let links = container::read(
             &http.client,
-            &self.0.cfg.endpoints.dlc_service,
+            &self.cfg().endpoints.dlc_service,
             filename,
             bytes,
         )
@@ -524,9 +632,10 @@ impl Engine {
             let http = self.http_for(&hosts::host_of(&url), &st);
             (url, http)
         };
+        let cfg = self.cfg();
         let cx = Cx {
             http: &http,
-            cfg: &self.0.cfg,
+            cfg: &cfg,
             tokens: &self.0.tokens,
         };
         let found = tokio::time::timeout(Duration::from_secs(25), hosts::probe(&cx, &url))
@@ -569,13 +678,13 @@ impl Engine {
         let mut events = Vec::new();
         {
             let mut st = self.lock();
-            if st.paused {
+            if st.paused || st.moving {
                 return;
             }
             let now = Instant::now();
+            let mut changed = self.auto_retry(&mut st, now);
             let mut running = st.items.values().filter(|i| i.running()).count();
             let ids: Vec<String> = st.items.keys().cloned().collect();
-            let mut changed = false;
             for id in ids {
                 if running >= st.max_total {
                     break;
@@ -594,7 +703,7 @@ impl Engine {
                 match self.pick(&mut st, &id, now) {
                     Some(url) => {
                         let host = hosts::host_of(&url);
-                        st.host(&host, &self.0.cfg).active += 1;
+                        st.host(&host, &self.cfg()).active += 1;
                         let cancel = CancellationToken::new();
                         let it = st.items.get_mut(&id).expect("item checked above");
                         it.host = host.clone();
@@ -652,16 +761,18 @@ impl Engine {
                 if it.error.is_empty() {
                     it.error = "all mirrors failed".into();
                 }
+                self.plan_auto_retry(it, now);
             }
             return None;
         }
         let mut best: Option<(String, f64)> = None;
+        let cfg = self.cfg();
         for m in candidates {
-            let host = st.host(&hosts::host_of(&m), &self.0.cfg);
+            let host = st.host(&hosts::host_of(&m), &cfg);
             if !host.free(now) {
                 continue;
             }
-            let score = host.score();
+            let score = host.score(now);
             if best.as_ref().is_none_or(|(_, s)| score > *s) {
                 best = Some((m, score));
             }
@@ -695,9 +806,10 @@ impl Engine {
         let entry = match pre {
             Some(entry) => entry,
             None => {
+                let cfg = self.cfg();
                 let cx = Cx {
                     http: &http,
-                    cfg: &self.0.cfg,
+                    cfg: &cfg,
                     tokens: &self.0.tokens,
                 };
                 let mut entries = or_cancel(cancel, hosts::resolve(&cx, url)).await??;
@@ -777,17 +889,19 @@ impl Engine {
             let mut st = self.lock();
             let now = Instant::now();
             {
-                let h = st.host(host, &self.0.cfg);
+                let h = st.host(host, &self.cfg());
                 h.active = h.active.saturating_sub(1);
             }
             log_outcome(id, url, &result);
             match result {
                 Ok(Outcome::Gone) => {}
                 Ok(Outcome::Done) => {
-                    st.host(host, &self.0.cfg).ok += 1;
+                    st.host(host, &self.cfg()).ok += 1;
                     if let Some(it) = st.items.get_mut(id) {
                         it.status = Status::Done;
                         it.retries = 0;
+                        it.auto_retries = 0;
+                        it.retry_at = None;
                         it.error.clear();
                         it.percent = None;
                         if it.size == 0 {
@@ -835,7 +949,7 @@ impl Engine {
                 }
                 Err(Fail::Wait { seconds, message }) => {
                     let until = now + Duration::from_secs(seconds);
-                    st.host(host, &self.0.cfg).cooldown = Some(until);
+                    st.host(host, &self.cfg()).cooldown = Some(until);
                     if let Some(it) = st.items.get_mut(id) {
                         it.status = Status::Waiting;
                         it.not_before = Some(until);
@@ -843,14 +957,18 @@ impl Engine {
                     }
                 }
                 Err(Fail::Transient(message))
-                    if st.items.get(id).is_some_and(|it| it.retries < MAX_RETRIES) =>
+                    if st
+                        .items
+                        .get(id)
+                        .is_some_and(|it| it.retries < self.cfg().resume_attempts) =>
                 {
+                    st.host(host, &self.cfg()).penalize(now);
                     let it = st.items.get_mut(id).expect("checked by the guard");
                     it.retries += 1;
-                    let wait = 2u64 << (it.retries - 1);
+                    let wait = (2u64 << (it.retries - 1).min(5)).min(60);
                     it.status = Status::Waiting;
                     it.not_before = Some(now + Duration::from_secs(wait));
-                    it.error = format!("{host}: {message}; resuming in {wait}s");
+                    it.error = format!("{host}: {message}; trying again in {wait}s");
                 }
                 Err(Fail::Error(message) | Fail::Transient(message)) => {
                     if let Some(e) = self.fail_mirror(&mut st, id, url, host, message) {
@@ -885,9 +1003,11 @@ impl Engine {
         host: &str,
         message: String,
     ) -> Option<Event> {
-        st.host(host, &self.0.cfg).fails += 1;
+        st.host(host, &self.cfg()).penalize(Instant::now());
         let it = st.items.get_mut(id)?;
         it.error = format!("{host}: {message}");
+        // The next mirror gets its own retries.
+        it.retries = 0;
         let was_manual = it.manual;
         drop_used_pre(it, url);
         if was_manual {
@@ -901,6 +1021,9 @@ impl Engine {
         } else {
             Status::Error
         };
+        if it.status == Status::Error {
+            self.plan_auto_retry(it, Instant::now());
+        }
         (it.status == Status::Error).then(|| Event::Failed {
             id: id.to_string(),
             name: display_name(it),
@@ -973,8 +1096,7 @@ impl Engine {
     }
 
     fn part_path(&self, id: &str) -> PathBuf {
-        self.0
-            .download_dir
+        self.download_dir()
             .join(".partial")
             .join(format!("{id}.part"))
     }
@@ -994,9 +1116,9 @@ impl Engine {
             .map(|i| i.package.clone())
             .ok_or(Fail::Cancelled)?;
         let out_dir = if package.is_empty() {
-            self.0.download_dir.clone()
+            self.download_dir()
         } else {
-            self.0.download_dir.join(paths::safe(&package))
+            self.download_dir().join(paths::safe(&package))
         };
         let part = self.part_path(id);
         tokio::fs::create_dir_all(&out_dir).await?;
@@ -1039,7 +1161,7 @@ impl Engine {
             let mut note = "";
             if matches!(status, 403 | 451) && http.via_proxy {
                 // Flag only: never switch to a direct connection on our own.
-                self.lock().host(host, &self.0.cfg).blocked = true;
+                self.lock().host(host, &self.cfg()).blocked = true;
                 note = " (host may block VPN IPs)";
             }
             return Err(Fail::Error(format!("HTTP {status}{note}")));
@@ -1111,7 +1233,7 @@ impl Engine {
                         }
                         (mark, mark_bytes) = (Instant::now(), done);
                     }
-                    let h = st.host(host, &self.0.cfg);
+                    let h = st.host(host, &self.cfg());
                     h.bytes += chunk.len() as u64;
                     if let Some(speed) = speed {
                         h.ema = if h.ema == 0.0 { speed } else { h.ema * 0.7 + speed * 0.3 };
@@ -1175,7 +1297,7 @@ impl Engine {
             .get(id)
             .map(|i| i.package.clone())
             .unwrap_or_default();
-        let out = self.0.download_dir.join(paths::safe(if package.is_empty() {
+        let out = self.download_dir().join(paths::safe(if package.is_empty() {
             "mega"
         } else {
             &package
@@ -1278,6 +1400,8 @@ impl Engine {
                 it.failed.clear();
                 it.not_before = None;
                 it.retries = 0;
+                it.auto_retries = 0;
+                it.retry_at = None;
             }
             ItemAction::RetryManual => {
                 if !it.running() {
@@ -1339,6 +1463,8 @@ impl Engine {
         it.manual_urls.clear();
         it.failed.clear();
         it.retries = 0;
+        it.auto_retries = 0;
+        it.retry_at = None;
         self.touch(&mut st);
         drop(st);
         self.0.wake.notify_one();
@@ -1392,83 +1518,16 @@ impl Engine {
         self.touch(&mut st);
     }
 
-    pub fn set_max_total(&self, n: usize) {
-        let n = n.max(1);
-        let mut st = self.lock();
-        st.max_total = n;
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
-        self.remember(Setting::MaxTotal(n));
-    }
-
-    /// Global speed limit in MB/s; 0 removes it.
-    pub fn set_rate_mbps(&self, mbps: f64) {
-        let mbps = if mbps.is_finite() { mbps.max(0.0) } else { 0.0 };
-        self.0.limiter.set_rate(mbps * 1e6);
-        let mut st = self.lock();
-        self.touch(&mut st);
-        drop(st);
-        self.remember(Setting::RateLimit(mbps));
-    }
-
-    pub fn set_host_limit(&self, host: &str, n: usize) {
-        let n = n.clamp(1, config::FALLBACK_LIMIT);
-        let mut st = self.lock();
-        st.host(host, &self.0.cfg).limit = n;
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
-        self.remember(Setting::HostLimit(host, n));
-    }
-
-    pub fn theme(&self) -> Theme {
-        *self.0.theme.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub fn set_theme(&self, theme: Theme) {
-        *self.0.theme.lock().unwrap_or_else(|e| e.into_inner()) = theme;
-        let mut st = self.lock();
-        self.touch(&mut st);
-        drop(st);
-        self.remember(Setting::Theme(theme));
-    }
-
-    /// The settings file, if the engine was started from one.
-    pub fn config_path(&self) -> Option<&Path> {
-        self.0.config_path.as_deref()
-    }
-
-    /// Writes a setting the user changed back to `config.toml`.
-    fn remember(&self, setting: Setting<'_>) {
-        if let Some(path) = &self.0.config_path
-            && let Err(e) = config::write_setting(path, setting)
-        {
-            tracing::error!("saving {setting:?} to {}: {e}", path.display());
-        }
-    }
-
     /// Where a finished item was saved.
     pub fn item_path(&self, id: &str) -> Option<PathBuf> {
         self.lock().items.get(id)?.path.as_ref().map(PathBuf::from)
     }
 
-    /// The user's choice of route for one host. `Direct` leaves the proxy and
-    /// uses the real address, so it is never chosen automatically.
-    pub fn set_route(&self, host: &str, route: Route) -> std::io::Result<()> {
-        let mut st = self.lock();
-        st.routes.insert(host.to_string(), route);
-        st.host(host, &self.0.cfg).blocked = false;
-        let routes = st.routes.clone();
-        self.touch(&mut st);
-        drop(st);
-        store::write(&self.0.data_dir, store::ROUTES, &routes)
-    }
-
     pub fn snapshot(&self) -> Snapshot {
         let st = self.lock();
         let now = Instant::now();
-        let has_proxy = self.0.proxy.is_some();
+        let has_proxy = self.clients().proxy.is_some();
+        let cfg = self.cfg();
         let items: Vec<ItemView> = st
             .items
             .values()
@@ -1491,6 +1550,9 @@ impl Engine {
                 wait: it
                     .not_before
                     .map_or(0, |t| t.saturating_duration_since(now).as_secs()),
+                retry_in: it
+                    .retry_at
+                    .map_or(0, |t| t.saturating_duration_since(now).as_secs().max(1)),
                 open_urls: it
                     .mirrors
                     .iter()
@@ -1531,8 +1593,16 @@ impl Engine {
             max_total: st.max_total,
             rate: self.0.limiter.rate(),
             proxy: has_proxy,
-            theme: self.theme(),
-            download_dir: self.0.download_dir.display().to_string(),
+            theme: cfg.theme,
+            watch_clipboard: cfg.watch_clipboard,
+            config_version: self.0.config_version.load(Ordering::Relaxed),
+            config_error: self
+                .0
+                .config_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            download_dir: self.download_dir().display().to_string(),
             data_dir: self.0.data_dir.display().to_string(),
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
         }

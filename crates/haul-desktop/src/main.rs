@@ -9,6 +9,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browser;
+mod clipboard;
 mod tray;
 
 use std::{
@@ -118,7 +119,7 @@ async fn start(app: &AppHandle, data_dir: PathBuf) -> Result<(), String> {
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     tracing::info!("UI and API on http://127.0.0.1:{port}/");
 
-    let browser = browser::Browser::start(app.clone(), engine.clone()).await;
+    let browser = browser::Browser::new(app.clone(), engine.clone());
     tauri::async_runtime::spawn(haul_web::serve(
         listener,
         engine.clone(),
@@ -128,6 +129,8 @@ async fn start(app: &AppHandle, data_dir: PathBuf) -> Result<(), String> {
     main_window(app, port, engine.theme()).map_err(|e| e.to_string())?;
     tray::create(app, &engine).map_err(|e| e.to_string())?;
     spawn_notifications(app.clone(), &engine);
+    spawn_theme_sync(app.clone(), &engine);
+    clipboard::spawn(app.clone(), engine.clone());
     let cwd = std::env::current_dir().unwrap_or_default();
     handle_args(app, std::env::args().skip(1), &cwd);
     Ok(())
@@ -230,6 +233,24 @@ fn handle_args(app: &AppHandle, args: impl IntoIterator<Item = String>, cwd: &Pa
     }
 }
 
+/// Keeps every window frame on the theme chosen in the app or the file.
+fn spawn_theme_sync(app: AppHandle, engine: &Engine) {
+    let mut events = engine.subscribe();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(Event::ThemeChanged(theme)) => {
+                    for window in app.webview_windows().values() {
+                        let _ = window.set_theme(window_theme(theme));
+                    }
+                }
+                Ok(_) | Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => return,
+            }
+        }
+    });
+}
+
 /// Desktop notifications for finished, failed and stuck downloads, gathered
 /// over two seconds and skipped while the window has focus.
 fn spawn_notifications(app: AppHandle, engine: &Engine) {
@@ -275,6 +296,7 @@ fn summarize(events: &[Event]) -> Vec<(String, String)> {
             Event::Finished { name, .. } => finished.push(name.as_str()),
             Event::NeedsUser { name, .. } => waiting.push(name.as_str()),
             Event::Failed { name, error, .. } => failed.push(format!("{name}: {error}")),
+            Event::ThemeChanged(_) => {}
         }
     }
     let list = |names: &[&str]| {

@@ -12,12 +12,12 @@ Bodies are JSON. Errors come back as `{"error": "…"}` with a 4xx or 5xx status
 
 ## State
 
-| Method and path   | Does                                                                                                                                                                                            |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/state`  | The whole state: `items`, `hosts`, `paused`, `speed` (bytes/s), `max_total`, `rate` (bytes/s cap, 0 = none), `proxy`, `theme`, `download_dir`, `data_dir`, `config_file`, `desktop`, `version`. |
-| `GET /api/events` | Server-sent events: a `state` event with the same JSON right away, after every change (bursts merged) and at least once a second.                                                               |
+| Method and path   | Does                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /api/state`  | The whole state: `items`, `hosts`, `paused`, `speed` (bytes/s), `max_total`, `rate` (bytes/s cap, 0 = none), `proxy`, `theme`, `watch_clipboard`, `config_version` (moves when a setting changes), `config_error` (why the settings file is not in effect), `download_dir`, `data_dir`, `config_file`, `desktop`, `version`. Account secrets are never part of it. |
+| `GET /api/events` | Server-sent events: a `state` event with the same JSON right away, after every change (bursts merged) and at least once a second.                                                                                                                                                                                                                                  |
 
-An item has `id`, `name`, `package`, `status` (`checking`, `queued`, `resolving`, `downloading`, `waiting`, `paused`, `captcha`, `done`, `error`), `error`, `size` and `done` (bytes, 0 when unknown), `speed`, `percent` (from external downloaders), `host`, `mirrors` (host names), `wait` (seconds), `open_urls` (pages that need a person) and `path` (where a finished file went).
+An item has `id`, `name`, `package`, `status` (`checking`, `queued`, `resolving`, `downloading`, `waiting`, `paused`, `captcha`, `done`, `error`), `error`, `size` and `done` (bytes, 0 when unknown), `speed`, `percent` (from external downloaders), `host`, `mirrors` (host names), `wait` (seconds), `retry_in` (seconds until a failed item is tried again on its own, 0 when never), `open_urls` (pages that need a person) and `path` (where a finished file went).
 
 ## Adding
 
@@ -39,10 +39,19 @@ The UI also opens its Add dialog, filled in, at `/#/add/<url-encoded links>`; no
 
 ## Hosts and settings
 
-| Method and path                               | Body                                                  | Does                                                                                                           |
-| --------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `POST /api/host/{name}/limit/{n}`             |                                                       | Files downloaded from this host at once (1 to 32); saved to `config.toml`.                                     |
-| `POST /api/host/{name}/route/{direct\|proxy}` |                                                       | The user's route choice for a host when a proxy is configured; saved to `routes.json`.                         |
-| `POST /api/global/{action}`                   |                                                       | `pause` (also pauses running transfers), `resume`, `retry_failed`, `clear_done`.                               |
-| `POST /api/settings`                          | `{"max_total": 8, "rate_mbps": 2.5, "theme": "dark"}` | Any subset; each is applied at once and saved to `config.toml`.                                                |
-| `POST /api/open/{downloads\|data\|config}`    |                                                       | Opens the download folder, the data folder, or `config.toml` (created from a commented template when missing). |
+| Method and path                               | Body | Does                                                                                                           |
+| --------------------------------------------- | ---- | -------------------------------------------------------------------------------------------------------------- |
+| `POST /api/host/{name}/limit/{n}`             |      | Files downloaded from this host at once (1 to 32); saved under `[limits]` in `config.toml`.                    |
+| `POST /api/host/{name}/route/{direct\|proxy}` |      | The user's route choice for a host when a proxy is configured; saved under `[routes]` in `config.toml`.        |
+| `POST /api/global/{action}`                   |      | `pause` (also pauses running transfers), `resume`, `retry_failed`, `clear_done`.                               |
+| `POST /api/open/{downloads\|data\|config}`    |      | Opens the download folder, the data folder, or `config.toml` (created from a commented template when missing). |
+
+## Settings
+
+Settings use the names of `config.toml`; each change is checked, written to the file and applied at once.
+
+| Method and path                        | Body                                                     | Does                                                                                                                                                                                                                                                                                                                  |
+| -------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/settings`                    |                                                          | Every setting, account secrets included, plus `from_env` (keys an environment variable sets, which cannot change here), `download_dir_fixed`, `config_file` and `error`.                                                                                                                                              |
+| `POST /api/settings`                   | `{"max_total": 8, "theme": "dark", "1fichier_key": "…"}` | Any subset of `download_dir`, `max_total`, `rate_limit_mbps`, `theme`, `watch_clipboard`, `resume_attempts`, `retry_failed_minutes`, `proxy`, `user_agent`, `megatools` and the account keys. An empty text removes the key, which brings back its default. Answers 400 with the reason when a value is not accepted. |
+| `POST /api/settings/download-dir/pick` |                                                          | Desktop app only (501 elsewhere): asks for a folder in the system's dialog and moves the downloads there, unfinished ones included. Answers `{"cancelled": true}` when the user cancels.                                                                                                                              |

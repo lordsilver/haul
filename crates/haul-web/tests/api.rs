@@ -203,8 +203,11 @@ async fn adds_imports_and_controls_items() {
     );
     assert_eq!(s.state().await["items"][0]["status"], "paused");
 
-    s.post("/api/settings", json!({"max_total": 3, "rate_mbps": 2.5}))
-        .await;
+    s.post(
+        "/api/settings",
+        json!({"max_total": 3, "rate_limit_mbps": 2.5}),
+    )
+    .await;
     s.post("/api/host/a.example/limit/0", json!({})).await;
     let state = s.state().await;
     assert_eq!(
@@ -257,14 +260,55 @@ async fn streams_state_events() {
 }
 
 #[tokio::test]
-async fn settings_theme_and_places() {
+async fn settings_round_trip_and_secrets_stay_out_of_the_stream() {
     let s = start().await;
     assert_eq!(s.state().await["theme"], "system");
-    s.post("/api/settings", json!({"theme": "dark"})).await;
-    assert_eq!(s.state().await["theme"], "dark");
-    let bad = s.post("/api/settings", json!({"theme": "purple"})).await;
-    assert_eq!(bad.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let ok = s
+        .post(
+            "/api/settings",
+            json!({"theme": "dark", "1fichier_key": "s3cret", "watch_clipboard": true}),
+        )
+        .await;
+    assert_eq!(ok.status(), StatusCode::OK);
+    let state = s.state().await;
+    assert_eq!(
+        (state["theme"].as_str(), state["watch_clipboard"].as_bool()),
+        (Some("dark"), Some(true))
+    );
+    assert!(
+        !state.to_string().contains("s3cret"),
+        "secrets never ride the state stream"
+    );
 
+    let settings: Value = s
+        .http
+        .get(format!("{}/api/settings", s.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["accounts"]["1fichier_key"], "s3cret");
+    assert_eq!(settings["theme"], "dark");
+
+    for bad in [
+        json!({"theme": "purple"}),
+        json!({"max_total": "many"}),
+        json!({"proxy": "ftp://nope"}),
+        json!({"download_dir": "relative/path"}),
+        json!({"no_such_setting": 1}),
+    ] {
+        let r = s.post("/api/settings", bad.clone()).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let picker = s.post("/api/settings/download-dir/pick", json!({})).await;
+    assert_eq!(picker.status(), StatusCode::NOT_IMPLEMENTED);
+}
+
+#[tokio::test]
+async fn places_and_reveal_are_limited_to_the_app() {
+    let s = start().await;
     // Only the app's own places open, and nothing a caller names.
     assert_eq!(
         s.post("/api/open/etc", json!({})).await.status(),

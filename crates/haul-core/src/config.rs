@@ -1,8 +1,13 @@
-//! User settings: `config.toml` in the data directory, with `HAUL_*`
-//! environment variables for the proxy and account secrets.
+//! User settings, all of them in `config.toml` in the data directory.
+//!
+//! The app writes a key back when the user changes it in the GUI and reloads
+//! the file when it changes on disk, so the GUI and a text editor are two ways
+//! to the same settings. `HAUL_*` environment variables override some keys;
+//! the GUI shows those as set by the environment.
 
 use std::{
     collections::BTreeMap,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -14,21 +19,35 @@ pub const FILE: &str = "config.toml";
 /// User agent for every request a host does not get a browser's for.
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0";
 
-#[derive(Debug, Clone, Deserialize)]
+/// Per-host parallel downloads when `limits` does not name the host.
+pub const FALLBACK_LIMIT: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Where finished files go; `--dir` overrides it.
+    /// Where finished files go.
     pub download_dir: Option<PathBuf>,
     /// Files downloaded at the same time.
     pub max_total: usize,
-    /// Global speed limit in MB/s at start-up; 0 means none.
+    /// Global speed limit in MB/s; 0 means none.
     pub rate_limit_mbps: f64,
+    pub theme: Theme,
+    /// Add links copied anywhere (desktop app).
+    pub watch_clipboard: bool,
+    /// Automatic retries of a mirror after a dropped connection or a
+    /// network error, before it counts as failed.
+    pub resume_attempts: u32,
+    /// Minutes before a failed download is tried again on its own (at most
+    /// three times); 0 turns that off.
+    pub retry_failed_minutes: u64,
     /// Proxy every host goes through unless the user approves a direct route
     /// for it, such as `socks5://user:pass@host:1080`.
     pub proxy: Option<String>,
     pub user_agent: String,
     /// Parallel downloads per host; unlisted hosts get [`FALLBACK_LIMIT`].
     pub limits: BTreeMap<String, usize>,
+    /// The user's route choice per host when a proxy is configured.
+    pub routes: BTreeMap<String, Route>,
     #[serde(rename = "1fichier_key")]
     pub onefichier_key: Option<String>,
     pub pixeldrain_key: Option<String>,
@@ -39,13 +58,12 @@ pub struct Config {
     pub gofile_token: Option<String>,
     /// `megatools` executable for mega.nz; looked up on `PATH` when unset.
     pub megatools: Option<PathBuf>,
-    pub theme: Theme,
     #[serde(skip)]
     pub endpoints: Endpoints,
+    /// Keys an environment variable set, with the variable's name.
+    #[serde(skip)]
+    pub from_env: BTreeMap<&'static str, &'static str>,
 }
-
-/// Per-host parallel downloads when `limits` does not name the host.
-pub const FALLBACK_LIMIT: usize = 32;
 
 impl Default for Config {
     fn default() -> Self {
@@ -53,9 +71,14 @@ impl Default for Config {
             download_dir: None,
             max_total: 8,
             rate_limit_mbps: 0.0,
+            theme: Theme::System,
+            watch_clipboard: false,
+            resume_attempts: 3,
+            retry_failed_minutes: 15,
             proxy: None,
             user_agent: DEFAULT_USER_AGENT.into(),
             limits: BTreeMap::new(),
+            routes: BTreeMap::new(),
             onefichier_key: None,
             pixeldrain_key: None,
             rapidgator_user: None,
@@ -64,46 +87,86 @@ impl Default for Config {
             nitroflare_key: None,
             gofile_token: None,
             megatools: None,
-            theme: Theme::System,
             endpoints: Endpoints::default(),
+            from_env: BTreeMap::new(),
         }
     }
 }
 
+/// Account keys, by their name in the file and their environment variable.
+pub const ACCOUNTS: [(&str, &str); 7] = [
+    ("1fichier_key", "HAUL_1FICHIER_KEY"),
+    ("pixeldrain_key", "HAUL_PIXELDRAIN_KEY"),
+    ("rapidgator_user", "HAUL_RAPIDGATOR_USER"),
+    ("rapidgator_pass", "HAUL_RAPIDGATOR_PASS"),
+    ("nitroflare_user", "HAUL_NITROFLARE_USER"),
+    ("nitroflare_key", "HAUL_NITROFLARE_KEY"),
+    ("gofile_token", "HAUL_GOFILE_TOKEN"),
+];
+
 impl Config {
-    /// Reads `path` (a missing file means defaults), then fills unset secrets
-    /// from `HAUL_<KEY>` and lets `HAUL_PROXY` replace the proxy.
+    /// Reads `path` (a missing file means defaults), then fills unset account
+    /// keys from `HAUL_<KEY>` and lets `HAUL_PROXY` replace the proxy.
     pub fn load(path: &Path) -> Result<Self, String> {
-        let mut cfg: Config = match std::fs::read_to_string(path) {
-            Ok(text) => toml::from_str(&text).map_err(|e| e.to_string())?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        let mut cfg = Self::parse(&match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(e.to_string()),
-        };
+        })?;
         cfg.apply_env(|k| std::env::var(k).ok());
         Ok(cfg)
     }
 
+    /// Parses the file's text; an error names the line it is on.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        toml::from_str(text).map_err(|e| e.to_string().trim().to_string())
+    }
+
     fn apply_env(&mut self, var: impl Fn(&str) -> Option<String>) {
         let get = |k: &str| var(k).filter(|v| !v.is_empty());
-        for (slot, key) in [
-            (&mut self.onefichier_key, "HAUL_1FICHIER_KEY"),
-            (&mut self.pixeldrain_key, "HAUL_PIXELDRAIN_KEY"),
-            (&mut self.rapidgator_user, "HAUL_RAPIDGATOR_USER"),
-            (&mut self.rapidgator_pass, "HAUL_RAPIDGATOR_PASS"),
-            (&mut self.nitroflare_user, "HAUL_NITROFLARE_USER"),
-            (&mut self.nitroflare_key, "HAUL_NITROFLARE_KEY"),
-            (&mut self.gofile_token, "HAUL_GOFILE_TOKEN"),
-        ] {
-            if secret(slot).is_none() {
-                *slot = get(key);
+        for (key, variable) in ACCOUNTS {
+            let slot = self.account_mut(key).expect("listed account");
+            if secret(slot).is_none()
+                && let Some(value) = get(variable)
+            {
+                *slot = Some(value);
+                self.from_env.insert(key, variable);
             }
         }
         if let Some(proxy) = get("HAUL_PROXY") {
             self.proxy = Some(proxy);
+            self.from_env.insert("proxy", "HAUL_PROXY");
         }
     }
 
-    /// Parallel downloads allowed for `host` before the user changes it.
+    /// An account key's value, by its name in the file.
+    pub fn account(&self, key: &str) -> Option<&Option<String>> {
+        Some(match key {
+            "1fichier_key" => &self.onefichier_key,
+            "pixeldrain_key" => &self.pixeldrain_key,
+            "rapidgator_user" => &self.rapidgator_user,
+            "rapidgator_pass" => &self.rapidgator_pass,
+            "nitroflare_user" => &self.nitroflare_user,
+            "nitroflare_key" => &self.nitroflare_key,
+            "gofile_token" => &self.gofile_token,
+            _ => return None,
+        })
+    }
+
+    pub fn account_mut(&mut self, key: &str) -> Option<&mut Option<String>> {
+        Some(match key {
+            "1fichier_key" => &mut self.onefichier_key,
+            "pixeldrain_key" => &mut self.pixeldrain_key,
+            "rapidgator_user" => &mut self.rapidgator_user,
+            "rapidgator_pass" => &mut self.rapidgator_pass,
+            "nitroflare_user" => &mut self.nitroflare_user,
+            "nitroflare_key" => &mut self.nitroflare_key,
+            "gofile_token" => &mut self.gofile_token,
+            _ => return None,
+        })
+    }
+
+    /// Parallel downloads allowed for `host`.
     pub fn limit_for(&self, host: &str) -> usize {
         self.limits
             .get(host)
@@ -138,43 +201,76 @@ impl Theme {
     }
 }
 
-/// A setting the app changes and writes back to `config.toml`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Setting<'a> {
-    MaxTotal(usize),
-    RateLimit(f64),
-    Theme(Theme),
-    HostLimit(&'a str, usize),
+/// How a host is reached when a proxy is configured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Route {
+    Proxy,
+    Direct,
 }
 
-/// Writes one setting into the file at `path` (starting from [`TEMPLATE`]
-/// when there is none), keeping everything else, comments included.
-pub fn write_setting(path: &Path, setting: Setting<'_>) -> std::io::Result<()> {
+impl Route {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Route::Proxy => "proxy",
+            Route::Direct => "direct",
+        }
+    }
+}
+
+/// Sets one key in the file at `path`, or removes it with `None`, keeping
+/// everything else, comments included. A missing file starts from
+/// [`TEMPLATE`]. `key` is a top-level key or `[table, key]`.
+pub fn write_key(path: &Path, key: &[&str], value: Option<toml_edit::Value>) -> io::Result<()> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => TEMPLATE.to_string(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => TEMPLATE.to_string(),
         Err(e) => return Err(e),
     };
-    let mut doc: toml_edit::DocumentMut = text.parse().map_err(std::io::Error::other)?;
-    let (key, value) = match setting {
-        Setting::MaxTotal(n) => ("max_total", toml_edit::Value::from(n as i64)),
-        Setting::RateLimit(mbps) => ("rate_limit_mbps", toml_edit::Value::from(mbps)),
-        Setting::Theme(theme) => ("theme", toml_edit::Value::from(theme.as_str())),
-        Setting::HostLimit(host, n) => {
-            if !doc.contains_table("limits") {
-                doc["limits"] = toml_edit::table();
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(io::Error::other)?;
+    match (key, value) {
+        ([name], Some(value)) => {
+            if !doc.contains_key(name)
+                && let Some(enabled) = enable_commented(&text, name, &value)
+                && let Ok(parsed) = enabled.parse()
+            {
+                doc = parsed;
+            } else {
+                doc[*name] = toml_edit::Item::Value(value);
             }
-            doc["limits"][host] = toml_edit::value(n as i64);
-            return write_atomic(path, &doc.to_string());
         }
-    };
-    if !doc.contains_key(key)
-        && let Some(enabled) = enable_commented(&text, key, &value)
-        && let Ok(parsed) = enabled.parse()
-    {
-        doc = parsed;
-    } else {
-        doc[key] = toml_edit::Item::Value(value);
+        ([name], None) => {
+            // Commenting the line out keeps the explanation above it.
+            if let Some(disabled) = disable_line(&text, name)
+                && let Ok(parsed) = disabled.parse()
+            {
+                doc = parsed;
+            } else {
+                doc.remove(name);
+            }
+        }
+        ([table, name], Some(value)) => {
+            if !doc.contains_table(table)
+                && let Some(enabled) = enable_table(&text, table, name, &value)
+                && let Ok(parsed) = enabled.parse()
+            {
+                doc = parsed;
+            } else {
+                if !doc.contains_table(table) {
+                    doc[*table] = toml_edit::table();
+                }
+                doc[*table][*name] = toml_edit::Item::Value(value);
+            }
+        }
+        ([table, name], None) => {
+            if let Some(t) = doc
+                .get_mut(table)
+                .and_then(toml_edit::Item::as_table_like_mut)
+            {
+                t.remove(name);
+            }
+        }
+        _ => return Err(io::Error::other(format!("bad settings key {key:?}"))),
     }
     write_atomic(path, &doc.to_string())
 }
@@ -205,29 +301,77 @@ fn enable_commented(text: &str, key: &str, value: &toml_edit::Value) -> Option<S
     found.then_some(out)
 }
 
-fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+/// Turns the commented `# [table]` header into a real one with `name = value`
+/// right below it, so the table stays where the template explains it.
+fn enable_table(text: &str, table: &str, name: &str, value: &toml_edit::Value) -> Option<String> {
+    let header = format!("[{table}]");
+    let mut out = String::with_capacity(text.len() + 64);
+    let mut found = false;
+    for line in text.split_inclusive('\n') {
+        let commented = line
+            .trim_start()
+            .strip_prefix('#')
+            .is_some_and(|rest| rest.trim() == header);
+        if !found && commented {
+            let key = toml_edit::Key::new(name);
+            out.push_str(&format!(
+                "{header}\n{} = {}\n",
+                key.display_repr(),
+                value.to_string().trim()
+            ));
+            found = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    found.then_some(out)
+}
+
+/// Comments out the top-level `key = …` line.
+fn disable_line(text: &str, key: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len() + 2);
+    let mut found = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if !found && trimmed.starts_with('[') {
+            return None;
+        }
+        let set = trimmed
+            .strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with('='));
+        if !found && set {
+            out.push_str("# ");
+            out.push_str(trimmed);
+            found = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+    found.then_some(out)
+}
+
+fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
 }
 
 /// Creates `path` from [`TEMPLATE`] unless it exists.
-pub fn ensure_file(path: &Path) -> std::io::Result<()> {
+pub fn ensure_file(path: &Path) -> io::Result<()> {
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
     {
-        Ok(mut f) => std::io::Write::write_all(&mut f, TEMPLATE.as_bytes()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Ok(mut f) => io::Write::write_all(&mut f, TEMPLATE.as_bytes()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(e),
     }
 }
 
 /// A commented `config.toml` naming every key.
-pub const TEMPLATE: &str = r#"# Haul settings. The app writes parallel files, the speed limit, host
-# slots and the theme back here when you change them; restart Haul after
-# editing anything else.
+pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be changed in the app, which
+# writes it back to this file; changes saved here apply within a second.
 
 # Folder for finished downloads (default: Downloads\Haul).
 # download_dir = "D:/Downloads"
@@ -240,6 +384,16 @@ pub const TEMPLATE: &str = r#"# Haul settings. The app writes parallel files, th
 
 # Appearance: "system", "light" or "dark".
 # theme = "system"
+
+# Add links copied anywhere (desktop app).
+# watch_clipboard = false
+
+# Retries of a mirror after a dropped connection or a network error.
+# resume_attempts = 3
+
+# Minutes before a failed download is tried again on its own (up to three
+# times); 0 turns that off.
+# retry_failed_minutes = 15
 
 # Every host goes through this proxy unless you allow a direct route for it
 # in Hosts. HAUL_PROXY overrides it.
@@ -258,9 +412,16 @@ pub const TEMPLATE: &str = r#"# Haul settings. The app writes parallel files, th
 # megatools for mega.nz links (default: found on PATH).
 # megatools = "C:/Tools/megatools/megatools.exe"
 
-# Parallel downloads per host; unlisted hosts get 32.
+# Sent to hosts with every request.
+# user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0"
+
+# Files downloaded from one host at the same time; unlisted hosts get 32.
 # [limits]
 # "1fichier.com" = 1
+
+# Hosts allowed to bypass the proxy ("direct"), or kept on it ("proxy").
+# [routes]
+# "example.com" = "direct"
 "#;
 
 /// A configured, non-empty value.
@@ -269,7 +430,7 @@ pub fn secret(v: &Option<String>) -> Option<&str> {
 }
 
 /// Where each host's API lives. Only tests point these elsewhere.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Endpoints {
     pub pixeldrain: String,
     pub gofile: String,
@@ -300,84 +461,34 @@ mod tests {
 
     #[test]
     fn parses_every_key() {
-        let cfg: Config = toml::from_str(
+        let cfg = Config::parse(
             r#"
             download_dir = "D:/Downloads"
             max_total = 4
             rate_limit_mbps = 2.5
+            watch_clipboard = true
+            retry_failed_minutes = 0
             proxy = "socks5://u:p@host:1080"
             1fichier_key = "k1"
-            pixeldrain_key = "k2"
-            gofile_token = "t"
             [limits]
             "1fichier.com" = 1
+            [routes]
+            "a.example" = "direct"
             "#,
         )
         .unwrap();
-        assert_eq!(cfg.max_total, 4);
+        assert_eq!(
+            (cfg.max_total, cfg.watch_clipboard, cfg.retry_failed_minutes),
+            (4, true, 0)
+        );
         assert_eq!(cfg.onefichier_key.as_deref(), Some("k1"));
         assert_eq!(cfg.limit_for("1fichier.com"), 1);
         assert_eq!(cfg.limit_for("other.example"), FALLBACK_LIMIT);
+        assert_eq!(cfg.routes.get("a.example"), Some(&Route::Direct));
         assert_eq!(cfg.user_agent, DEFAULT_USER_AGENT);
-        assert!(
-            toml::from_str::<Config>("max_totl = 3").is_err(),
-            "typos are reported"
-        );
-    }
-
-    #[test]
-    fn template_parses_and_settings_write_back() {
-        let parsed: Config = toml::from_str(TEMPLATE).unwrap();
-        assert_eq!(parsed.max_total, Config::default().max_total);
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FILE);
-        std::fs::write(
-            &path,
-            "# mine\nproxy = \"socks5://h:1\" # keep\n[limits]\n\"a.example\" = 2\n",
-        )
-        .unwrap();
-        write_setting(&path, Setting::MaxTotal(3)).unwrap();
-        write_setting(&path, Setting::RateLimit(1.5)).unwrap();
-        write_setting(&path, Setting::Theme(Theme::Dark)).unwrap();
-        write_setting(&path, Setting::HostLimit("b.example", 1)).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            text.starts_with("# mine") && text.contains("# keep"),
-            "{text}"
-        );
-        let cfg: Config = toml::from_str(&text).unwrap();
-        assert_eq!(
-            (cfg.max_total, cfg.rate_limit_mbps, cfg.theme),
-            (3, 1.5, Theme::Dark)
-        );
-        assert_eq!(
-            (cfg.limit_for("a.example"), cfg.limit_for("b.example")),
-            (2, 1)
-        );
-
-        let fresh = dir.path().join("fresh.toml");
-        write_setting(&fresh, Setting::Theme(Theme::Light)).unwrap();
-        write_setting(&fresh, Setting::MaxTotal(5)).unwrap();
-        let text = std::fs::read_to_string(&fresh).unwrap();
-        assert!(
-            text.starts_with("# Haul settings"),
-            "the header stays on top: {text}"
-        );
-        assert!(
-            text.contains("# Files downloaded at the same time.\nmax_total = 5\n"),
-            "{text}"
-        );
-        assert!(text.contains("\ntheme = \"light\"\n"), "{text}");
-        let cfg: Config = toml::from_str(&text).unwrap();
-        assert_eq!((cfg.theme, cfg.max_total), (Theme::Light, 5));
-        ensure_file(&fresh).unwrap();
-        assert!(
-            std::fs::read_to_string(&fresh)
-                .unwrap()
-                .contains("theme = \"light\""),
-            "never overwritten"
-        );
+        let typo = Config::parse("max_totl = 3").unwrap_err();
+        assert!(typo.contains("max_totl"), "{typo}");
+        assert_eq!(Config::parse(TEMPLATE).unwrap(), Config::default());
     }
 
     #[test]
@@ -396,5 +507,82 @@ mod tests {
         assert_eq!(cfg.pixeldrain_key.as_deref(), Some("file"));
         assert_eq!(cfg.onefichier_key.as_deref(), Some("env1f"));
         assert_eq!(cfg.proxy(), Some("socks5://env:2"));
+        assert_eq!(
+            cfg.from_env.into_iter().collect::<Vec<_>>(),
+            [
+                ("1fichier_key", "HAUL_1FICHIER_KEY"),
+                ("proxy", "HAUL_PROXY")
+            ]
+        );
+    }
+
+    #[test]
+    fn keys_are_written_back_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        std::fs::write(
+            &path,
+            "# mine\nproxy = \"socks5://h:1\" # keep\nmax_total = 2\n[limits]\n\"a.example\" = 2\n",
+        )
+        .unwrap();
+        write_key(&path, &["max_total"], Some(3.into())).unwrap();
+        write_key(&path, &["rate_limit_mbps"], Some(1.5.into())).unwrap();
+        write_key(&path, &["theme"], Some("dark".into())).unwrap();
+        write_key(&path, &["limits", "b.example"], Some(1.into())).unwrap();
+        write_key(&path, &["routes", "c.example"], Some("direct".into())).unwrap();
+        write_key(&path, &["proxy"], None).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.starts_with("# mine\n# proxy = "),
+            "cleared, not deleted: {text}"
+        );
+        assert!(
+            text.contains("\nmax_total = 3\n"),
+            "changed in place: {text}"
+        );
+        let cfg = Config::parse(&text).unwrap();
+        assert_eq!(
+            (cfg.max_total, cfg.rate_limit_mbps, cfg.theme),
+            (3, 1.5, Theme::Dark)
+        );
+        assert_eq!(
+            (cfg.limit_for("a.example"), cfg.limit_for("b.example")),
+            (2, 1)
+        );
+        assert_eq!(cfg.routes.get("c.example"), Some(&Route::Direct));
+        assert_eq!(cfg.proxy, None);
+        write_key(&path, &["routes", "c.example"], None).unwrap();
+        assert!(Config::load(&path).unwrap().routes.is_empty());
+
+        // A new file starts from the template; values land under their comments.
+        let fresh = dir.path().join("fresh.toml");
+        write_key(&fresh, &["routes", "127.0.0.1"], Some("direct".into())).unwrap();
+        write_key(&fresh, &["theme"], Some("light".into())).unwrap();
+        write_key(&fresh, &["max_total"], Some(5.into())).unwrap();
+        write_key(&fresh, &["1fichier_key"], Some("k".into())).unwrap();
+        let text = std::fs::read_to_string(&fresh).unwrap();
+        assert!(
+            text.starts_with("# Haul settings"),
+            "the header stays on top: {text}"
+        );
+        assert!(
+            text.contains("# Files downloaded at the same time.\nmax_total = 5\n"),
+            "{text}"
+        );
+        assert!(text.contains("\ntheme = \"light\"\n"), "{text}");
+        assert!(text.contains("\n1fichier_key = \"k\"\n"), "{text}");
+        assert!(
+            text.contains("\n[routes]\n\"127.0.0.1\" = \"direct\"\n"),
+            "{text}"
+        );
+        let cfg = Config::parse(&text).unwrap();
+        assert_eq!((cfg.theme, cfg.max_total), (Theme::Light, 5));
+        ensure_file(&fresh).unwrap();
+        assert!(
+            std::fs::read_to_string(&fresh)
+                .unwrap()
+                .contains("theme = \"light\""),
+            "never overwritten"
+        );
     }
 }

@@ -62,8 +62,12 @@ pub(crate) struct Item {
     pub percent: Option<f32>,
     pub host: String,
     pub not_before: Option<Instant>,
-    /// Resumes after broken transfers since the last success.
+    /// Retries of the current mirror after network trouble.
     pub retries: u32,
+    /// Automatic retries of the whole download after it failed.
+    pub auto_retries: u32,
+    /// When the next automatic retry happens.
+    pub retry_at: Option<Instant>,
     /// Where the finished file went.
     pub path: Option<String>,
     /// Cancels the running attempt; present exactly while one runs.
@@ -92,6 +96,8 @@ impl Item {
             host: String::new(),
             not_before: None,
             retries: 0,
+            auto_retries: 0,
+            retry_at: None,
             path: None,
             task: None,
         }

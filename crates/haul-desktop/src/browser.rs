@@ -6,9 +6,9 @@
 //! With a proxy configured, the window goes through it too, by way of the
 //! local bridge, because browser engines cannot pass proxy credentials.
 
-use std::{collections::BTreeMap, net::SocketAddr};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Mutex};
 
-use haul_core::{Engine, Theme, bridge, hosts};
+use haul_core::{Engine, bridge::Bridge, hosts};
 use haul_web::Desktop;
 use tauri::{
     AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder, Wry,
@@ -20,28 +20,30 @@ use crate::notify;
 pub struct Browser {
     app: AppHandle,
     engine: Engine,
-    /// The local bridge to the proxy, when one is configured.
-    bridge: Option<SocketAddr>,
+    /// The local bridge to the proxy, started the first time a page needs it.
+    bridge: Mutex<Option<Bridge>>,
 }
 
 impl Browser {
-    pub async fn start(app: AppHandle, engine: Engine) -> Self {
-        let bridge = match engine.proxy() {
-            Some(proxy) => match bridge::start(proxy).await {
-                Ok(addr) => Some(addr),
-                // Without the bridge, pages that need the proxy cannot be opened here.
-                Err(e) => {
-                    tracing::warn!("proxy bridge: {e}");
-                    None
-                }
-            },
-            None => None,
-        };
+    pub fn new(app: AppHandle, engine: Engine) -> Self {
         Self {
             app,
             engine,
-            bridge,
+            bridge: Mutex::new(None),
         }
+    }
+
+    /// The bridge's address, pointed at the proxy currently configured.
+    fn bridge_to(&self, proxy: &str) -> Result<SocketAddr, String> {
+        let mut slot = self.bridge.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            *slot = Some(Bridge::start().map_err(|e| format!("proxy bridge: {e}"))?);
+        }
+        let bridge = slot.as_ref().expect("started above");
+        bridge
+            .set_upstream(Some(proxy))
+            .map_err(|e| format!("proxy bridge: {e}"))?;
+        Ok(bridge.addr())
     }
 }
 
@@ -55,13 +57,12 @@ impl Desktop for Browser {
         }
         let page: Url = url.parse().map_err(|e| format!("{url}: {e}"))?;
         let host = hosts::host_of(url);
-        let proxied = self.engine.proxy_for(&host).is_some();
-        if proxied && self.bridge.is_none() {
-            return Err(
-                "the proxy bridge is not running, so this page would leave the proxy; see haul.log"
-                    .into(),
-            );
-        }
+        // Pages for a proxied host go through the same proxy as its downloads.
+        let bridge = match self.engine.proxy_for(&host) {
+            Some(proxy) => Some(self.bridge_to(&proxy)?),
+            None => None,
+        };
+        let proxied = bridge.is_some();
         // One browser profile per route, so pages opened through the proxy
         // never share cookies or settings with direct ones.
         let profile =
@@ -85,7 +86,7 @@ impl Desktop for Browser {
             .data_directory(profile)
             .on_download(move |_, event| on_download.on_download(event))
             .on_new_window(move |url, _| capture.on_popup(url));
-        if let (true, Some(addr)) = (proxied, self.bridge) {
+        if let Some(addr) = bridge {
             builder = builder.proxy_url(format!("socks5://{addr}").parse().expect("valid URL"));
             // WebRTC could otherwise reveal the real address to the page.
             #[cfg(windows)]
@@ -103,10 +104,18 @@ impl Desktop for Browser {
         Ok(())
     }
 
-    fn set_theme(&self, theme: Theme) {
-        for window in self.app.webview_windows().values() {
-            let _ = window.set_theme(crate::window_theme(theme));
+    fn pick_folder(&self, start: &std::path::Path) -> Option<std::path::PathBuf> {
+        use tauri_plugin_dialog::DialogExt;
+        let mut dialog = self
+            .app
+            .dialog()
+            .file()
+            .set_title("Download folder")
+            .set_directory(start);
+        if let Some(window) = self.app.get_webview_window(crate::MAIN) {
+            dialog = dialog.set_parent(&window);
         }
+        dialog.blocking_pick_folder()?.into_path().ok()
     }
 }
 

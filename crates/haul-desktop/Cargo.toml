@@ -10,6 +10,7 @@ repository.workspace = true
 tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
+arboard = { version = "3.6.1", default-features = false }
 haul-core = { version = "0.1.0", path = "../haul-core" }
 haul-web = { version = "0.1.0", path = "../haul-web" }
 open = "5.4.4"
@@ -20,3 +21,6 @@ tauri-plugin-single-instance = "2.5.3"
 tokio = { version = "1.53.2", features = ["fs", "net", "sync", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_DataExchange"] }

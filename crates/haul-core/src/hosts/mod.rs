@@ -52,6 +52,9 @@ pub enum ResolveError {
     /// The host needs a person (captcha or browser step).
     #[error("{0}")]
     NeedsUser(String),
+    /// The host could not be reached; worth trying again shortly.
+    #[error("{0}")]
+    Network(String),
     #[error("{0}")]
     Failed(String),
 }
@@ -64,9 +67,47 @@ impl ResolveError {
 
 impl From<reqwest::Error> for ResolveError {
     fn from(e: reqwest::Error) -> Self {
+        let network = e.is_connect() || e.is_timeout();
         // The URL can carry account credentials in its query.
-        Self::Failed(e.without_url().to_string())
+        let message = e.without_url().to_string();
+        if network {
+            Self::Network(message)
+        } else {
+            Self::Failed(message)
+        }
     }
+}
+
+/// Hosts with a resolver of their own.
+const KNOWN_HOSTS: [&str; 9] = [
+    "pixeldrain.com",
+    "gofile.io",
+    "buzzheavier.com",
+    "1fichier.com",
+    "rapidgator.net",
+    "nitroflare.com",
+    "mega.nz",
+    "mega.co.nz",
+    "fileditchfiles.st",
+];
+
+/// Whether a link is worth adding when it shows up on the clipboard: a host
+/// Haul knows, or a link to a file rather than to a web page.
+pub fn is_download_link(url: &str) -> bool {
+    if KNOWN_HOSTS.contains(&host_of(url).as_str()) {
+        return true;
+    }
+    guess_name(url).is_some_and(|name| {
+        let ext = name
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        !matches!(
+            ext.as_str(),
+            "html" | "htm" | "shtml" | "xhtml" | "php" | "asp" | "aspx" | "jsp" | "cgi"
+        )
+    })
 }
 
 /// HTTP clients for one route (direct or through the proxy). Both share a
@@ -264,6 +305,18 @@ mod tests {
         );
         assert_eq!(guess_name("https://h.example/d/abc123"), None);
         assert_eq!(guess_name("https://1fichier.com/?abc&af=1"), None);
+    }
+
+    #[test]
+    fn clipboard_links() {
+        assert!(is_download_link("https://1fichier.com/?abc"));
+        assert!(is_download_link("https://www.pixeldrain.com/u/x"));
+        assert!(is_download_link(
+            "https://cdn.example/files/video.part2.rar"
+        ));
+        assert!(!is_download_link("https://news.example/story.html"));
+        assert!(!is_download_link("https://example.com/index.php"));
+        assert!(!is_download_link("https://github.com/garysassano/haul"));
     }
 
     #[test]

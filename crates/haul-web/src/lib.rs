@@ -20,7 +20,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::Stream;
-use haul_core::{Added, Engine, ItemAction, Route, Snapshot, Theme, config};
+use haul_core::{Added, Engine, ItemAction, Route, SettingsView, Snapshot, config};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -33,8 +33,9 @@ pub trait Desktop: Send + Sync + 'static {
     /// user starts there goes to the engine instead of being saved.
     fn browse(&self, id: &str, url: &str, user_agent: Option<String>) -> Result<(), String>;
 
-    /// Matches the window frames to the theme the user picked.
-    fn set_theme(&self, _theme: Theme) {}
+    /// Asks the user for a folder, starting in `start`; blocks until they
+    /// answer. `None` when they cancel.
+    fn pick_folder(&self, start: &std::path::Path) -> Option<std::path::PathBuf>;
 }
 
 #[derive(Clone)]
@@ -121,7 +122,8 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/host/{name}/limit/{n}", post(host_limit))
         .route("/api/host/{name}/route/{mode}", post(host_route))
         .route("/api/global/{action}", post(global))
-        .route("/api/settings", post(settings))
+        .route("/api/settings", get(settings).post(update_settings))
+        .route("/api/settings/download-dir/pick", post(pick_download_dir))
         .route("/api/open/{place}", post(open_place))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
@@ -320,10 +322,7 @@ async fn host_route(
     };
     match app.engine.set_route(&name, route) {
         Ok(()) => ok(),
-        Err(e) => error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("saving routes: {e}"),
-        ),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
@@ -338,27 +337,44 @@ async fn global(State(app): State<App>, Path(action): Path<String>) -> Response 
     ok()
 }
 
-#[derive(Deserialize)]
-struct SettingsBody {
-    max_total: Option<usize>,
-    rate_mbps: Option<f64>,
-    theme: Option<Theme>,
+/// Every setting, account secrets included; sent only when asked for, never
+/// in the state stream.
+async fn settings(State(app): State<App>) -> Json<SettingsView> {
+    Json(app.engine.settings())
 }
 
-async fn settings(State(app): State<App>, Json(body): Json<SettingsBody>) -> Response {
-    if let Some(n) = body.max_total {
-        app.engine.set_max_total(n);
+/// Changes settings, named as in `config.toml`; each is written there.
+async fn update_settings(
+    State(app): State<App>,
+    Json(body): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    match app.engine.update_settings(&body) {
+        Ok(()) => ok(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
     }
-    if let Some(mbps) = body.rate_mbps {
-        app.engine.set_rate_mbps(mbps);
+}
+
+/// Lets the user pick the download folder in the system's folder dialog.
+async fn pick_download_dir(State(app): State<App>) -> Response {
+    let Some(desktop) = app.desktop.clone() else {
+        return error(
+            StatusCode::NOT_IMPLEMENTED,
+            "only the desktop app has a folder dialog",
+        );
+    };
+    let start = app.engine.download_dir();
+    let picked = tokio::task::spawn_blocking(move || desktop.pick_folder(&start)).await;
+    let Ok(Some(folder)) = picked else {
+        return Json(json!({ "cancelled": true })).into_response();
+    };
+    let change = serde_json::Map::from_iter([(
+        "download_dir".to_string(),
+        serde_json::Value::String(folder.display().to_string()),
+    )]);
+    match app.engine.update_settings(&change) {
+        Ok(()) => ok(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
     }
-    if let Some(theme) = body.theme {
-        app.engine.set_theme(theme);
-        if let Some(desktop) = &app.desktop {
-            desktop.set_theme(theme);
-        }
-    }
-    ok()
 }
 
 /// Shows a finished file in the system's file manager.

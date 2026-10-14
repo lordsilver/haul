@@ -21,7 +21,7 @@ use axum::{
     routing::get,
 };
 use haul_core::{
-    Config, Engine, ItemAction, Options, Route, Snapshot, StartError, config::Endpoints,
+    Config, Engine, Event, ItemAction, Options, Route, Snapshot, StartError, config::Endpoints,
 };
 use serde_json::json;
 
@@ -238,6 +238,7 @@ impl Setup {
 
     fn config(&self) -> Config {
         Config {
+            download_dir: Some(self.root.join("dl")),
             endpoints: Endpoints {
                 pixeldrain: self.ip.clone(),
                 ..Endpoints::default()
@@ -249,7 +250,7 @@ impl Setup {
     fn options(&self) -> Options {
         Options {
             data_dir: self.root.join("data"),
-            download_dir: Some(self.root.join("dl")),
+            download_dir: None,
             config: Some(self.config()),
         }
     }
@@ -319,7 +320,7 @@ async fn resumes_after_a_broken_connection() {
     let engine = t.engine().await;
     engine.add_text(&format!("{}/flaky/b.bin", t.ip), "");
     wait_for(&engine, "a retry", |s| {
-        s.items[0].status == "waiting" && s.items[0].error.contains("resuming")
+        s.items[0].status == "waiting" && s.items[0].error.contains("trying again")
     })
     .await;
     wait_for(&engine, "done", all_done).await;
@@ -495,10 +496,37 @@ async fn folder_expands_in_place() {
     assert_eq!(t.downloaded("second.rar"), content("second.rar", SIZE));
 }
 
+/// Starts from `config.toml` in the data folder, as the apps do.
+async fn start_from_file(t: &Setup) -> Engine {
+    let options = || Options {
+        data_dir: t.root.join("data"),
+        download_dir: None,
+        config: None,
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match Engine::start(options()).await {
+            Ok(e) => return e,
+            // The previous engine's tasks are still letting go of the lock.
+            Err(StartError::Locked(_)) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+}
+
 #[tokio::test]
-async fn queue_survives_restart_and_a_second_instance_is_refused() {
+async fn queue_and_settings_survive_restart_and_a_second_instance_is_refused() {
     let t = Setup::new().await;
-    let engine = t.engine().await;
+    std::fs::create_dir_all(t.root.join("data")).unwrap();
+    // A route choice saved by an older version.
+    std::fs::write(
+        t.root.join("data/routes.json"),
+        r#"{"old.example":"direct"}"#,
+    )
+    .unwrap();
+    let engine = start_from_file(&t).await;
     assert!(matches!(
         Engine::start(t.options()).await,
         Err(StartError::Locked(_))
@@ -509,19 +537,12 @@ async fn queue_survives_restart_and_a_second_instance_is_refused() {
     let id = engine.snapshot().items[0].id.clone();
     engine.item_action(&id, ItemAction::Pause);
     engine.set_route("127.0.0.1", Route::Direct).unwrap();
+    engine.set_max_total(3);
+    engine.set_host_limit("127.0.0.1", 2);
     engine.shutdown().await;
     drop(engine);
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let engine = loop {
-        match Engine::start(t.options()).await {
-            Ok(e) => break e,
-            Err(StartError::Locked(_)) if Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(20)).await
-            }
-            Err(e) => panic!("{e}"),
-        }
-    };
+    let engine = start_from_file(&t).await;
     let s = engine.snapshot();
     assert_eq!(s.items.len(), 1);
     assert_eq!(
@@ -532,8 +553,107 @@ async fn queue_survives_restart_and_a_second_instance_is_refused() {
         ),
         (id.as_str(), "paused", "keep")
     );
-    let routes = std::fs::read_to_string(t.root.join("data/routes.json")).unwrap();
-    assert_eq!(routes, r#"{"127.0.0.1":"direct"}"#);
+    assert_eq!(s.max_total, 3);
+    let cfg = engine.cfg();
+    assert_eq!(cfg.routes.get("127.0.0.1"), Some(&Route::Direct));
+    assert_eq!(
+        cfg.routes.get("old.example"),
+        Some(&Route::Direct),
+        "migrated"
+    );
+    assert_eq!(cfg.limit_for("127.0.0.1"), 2);
+    assert!(!t.root.join("data/routes.json").exists());
+    let file = std::fs::read_to_string(t.root.join("data/config.toml")).unwrap();
+    assert!(file.starts_with("# Haul settings"), "{file}");
+}
+
+#[tokio::test]
+async fn edits_to_the_settings_file_apply_while_running() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("data")).unwrap();
+    let path = t.root.join("data/config.toml");
+    let engine = start_from_file(&t).await;
+    let version = engine.snapshot().config_version;
+
+    std::fs::write(
+        &path,
+        "max_total = 2\nrate_limit_mbps = 1.5\ntheme = \"dark\"\n",
+    )
+    .unwrap();
+    let mut events = engine.subscribe();
+    let s = wait_for(&engine, "the edit", |s| s.max_total == 2).await;
+    assert_eq!((s.rate, s.theme), (1.5e6, haul_core::Theme::Dark));
+    assert!(s.config_version > version);
+    let theme = tokio::time::timeout(Duration::from_secs(5), events.recv()).await;
+    assert!(
+        matches!(theme, Ok(Ok(Event::ThemeChanged(haul_core::Theme::Dark)))),
+        "{theme:?}"
+    );
+
+    // A broken file leaves the settings alone and says why.
+    std::fs::write(&path, "max_total = \"many\"\n").unwrap();
+    let s = wait_for(&engine, "the error", |s| s.config_error.is_some()).await;
+    assert_eq!(s.max_total, 2);
+    assert!(s.config_error.unwrap().contains("max_total"));
+    std::fs::write(&path, "max_total = 5\n").unwrap();
+    let s = wait_for(&engine, "the fix", |s| s.max_total == 5).await;
+    assert_eq!(s.config_error, None);
+}
+
+#[tokio::test]
+async fn a_new_download_folder_takes_the_partial_files_along() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/slow/n.bin", t.ip), "");
+    wait_for(&engine, "progress", |s| s.items[0].done > 0).await;
+    let moved = t.root.join("elsewhere");
+    let changes = serde_json::json!({"download_dir": moved.display().to_string()});
+    engine
+        .update_settings(changes.as_object().unwrap())
+        .unwrap();
+    let s = wait_for(&engine, "done", all_done).await;
+    assert_eq!(s.download_dir, moved.display().to_string());
+    assert_eq!(
+        std::fs::read(moved.join("n.bin")).unwrap(),
+        content("n.bin", SIZE)
+    );
+    let gets = t.server.requests("/slow/n.bin");
+    assert!(
+        gets.iter()
+            .any(|r| r.contains("bytes=") && !r.ends_with("bytes=0-")),
+        "resumed rather than restarted: {gets:?}"
+    );
+    let relative = serde_json::json!({"download_dir": "relative/dir"});
+    assert!(
+        engine
+            .update_settings(relative.as_object().unwrap())
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn failed_downloads_retry_on_their_own() {
+    let t = Setup::new().await;
+    let mut config = t.config();
+    config.retry_failed_minutes = 0;
+    let engine = Engine::start(Options {
+        config: Some(config),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.add_text(&format!("{}/missing/o.bin", t.ip), "");
+    let s = wait_for(&engine, "failure", |s| s.items[0].status == "error").await;
+    assert_eq!(s.items[0].retry_in, 0, "turned off");
+
+    let on = serde_json::json!({"retry_failed_minutes": 1});
+    engine.update_settings(on.as_object().unwrap()).unwrap();
+    let s = engine.snapshot();
+    assert!(
+        (50..=60).contains(&s.items[0].retry_in),
+        "{}",
+        s.items[0].retry_in
+    );
 }
 
 #[tokio::test]

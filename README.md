@@ -9,9 +9,11 @@ It comes as a Windows desktop app (a Tauri 2 shell around the engine) and as `ha
 Early. Working today:
 
 - Queue with mirrors: the same file name on several hosts becomes one row; links that hide the name are looked up first (name and size), so they merge before anything downloads.
-- Per-host slots, cooldowns when a host answers 429 or 503, failover to the next mirror, and up to three automatic resumes of a broken transfer.
-- Resume through HTTP ranges; partial files survive restarts and pauses.
-- One global speed limit across every transfer; parallel downloads and the limit change live and are saved to `config.toml`.
+- Per-host slots, cooldowns when a host answers 429 or 503, and failover to the next mirror. Dropped connections and unreachable hosts are retried with growing pauses before a mirror counts as failed, a host's failures weigh less as they age, and failed downloads are tried again on their own after a while.
+- Resume through HTTP ranges; partial files survive restarts and pauses, and move along when you change the download folder.
+- One global speed limit across every transfer, parallel downloads and per-host slots, all changeable while downloads run.
+- Every setting can be changed in the app or in `config.toml`; each is written to the other, and edits to the file apply within a second.
+- Clipboard watching (desktop app): links you copy anywhere are added when they point at a supported host or a file.
 - Proxy (SOCKS5 or HTTP, with credentials): every host goes through it unless you allow a direct route for that host. A 403 or 451 through the proxy flags the host instead of silently leaving the tunnel.
 - Hosts: pixeldrain (files and lists), gofile, buzzheavier, 1fichier, rapidgator and nitroflare (premium accounts), mega.nz through `megatools`, and any direct link. [docs/hosts.md](docs/hosts.md) says how each one is handled and what has been verified against the real host.
 - Import of JDownloader `.dlc` containers (through JDownloader's key service) and of any text file with links in it.
@@ -43,13 +45,16 @@ cd crates/haul-desktop && npx @tauri-apps/cli@2 build   # installers in target/r
 
 ## Configure
 
-Settings live in `config.toml` in the data folder (**Settings › Settings file › Open** creates it with every key explained). The app writes the theme, parallel downloads, the speed limit and host slots back to it; restart Haul after editing anything else.
+Everything is under **Settings**, and everything there is stored in `config.toml` in the data folder: the app writes each change to the file, and changes you save in the file apply within a second. If the file stops parsing, the previous settings stay in effect and the app shows the error until it is fixed. **Settings › Settings file › Open** creates the file with every key explained:
 
 ```toml
 download_dir = "D:/Downloads"          # default: Downloads\Haul
 max_total = 8                          # files at the same time
 rate_limit_mbps = 0                    # MB/s, 0 = no limit
 theme = "system"                       # system, light or dark
+watch_clipboard = false                # desktop app
+resume_attempts = 3                    # retries per mirror after network trouble
+retry_failed_minutes = 15              # retry failed downloads (up to 3 times), 0 = never
 proxy = "socks5://user:pass@host:1080" # every host goes through it unless allowed direct
 
 # Accounts
@@ -62,17 +67,21 @@ nitroflare_key = ""
 gofile_token = ""
 
 megatools = "C:/Tools/megatools/megatools.exe" # default: found on PATH
+user_agent = "..."                             # default: Haul's own
 
 [limits]            # files at once per host (default 32)
 "1fichier.com" = 1
+
+[routes]            # hosts allowed off the proxy
+"example.com" = "direct"
 ```
 
-Environment variables: `HAUL_PROXY` replaces `proxy`; `HAUL_1FICHIER_KEY`, `HAUL_PIXELDRAIN_KEY`, `HAUL_RAPIDGATOR_USER`, `HAUL_RAPIDGATOR_PASS`, `HAUL_NITROFLARE_USER`, `HAUL_NITROFLARE_KEY` and `HAUL_GOFILE_TOKEN` fill the account keys the file leaves unset; `HAUL_DATA_DIR` moves the data folder and `HAUL_PORT` the local port (default 8765).
+Environment variables: `HAUL_PROXY` replaces `proxy`; `HAUL_1FICHIER_KEY`, `HAUL_PIXELDRAIN_KEY`, `HAUL_RAPIDGATOR_USER`, `HAUL_RAPIDGATOR_PASS`, `HAUL_NITROFLARE_USER`, `HAUL_NITROFLARE_KEY` and `HAUL_GOFILE_TOKEN` fill the account keys the file leaves unset. Settings shows those as set by the environment and does not change them. `HAUL_DATA_DIR` moves the data folder and `HAUL_PORT` the local port (default 8765).
 
 ## Files
 
-The data folder is `%LOCALAPPDATA%\haul` on Windows and `~/.local/share/haul` on Linux. It holds `config.toml`, the queue (`queue.json`), per-host route choices (`routes.json`), the desktop app's log (`haul.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish.
+The data folder is `%LOCALAPPDATA%\haul` on Windows and `~/.local/share/haul` on Linux. It holds `config.toml`, the queue (`queue.json`), the desktop app's log (`haul.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish.
 
 ## Coming from the Python prototype
 
-Copy `queue.json` and `routes.json` into the data folder: Haul reads both formats as they are. The old `grabber.json` keys map one to one onto `config.toml`, and the `GRABBER_*` variables are now `HAUL_*`. To keep partial downloads, move the old `downloads\.partial` folder into the new download folder.
+Copy `queue.json` and `routes.json` into the data folder: Haul reads the queue as it is and moves the route choices into `config.toml`. The old `grabber.json` keys map one to one onto `config.toml`, and the `GRABBER_*` variables are now `HAUL_*`. To keep partial downloads, move the old `downloads\.partial` folder into the new download folder.

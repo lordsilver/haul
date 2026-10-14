@@ -15,7 +15,8 @@ mod limiter;
 pub mod paths;
 mod store;
 
-pub use config::{Config, Theme};
+pub use config::{Config, Route, Theme};
 pub use engine::{
-    Added, Engine, Event, HostView, ItemAction, ItemView, Options, Route, Snapshot, StartError,
+    Added, Engine, Event, HostView, ItemAction, ItemView, Options, SettingsView, Snapshot,
+    StartError,
 };

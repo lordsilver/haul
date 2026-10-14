@@ -11,7 +11,7 @@ use std::{
 use indexmap::IndexMap;
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::{engine::Route, engine::StartError, item::Saved};
+use crate::{config::Route, engine::StartError, item::Saved};
 
 pub(crate) const QUEUE: &str = "queue.json";
 pub(crate) const ROUTES: &str = "routes.json";
