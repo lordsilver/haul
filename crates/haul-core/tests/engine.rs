@@ -248,6 +248,28 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/trickle/{name}",
+            // About 40 KiB/s: 4 KiB every 100 ms.
+            get(|State(s): State<Server>, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                log(&s, &format!("/trickle/{name}"), &headers);
+                let data = content(&name, SIZE);
+                let start = range_start(&headers).unwrap_or(0);
+                let chunks: Vec<Bytes> = data[start..].chunks(4 * 1024).map(Bytes::copy_from_slice).collect();
+                let stream = futures_util::stream::unfold(chunks.into_iter(), |mut it| async move {
+                    let chunk = it.next()?;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Some((Ok::<_, Infallible>(chunk), it))
+                });
+                let mut resp = Response::builder().header(header::CONTENT_LENGTH, SIZE - start);
+                if start > 0 {
+                    resp = resp
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_RANGE, format!("bytes {start}-{}/{SIZE}", SIZE - 1));
+                }
+                resp.body(Body::from_stream(stream)).unwrap()
+            }),
+        )
+        .route(
             "/limited/{name}",
             get(|State(s): State<Server>, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
                 log(&s, &format!("/limited/{name}"), &headers);
@@ -1185,4 +1207,51 @@ async fn clearing_failed_downloads_keeps_the_rest() {
         ["done"],
         "only the finished download is left"
     );
+}
+
+#[tokio::test]
+async fn a_slow_mirror_gives_way() {
+    let t = Setup::new().await;
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            min_speed_kbps: 100,
+            min_speed_seconds: 1,
+            retry_failed_minutes: 0,
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    // The slow host first, so it has to give way to the fast one.
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/trickle/t.bin {}/files/t.bin", t.ip, t.name),
+        "",
+    );
+    wait_for(&engine, "done", all_done).await;
+    assert_eq!(t.downloaded("t.bin"), content("t.bin", SIZE));
+    assert!(
+        !t.server.requests("/trickle/t.bin").is_empty(),
+        "the slow host was tried"
+    );
+    assert!(
+        t.server
+            .requests("/files/t.bin")
+            .iter()
+            .any(|r| r.contains("bytes=")),
+        "the fast host resumed what the slow one had sent: {:?}",
+        t.server.requests("/files/t.bin")
+    );
+
+    // With no other mirror it fails, saying why.
+    engine.add_text(&format!("{}/trickle/u.bin", t.ip), "");
+    let s = wait_for(&engine, "the failure", |s| {
+        s.items
+            .iter()
+            .any(|i| i.name == "u.bin" && i.status == "error")
+    })
+    .await;
+    let error = &s.items.iter().find(|i| i.name == "u.bin").unwrap().error;
+    assert!(error.contains("slower than 100 KB/s for 1s"), "{error}");
 }

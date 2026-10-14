@@ -60,6 +60,7 @@ theme = "system"                       # system, light or dark
 watch_clipboard = false                # desktop app
 recycle_on_remove = false              # removing a finished download also moves its file to the Recycle Bin
 resume_attempts = 5                    # retries per mirror after network trouble
+min_speed_kbps = 0                     # give up a mirror slower than this (KiB/s) for min_speed_seconds (60); 0 = off
 retry_failed_minutes = 15              # retry failed downloads (up to 3 times), 0 = never
 proxy = "socks5://user:pass@host:1080" # every host goes through it unless allowed direct
 preferred_hosts = ["rapidgator.net"]     # downloaded from first, in this order

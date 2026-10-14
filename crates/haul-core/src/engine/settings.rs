@@ -34,6 +34,8 @@ pub struct SettingsView {
     pub recycle_on_remove: bool,
     pub skip_add_dialog: bool,
     pub resume_attempts: u32,
+    pub min_speed_kbps: u32,
+    pub min_speed_seconds: u64,
     pub retry_failed_minutes: u64,
     pub proxy: String,
     pub user_agent: String,
@@ -88,6 +90,8 @@ impl Engine {
             recycle_on_remove: cfg.recycle_on_remove,
             skip_add_dialog: cfg.skip_add_dialog,
             resume_attempts: cfg.resume_attempts,
+            min_speed_kbps: cfg.min_speed_kbps,
+            min_speed_seconds: cfg.min_speed_seconds,
             retry_failed_minutes: cfg.retry_failed_minutes,
             proxy: shown(&cfg.proxy),
             user_agent: cfg.user_agent.clone(),
@@ -199,6 +203,16 @@ impl Engine {
                     let n = number(value, key)?.min(20) as u32;
                     cfg.resume_attempts = n;
                     writes.push(top(key, Some(i64::from(n).into())));
+                }
+                "min_speed_kbps" => {
+                    let n = number(value, key)?.min(1 << 20) as u32;
+                    cfg.min_speed_kbps = n;
+                    writes.push(top(key, Some(i64::from(n).into())));
+                }
+                "min_speed_seconds" => {
+                    let n = number(value, key)?.clamp(1, 3600);
+                    cfg.min_speed_seconds = n;
+                    writes.push(top(key, Some((n as i64).into())));
                 }
                 "retry_failed_minutes" => {
                     let n = number(value, key)?.min(24 * 60);

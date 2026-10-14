@@ -1166,6 +1166,12 @@ function renderSettings(s) {
       numberField("resume_attempts", d.resume_attempts, { min: 0, max: 20, label: "Retries", unit: "times" }),
     ),
     settingCard(
+      "top-speed",
+      "Give up on slow downloads",
+      `Below this speed for ${d.min_speed_seconds === 60 ? "a minute" : `${d.min_speed_seconds} seconds`}, the next mirror takes over, or the download fails until it is tried again. 0 turns it off; so does a speed limit.`,
+      numberField("min_speed_kbps", d.min_speed_kbps, { min: 0, max: 1048576, label: "Minimum speed", unit: "KB/s" }),
+    ),
+    settingCard(
       "clock",
       "Retry failed downloads",
       "Tries a failed download again after this many minutes, up to three times. 0 turns it off.",

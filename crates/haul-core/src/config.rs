@@ -45,6 +45,12 @@ pub struct Config {
     /// Automatic retries of a mirror after a dropped connection or a
     /// network error, before it counts as failed.
     pub resume_attempts: u32,
+    /// A download slower than this many KiB/s over `min_speed_seconds` gives
+    /// up its mirror: the next one takes over, or it fails until it is tried
+    /// again. 0 turns that off; so does a speed limit, which would make every
+    /// download look slow.
+    pub min_speed_kbps: u32,
+    pub min_speed_seconds: u64,
     /// Minutes before a failed download is tried again on its own (at most
     /// three times); 0 turns that off.
     pub retry_failed_minutes: u64,
@@ -88,6 +94,8 @@ impl Default for Config {
             recycle_on_remove: false,
             skip_add_dialog: false,
             resume_attempts: 5,
+            min_speed_kbps: 0,
+            min_speed_seconds: 60,
             retry_failed_minutes: 15,
             proxy: None,
             user_agent: DEFAULT_USER_AGENT.into(),
@@ -431,6 +439,12 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # Retries of a mirror after a dropped connection or a network error. An attempt
 # that gets data in before it stops starts the count over.
 # resume_attempts = 5
+
+# A download slower than this many KiB/s over min_speed_seconds gives up its
+# mirror: the next mirror takes over, or it fails until it is tried again.
+# 0 turns that off; so does a speed limit (rate_limit_mbps).
+# min_speed_kbps = 0
+# min_speed_seconds = 60
 
 # Minutes before a failed download is tried again on its own (up to three
 # times); 0 turns that off.

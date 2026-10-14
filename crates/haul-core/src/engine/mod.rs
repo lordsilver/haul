@@ -1498,13 +1498,41 @@ impl Engine {
             let mut file = BufWriter::with_capacity(1 << 20, file);
             let mut done = have;
             let (mut mark, mut mark_bytes) = (Instant::now(), have);
+            // The slowest it may be over each window, in bytes per second; 0
+            // when that is off. A speed limit of our own turns it off, since
+            // it would make every download look slow.
+            let cfg = self.cfg();
+            let floor = if cfg.rate_limit_mbps > 0.0 {
+                0.0
+            } else {
+                f64::from(cfg.min_speed_kbps) * 1024.0
+            };
+            let window = Duration::from_secs(cfg.min_speed_seconds.max(1));
+            let (mut window_at, mut window_bytes) = (Instant::now(), have);
             let streamed: Result<(), Fail> = async {
                 loop {
+                    // Woken at the window's end too, so a stalled connection
+                    // is judged as well.
+                    let judge_at = tokio::time::Instant::from_std(window_at + window);
                     let chunk = tokio::select! {
                         biased;
                         _ = cancel.cancelled() => return Err(Fail::Cancelled),
-                        c = resp.chunk() => c.map_err(|e| Fail::Transient(hosts::error_text(e)))?,
+                        c = resp.chunk() => Some(c.map_err(|e| Fail::Transient(hosts::error_text(e)))?),
+                        _ = tokio::time::sleep_until(judge_at), if floor > 0.0 => None,
                     };
+                    if floor > 0.0 && window_at.elapsed() >= window {
+                        let speed = (done - window_bytes) as f64 / window_at.elapsed().as_secs_f64();
+                        if speed < floor {
+                            return Err(Fail::Error(format!(
+                                "slower than {} KB/s for {}s ({:.0} KB/s)",
+                                cfg.min_speed_kbps,
+                                window.as_secs(),
+                                speed / 1024.0
+                            )));
+                        }
+                        (window_at, window_bytes) = (Instant::now(), done);
+                    }
+                    let Some(chunk) = chunk else { continue };
                     let Some(chunk) = chunk else { return Ok(()) };
                     file.write_all(&chunk).await?;
                     done += chunk.len() as u64;
