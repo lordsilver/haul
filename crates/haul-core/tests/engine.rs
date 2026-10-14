@@ -1255,3 +1255,35 @@ async fn a_slow_mirror_gives_way() {
     let error = &s.items.iter().find(|i| i.name == "u.bin").unwrap().error;
     assert!(error.contains("slower than 100 KB/s for 1s"), "{error}");
 }
+
+#[tokio::test]
+async fn the_size_cap_spaces_out_big_files() {
+    let t = Setup::new().await;
+    // Room for one of these files at a time, not two.
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            max_active_gb: (SIZE as f64 * 1.5) / 1e9,
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    let links: Vec<String> = (1..=3).map(|i| format!("{}/slow/z{i}.bin", t.ip)).collect();
+    engine.add_text(&links.join(" "), "");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let s = engine.snapshot();
+        let downloading = s.items.iter().filter(|i| i.status == "downloading").count();
+        assert!(downloading <= 1, "two files at once: {:#?}", s.items);
+        if s.items.len() == 3 && all_done(&s) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "timed out: {:#?}", s.items);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    for i in 1..=3 {
+        let name = format!("z{i}.bin");
+        assert_eq!(t.downloaded(&name), content(&name, SIZE));
+    }
+}

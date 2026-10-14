@@ -33,6 +33,9 @@ pub struct Config {
     pub max_total: usize,
     /// Global speed limit in MB/s; 0 means none.
     pub rate_limit_mbps: f64,
+    /// The most gigabytes of files downloading at once, by their full size;
+    /// 0 means no limit. A bigger file still downloads on its own.
+    pub max_active_gb: f64,
     pub theme: Theme,
     /// Add links copied anywhere (desktop app).
     pub watch_clipboard: bool,
@@ -89,6 +92,7 @@ impl Default for Config {
             download_dir: None,
             max_total: 8,
             rate_limit_mbps: 0.0,
+            max_active_gb: 0.0,
             theme: Theme::System,
             watch_clipboard: false,
             recycle_on_remove: false,
@@ -421,6 +425,11 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 
 # Global speed limit in MB/s; 0 means none.
 # rate_limit_mbps = 0
+
+# The most gigabytes of files downloading at once, by their full size: 20 lets
+# four 5 GB files run, or ten of 2 GB. 0 means no limit; a bigger file still
+# downloads on its own.
+# max_active_gb = 0
 
 # Appearance: "system", "light" or "dark".
 # theme = "system"

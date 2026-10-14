@@ -56,6 +56,7 @@ Everything is under **Settings**, and everything there is stored in `config.toml
 download_dir = "D:/Downloads"          # default: Downloads\Haul
 max_total = 8                          # files at the same time
 rate_limit_mbps = 0                    # MB/s, 0 = no limit
+max_active_gb = 0                      # most GB of files downloading at once (20: four 5 GB files), 0 = no limit
 theme = "system"                       # system, light or dark
 watch_clipboard = false                # desktop app
 recycle_on_remove = false              # removing a finished download also moves its file to the Recycle Bin

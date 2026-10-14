@@ -1132,6 +1132,12 @@ function renderSettings(s) {
     el("h2", {}, "Downloads"),
     settingCard("arrow-download", "Parallel downloads", "Files downloaded at the same time.", numberField("max_total", d.max_total, { min: 1, max: 64, label: "Parallel downloads" })),
     settingCard(
+      "document",
+      "Size downloading at once",
+      "The most gigabytes of files downloading at the same time, by their full size: 20 lets four 5 GB files run, or ten of 2 GB. A bigger file still downloads on its own. 0 means no limit.",
+      numberField("max_active_gb", d.max_active_gb, { min: 0, step: 1, label: "Size downloading at once", unit: "GB" }),
+    ),
+    settingCard(
       "top-speed",
       "Speed limit",
       "Shared by every transfer. 0 means no limit.",

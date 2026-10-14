@@ -29,6 +29,7 @@ pub struct SettingsView {
     pub download_dir_fixed: bool,
     pub max_total: usize,
     pub rate_limit_mbps: f64,
+    pub max_active_gb: f64,
     pub theme: Theme,
     pub watch_clipboard: bool,
     pub recycle_on_remove: bool,
@@ -85,6 +86,7 @@ impl Engine {
             download_dir_fixed: self.0.download_dir_fixed,
             max_total: cfg.max_total,
             rate_limit_mbps: cfg.rate_limit_mbps,
+            max_active_gb: cfg.max_active_gb,
             theme: cfg.theme,
             watch_clipboard: cfg.watch_clipboard,
             recycle_on_remove: cfg.recycle_on_remove,
@@ -175,6 +177,14 @@ impl Engine {
                         .ok_or("the speed limit must be a number, 0 or more")?;
                     cfg.rate_limit_mbps = mbps;
                     writes.push(top(key, Some(mbps.into())));
+                }
+                "max_active_gb" => {
+                    let gb = value
+                        .as_f64()
+                        .filter(|v| v.is_finite() && *v >= 0.0)
+                        .ok_or("the size limit must be a number, 0 or more")?;
+                    cfg.max_active_gb = gb;
+                    writes.push(top(key, Some(gb.into())));
                 }
                 "theme" => {
                     let theme: Theme = serde_json::from_value(value.clone())

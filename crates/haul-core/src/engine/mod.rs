@@ -391,6 +391,9 @@ enum Outcome {
     Gone,
     /// The file was in the download folder already, at this path.
     Existing(PathBuf),
+    /// Too big to download next to the files already downloading, within
+    /// `max_active_gb`: back in the queue.
+    Deferred,
 }
 
 enum Fail {
@@ -903,6 +906,14 @@ impl Engine {
             let now = Instant::now();
             let mut changed = self.auto_retry(&mut st, now);
             let mut running = st.items.values().filter(|i| i.running()).count();
+            // What downloads now against max_active_gb, by full size.
+            let size_cap = self.size_cap();
+            let mut busy: u64 = st
+                .items
+                .values()
+                .filter(|i| i.running())
+                .map(|i| i.size)
+                .sum();
             let ids: Vec<String> = st.items.keys().cloned().collect();
             for id in ids {
                 if running >= st.max_total {
@@ -918,6 +929,12 @@ impl Engine {
                 {
                     continue;
                 }
+                // In queue order, as with max_total: the next file waits for
+                // room rather than let smaller ones behind it go first.
+                if size_cap > 0 && busy > 0 && busy + it.size > size_cap {
+                    break;
+                }
+                let size = it.size;
                 let before = it.status;
                 match self.pick(&mut st, &id, now) {
                     Some(url) => {
@@ -929,6 +946,7 @@ impl Engine {
                         it.status = Status::Resolving;
                         it.task = Some(cancel.clone());
                         running += 1;
+                        busy += size;
                         changed = true;
                         tokio::spawn(self.clone().work(id, url, host, cancel));
                     }
@@ -1090,6 +1108,21 @@ impl Engine {
         if let Some(path) = or_cancel(cancel, self.existing_file(id)).await? {
             return Ok(Outcome::Existing(path));
         }
+        // A size learned only now may not fit next to what downloads already.
+        let size_cap = self.size_cap();
+        if size_cap > 0 {
+            let st = self.lock();
+            let size = st.items.get(id).map_or(0, |i| i.size);
+            let others: u64 = st
+                .items
+                .values()
+                .filter(|i| i.running() && i.id != id)
+                .map(|i| i.size)
+                .sum();
+            if others > 0 && others + size > size_cap {
+                return Ok(Outcome::Deferred);
+            }
+        }
         {
             let mut st = self.lock();
             let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
@@ -1151,6 +1184,11 @@ impl Engine {
             }
             match result {
                 Ok(Outcome::Gone) => {}
+                Ok(Outcome::Deferred) => {
+                    if let Some(it) = st.items.get_mut(id) {
+                        it.status = Status::Queued;
+                    }
+                }
                 Ok(Outcome::Existing(path)) => {
                     if let Some(it) = st.items.get_mut(id) {
                         it.adopt(&path);
@@ -1366,6 +1404,11 @@ impl Engine {
             }
         }
         false
+    }
+
+    /// `max_active_gb` in bytes; 0 when there is no such limit.
+    fn size_cap(&self) -> u64 {
+        (self.cfg().max_active_gb * 1e9) as u64
     }
 
     /// Deletes the partial files of rows that are gone for good.
@@ -2068,7 +2111,7 @@ fn log_outcome(id: &str, url: &str, result: &Result<Outcome, Fail>) {
         Ok(Outcome::Existing(path)) => {
             tracing::info!(item = id, url, "already downloaded: {}", path.display())
         }
-        Ok(Outcome::Gone) | Err(Fail::Cancelled) => {}
+        Ok(Outcome::Gone | Outcome::Deferred) | Err(Fail::Cancelled) => {}
         Err(Fail::Wait { seconds, message }) => {
             tracing::info!(item = id, url, seconds, "host asks to wait: {message}")
         }
