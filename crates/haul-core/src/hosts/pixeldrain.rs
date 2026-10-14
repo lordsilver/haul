@@ -7,7 +7,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use regex::Regex;
 use serde::Deserialize;
 
-use super::{Cx, Entry, ResolveError};
+use super::{Algo, Checksum, Cx, Entry, Probed, ResolveError};
 use crate::config::secret;
 
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/(u|l)/([\w-]+)").unwrap());
@@ -21,6 +21,15 @@ struct File {
     /// `file_rate_limited_captcha_required`.
     #[serde(default)]
     availability: String,
+    /// In file info; list entries may leave it out.
+    #[serde(default)]
+    hash_sha256: Option<String>,
+}
+
+impl File {
+    fn checksum(&self) -> Option<Checksum> {
+        Checksum::from_hex(Algo::Sha256, self.hash_sha256.as_deref()?)
+    }
 }
 
 #[derive(Deserialize)]
@@ -66,12 +75,14 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             .files
             .into_iter()
             .filter_map(|f| {
+                let checksum = f.checksum();
                 Some(Entry {
                     url: format!("{base}/api/file/{}?download", f.id?),
                     name: Some(f.name),
                     size: Some(f.size),
                     headers: headers.clone(),
                     exec: None,
+                    checksum,
                 })
             })
             .collect());
@@ -92,16 +103,18 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             file.availability
         )));
     }
+    let checksum = file.checksum();
     Ok(vec![Entry {
         url: format!("{base}/api/file/{id}?download"),
         name: Some(file.name),
         size: Some(file.size),
         headers,
         exec: None,
+        checksum,
     }])
 }
 
-pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<(String, Option<u64>)> {
+pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
     let caps = LINK.captures(url).filter(|c| &c[1] == "u")?;
     let base = &cx.cfg.endpoints.pixeldrain;
     let r = request(cx, format!("{base}/api/file/{}/info", &caps[2]), &auth(cx))
@@ -112,5 +125,9 @@ pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<(String, Option<u64>
         return None;
     }
     let file: File = r.json().await.ok()?;
-    Some((file.name, Some(file.size)))
+    Some(Probed {
+        checksum: file.checksum(),
+        name: file.name,
+        size: Some(file.size),
+    })
 }

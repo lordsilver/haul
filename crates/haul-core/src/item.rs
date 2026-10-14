@@ -5,7 +5,7 @@ use std::{collections::HashSet, time::Instant};
 use serde::{Deserialize, Deserializer, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::hosts::{Entry, guess_name};
+use crate::hosts::{Checksum, Entry, guess_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -70,6 +70,10 @@ pub(crate) struct Item {
     pub retry_at: Option<Instant>,
     /// Where the finished file went.
     pub path: Option<String>,
+    /// The checksum a host published for the file.
+    pub checksum: Option<Checksum>,
+    /// Finished without downloading: the file was in the download folder.
+    pub existing: bool,
     /// Cancels the running attempt; present exactly while one runs.
     pub task: Option<CancellationToken>,
 }
@@ -99,6 +103,8 @@ impl Item {
             auto_retries: 0,
             retry_at: None,
             path: None,
+            checksum: None,
+            existing: false,
             task: None,
         }
     }
@@ -133,7 +139,25 @@ impl Item {
             pre_for: self.pre_for.clone(),
             manual: self.manual,
             path: self.path.clone(),
+            checksum: self.checksum.clone(),
+            existing: self.existing,
         }
+    }
+
+    /// Finishes this row with the file at `path`, which was in the download
+    /// folder already.
+    pub fn adopt(&mut self, path: &std::path::Path) {
+        self.status = Status::Done;
+        self.existing = true;
+        self.path = Some(path.display().to_string());
+        self.done = self.size;
+        self.speed = 0.0;
+        self.percent = None;
+        self.error.clear();
+        self.retries = 0;
+        self.auto_retries = 0;
+        self.retry_at = None;
+        self.not_before = None;
     }
 
     /// Rebuilds a saved row. Anything that was in flight is queued again; the
@@ -148,6 +172,8 @@ impl Item {
         it.size = s.size.unwrap_or(0);
         it.error = s.error;
         it.path = s.path;
+        it.checksum = s.checksum;
+        it.existing = s.existing;
         it.status = match s.status {
             Status::Done | Status::Paused | Status::Error => s.status,
             _ => Status::Queued,
@@ -179,6 +205,10 @@ pub(crate) struct Saved {
     pub manual: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<Checksum>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub existing: bool,
 }
 
 fn lenient_status<'de, D: Deserializer<'de>>(d: D) -> Result<Status, D::Error> {

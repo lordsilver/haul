@@ -7,8 +7,8 @@ use regex::Regex;
 use reqwest::header::RANGE;
 
 use super::{
-    Cx, Entry, ResolveError, content_length, content_range, content_type, disposition_name,
-    guess_name, host_of, retry_after,
+    Cx, Entry, Probed, ResolveError, content_length, content_range, content_type, disposition_name,
+    guess_name, header_checksum, host_of, retry_after,
 };
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
@@ -44,6 +44,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             url: final_url,
             name,
             size,
+            checksum: header_checksum(r.headers(), status == 200),
             ..Entry::default()
         }]);
     }
@@ -72,7 +73,7 @@ static FILE_IN_TITLE: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Name and size from the headers of a file, or the name from the title of a
 /// page, reading at most the first 64 KiB.
-pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<(String, Option<u64>)> {
+pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
     let mut r = cx
         .http
         .client
@@ -94,7 +95,11 @@ pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<(String, Option<u64>
             200 => content_length(r.headers()),
             _ => None,
         };
-        return Some((name, size));
+        return Some(Probed {
+            name,
+            size,
+            checksum: header_checksum(r.headers(), status == 200),
+        });
     }
     let mut page = Vec::new();
     while page.len() < PEEK {
@@ -107,6 +112,10 @@ pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<(String, Option<u64>
     let page = String::from_utf8_lossy(&page);
     [&OG_TITLE, &TITLE].into_iter().find_map(|pattern| {
         let title = pattern.captures(&page)?;
-        Some((FILE_IN_TITLE.captures(&title[1])?[1].to_string(), None))
+        Some(Probed {
+            name: FILE_IN_TITLE.captures(&title[1])?[1].to_string(),
+            size: None,
+            checksum: None,
+        })
     })
 }

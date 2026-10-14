@@ -87,6 +87,28 @@ fn move_data(old: &Path, dir: &Path) {
     let _ = std::fs::remove_dir(old);
 }
 
+/// `dir/name` unless something is there already; then the first free
+/// `name (1).ext`, `name (2).ext` and so on, as browsers number their
+/// downloads. A `.tar.*` archive keeps its double extension together.
+pub fn unused_name(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let lower = name.to_ascii_lowercase();
+    let split = ["tar.gz", "tar.bz2", "tar.xz", "tar.zst"]
+        .iter()
+        .find(|ext| lower.ends_with(&format!(".{ext}")) && name.len() > ext.len() + 1)
+        .map(|ext| name.len() - ext.len() - 1)
+        .or_else(|| name.rfind('.').filter(|&i| i > 0))
+        .unwrap_or(name.len());
+    let (stem, ext) = name.split_at(split);
+    (1..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|path| !path.exists())
+        .expect("some number is free")
+}
+
 /// The user's Downloads folder plus `Haul`.
 pub fn download_dir() -> PathBuf {
     dirs::download_dir()
@@ -160,7 +182,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use super::{APP_ID, move_data, safe, subfolder};
+    use super::{APP_ID, move_data, safe, subfolder, unused_name};
 
     #[test]
     fn safe_names() {
@@ -239,5 +261,28 @@ mod tests {
         std::fs::write(old.join("queue.json"), "{}").unwrap();
         move_data(&old, &dir);
         assert!(!old.exists() && dir.join("queue.json").is_file());
+    }
+
+    #[test]
+    fn taken_names_are_numbered() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let next = |name: &str| unused_name(d, name).file_name().unwrap().to_owned();
+        assert_eq!(next("a.iso"), "a.iso");
+        for f in [
+            "a.iso",
+            "a (1).iso",
+            "b.tar.gz",
+            "README",
+            ".env",
+            "c.part1.rar",
+        ] {
+            std::fs::write(d.join(f), "").unwrap();
+        }
+        assert_eq!(next("a.iso"), "a (2).iso");
+        assert_eq!(next("b.tar.gz"), "b (1).tar.gz");
+        assert_eq!(next("README"), "README (1)");
+        assert_eq!(next(".env"), ".env (1)");
+        assert_eq!(next("c.part1.rar"), "c.part1 (1).rar");
     }
 }

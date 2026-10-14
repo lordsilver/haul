@@ -185,6 +185,8 @@ pub struct ItemView {
     pub open_urls: Vec<String>,
     /// Where the finished file was saved.
     pub path: Option<String>,
+    /// Finished without downloading: the file was in the download folder.
+    pub existing: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -326,6 +328,8 @@ enum Outcome {
     Done,
     /// The row is gone: merged into another, or expanded into a folder's files.
     Gone,
+    /// The file was in the download folder already, at this path.
+    Existing(PathBuf),
 }
 
 enum Fail {
@@ -714,23 +718,91 @@ impl Engine {
             .await
             .ok()
             .flatten();
+        let learned = found.is_some();
+        {
+            let mut st = self.lock();
+            let Some(it) = st.items.get_mut(&id) else {
+                return;
+            };
+            if let Some(found) = found {
+                it.name = Some(found.name);
+                if let Some(size) = found.size.filter(|s| *s > 0) {
+                    it.size = size;
+                }
+                if it.checksum.is_none() {
+                    it.checksum = found.checksum;
+                }
+                if self.dedupe(&mut st, &id) {
+                    st.items.shift_remove(&id);
+                    self.touch(&mut st);
+                    drop(st);
+                    self.0.wake.notify_one();
+                    return;
+                }
+            }
+        }
+        // The row is not probed yet, so nothing starts it meanwhile.
+        let existing = match learned {
+            true => self.existing_file(&id).await,
+            false => None,
+        };
         let mut st = self.lock();
         let Some(it) = st.items.get_mut(&id) else {
             return;
         };
         it.probed = true;
-        if let Some((name, size)) = found {
-            it.name = Some(name);
-            if let Some(size) = size.filter(|s| *s > 0) {
-                it.size = size;
+        let adopted = match existing {
+            Some(path) if !it.running() => {
+                tracing::info!(item = id, "already downloaded: {}", path.display());
+                it.adopt(&path);
+                true
             }
-            if self.dedupe(&mut st, &id) {
-                st.items.shift_remove(&id);
-            }
-        }
+            _ => false,
+        };
         self.touch(&mut st);
         drop(st);
+        if adopted {
+            self.discard_parts([id]);
+        }
         self.0.wake.notify_one();
+    }
+
+    /// A file already in the download folder that row `id` would fetch again:
+    /// the same name and size where one of its hosts would put it and, when a
+    /// host published a checksum, the same content. Needs the name and size.
+    async fn existing_file(&self, id: &str) -> Option<PathBuf> {
+        let (name, size, checksum, package, hosts) = {
+            let st = self.lock();
+            let it = st.items.get(id)?;
+            let name = it.name.clone().filter(|_| it.size > 0)?;
+            let hosts: Vec<String> = it.mirrors.iter().map(|m| hosts::host_of(m)).collect();
+            (
+                name,
+                it.size,
+                it.checksum.clone(),
+                it.package.clone(),
+                hosts,
+            )
+        };
+        let file = paths::safe(&name);
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        for host in hosts {
+            let path = self.out_dir(&host, &package).join(&file);
+            if !candidates.contains(&path) {
+                candidates.push(path);
+            }
+        }
+        tokio::task::spawn_blocking(move || {
+            candidates.into_iter().find(|path| {
+                std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == size)
+                    && checksum
+                        .as_ref()
+                        .is_none_or(|c| c.matches(path).unwrap_or(false))
+            })
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     // ---- scheduler
@@ -929,12 +1001,21 @@ impl Engine {
             if let Some(size) = entry.size.filter(|s| *s > 0) {
                 it.size = size;
             }
+            if it.checksum.is_none() {
+                it.checksum = entry.checksum.clone();
+            }
             if self.dedupe(&mut st, id) {
                 st.items.shift_remove(id);
                 self.touch(&mut st);
                 return Ok(Outcome::Gone);
             }
-            let it = st.items.get_mut(id).expect("still present");
+        }
+        if let Some(path) = or_cancel(cancel, self.existing_file(id)).await? {
+            return Ok(Outcome::Existing(path));
+        }
+        {
+            let mut st = self.lock();
+            let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
             it.status = Status::Downloading;
             it.error.clear();
             self.touch(&mut st);
@@ -985,6 +1066,13 @@ impl Engine {
             log_outcome(id, url, &result);
             match result {
                 Ok(Outcome::Gone) => {}
+                Ok(Outcome::Existing(path)) => {
+                    if let Some(it) = st.items.get_mut(id) {
+                        it.adopt(&path);
+                    }
+                    // Its partial file, if any, is no longer needed.
+                    removed.push(id.to_string());
+                }
                 Ok(Outcome::Done) => {
                     st.host(host, &self.cfg()).ok += 1;
                     if let Some(it) = st.items.get_mut(id) {
@@ -1166,6 +1254,9 @@ impl Engine {
                 }
             }
             it.manual_urls.extend(o.manual_urls);
+            if it.checksum.is_none() {
+                it.checksum = o.checksum;
+            }
             let (from, to) = (self.part_path(&other), self.part_path(id));
             if from.exists() {
                 if size > 0 && o.size == size && !to.exists() {
@@ -1357,7 +1448,8 @@ impl Engine {
         dir
     }
 
-    /// Moves a finished partial file to its final name, never overwriting.
+    /// Moves a finished partial file to its final name, never overwriting: a
+    /// different file by that name already there makes it `name (1).ext`.
     fn place(&self, id: &str, part: &Path, out_dir: &Path) -> Result<(), Fail> {
         let name = self
             .lock()
@@ -1366,18 +1458,7 @@ impl Engine {
             .and_then(|i| i.name.clone())
             .unwrap_or_else(|| format!("{id}.bin"));
         let _guard = self.0.rename_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut target = out_dir.join(paths::safe(&name));
-        if target.exists() {
-            let stem = target
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let ext = target
-                .extension()
-                .map(|e| format!(".{}", e.to_string_lossy()))
-                .unwrap_or_default();
-            target = target.with_file_name(format!("{stem}.{id}{ext}"));
-        }
+        let target = paths::unused_name(out_dir, &paths::safe(&name));
         std::fs::rename(part, &target)?;
         if let Some(it) = self.lock().items.get_mut(id) {
             it.path = Some(target.display().to_string());
@@ -1535,7 +1616,8 @@ impl Engine {
             let Some(it) = st.items.get(id) else {
                 return Ok(false);
             };
-            (it.status == Status::Done && self.cfg().recycle_on_remove)
+            // A file the row found rather than downloaded stays where it is.
+            (it.status == Status::Done && !it.existing && self.cfg().recycle_on_remove)
                 .then(|| it.path.clone())
                 .flatten()
         };
@@ -1578,6 +1660,7 @@ impl Engine {
             size: None,
             headers,
             exec: None,
+            checksum: None,
         });
         it.pre_for = None;
         it.manual = true;
@@ -1687,6 +1770,7 @@ impl Engine {
                     .cloned()
                     .collect(),
                 path: it.path.clone(),
+                existing: it.existing,
             })
             .collect();
         let mut hosts: Vec<HostView> = st
@@ -1809,6 +1893,9 @@ impl Engine {
 fn log_outcome(id: &str, url: &str, result: &Result<Outcome, Fail>) {
     match result {
         Ok(Outcome::Done) => tracing::info!(item = id, url, "downloaded"),
+        Ok(Outcome::Existing(path)) => {
+            tracing::info!(item = id, url, "already downloaded: {}", path.display())
+        }
         Ok(Outcome::Gone) | Err(Fail::Cancelled) => {}
         Err(Fail::Wait { seconds, message }) => {
             tracing::info!(item = id, url, seconds, "host asks to wait: {message}")

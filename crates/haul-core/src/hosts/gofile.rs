@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use super::{Cx, Entry, ResolveError};
+use super::{Algo, Checksum, Cx, Entry, ResolveError};
 use crate::config::secret;
 
 /// The `wt` parameter the content API expects.
@@ -85,6 +85,9 @@ fn walk(node: &Value, token: &str, out: &mut Vec<Entry>) {
                 size: child["size"].as_u64(),
                 headers: BTreeMap::from([("Cookie".into(), format!("accountToken={token}"))]),
                 exec: None,
+                checksum: child["md5"]
+                    .as_str()
+                    .and_then(|h| Checksum::from_hex(Algo::Md5, h)),
             });
         }
     }

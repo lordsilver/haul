@@ -410,7 +410,7 @@ function caption(it) {
     case "captcha":
       return "Needs you";
     case "done":
-      return `Completed${it.size ? ` · ${bytes(it.size)}` : ""}`;
+      return `${it.existing ? "Already downloaded" : "Completed"}${it.size ? ` · ${bytes(it.size)}` : ""}`;
     case "error":
       return it.retry_in ? `Failed · retrying in ${duration(it.retry_in)}` : "Failed";
     default:

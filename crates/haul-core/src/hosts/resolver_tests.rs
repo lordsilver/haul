@@ -56,7 +56,8 @@ async fn pixeldrain_file_list_and_captcha() {
             get(|Path(id): Path<String>, headers: HeaderMap| async move {
                 let auth = headers.get("authorization").map(|v| v.to_str().unwrap().to_string());
                 match id.as_str() {
-                    "abc" => Json(json!({"name": "a.zip", "size": 1234, "auth": auth})).into_response(),
+                    "abc" => Json(json!({"name": "a.zip", "size": 1234, "auth": auth, "hash_sha256": "AB".repeat(32)}))
+                        .into_response(),
                     "busy" => Json(json!({"name": "b.zip", "size": 1, "availability": "file_rate_limited_captcha_required"}))
                         .into_response(),
                     _ => StatusCode::NOT_FOUND.into_response(),
@@ -88,6 +89,8 @@ async fn pixeldrain_file_list_and_captcha() {
         (file[0].name.as_deref(), file[0].size),
         (Some("a.zip"), Some(1234))
     );
+    let sha = Checksum::from_hex(Algo::Sha256, &"ab".repeat(32));
+    assert_eq!(file[0].checksum, sha);
     // Basic auth with an empty user and the key as password.
     assert_eq!(
         file[0].headers.get("Authorization").map(String::as_str),
@@ -119,7 +122,11 @@ async fn pixeldrain_file_list_and_captcha() {
     );
     assert_eq!(
         pixeldrain::probe(&cx, "https://pixeldrain.com/u/abc").await,
-        Some(("a.zip".into(), Some(1234)))
+        Some(Probed {
+            name: "a.zip".into(),
+            size: Some(1234),
+            checksum: sha,
+        })
     );
     assert_eq!(
         pixeldrain::probe(&cx, "https://pixeldrain.com/l/xyz").await,
@@ -148,7 +155,7 @@ async fn gofile_guest_token_and_folders() {
                     return Json(json!({"status": "error-notPremium"}));
                 }
                 Json(json!({"status": "ok", "data": {"children": {
-                    "1": {"type": "file", "name": "x.7z", "size": 5, "link": "https://store.example/x.7z"},
+                    "1": {"type": "file", "name": "x.7z", "size": 5, "link": "https://store.example/x.7z", "md5": "0123456789abcdef0123456789abcdef"},
                     "2": {"type": "folder", "children": {
                         "3": {"type": "file", "name": "y.7z", "size": 6, "link": "https://store.example/y.7z"}
                     }}
@@ -169,6 +176,11 @@ async fn gofile_guest_token_and_folders() {
         .unwrap();
     let names: Vec<_> = entries.iter().map(|e| e.name.clone().unwrap()).collect();
     assert_eq!(names, ["x.7z", "y.7z"]);
+    assert_eq!(
+        entries[0].checksum,
+        Checksum::from_hex(Algo::Md5, "0123456789abcdef0123456789abcdef")
+    );
+    assert_eq!(entries[1].checksum, None);
     assert_eq!(
         entries[0].headers.get("Cookie").map(String::as_str),
         Some("accountToken=guest")
@@ -378,7 +390,15 @@ async fn nitroflare_premium_link() {
 #[tokio::test]
 async fn generic_links_and_probes() {
     let app = Router::new()
-        .route("/file/data.bin", get(|| async { vec![7u8; 300] }))
+        .route(
+            "/file/data.bin",
+            get(|| async {
+                (
+                    [("content-md5", "AAAAAAAAAAAAAAAAAAAAAA==")],
+                    vec![7u8; 300],
+                )
+            }),
+        )
         .route(
             "/nohead/data.bin",
             get(|headers: HeaderMap| async move {
@@ -408,6 +428,12 @@ async fn generic_links_and_probes() {
                     [
                         ("content-disposition", "attachment; filename=\"same.bin\""),
                         ("content-range", "bytes 0-65535/500000"),
+                        // Of these 16 bytes only, so not the file's.
+                        ("content-md5", "AAAAAAAAAAAAAAAAAAAAAA=="),
+                        (
+                            "repr-digest",
+                            "sha-256=:AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=:",
+                        ),
                     ],
                     vec![0u8; 16],
                 )
@@ -429,6 +455,10 @@ async fn generic_links_and_probes() {
         (e[0].name.as_deref(), e[0].size),
         (Some("data.bin"), Some(300))
     );
+    assert_eq!(
+        e[0].checksum,
+        Checksum::from_hex(Algo::Md5, &"0".repeat(32))
+    );
     let e = generic::resolve(&cx, &format!("{base}/nohead/data.bin"))
         .await
         .unwrap();
@@ -440,11 +470,19 @@ async fn generic_links_and_probes() {
 
     assert_eq!(
         generic::probe(&cx, &format!("{base}/hidden")).await,
-        Some(("same.bin".into(), Some(500_000)))
+        Some(Probed {
+            name: "same.bin".into(),
+            size: Some(500_000),
+            checksum: Checksum::from_hex(Algo::Sha256, &"01".repeat(32)),
+        })
     );
     assert_eq!(
         generic::probe(&cx, &format!("{base}/page")).await,
-        Some(("big.part2.rar".into(), None))
+        Some(Probed {
+            name: "big.part2.rar".into(),
+            size: None,
+            checksum: None,
+        })
     );
     assert_eq!(generic::probe(&cx, &format!("{base}/missing")).await, None);
 }

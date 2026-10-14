@@ -10,6 +10,7 @@ Early. Working today:
 
 - Queue with mirrors: the same file name on several hosts becomes one row; links that hide the name are looked up first (name and size), so they merge before anything downloads.
 - Preferred hosts: a file with mirrors downloads from the hosts you star, in that order, and otherwise from the fastest; speeds come from earlier downloads and are remembered for a week.
+- Files already downloaded are recognised before anything is fetched: the same name and size in the download folder, and the same checksum where the host publishes one (pixeldrain, gofile, and servers that send digest headers). The row finishes as **Already downloaded**; a different file by that name is saved as `name (1).ext`.
 - Per-host slots, cooldowns when a host answers 429 or 503, and failover to the next mirror. Dropped connections and unreachable hosts are retried with growing pauses before a mirror counts as failed, a host's failures weigh less as they age, and failed downloads are tried again on their own after a while.
 - Resume through HTTP ranges; partial files survive restarts and pauses, and move along when you change the download folder.
 - One global speed limit across every transfer, parallel downloads and per-host slots, all changeable while downloads run.

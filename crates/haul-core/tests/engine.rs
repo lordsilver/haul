@@ -37,6 +37,14 @@ fn content(name: &str, len: usize) -> Vec<u8> {
 
 const SIZE: usize = 600 * 1024;
 
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 #[derive(Clone, Default)]
 struct Server {
     /// "path range" for every file request, in order.
@@ -195,6 +203,14 @@ async fn start_server() -> (Server, u16) {
                         {"id": "second.rar", "name": "second.rar", "size": SIZE}
                     ]}),
                 })
+            }),
+        )
+        .route(
+            "/api/file/{id}/info",
+            // Publishes the SHA-256 of what /api/file/{id} serves.
+            get(|State(s): State<Server>, UrlPath(id): UrlPath<String>, headers: HeaderMap| async move {
+                log(&s, &format!("/api/file/{id}/info"), &headers);
+                Json(json!({"name": format!("{id}.bin"), "size": SIZE, "hash_sha256": sha256_hex(&content(&id, SIZE))}))
             }),
         )
         .route(
@@ -875,5 +891,94 @@ async fn host_speeds_survive_a_restart() {
         "{} then {}",
         before.speed,
         after.speed
+    );
+}
+
+/// The files in the download folder, without the partial-file folder.
+fn files_in(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n != ".partial")
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn a_downloaded_file_is_not_fetched_again() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let link = format!("{}/files/again.bin", t.ip);
+    engine.add_text(&link, "");
+    let s = wait_for(&engine, "done", all_done).await;
+    let first = s.items[0].path.clone().unwrap();
+    assert!(!s.items[0].existing);
+    assert!(engine.remove(&s.items[0].id).await.unwrap());
+    let before = t.server.requests("/files/again.bin").len();
+
+    engine.add_text(&link, "");
+    let s = wait_for(&engine, "done", all_done).await;
+    assert_eq!(
+        (
+            s.items[0].existing,
+            s.items[0].path.as_deref(),
+            s.items[0].done
+        ),
+        (true, Some(first.as_str()), SIZE as u64)
+    );
+    // One HEAD request learned the size; a download would have made
+    // another request and a second file, `again (1).bin`.
+    assert_eq!(t.server.requests("/files/again.bin").len(), before + 1);
+    assert_eq!(files_in(&t.root.join("dl")), ["again.bin"]);
+
+    // Recycling removed files covers only files a row downloaded itself.
+    let on = json!({"recycle_on_remove": true});
+    engine.update_settings(on.as_object().unwrap()).unwrap();
+    assert!(engine.remove(&s.items[0].id).await.unwrap());
+    assert_eq!(t.downloaded("again.bin"), content("again.bin", SIZE));
+}
+
+#[tokio::test]
+async fn a_different_file_by_the_same_name_is_numbered() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("dl")).unwrap();
+    std::fs::write(t.root.join("dl/other.bin"), "not the same").unwrap();
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/files/other.bin", t.ip), "");
+    let s = wait_for(&engine, "done", all_done).await;
+    assert!(!s.items[0].existing);
+    assert_eq!(t.downloaded("other (1).bin"), content("other.bin", SIZE));
+    assert_eq!(t.downloaded("other.bin"), b"not the same");
+}
+
+#[tokio::test]
+async fn a_published_checksum_decides() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("dl")).unwrap();
+    // The host's bytes, and other bytes of the same size under the same name.
+    std::fs::write(t.root.join("dl/kept.bin"), content("kept", SIZE)).unwrap();
+    std::fs::write(t.root.join("dl/twin.bin"), content("not the twin", SIZE)).unwrap();
+    let engine = t.engine().await;
+    engine.add_text(
+        "https://pixeldrain.com/u/kept https://pixeldrain.com/u/twin",
+        "",
+    );
+    let s = wait_for(&engine, "done", |s| s.items.len() == 2 && all_done(s)).await;
+    let existing = |name: &str| s.items.iter().find(|i| i.name == name).unwrap().existing;
+    assert!(existing("kept.bin"));
+    assert!(!existing("twin.bin"));
+    assert!(
+        t.server
+            .requests("/api/file/kept")
+            .iter()
+            .all(|r| r.starts_with("/api/file/kept/info")),
+        "kept.bin is not downloaded: {:?}",
+        t.server.requests("/api/file/kept")
+    );
+    assert_eq!(t.downloaded("twin (1).bin"), content("twin", SIZE));
+    assert_eq!(
+        files_in(&t.root.join("dl")),
+        ["kept.bin", "twin (1).bin", "twin.bin"]
     );
 }
