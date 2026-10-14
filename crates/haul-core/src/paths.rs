@@ -67,9 +67,23 @@ pub fn safe(name: &str) -> String {
     out
 }
 
+/// Turns a folder the user named, such as `Hosts/pixeldrain`, into a path
+/// inside the download folder: each part made [`safe`], and empty parts and
+/// parts of only dots (`.`, `..`) dropped, so it cannot lead anywhere else.
+pub fn subfolder(value: &str) -> PathBuf {
+    value
+        .split(['/', '\\'])
+        .map(str::trim)
+        .filter(|part| !part.chars().all(|c| c == '.'))
+        .map(safe)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::safe;
+    use std::path::{Path, PathBuf};
+
+    use super::{safe, subfolder};
 
     #[test]
     fn safe_names() {
@@ -82,5 +96,21 @@ mod tests {
         let long = format!("{}.part01.rar", "x".repeat(300));
         let s = safe(&long);
         assert!(s.len() <= 200 && s.ends_with(".rar"), "{s}");
+    }
+
+    #[test]
+    fn subfolders_stay_inside() {
+        assert_eq!(subfolder("pixeldrain"), Path::new("pixeldrain"));
+        assert_eq!(
+            subfolder(" Hosts\\pixel:drain/ "),
+            Path::new("Hosts").join("pixel_drain")
+        );
+        assert_eq!(subfolder("../../etc"), Path::new("etc"));
+        assert_eq!(subfolder("/abs/./x/"), Path::new("abs").join("x"));
+        assert_eq!(
+            subfolder("C:\\Downloads"),
+            Path::new("C_").join("Downloads")
+        );
+        assert_eq!(subfolder(" / .. / ... "), PathBuf::new());
     }
 }

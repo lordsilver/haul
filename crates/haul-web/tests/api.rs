@@ -22,6 +22,7 @@ async fn start() -> Server {
         data_dir: tmp.path().join("data"),
         download_dir: Some(tmp.path().join("dl")),
         config: Some(Config::default()),
+        recycle_bin: Some(tmp.path().join("bin")),
     })
     .await
     .unwrap();
@@ -266,14 +267,18 @@ async fn settings_round_trip_and_secrets_stay_out_of_the_stream() {
     let ok = s
         .post(
             "/api/settings",
-            json!({"theme": "dark", "1fichier_key": "s3cret", "watch_clipboard": true}),
+            json!({"theme": "dark", "1fichier_key": "s3cret", "watch_clipboard": true, "recycle_on_remove": true}),
         )
         .await;
     assert_eq!(ok.status(), StatusCode::OK);
     let state = s.state().await;
     assert_eq!(
-        (state["theme"].as_str(), state["watch_clipboard"].as_bool()),
-        (Some("dark"), Some(true))
+        (
+            state["theme"].as_str(),
+            state["watch_clipboard"].as_bool(),
+            state["recycle_on_remove"].as_bool()
+        ),
+        (Some("dark"), Some(true), Some(true))
     );
     assert!(
         !state.to_string().contains("s3cret"),
@@ -302,6 +307,15 @@ async fn settings_round_trip_and_secrets_stay_out_of_the_stream() {
         let r = s.post("/api/settings", bad.clone()).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{bad}");
     }
+    let folder = s
+        .post("/api/host/example.com/folder", json!({"folder": "Example"}))
+        .await;
+    assert_eq!(folder.status(), StatusCode::OK);
+    let missing = s.post("/api/host/example.com/folder", json!({})).await;
+    assert!(missing.status().is_client_error(), "{}", missing.status());
+    let gone = s.post("/api/item/no-such-id/remove", json!({})).await;
+    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+
     let picker = s.post("/api/settings/download-dir/pick", json!({})).await;
     assert_eq!(picker.status(), StatusCode::NOT_IMPLEMENTED);
 }

@@ -948,6 +948,10 @@ input.wide {
   min-width: 220px;
 }
 
+.inline-form .hint {
+  flex-basis: 100%;
+}
+
 /* ToggleSwitch: "On"/"Off" beside a pill with a sliding knob */
 .toggle {
   display: inline-flex;

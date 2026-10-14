@@ -42,6 +42,13 @@ pub use settings::SettingsView;
 /// Automatic retries of a failed download, when `retry_failed_minutes` is on.
 const AUTO_RETRIES: u32 = 3;
 
+/// What the system calls the place deleted files go.
+pub const BIN: &str = if cfg!(windows) {
+    "Recycle Bin"
+} else {
+    "trash"
+};
+
 pub struct Options {
     /// Holds `config.toml`, the queue and the instance lock.
     pub data_dir: PathBuf,
@@ -49,6 +56,9 @@ pub struct Options {
     pub download_dir: Option<PathBuf>,
     /// Used instead of reading `config.toml` and the environment.
     pub config: Option<Config>,
+    /// A folder that removed files move to instead of the system's
+    /// [`BIN`]; only tests set it.
+    pub recycle_bin: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -139,6 +149,10 @@ pub struct Snapshot {
     pub proxy: bool,
     pub theme: Theme,
     pub watch_clipboard: bool,
+    /// Removing a finished download moves its file to the [`BIN`].
+    pub recycle_on_remove: bool,
+    /// [`BIN`], for the views to name it.
+    pub bin: &'static str,
     /// Moves whenever a setting changes, so views can fetch them again.
     pub config_version: u64,
     /// Why the settings file on disk is not in effect.
@@ -186,6 +200,8 @@ pub struct HostView {
     pub blocked: bool,
     pub route: Route,
     pub cooldown: u64,
+    /// Subfolder of the download folder for its files; empty for none.
+    pub folder: String,
 }
 
 struct HostStats {
@@ -352,6 +368,7 @@ struct Inner {
     download_dir: RwLock<PathBuf>,
     /// Given on the command line, so the settings do not move it.
     download_dir_fixed: bool,
+    recycle_bin: Option<PathBuf>,
     clients: RwLock<Arc<Clients>>,
     tokens: Tokens,
     limiter: Limiter,
@@ -424,6 +441,7 @@ impl Engine {
             data_dir,
             download_dir: RwLock::new(download_dir),
             download_dir_fixed,
+            recycle_bin: opts.recycle_bin,
             clients: RwLock::new(Arc::new(clients)),
             tokens: Tokens::default(),
             wake: Notify::new(),
@@ -850,7 +868,7 @@ impl Engine {
             self.touch(&mut st);
         }
         match &entry.exec {
-            Some(exec) => self.run_exec(id, &entry, exec, cancel).await?,
+            Some(exec) => self.run_exec(id, &entry, host, exec, cancel).await?,
             None => self.fetch(id, &entry, host, &http, cancel).await?,
         }
         Ok(Outcome::Done)
@@ -1109,19 +1127,7 @@ impl Engine {
         http: &Http,
         cancel: &CancellationToken,
     ) -> Result<(), Fail> {
-        let package = self
-            .lock()
-            .items
-            .get(id)
-            .map(|i| i.package.clone())
-            .ok_or(Fail::Cancelled)?;
-        let out_dir = if package.is_empty() {
-            self.download_dir()
-        } else {
-            self.download_dir().join(paths::safe(&package))
-        };
         let part = self.part_path(id);
-        tokio::fs::create_dir_all(&out_dir).await?;
         tokio::fs::create_dir_all(part.parent().expect("part has a parent")).await?;
         let mut have = tokio::fs::metadata(&part)
             .await
@@ -1252,7 +1258,30 @@ impl Engine {
                 )));
             }
         }
+        let package = self
+            .lock()
+            .items
+            .get(id)
+            .map(|i| i.package.clone())
+            .ok_or(Fail::Cancelled)?;
+        let out_dir = self.out_dir(host, &package);
+        tokio::fs::create_dir_all(&out_dir).await?;
         self.place(id, &part, &out_dir)
+    }
+
+    /// Where a finished file goes: the download folder, then the host's
+    /// subfolder if it has one, then the package's folder. Decided when the
+    /// file is complete, so a changed setting applies to running downloads.
+    fn out_dir(&self, host: &str, package: &str) -> PathBuf {
+        let mut dir = self.download_dir();
+        let folder = self.cfg().folder_for(host);
+        if !folder.as_os_str().is_empty() {
+            dir.push(folder);
+        }
+        if !package.is_empty() {
+            dir.push(paths::safe(package));
+        }
+        dir
     }
 
     /// Moves a finished partial file to its final name, never overwriting.
@@ -1288,6 +1317,7 @@ impl Engine {
         &self,
         id: &str,
         entry: &Entry,
+        host: &str,
         exec: &[String],
         cancel: &CancellationToken,
     ) -> Result<(), Fail> {
@@ -1297,11 +1327,7 @@ impl Engine {
             .get(id)
             .map(|i| i.package.clone())
             .unwrap_or_default();
-        let out = self.download_dir().join(paths::safe(if package.is_empty() {
-            "mega"
-        } else {
-            &package
-        }));
+        let out = self.out_dir(host, if package.is_empty() { "mega" } else { &package });
         tokio::fs::create_dir_all(&out).await?;
         if let Some(it) = self.lock().items.get_mut(id) {
             it.path = Some(out.display().to_string());
@@ -1424,6 +1450,34 @@ impl Engine {
         drop(st);
         self.0.wake.notify_one();
         true
+    }
+
+    /// Takes an item off the list, and its partial file with it. A finished
+    /// file stays where it is unless `recycle_on_remove` is on: then it goes
+    /// to the [`BIN`] first, and if that fails the item stays as well.
+    /// Returns false when there is no such item.
+    pub async fn remove(&self, id: &str) -> Result<bool, String> {
+        let file = {
+            let st = self.lock();
+            let Some(it) = st.items.get(id) else {
+                return Ok(false);
+            };
+            (it.status == Status::Done && self.cfg().recycle_on_remove)
+                .then(|| it.path.clone())
+                .flatten()
+        };
+        if let Some(file) = file.map(PathBuf::from) {
+            let bin = self.0.recycle_bin.clone();
+            let shown = file.display().to_string();
+            let recycled = tokio::task::spawn_blocking(move || recycle(&file, bin.as_deref()))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| format!("could not move {shown} to the {BIN}: {e}"))?;
+            if recycled {
+                tracing::info!("moved {shown} to the {BIN}");
+            }
+        }
+        Ok(self.item_action(id, ItemAction::Remove))
     }
 
     /// Uses a direct link the user supplied (pasted, or caught from the
@@ -1582,6 +1636,7 @@ impl Engine {
                 cooldown: h
                     .cooldown
                     .map_or(0, |c| c.saturating_duration_since(now).as_secs()),
+                folder: cfg.folder_for(name).display().to_string(),
             })
             .collect();
         hosts.sort_by(|a, b| b.speed.total_cmp(&a.speed));
@@ -1595,6 +1650,8 @@ impl Engine {
             proxy: has_proxy,
             theme: cfg.theme,
             watch_clipboard: cfg.watch_clipboard,
+            recycle_on_remove: cfg.recycle_on_remove,
+            bin: BIN,
             config_version: self.0.config_version.load(Ordering::Relaxed),
             config_error: self
                 .0
@@ -1687,7 +1744,53 @@ fn drop_used_pre(it: &mut Item, url: &str) {
     }
 }
 
+/// Moves a finished file to the system's bin, or into `bin` in tests.
+/// Returns false, leaving it alone, when there is no such file: it is gone
+/// already, or it is a folder (megatools downloads into one that other
+/// downloads share).
+fn recycle(file: &Path, bin: Option<&Path>) -> Result<bool, String> {
+    if !file.is_file() {
+        return Ok(false);
+    }
+    match bin {
+        Some(bin) => {
+            let name = file.file_name().ok_or("no file name")?;
+            std::fs::create_dir_all(bin)
+                .and_then(|()| std::fs::rename(file, bin.join(name)))
+                .map_err(|e| e.to_string())?;
+        }
+        None => trash::delete(file).map_err(|e| e.to_string())?,
+    }
+    Ok(true)
+}
+
 fn display_name(it: &Item) -> String {
     it.key_name()
         .unwrap_or_else(|| it.mirrors.first().cloned().unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    /// The system's own bin, on the platforms that can list it: the file
+    /// leaves its folder for the bin, and the test empties exactly that item.
+    #[test]
+    #[cfg(any(windows, all(unix, not(target_os = "macos"))))]
+    fn recycles_into_the_system_bin() {
+        use super::recycle;
+
+        let dir = tempfile::tempdir().unwrap();
+        let name = format!("haul-test-{}.bin", uuid::Uuid::new_v4());
+        let file = dir.path().join(&name);
+        std::fs::write(&file, b"x").unwrap();
+        assert!(recycle(&file, None).unwrap());
+        assert!(!file.exists());
+        let mut ours = trash::os_limited::list().unwrap();
+        ours.retain(|item| item.name == *name);
+        assert_eq!(ours.len(), 1, "one item in the bin");
+        trash::os_limited::purge_all(&ours).unwrap();
+
+        assert!(!recycle(&file, None).unwrap(), "gone already");
+        assert!(!recycle(dir.path(), None).unwrap(), "folders stay");
+        assert!(dir.path().exists());
+    }
 }

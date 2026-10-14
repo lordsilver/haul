@@ -31,6 +31,7 @@ pub struct SettingsView {
     pub rate_limit_mbps: f64,
     pub theme: Theme,
     pub watch_clipboard: bool,
+    pub recycle_on_remove: bool,
     pub resume_attempts: u32,
     pub retry_failed_minutes: u64,
     pub proxy: String,
@@ -83,6 +84,7 @@ impl Engine {
             rate_limit_mbps: cfg.rate_limit_mbps,
             theme: cfg.theme,
             watch_clipboard: cfg.watch_clipboard,
+            recycle_on_remove: cfg.recycle_on_remove,
             resume_attempts: cfg.resume_attempts,
             retry_failed_minutes: cfg.retry_failed_minutes,
             proxy: shown(&cfg.proxy),
@@ -179,6 +181,13 @@ impl Engine {
                     cfg.watch_clipboard = on;
                     writes.push(top(key, Some(on.into())));
                 }
+                "recycle_on_remove" => {
+                    let on = value
+                        .as_bool()
+                        .ok_or("recycle_on_remove is true or false")?;
+                    cfg.recycle_on_remove = on;
+                    writes.push(top(key, Some(on.into())));
+                }
                 "resume_attempts" => {
                     let n = number(value, key)?.min(20) as u32;
                     cfg.resume_attempts = n;
@@ -257,6 +266,25 @@ impl Engine {
             Some((n as i64).into()),
         );
         self.log_failure(self.write_and_apply(cfg, vec![write]));
+    }
+
+    /// The subfolder of the download folder for files from `host`; an empty
+    /// one puts them back in the download folder itself. Saved the way it is
+    /// used, so the file shows the folder files actually go to.
+    pub fn set_host_folder(&self, host: &str, folder: &str) -> Result<(), String> {
+        let folder = paths::subfolder(folder)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let mut cfg = (*self.cfg()).clone();
+        let key = vec!["folders".into(), host.to_string()];
+        let write = if folder.is_empty() {
+            cfg.folders.remove(host);
+            (key, None)
+        } else {
+            cfg.folders.insert(host.to_string(), folder.clone());
+            (key, Some(folder.as_str().into()))
+        };
+        self.write_and_apply(cfg, vec![write])
     }
 
     /// The user's choice of route for one host. `Direct` leaves the proxy and

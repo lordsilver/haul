@@ -418,7 +418,7 @@ function caption(it) {
   }
 }
 
-function rowActions(it) {
+function rowActions(it, s) {
   const out = [];
   const subtle = (label, name, onclick) => button(label, { icon: name, kind: "subtle small", iconOnly: true, onclick });
   if (ACTIVE.includes(it.status)) out.push(subtle("Pause", "pause", () => act(it.id, "pause")));
@@ -427,7 +427,13 @@ function rowActions(it) {
   if (it.status === "done" && it.path) {
     out.push(subtle("Show in folder", "folder-open", () => act(it.id, "reveal")));
   }
-  out.push(subtle(it.status === "done" ? "Clear from list" : "Remove", "dismiss", () => act(it.id, "remove")));
+  if (it.status === "done" && it.path && s.recycle_on_remove) {
+    const recycle = () =>
+      api(`/api/item/${encodeURIComponent(it.id)}/remove`).then(() => toast(`Moved ${it.name} to the ${s.bin}`, "success"), report);
+    out.push(subtle(`Move to the ${s.bin}`, "delete", recycle));
+  } else {
+    out.push(subtle(it.status === "done" ? "Clear from list" : "Remove", "dismiss", () => act(it.id, "remove")));
+  }
   return out;
 }
 
@@ -564,10 +570,10 @@ function updateRow(r, it, s) {
     r.rate.replaceChildren(...(speed ? [el("b", {}, speed), left ? `${left} left` : ""] : []));
   }
 
-  const actionsKey = `${it.status}|${Boolean(it.path)}`;
+  const actionsKey = `${it.status}|${Boolean(it.path)}|${s.recycle_on_remove}`;
   if (r.actionsKey !== actionsKey) {
     r.actionsKey = actionsKey;
-    r.actions.replaceChildren(...rowActions(it));
+    r.actions.replaceChildren(...rowActions(it, s));
   }
 
   const needsHelp = it.status === "captcha";
@@ -672,6 +678,40 @@ function confirmButton(label, confirmLabel, action) {
   return node;
 }
 
+// The subfolder for one host's files, typed in a form under its card.
+function editFolder(c, name) {
+  if (c.node.querySelector("form")) {
+    c.node.querySelector("input").focus();
+    return;
+  }
+  const current = state?.hosts.find((h) => h.name === name)?.folder ?? "";
+  const input = el("input", { type: "text", value: current, placeholder: "Subfolder", "aria-label": `Folder for files from ${name}` });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") form.remove();
+  });
+  const form = el(
+    "form",
+    {
+      class: "inline-form",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        try {
+          await api(`/api/host/${encodeURIComponent(name)}/folder`, { folder: input.value.trim() });
+          form.remove();
+        } catch (error) {
+          report(error);
+        }
+      },
+    },
+    input,
+    el("button", { type: "submit", class: "button accent" }, "Save"),
+    button("Cancel", { onclick: () => form.remove() }),
+    el("p", { class: "hint" }, `Files from ${name} go to this folder inside ${state?.download_dir ?? "the download folder"}. Leave it empty for the download folder itself.`),
+  );
+  c.node.append(form);
+  input.focus();
+}
+
 function makeHostCard(name) {
   const c = { key: null };
   c.stats = el("div", { class: "sub" });
@@ -690,6 +730,7 @@ function makeHostCard(name) {
       c.slots,
       button("More slots", { icon: "add", kind: "subtle small", iconOnly: true, onclick: () => setLimit(name, 1) }),
     ),
+    button("Folder for this host's files", { icon: "folder", kind: "subtle small", iconOnly: true, onclick: () => editFolder(c, name) }),
   );
   return c;
 }
@@ -728,12 +769,13 @@ function renderHosts(s) {
     setText(c.stats, stats.join(" · "));
     setText(c.slots, `${h.active} / ${h.limit}`);
     const best = index === 0 && h.speed > 0;
-    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}`;
+    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}`;
     if (c.key !== key) {
       c.key = key;
       c.node.classList.toggle("best", best);
       const pills = [];
       if (best) pills.push(el("span", { class: "pill success" }, "Fastest"));
+      if (h.folder) pills.push(el("span", { class: "pill", title: "Its files go to this subfolder" }, icon("folder"), h.folder));
       if (s.proxy) pills.push(el("span", { class: `pill${h.route === "direct" ? " caution" : ""}` }, icon("shield"), `via ${h.route}`));
       c.pills.replaceChildren(...pills);
       for (const bar of c.node.querySelectorAll(":scope > .infobar")) bar.remove();
@@ -949,6 +991,12 @@ function renderSettings(s) {
       numberField("rate_limit_mbps", d.rate_limit_mbps, { min: 0, step: 0.5, label: "Speed limit", unit: "MB/s" }),
     ),
     folderCard(s),
+    settingCard(
+      "delete",
+      `Move removed files to the ${s.bin}`,
+      "When you remove a finished download from the list, its file goes too. Clear completed only tidies the list.",
+      toggleSwitch("recycle_on_remove", d.recycle_on_remove, `Move removed files to the ${s.bin}`),
+    ),
     s.desktop
       ? settingCard(
           "clipboard-link",

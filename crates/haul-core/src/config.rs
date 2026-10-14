@@ -13,6 +13,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::paths;
+
 /// File name of the configuration inside the data directory.
 pub const FILE: &str = "config.toml";
 
@@ -34,6 +36,9 @@ pub struct Config {
     pub theme: Theme,
     /// Add links copied anywhere (desktop app).
     pub watch_clipboard: bool,
+    /// Removing a finished download from the list also moves its file to the
+    /// Recycle Bin.
+    pub recycle_on_remove: bool,
     /// Automatic retries of a mirror after a dropped connection or a
     /// network error, before it counts as failed.
     pub resume_attempts: u32,
@@ -48,6 +53,8 @@ pub struct Config {
     pub limits: BTreeMap<String, usize>,
     /// The user's route choice per host when a proxy is configured.
     pub routes: BTreeMap<String, Route>,
+    /// Subfolder of the download folder for the files from a host.
+    pub folders: BTreeMap<String, String>,
     #[serde(rename = "1fichier_key")]
     pub onefichier_key: Option<String>,
     pub pixeldrain_key: Option<String>,
@@ -73,12 +80,14 @@ impl Default for Config {
             rate_limit_mbps: 0.0,
             theme: Theme::System,
             watch_clipboard: false,
+            recycle_on_remove: false,
             resume_attempts: 3,
             retry_failed_minutes: 15,
             proxy: None,
             user_agent: DEFAULT_USER_AGENT.into(),
             limits: BTreeMap::new(),
             routes: BTreeMap::new(),
+            folders: BTreeMap::new(),
             onefichier_key: None,
             pixeldrain_key: None,
             rapidgator_user: None,
@@ -178,6 +187,15 @@ impl Config {
     /// The proxy, if one is configured.
     pub fn proxy(&self) -> Option<&str> {
         secret(&self.proxy)
+    }
+
+    /// The subfolder for files from `host`, relative to the download folder;
+    /// empty when the host has none.
+    pub fn folder_for(&self, host: &str) -> PathBuf {
+        self.folders
+            .get(host)
+            .map(|f| paths::subfolder(f))
+            .unwrap_or_default()
     }
 }
 
@@ -388,6 +406,10 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # Add links copied anywhere (desktop app).
 # watch_clipboard = false
 
+# Removing a finished download from the list also moves its file to the
+# Recycle Bin (the trash outside Windows). Clear completed never does.
+# recycle_on_remove = false
+
 # Retries of a mirror after a dropped connection or a network error.
 # resume_attempts = 3
 
@@ -422,6 +444,10 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # Hosts allowed to bypass the proxy ("direct"), or kept on it ("proxy").
 # [routes]
 # "example.com" = "direct"
+
+# Subfolders of the download folder for the files from these hosts.
+# [folders]
+# "pixeldrain.com" = "pixeldrain"
 "#;
 
 /// A configured, non-empty value.
@@ -467,6 +493,7 @@ mod tests {
             max_total = 4
             rate_limit_mbps = 2.5
             watch_clipboard = true
+            recycle_on_remove = true
             retry_failed_minutes = 0
             proxy = "socks5://u:p@host:1080"
             1fichier_key = "k1"
@@ -474,6 +501,8 @@ mod tests {
             "1fichier.com" = 1
             [routes]
             "a.example" = "direct"
+            [folders]
+            "a.example" = "Hosts/../a"
             "#,
         )
         .unwrap();
@@ -485,6 +514,9 @@ mod tests {
         assert_eq!(cfg.limit_for("1fichier.com"), 1);
         assert_eq!(cfg.limit_for("other.example"), FALLBACK_LIMIT);
         assert_eq!(cfg.routes.get("a.example"), Some(&Route::Direct));
+        assert!(cfg.recycle_on_remove);
+        assert_eq!(cfg.folder_for("a.example"), Path::new("Hosts").join("a"));
+        assert_eq!(cfg.folder_for("other.example"), PathBuf::new());
         assert_eq!(cfg.user_agent, DEFAULT_USER_AGENT);
         let typo = Config::parse("max_totl = 3").unwrap_err();
         assert!(typo.contains("max_totl"), "{typo}");

@@ -100,6 +100,7 @@ async fn start(app: &AppHandle, data_dir: PathBuf) -> Result<(), String> {
         data_dir,
         download_dir: None,
         config: None,
+        recycle_bin: None,
     })
     .await
     .map_err(|e| e.to_string())?;

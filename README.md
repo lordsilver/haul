@@ -14,6 +14,7 @@ Early. Working today:
 - One global speed limit across every transfer, parallel downloads and per-host slots, all changeable while downloads run.
 - Every setting can be changed in the app or in `config.toml`; each is written to the other, and edits to the file apply within a second.
 - Clipboard watching (desktop app): links you copy anywhere are added when they point at a supported host or a file.
+- Optional per-host subfolders of the download folder, and an option to move a finished download's file to the Recycle Bin when you remove it from the list.
 - Proxy (SOCKS5 or HTTP, with credentials): every host goes through it unless you allow a direct route for that host. A 403 or 451 through the proxy flags the host instead of silently leaving the tunnel.
 - Hosts: pixeldrain (files and lists), gofile, buzzheavier, 1fichier, rapidgator and nitroflare (premium accounts), mega.nz through `megatools`, and any direct link. [docs/hosts.md](docs/hosts.md) says how each one is handled and what has been verified against the real host.
 - Import of JDownloader `.dlc` containers (through JDownloader's key service) and of any text file with links in it.
@@ -39,7 +40,8 @@ cd crates/haul-desktop && npx @tauri-apps/cli@2 build   # installers in target/r
 
 - **Add links**: paste anywhere in the window (Ctrl+V), use **Add links**, drop links or `.dlc` / `.txt` files on the window, or pass them on the command line: `Haul.exe <link or file>…`. A second launch hands its links to the running app.
 - **Needs you**: a host that wants a captcha or a browser step parks its download under **Needs you**. In the desktop app, **Open here** opens the page in Haul's own browser window: solve it and press the host's download button, and Haul takes the download over (with the page's cookies, through your proxy if the host uses it). Anywhere else, **Open page** and **Paste link** do the same by hand.
-- **Hosts**: transfer speed per host, slots (files downloaded from it at once), and the proxy route. A host that looks blocked through the proxy offers **Allow direct**, which needs a second click because it reveals your real IP address to that host.
+- **Hosts**: transfer speed per host, slots (files downloaded from it at once), the folder its files go to (a subfolder of the download folder), and the proxy route. A host that looks blocked through the proxy offers **Allow direct**, which needs a second click because it reveals your real IP address to that host.
+- **Removing**: the ✕ on a row takes the download off the list and leaves its file alone, unless **Settings › Move removed files to the Recycle Bin** is on; then a finished download's file goes to the Recycle Bin. **Clear completed** only tidies the list.
 - **Headless**: `haul --port 8765 --dir D:\Downloads`, then open <http://127.0.0.1:8765/>. `haul --help` lists the options.
 - **From any page**: this bookmarklet opens Haul's Add dialog with the page you are on (adding still takes your click): `javascript:location.href='http://127.0.0.1:8765/#/add/'+encodeURIComponent(location.href)`
 
@@ -53,6 +55,7 @@ max_total = 8                          # files at the same time
 rate_limit_mbps = 0                    # MB/s, 0 = no limit
 theme = "system"                       # system, light or dark
 watch_clipboard = false                # desktop app
+recycle_on_remove = false              # removing a finished download also moves its file to the Recycle Bin
 resume_attempts = 3                    # retries per mirror after network trouble
 retry_failed_minutes = 15              # retry failed downloads (up to 3 times), 0 = never
 proxy = "socks5://user:pass@host:1080" # every host goes through it unless allowed direct
@@ -74,6 +77,9 @@ user_agent = "..."                             # default: Haul's own
 
 [routes]            # hosts allowed off the proxy
 "example.com" = "direct"
+
+[folders]           # subfolders of the download folder per host
+"pixeldrain.com" = "pixeldrain"
 ```
 
 Environment variables: `HAUL_PROXY` replaces `proxy`; `HAUL_1FICHIER_KEY`, `HAUL_PIXELDRAIN_KEY`, `HAUL_RAPIDGATOR_USER`, `HAUL_RAPIDGATOR_PASS`, `HAUL_NITROFLARE_USER`, `HAUL_NITROFLARE_KEY` and `HAUL_GOFILE_TOKEN` fill the account keys the file leaves unset. Settings shows those as set by the environment and does not change them. `HAUL_DATA_DIR` moves the data folder and `HAUL_PORT` the local port (default 8765).

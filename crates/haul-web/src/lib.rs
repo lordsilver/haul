@@ -120,6 +120,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/item/{id}/reveal", post(reveal))
         .route("/api/item/{id}/{action}", post(item))
         .route("/api/host/{name}/limit/{n}", post(host_limit))
+        .route("/api/host/{name}/folder", post(host_folder))
         .route("/api/host/{name}/route/{mode}", post(host_route))
         .route("/api/global/{action}", post(global))
         .route("/api/settings", get(settings).post(update_settings))
@@ -298,7 +299,15 @@ async fn item(State(app): State<App>, Path((id, action)): Path<(String, String)>
     let Ok(action) = action.parse::<ItemAction>() else {
         return error(StatusCode::BAD_REQUEST, "unknown action");
     };
-    if app.engine.item_action(&id, action) {
+    let found = match action {
+        // May move the file to the Recycle Bin, which can fail.
+        ItemAction::Remove => match app.engine.remove(&id).await {
+            Ok(found) => found,
+            Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        },
+        _ => app.engine.item_action(&id, action),
+    };
+    if found {
         ok()
     } else {
         error(StatusCode::NOT_FOUND, "no such item")
@@ -308,6 +317,23 @@ async fn item(State(app): State<App>, Path((id, action)): Path<(String, String)>
 async fn host_limit(State(app): State<App>, Path((name, n)): Path<(String, usize)>) -> Response {
     app.engine.set_host_limit(&name, n);
     ok()
+}
+
+#[derive(Deserialize)]
+struct Folder {
+    folder: String,
+}
+
+/// The subfolder for files from one host; empty for the download folder.
+async fn host_folder(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    Json(body): Json<Folder>,
+) -> Response {
+    match app.engine.set_host_folder(&name, &body.folder) {
+        Ok(()) => ok(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
 }
 
 /// The user's approval to reach one host directly, or to go back to the proxy.

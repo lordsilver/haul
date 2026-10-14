@@ -252,6 +252,7 @@ impl Setup {
             data_dir: self.root.join("data"),
             download_dir: None,
             config: Some(self.config()),
+            recycle_bin: Some(self.root.join("bin")),
         }
     }
 
@@ -499,9 +500,8 @@ async fn folder_expands_in_place() {
 /// Starts from `config.toml` in the data folder, as the apps do.
 async fn start_from_file(t: &Setup) -> Engine {
     let options = || Options {
-        data_dir: t.root.join("data"),
-        download_dir: None,
         config: None,
+        ..t.options()
     };
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -753,4 +753,61 @@ async fn a_folder_row_fails_over_without_reusing_the_folder_link() {
         1,
         "the dead folder link is tried once: {dead:?}"
     );
+}
+
+#[tokio::test]
+async fn host_folders_and_the_recycle_bin() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine
+        .set_host_folder("localhost", " Hosts/../local:host ")
+        .unwrap();
+    engine.add_text(
+        &format!(
+            "{ip}/files/a.bin {name}/files/b.bin {name}/files/c.bin {name}/files/d.bin",
+            ip = t.ip,
+            name = t.name
+        ),
+        "",
+    );
+    let s = wait_for(&engine, "done", |s| s.items.len() == 4 && all_done(s)).await;
+    let folder = std::path::Path::new("Hosts").join("local_host");
+    assert_eq!(t.downloaded("a.bin"), content("a.bin", SIZE));
+    assert_eq!(
+        t.downloaded(&folder.join("b.bin").to_string_lossy()),
+        content("b.bin", SIZE)
+    );
+    let local = s.hosts.iter().find(|h| h.name == "localhost").unwrap();
+    assert_eq!(local.folder, folder.display().to_string());
+    let id = |name: &str| s.items.iter().find(|i| i.name == name).unwrap().id.clone();
+    let dl = t.root.join("dl");
+    let bin = t.root.join("bin");
+
+    // Off by default: removing a finished download only clears its row.
+    assert!(engine.remove(&id("a.bin")).await.unwrap());
+    assert!(dl.join("a.bin").is_file());
+
+    // On: the file goes to the bin first; Clear completed never touches files.
+    let on = json!({"recycle_on_remove": true});
+    engine.update_settings(on.as_object().unwrap()).unwrap();
+    assert!(engine.remove(&id("b.bin")).await.unwrap());
+    assert!(!dl.join(&folder).join("b.bin").exists());
+    assert_eq!(
+        std::fs::read(bin.join("b.bin")).unwrap(),
+        content("b.bin", SIZE)
+    );
+    // A file the user moved away already: the row goes, nothing else happens.
+    std::fs::remove_file(dl.join(&folder).join("c.bin")).unwrap();
+    assert!(engine.remove(&id("c.bin")).await.unwrap());
+    assert!(!bin.join("c.bin").exists());
+    engine.clear_done();
+    assert!(dl.join(&folder).join("d.bin").is_file());
+    assert!(engine.snapshot().items.is_empty());
+    assert!(!engine.remove("no-such-id").await.unwrap());
+
+    // An empty folder puts the host's files back in the download folder.
+    engine.set_host_folder("localhost", " ").unwrap();
+    engine.add_text(&format!("{}/files/e.bin", t.name), "");
+    wait_for(&engine, "done", all_done).await;
+    assert_eq!(t.downloaded("e.bin"), content("e.bin", SIZE));
 }
