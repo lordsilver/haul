@@ -15,6 +15,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # Incremental state is never reused on fresh runners; leaving it out keeps
+  # the cached target lean.
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   check:
@@ -35,7 +38,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Mr. Boxington target mode: restores the pruned target tree and Cargo
+      # registry, so a change rebuilds only what it touches. Main saves the
+      # baseline; each pull request saves its own revisions on top of it.
+      - uses: jdx/mr-boxington-action@47ce49b32025d93a7a2f4570815afaa2b7092240 # v1.7.2
+        with:
+          version: "1.24.0"
+          save-on-pull-request: true
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: runner.os == 'Linux'
         with:
@@ -47,6 +56,6 @@ jobs:
         if: runner.os == 'Linux'
         run: for f in crates/haul-web/ui/*.js; do node --check "$f"; done
       - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets
+        run: mbx clippy --locked --workspace --all-targets
       - name: Test
-        run: cargo test --locked --workspace
+        run: mbx test --locked --workspace
