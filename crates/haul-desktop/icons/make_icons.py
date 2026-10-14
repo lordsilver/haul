@@ -52,10 +52,11 @@ def gradient(y, spec):
 
 
 def render(size):
+    """Straight-alpha RGBA rows, top to bottom."""
     scale = size / 64
     rows = []
     for py in range(size):
-        row = bytearray([0])  # PNG filter type: none
+        row = bytearray()
         for px in range(size):
             x, y = (px + 0.5) / scale, (py + 0.5) / scale
             r = g = b = a = 0.0
@@ -72,19 +73,30 @@ def render(size):
                 r, g, b = r / a, g / a, b / a
             row += bytes((round(r), round(g), round(b), round(255 * a)))
         rows.append(bytes(row))
-    return png(size, b"".join(rows))
+    return rows
 
 
-def png(size, raw):
+def png(size, rows):
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
+    raw = b"".join(b"\0" + row for row in rows)  # PNG filter type: none
     header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
 
 
+def dib(size, rows):
+    """A classic icon bitmap: header, bottom-up BGRA rows, then the 1-bit AND
+    mask, left clear because the alpha channel decides."""
+    header = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0, 0, 0, 0, 0, 0)
+    pixels = bytearray()
+    for row in reversed(rows):
+        for i in range(0, len(row), 4):
+            pixels += bytes((row[i + 2], row[i + 1], row[i], row[i + 3]))
+    return header + bytes(pixels) + bytes((size + 31) // 32 * 4 * size)
+
+
 def ico(images):
-    # PNG-compressed entries, which Windows supports since Vista.
     out = struct.pack("<HHH", 0, 1, len(images))
     offset = 6 + 16 * len(images)
     body = b""
@@ -96,12 +108,15 @@ def ico(images):
 
 
 def main():
-    cache = {size: render(size) for size in (16, 24, 32, 48, 64, 128, 256, 512)}
-    (HERE / "32x32.png").write_bytes(cache[32])
-    (HERE / "128x128.png").write_bytes(cache[128])
-    (HERE / "128x128@2x.png").write_bytes(cache[256])
-    (HERE / "icon.png").write_bytes(cache[512])
-    (HERE / "icon.ico").write_bytes(ico([(s, cache[s]) for s in (16, 24, 32, 48, 64, 256)]))
+    rows = {size: render(size) for size in (16, 24, 32, 48, 64, 128, 256, 512)}
+    (HERE / "32x32.png").write_bytes(png(32, rows[32]))
+    (HERE / "128x128.png").write_bytes(png(128, rows[128]))
+    (HERE / "128x128@2x.png").write_bytes(png(256, rows[256]))
+    (HERE / "icon.png").write_bytes(png(512, rows[512]))
+    # Bitmaps below 256 px and PNG only at 256, as Microsoft recommends for
+    # icons: every part of Windows reads the bitmaps.
+    small = [(s, dib(s, rows[s])) for s in (16, 24, 32, 48, 64)]
+    (HERE / "icon.ico").write_bytes(ico(small + [(256, png(256, rows[256]))]))
 
 
 if __name__ == "__main__":

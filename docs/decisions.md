@@ -62,6 +62,10 @@ Removing a download from the list leaves its file alone unless the user turns on
 
 A host's folder is decided when a file finishes, by the host that delivered it: a file merged from several mirrors goes where the mirror that won sends it, and a changed folder applies to downloads already running. Folder names are cleaned like file names and cannot climb out of the download folder.
 
+## Installing for one user or for everyone
+
+The Windows installer offers both: for the current user in `%LOCALAPPDATA%\Haul`, which needs no administrator rights, or for everyone in Program Files. Tauri's NSIS installer does this with the standard MultiUser support, which runs at the highest privilege the account has, so an administrator sees the UAC prompt as the installer starts, whichever mode they then pick. An existing installation's mode is preselected, so updates stay where they are. Haul's data lives in each user's profile either way, never next to the program.
+
 ## The data folder on Windows
 
 The installer puts Haul in `%LOCALAPPDATA%\Haul` for the current user, and up to 0.3 the data folder was `%LOCALAPPDATA%\haul`: the same folder, since Windows ignores case. The queue and settings sat next to the program, and the uninstaller's option to delete the app's data, which removes `%LOCALAPPDATA%\<identifier>`, missed them. The data folder is now `%LOCALAPPDATA%\io.github.garysassano.haul`, where WebView2 already keeps the app's browser data. At start, Haul moves its own files from the old folder (never the program) unless the new folder has a queue or settings already, or an older Haul still holds the old one. On Linux nothing shares `~/.local/share/haul`, so it stays.
