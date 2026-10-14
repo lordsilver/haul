@@ -918,6 +918,13 @@ function toggleSwitch(key, on, label) {
   );
 }
 
+// The last two parts of a folder's path, which are enough to recognise it.
+function shortPath(path) {
+  const sep = path.includes("\\") ? "\\" : "/";
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  return parts.length > 2 ? parts.slice(-2).join(sep) : path;
+}
+
 function openPlace(place) {
   return api(`/api/open/${place}`).catch(report);
 }
@@ -964,8 +971,8 @@ function folderCard(s) {
     "folder-open",
     "Download folder",
     description,
+    // The status bar opens it, on this page as on every other.
     d.download_dir_fixed ? null : button("Change…", { onclick: () => changeFolder(card, s) }),
-    button("Open folder", { onclick: () => openPlace("downloads") }),
   );
   card.classList.add("with-bar");
   return card;
@@ -1096,13 +1103,26 @@ function renderStatus(s) {
   const downloading = s.items.filter((i) => i.status === "downloading").length;
   const queued = s.items.filter((i) => ["queued", "waiting", "checking", "resolving"].includes(i.status)).length;
   const clipboard = s.desktop && s.watch_clipboard;
-  const key = JSON.stringify([bytes(s.speed), downloading, queued, s.rate, s.proxy, theme, s.paused, clipboard]);
+  const key = JSON.stringify([bytes(s.speed), downloading, queued, s.rate, s.proxy, theme, s.paused, clipboard, s.download_dir]);
   if (key === statusKey) return;
   statusKey = key;
   const themeSpec = THEMES.find(([value]) => value === theme) ?? THEMES[0];
   const next = THEMES[(THEMES.indexOf(themeSpec) + 1) % THEMES.length][0];
   fill(
     $("status"),
+    // Where the files go, on every page; one click opens it.
+    el(
+      "button",
+      {
+        type: "button",
+        class: "status-item",
+        title: `Open the download folder: ${s.download_dir}`,
+        "aria-label": `Open the download folder, ${s.download_dir}`,
+        onclick: () => openPlace("downloads"),
+      },
+      icon("folder-open"),
+      el("span", { class: "status-label" }, shortPath(s.download_dir)),
+    ),
     el("span", { class: `status-item${s.speed ? " on" : ""}` }, icon("arrow-download"), `${bytes(s.speed)}/s`),
     el("span", { class: "status-item" }, s.paused ? "Paused" : `${downloading} downloading · ${queued} waiting`),
     el("span", { class: "grow" }),

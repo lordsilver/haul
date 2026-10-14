@@ -1177,6 +1177,11 @@ input.wide {
 /* ---- narrow windows: compact pane, fewer columns */
 
 @media (max-width: 860px) {
+  /* The folder keeps its icon; the path is in its tooltip. */
+  .status-label {
+    display: none;
+  }
+
   .app {
     grid-template-columns: 48px minmax(0, 1fr);
   }
