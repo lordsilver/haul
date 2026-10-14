@@ -273,6 +273,10 @@ impl Engine {
             Some((n as i64).into()),
         );
         self.log_failure(self.write_and_apply(cfg, vec![write]));
+        // The user's choice replaces what Haul learned from the host.
+        if let Some(h) = self.lock().hosts.get_mut(host) {
+            h.cap = None;
+        }
     }
 
     /// The subfolder of the download folder for files from `host`; an empty

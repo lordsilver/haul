@@ -64,6 +64,10 @@ pub(crate) struct Item {
     pub not_before: Option<Instant>,
     /// Retries of the current mirror after network trouble.
     pub retries: u32,
+    /// Refusals in a row from a host already busy with other downloads.
+    pub busy: u32,
+    /// Bytes downloaded when the current attempt started.
+    pub attempt_from: u64,
     /// Automatic retries of the whole download after it failed.
     pub auto_retries: u32,
     /// When the next automatic retry happens.
@@ -100,6 +104,8 @@ impl Item {
             host: String::new(),
             not_before: None,
             retries: 0,
+            busy: 0,
+            attempt_from: 0,
             auto_retries: 0,
             retry_at: None,
             path: None,

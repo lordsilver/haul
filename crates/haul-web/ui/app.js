@@ -656,9 +656,15 @@ function setPreferred(name, preferred) {
   api(`/api/host/${encodeURIComponent(name)}/preferred`, { preferred }).catch(report);
 }
 
+// Downloads a host runs at once: your limit, or fewer when the host showed it
+// takes fewer.
+function slotsOf(host) {
+  return host.cap ? Math.min(host.cap, host.limit) : host.limit;
+}
+
 function setLimit(name, delta) {
   const host = state?.hosts.find((h) => h.name === name);
-  if (host) api(`/api/host/${encodeURIComponent(name)}/limit/${Math.max(1, host.limit + delta)}`).catch(report);
+  if (host) api(`/api/host/${encodeURIComponent(name)}/limit/${Math.max(1, slotsOf(host) + delta)}`).catch(report);
 }
 
 // A button that wants a second click within a few seconds.
@@ -777,9 +783,9 @@ function renderHosts(s) {
     const stats = [h.speed ? `${bytes(h.speed)}/s per file` : "Speed not measured yet", `${h.ok} done`, `${h.fails} failed`, `${bytes(h.bytes)} total`];
     if (h.cooldown) stats.push(`cooling down ${duration(h.cooldown)}`);
     setText(c.stats, stats.join(" · "));
-    setText(c.slots, `${h.active} / ${h.limit}`);
+    setText(c.slots, `${h.active} / ${slotsOf(h)}`);
     const best = h.name === fastest;
-    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}`;
+    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}`;
     if (c.key !== key) {
       c.key = key;
       c.node.classList.toggle("best", best);
@@ -793,6 +799,10 @@ function renderHosts(s) {
       if (c.preferred) pills.push(el("span", { class: "pill preferred" }, icon("star-filled"), preferredCount > 1 ? `Preferred · ${h.preferred + 1}` : "Preferred"));
       if (best) pills.push(el("span", { class: "pill success" }, "Fastest"));
       if (h.folder) pills.push(el("span", { class: "pill", title: "Its files go to this subfolder" }, icon("folder"), h.folder));
+      if (h.cap && h.cap < h.limit) {
+        const title = "It refused one more download while these ran, so Haul runs no more than this. The slot buttons set your own limit.";
+        pills.push(el("span", { class: "pill", title }, icon("info"), `Takes ${h.cap} at a time`));
+      }
       if (s.proxy) pills.push(el("span", { class: `pill${h.route === "direct" ? " caution" : ""}` }, icon("shield"), `via ${h.route}`));
       c.pills.replaceChildren(...pills);
       for (const bar of c.node.querySelectorAll(":scope > .infobar")) bar.remove();

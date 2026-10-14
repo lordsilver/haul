@@ -87,7 +87,7 @@ impl Default for Config {
             watch_clipboard: false,
             recycle_on_remove: false,
             skip_add_dialog: false,
-            resume_attempts: 3,
+            resume_attempts: 5,
             retry_failed_minutes: 15,
             proxy: None,
             user_agent: DEFAULT_USER_AGENT.into(),
@@ -428,8 +428,9 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # instead of opening in the Add dialog first.
 # skip_add_dialog = false
 
-# Retries of a mirror after a dropped connection or a network error.
-# resume_attempts = 3
+# Retries of a mirror after a dropped connection or a network error. An attempt
+# that gets data in before it stops starts the count over.
+# resume_attempts = 5
 
 # Minutes before a failed download is tried again on its own (up to three
 # times); 0 turns that off.

@@ -51,6 +51,17 @@ struct Server {
     log: Arc<Mutex<Vec<String>>>,
     flaky: Arc<AtomicUsize>,
     limited: Arc<AtomicUsize>,
+    /// Files /busy is sending right now.
+    busy: Arc<AtomicUsize>,
+}
+
+/// Counts a /busy transfer out when its body is done or dropped.
+struct BusyOut(Arc<AtomicUsize>);
+
+impl Drop for BusyOut {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Server {
@@ -154,6 +165,78 @@ async fn start_server() -> (Server, u16) {
                     let chunk = it.next()?;
                     tokio::time::sleep(Duration::from_millis(15)).await;
                     Some((Ok::<_, Infallible>(chunk), it))
+                });
+                let mut resp = Response::builder().header(header::CONTENT_LENGTH, SIZE - start);
+                if start > 0 {
+                    resp = resp
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_RANGE, format!("bytes {start}-{}/{SIZE}", SIZE - 1));
+                }
+                resp.body(Body::from_stream(stream)).unwrap()
+            }),
+        )
+        .route(
+            "/busy/{name}",
+            // Sends at most two files at once and refuses more, saying why.
+            get(|State(s): State<Server>, method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                log(&s, &format!("/busy/{name}"), &headers);
+                let data = content(&name, SIZE);
+                if method == Method::HEAD {
+                    return file_response(data, &headers);
+                }
+                if s.busy.fetch_add(1, Ordering::SeqCst) >= 2 {
+                    s.busy.fetch_sub(1, Ordering::SeqCst);
+                    return (StatusCode::FORBIDDEN, Json(json!({"message": "too many downloads at once"}))).into_response();
+                }
+                let out = BusyOut(s.busy.clone());
+                let start = range_start(&headers).unwrap_or(0);
+                let chunks: Vec<Bytes> = data[start..].chunks(16 * 1024).map(Bytes::copy_from_slice).collect();
+                let stream = futures_util::stream::unfold((chunks.into_iter(), out), |(mut it, out)| async move {
+                    let chunk = it.next()?;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    Some((Ok::<_, Infallible>(chunk), (it, out)))
+                });
+                let mut resp = Response::builder().header(header::CONTENT_LENGTH, SIZE - start);
+                if start > 0 {
+                    resp = resp
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_RANGE, format!("bytes {start}-{}/{SIZE}", SIZE - 1));
+                }
+                resp.body(Body::from_stream(stream)).unwrap()
+            }),
+        )
+        .route(
+            "/refuse/{name}",
+            get(|method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                if method == Method::HEAD {
+                    return file_response(content(&name, SIZE), &headers);
+                }
+                (StatusCode::FORBIDDEN, Json(json!({"success": false, "message": "this link has expired"}))).into_response()
+            }),
+        )
+        .route(
+            "/drip/{name}",
+            // Sends a third of the file from where it is asked, then drops the
+            // connection, until the last third.
+            get(|State(s): State<Server>, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                log(&s, &format!("/drip/{name}"), &headers);
+                let data = content(&name, SIZE);
+                let start = range_start(&headers).unwrap_or(0);
+                let end = (start + SIZE / 3).min(SIZE);
+                let head = Bytes::from(data[start..end].to_vec());
+                let last = end == SIZE;
+                let stream = futures_util::stream::unfold(0, move |step| {
+                    let head = head.clone();
+                    async move {
+                        match step {
+                            0 => Some((Ok(head), 1)),
+                            1 if !last => {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                Some((Err(std::io::Error::other("connection dropped")), 2))
+                            }
+                            _ => None,
+                        }
+                    }
                 });
                 let mut resp = Response::builder().header(header::CONTENT_LENGTH, SIZE - start);
                 if start > 0 {
@@ -986,4 +1069,86 @@ async fn a_published_checksum_decides() {
         files_in(&t.root.join("dl")),
         ["kept.bin", "twin (1).bin", "twin.bin"]
     );
+}
+
+#[tokio::test]
+async fn a_busy_host_is_capped_instead_of_failing() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let links: Vec<String> = (1..=4).map(|i| format!("{}/busy/b{i}.bin", t.ip)).collect();
+    engine.add_text(&links.join(" "), "");
+    let host = |s: &Snapshot| {
+        s.hosts
+            .iter()
+            .find(|h| h.name == "127.0.0.1")
+            .map(|h| h.cap)
+    };
+    let s = wait_for(&engine, "the cap", |s| host(s) == Some(Some(2))).await;
+    assert!(
+        s.items
+            .iter()
+            .any(|i| i.status == "waiting" && i.error.contains("at a time")),
+        "{:#?}",
+        s.items
+    );
+    let s = wait_for(&engine, "done", |s| s.items.len() == 4 && all_done(s)).await;
+    for i in 1..=4 {
+        let name = format!("b{i}.bin");
+        assert_eq!(t.downloaded(&name), content(&name, SIZE));
+    }
+    let h = s.hosts.iter().find(|h| h.name == "127.0.0.1").unwrap();
+    assert_eq!(
+        (h.cap, h.fails),
+        (Some(2), 0),
+        "never below what it sent at once"
+    );
+
+    // The user's own limit replaces what was learned.
+    engine.set_host_limit("127.0.0.1", 6);
+    let h = engine
+        .snapshot()
+        .hosts
+        .into_iter()
+        .find(|h| h.name == "127.0.0.1")
+        .unwrap();
+    assert_eq!((h.limit, h.cap), (6, None));
+}
+
+#[tokio::test]
+async fn a_refusal_says_why() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/refuse/r.bin", t.ip), "");
+    let s = wait_for(&engine, "the failure", |s| s.items[0].status == "error").await;
+    assert!(
+        s.items[0].error.contains("HTTP 403: this link has expired"),
+        "{}",
+        s.items[0].error
+    );
+}
+
+#[tokio::test]
+async fn progress_starts_the_retry_count_over() {
+    let t = Setup::new().await;
+    // One retry only: each break would fail the download, were it not for the
+    // data that arrived before it.
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            resume_attempts: 1,
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.add_text(&format!("{}/drip/d.bin", t.ip), "");
+    wait_for(&engine, "done", all_done).await;
+    assert_eq!(t.downloaded("d.bin"), content("d.bin", SIZE));
+    let resumed = t
+        .server
+        .requests("/drip/d.bin")
+        .iter()
+        .filter(|r| r.contains("bytes="))
+        .count();
+    assert_eq!(resumed, 2, "{:?}", t.server.requests("/drip/d.bin"));
 }

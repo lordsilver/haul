@@ -42,6 +42,17 @@ pub use settings::SettingsView;
 /// Automatic retries of a failed download, when `retry_failed_minutes` is on.
 const AUTO_RETRIES: u32 = 3;
 
+/// Refusals in a row from a busy host before a download counts as failed.
+const BUSY_REFUSALS: u32 = 10;
+
+/// Seconds a download refused by a busy host waits before it may try again
+/// (and only then if the host has a free slot).
+const BUSY_PAUSE: u64 = 5;
+
+/// After a transfer from a host that takes a limited number at once, the next
+/// one waits this long, so the host has counted the finished one out.
+const SETTLE: Duration = Duration::from_secs(2);
+
 /// What the system calls the place deleted files go.
 pub const BIN: &str = if cfg!(windows) {
     "Recycle Bin"
@@ -208,10 +219,22 @@ pub struct HostView {
     pub folder: String,
     /// Where it stands among the preferred hosts, 0 being the first.
     pub preferred: Option<usize>,
+    /// The most downloads it takes at once, learned when it refused one more
+    /// than it was serving; `None` until it does.
+    pub cap: Option<usize>,
 }
 
 struct HostStats {
     limit: usize,
+    /// Download requests to it in flight and transfers from it in progress:
+    /// what a refusal is measured against. Counting requests that may still be
+    /// refused can only overstate it, and the next refusal corrects that.
+    serving: usize,
+    /// No new download from it before this; see [`SETTLE`].
+    settle_until: Option<Instant>,
+    /// See [`HostView::cap`]. Kept until a restart or until the user sets the
+    /// host's slots.
+    cap: Option<usize>,
     active: usize,
     cooldown: Option<Instant>,
     /// Smoothed bytes per second of one stream.
@@ -262,13 +285,24 @@ impl HostStats {
         self.cooldown.is_some_and(|c| now < c)
     }
 
+    /// Downloads that may run at once: the user's limit, or fewer when the
+    /// host showed it takes fewer.
+    fn slots(&self) -> usize {
+        self.cap.map_or(self.limit, |cap| cap.min(self.limit))
+    }
+
     fn free(&self, now: Instant) -> bool {
-        self.active < self.limit && !self.cooling(now)
+        self.active < self.slots()
+            && !self.cooling(now)
+            && self.settle_until.is_none_or(|t| now >= t)
     }
 
     fn new(limit: usize) -> Self {
         Self {
             limit,
+            serving: 0,
+            settle_until: None,
+            cap: None,
             active: 0,
             cooldown: None,
             ema: 0.0,
@@ -325,6 +359,31 @@ impl State {
     }
 }
 
+/// Counts a download as under way with its host, from the request to the end
+/// of the transfer.
+struct Serving<'a> {
+    engine: &'a Engine,
+    host: &'a str,
+}
+
+impl<'a> Serving<'a> {
+    fn start(engine: &'a Engine, host: &'a str) -> Self {
+        engine.lock().host(host, &engine.cfg()).serving += 1;
+        Self { engine, host }
+    }
+}
+
+impl Drop for Serving<'_> {
+    fn drop(&mut self) {
+        if let Some(h) = self.engine.lock().hosts.get_mut(self.host) {
+            h.serving = h.serving.saturating_sub(1);
+            if h.cap.is_some() {
+                h.settle_until = Some(Instant::now() + SETTLE);
+            }
+        }
+    }
+}
+
 /// How an attempt ended without an error.
 enum Outcome {
     Done,
@@ -344,6 +403,11 @@ enum Fail {
     Error(String),
     /// The connection broke mid-transfer; worth resuming on the same mirror.
     Transient(String),
+    /// The host refused one more download while `allowed` others from it ran.
+    Busy {
+        allowed: usize,
+        message: String,
+    },
 }
 
 impl From<ResolveError> for Fail {
@@ -968,13 +1032,15 @@ impl Engine {
         cancel: &CancellationToken,
     ) -> Result<Outcome, Fail> {
         let (pre, name, http) = {
-            let st = self.lock();
-            let it = st.items.get(id).ok_or(Fail::Cancelled)?;
+            let mut st = self.lock();
+            let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
+            it.attempt_from = it.done;
             let pre = it
                 .pre
                 .clone()
                 .filter(|_| it.pre_for.as_deref().is_none_or(|p| p == url));
-            (pre, it.name.clone(), self.http_for(host, &st))
+            let name = it.name.clone();
+            (pre, name, self.http_for(host, &st))
         };
         let entry = match pre {
             Some(entry) => entry,
@@ -1075,6 +1141,14 @@ impl Engine {
                 h.active = h.active.saturating_sub(1);
             }
             log_outcome(id, url, &result);
+            // An attempt that got data in before it stopped starts the counts
+            // over: a flaky connection is not a dead mirror.
+            if let Some(it) = st.items.get_mut(id)
+                && it.done > it.attempt_from
+            {
+                it.retries = 0;
+                it.busy = 0;
+            }
             match result {
                 Ok(Outcome::Gone) => {}
                 Ok(Outcome::Existing(path)) => {
@@ -1160,7 +1234,20 @@ impl Engine {
                     // The views count the wait down themselves.
                     it.error = format!("{host}: {message}");
                 }
-                Err(Fail::Error(message) | Fail::Transient(message)) => {
+                Err(Fail::Busy { allowed, .. })
+                    if st.items.get(id).is_some_and(|it| it.busy < BUSY_REFUSALS) =>
+                {
+                    let h = st.host(host, &self.cfg());
+                    h.cap = Some(h.cap.map_or(allowed, |cap| cap.min(allowed)));
+                    let it = st.items.get_mut(id).expect("checked by the guard");
+                    it.busy += 1;
+                    it.status = Status::Waiting;
+                    it.not_before = Some(now + Duration::from_secs(BUSY_PAUSE));
+                    it.error = format!("{host} takes {allowed} at a time");
+                }
+                Err(
+                    Fail::Error(message) | Fail::Transient(message) | Fail::Busy { message, .. },
+                ) => {
                     if let Some(e) = self.fail_mirror(&mut st, id, url, host, message) {
                         events.push(e);
                     }
@@ -1316,6 +1403,8 @@ impl Engine {
         if have > 0 {
             req = req.header(RANGE, format!("bytes={have}-"));
         }
+        // Counted from the request to the end of the transfer.
+        let _serving = Serving::start(self, host);
         let mut resp = or_cancel(cancel, req.send()).await??;
         let status = resp.status().as_u16();
         if matches!(status, 429 | 503) {
@@ -1339,13 +1428,30 @@ impl Engine {
                 it.done = have;
             }
         } else if status != 200 && status != 206 {
+            // Other downloads from the host under way: a refusal then means it
+            // takes no more at once.
+            let others = self
+                .lock()
+                .hosts
+                .get(host)
+                .map_or(0, |h| h.serving.saturating_sub(1));
             let mut note = "";
-            if matches!(status, 403 | 451) && http.via_proxy {
+            if matches!(status, 403 | 451) && http.via_proxy && others == 0 {
                 // Flag only: never switch to a direct connection on our own.
                 self.lock().host(host, &self.cfg()).blocked = true;
                 note = " (host may block VPN IPs)";
             }
-            return Err(Fail::Error(format!("HTTP {status}{note}")));
+            let message = match hosts::refusal_reason(resp).await {
+                Some(reason) => format!("HTTP {status}: {reason}{note}"),
+                None => format!("HTTP {status}{note}"),
+            };
+            if status == 403 && others > 0 {
+                return Err(Fail::Busy {
+                    allowed: others,
+                    message,
+                });
+            }
+            return Err(Fail::Error(message));
         } else {
             let name = self.lock().items.get(id).and_then(|i| i.name.clone());
             if hosts::content_type(resp.headers()).contains("text/html")
@@ -1379,6 +1485,7 @@ impl Engine {
                     it.size = total;
                 }
                 it.done = have;
+                it.attempt_from = have;
                 self.touch(&mut st);
             }
             let file = tokio::fs::OpenOptions::new()
@@ -1811,6 +1918,7 @@ impl Engine {
                     .map_or(0, |c| c.saturating_duration_since(now).as_secs()),
                 folder: cfg.folder_for(name).display().to_string(),
                 preferred: cfg.preference(name),
+                cap: h.cap,
             })
             .collect();
         // In the order downloads pick them: preferred, then fastest.
@@ -1922,6 +2030,9 @@ fn log_outcome(id: &str, url: &str, result: &Result<Outcome, Fail>) {
         }
         Err(Fail::Transient(message)) => {
             tracing::warn!(item = id, url, "transfer broke: {message}")
+        }
+        Err(Fail::Busy { allowed, message }) => {
+            tracing::info!(item = id, url, allowed, "host busy: {message}")
         }
         Err(Fail::Error(message)) => tracing::warn!(item = id, url, "attempt failed: {message}"),
     }

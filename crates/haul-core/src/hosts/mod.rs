@@ -194,6 +194,33 @@ impl ResolveError {
     }
 }
 
+/// The host's own words when it refuses a request: a JSON `message` (or
+/// `value`, `error`, `detail`), or the first line of a short plain-text body.
+/// Reads at most 4 KiB, for at most two seconds.
+pub(crate) async fn refusal_reason(mut resp: reqwest::Response) -> Option<String> {
+    let json = content_type(resp.headers()).contains("json");
+    let mut body = Vec::new();
+    while body.len() < 4096 {
+        match tokio::time::timeout(Duration::from_secs(2), resp.chunk()).await {
+            Ok(Ok(Some(chunk))) => body.extend_from_slice(&chunk),
+            _ => break,
+        }
+    }
+    body.truncate(4096);
+    let text = String::from_utf8_lossy(&body);
+    let text = text.trim();
+    let clip = |s: &str| s.trim().chars().take(160).collect::<String>();
+    if json || text.starts_with('{') {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        return ["message", "value", "error", "detail"]
+            .iter()
+            .find_map(|key| value.get(key)?.as_str().filter(|s| !s.trim().is_empty()))
+            .map(clip);
+    }
+    let line = text.lines().next()?.trim();
+    (!line.is_empty() && !line.starts_with('<')).then(|| clip(line))
+}
+
 /// reqwest's message and the root cause under it, since "error sending
 /// request" alone does not say whether DNS, the connection or TLS failed. The
 /// URL is left out: it can carry account credentials in its query.

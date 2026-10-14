@@ -19,7 +19,7 @@ Bodies are JSON. Errors come back as `{"error": "…"}` with a 4xx or 5xx status
 
 An item has `id`, `name`, `package`, `status` (`checking`, `queued`, `resolving`, `downloading`, `waiting`, `paused`, `captcha`, `done`, `error`), `error`, `size` and `done` (bytes, 0 when unknown), `speed`, `percent` (from external downloaders), `host`, `mirrors` (host names), `wait` (seconds), `retry_in` (seconds until a failed item is tried again on its own, 0 when never), `open_urls` (pages that need a person), `path` (where a finished file went) and `existing` (true when the file was in the download folder already, so nothing was downloaded).
 
-A host has `name`, `limit`, `active`, `speed` (bytes/s per file), `ok`, `fails`, `bytes`, `blocked` (answered 403/451 through the proxy), `route`, `cooldown` (seconds), `folder` (its subfolder of the download folder, empty for none) and `preferred` (its place among the preferred hosts, 0 first, or `null`). Hosts are listed in the order downloads pick them: preferred, then fastest.
+A host has `name`, `limit`, `active`, `speed` (bytes/s per file), `ok`, `fails`, `bytes`, `blocked` (answered 403/451 through the proxy), `route`, `cooldown` (seconds), `folder` (its subfolder of the download folder, empty for none), `preferred` (its place among the preferred hosts, 0 first, or `null`) and `cap` (the most downloads it takes at once, learned when it refused one more, or `null`). Hosts are listed in the order downloads pick them: preferred, then fastest.
 
 ## Adding
 
