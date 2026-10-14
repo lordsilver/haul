@@ -53,6 +53,10 @@ pub(crate) struct Item {
     pub pre_for: Option<String>,
     /// The name is known, so there is nothing to look up before scheduling.
     pub probed: bool,
+    /// Where the row stands with comparing a file on disk to the host's
+    /// checksum: `""`, `"waiting"` (for its turn, or while paused) or
+    /// `"comparing"`.
+    pub verifying: &'static str,
     pub status: Status,
     pub error: String,
     pub size: u64,
@@ -91,6 +95,7 @@ impl Item {
             manual_urls: HashSet::new(),
             manual: false,
             probed: name.is_some(),
+            verifying: "",
             name,
             package,
             pre: None,
@@ -153,6 +158,10 @@ impl Item {
     /// Finishes this row with the file at `path`, which was in the download
     /// folder already.
     pub fn adopt(&mut self, path: &std::path::Path) {
+        if self.size == 0 {
+            // Found by name alone: the file says how big it is.
+            self.size = std::fs::metadata(path).map_or(0, |m| m.len());
+        }
         self.status = Status::Done;
         self.existing = true;
         self.path = Some(path.display().to_string());

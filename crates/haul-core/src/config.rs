@@ -45,6 +45,10 @@ pub struct Config {
     /// Links and files dropped on the window, or opened with Haul, are added
     /// at once instead of filling the Add dialog first.
     pub skip_add_dialog: bool,
+    /// A file already in the download folder with the same name and size is
+    /// also read in full and compared with the checksum its host publishes,
+    /// before its download is skipped. Off: name and size decide.
+    pub verify_existing: bool,
     /// Automatic retries of a mirror after a dropped connection or a
     /// network error, before it counts as failed.
     pub resume_attempts: u32,
@@ -97,6 +101,7 @@ impl Default for Config {
             watch_clipboard: false,
             recycle_on_remove: false,
             skip_add_dialog: false,
+            verify_existing: false,
             resume_attempts: 5,
             min_speed_kbps: 0,
             min_speed_seconds: 60,
@@ -445,6 +450,12 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # instead of opening in the Add dialog first.
 # skip_add_dialog = false
 
+# A file already in the download folder with the same name and size counts as
+# downloaded. With this on, it is also read in full and compared with the
+# checksum its host publishes (pixeldrain, gofile and some servers), one file at
+# a time: thorough, but slow on big files and spinning disks.
+# verify_existing = false
+
 # Retries of a mirror after a dropped connection or a network error. An attempt
 # that gets data in before it stops starts the count over.
 # resume_attempts = 5
@@ -543,6 +554,7 @@ mod tests {
             watch_clipboard = true
             recycle_on_remove = true
             skip_add_dialog = true
+            verify_existing = true
             retry_failed_minutes = 0
             proxy = "socks5://u:p@host:1080"
             1fichier_key = "k1"
@@ -564,7 +576,7 @@ mod tests {
         assert_eq!(cfg.limit_for("1fichier.com"), 1);
         assert_eq!(cfg.limit_for("other.example"), FALLBACK_LIMIT);
         assert_eq!(cfg.routes.get("a.example"), Some(&Route::Direct));
-        assert!(cfg.recycle_on_remove && cfg.skip_add_dialog);
+        assert!(cfg.recycle_on_remove && cfg.skip_add_dialog && cfg.verify_existing);
         assert_eq!(
             (cfg.preference("b.example"), cfg.preference("a.example")),
             (Some(0), Some(1))

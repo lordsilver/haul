@@ -270,6 +270,16 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/nolength/{name}",
+            // A file whose size the server never says: streamed, no length.
+            get(|State(s): State<Server>, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                log(&s, &format!("/nolength/{name}"), &headers);
+                let data = Bytes::from(content(&name, SIZE));
+                let stream = futures_util::stream::once(async move { Ok::<_, Infallible>(data) });
+                Response::builder().body(Body::from_stream(stream)).unwrap()
+            }),
+        )
+        .route(
             "/limited/{name}",
             get(|State(s): State<Server>, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
                 log(&s, &format!("/limited/{name}"), &headers);
@@ -1063,13 +1073,21 @@ async fn a_different_file_by_the_same_name_is_numbered() {
 }
 
 #[tokio::test]
-async fn a_published_checksum_decides() {
+async fn a_published_checksum_decides_when_asked() {
     let t = Setup::new().await;
     std::fs::create_dir_all(t.root.join("dl")).unwrap();
     // The host's bytes, and other bytes of the same size under the same name.
     std::fs::write(t.root.join("dl/kept.bin"), content("kept", SIZE)).unwrap();
     std::fs::write(t.root.join("dl/twin.bin"), content("not the twin", SIZE)).unwrap();
-    let engine = t.engine().await;
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            verify_existing: true,
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
     engine.add_text(
         "https://pixeldrain.com/u/kept https://pixeldrain.com/u/twin",
         "",
@@ -1286,4 +1304,80 @@ async fn the_size_cap_spaces_out_big_files() {
         let name = format!("z{i}.bin");
         assert_eq!(t.downloaded(&name), content(&name, SIZE));
     }
+}
+
+#[tokio::test]
+async fn name_and_size_decide_by_default() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("dl")).unwrap();
+    // Other bytes than the host's, but the same name and size: taken as the
+    // file, and nothing is read or downloaded.
+    std::fs::write(t.root.join("dl/twin.bin"), content("not the twin", SIZE)).unwrap();
+    let engine = t.engine().await;
+    engine.add_text("https://pixeldrain.com/u/twin", "");
+    let s = wait_for(&engine, "done", all_done).await;
+    assert!(s.items[0].existing);
+    assert!(
+        t.server
+            .requests("/api/file/twin")
+            .iter()
+            .all(|r| r.starts_with("/api/file/twin/info")),
+        "{:?}",
+        t.server.requests("/api/file/twin")
+    );
+}
+
+#[tokio::test]
+async fn the_name_decides_when_the_size_is_unknown() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("dl")).unwrap();
+    std::fs::write(t.root.join("dl/unsized.bin"), "an earlier copy").unwrap();
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/nolength/unsized.bin", t.ip), "");
+    let s = wait_for(&engine, "done", all_done).await;
+    assert_eq!(
+        (s.items[0].existing, s.items[0].size),
+        (true, "an earlier copy".len() as u64),
+        "the size comes from the file found"
+    );
+    assert_eq!(files_in(&t.root.join("dl")), ["unsized.bin"]);
+}
+
+#[tokio::test]
+async fn a_pause_holds_comparisons_and_survives_a_restart() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("dl")).unwrap();
+    std::fs::write(t.root.join("dl/held.bin"), content("held", SIZE)).unwrap();
+    let options = || Options {
+        config: Some(Config {
+            verify_existing: true,
+            ..t.config()
+        }),
+        ..t.options()
+    };
+    let engine = Engine::start(options()).await.unwrap();
+    engine.set_paused(true);
+    engine.add_text("https://pixeldrain.com/u/held", "");
+    // The link is looked up, but the file on disk is not read while paused.
+    wait_for(&engine, "the name", |s| {
+        s.items[0].name == "held.bin" && !s.items[0].verifying.is_empty()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!all_done(&engine.snapshot()), "compared while paused");
+    engine.set_paused(false);
+    let s = wait_for(&engine, "done", all_done).await;
+    assert!(s.items[0].existing);
+
+    // A pause is kept across a restart.
+    engine.set_paused(true);
+    engine.shutdown().await;
+    drop(engine);
+    let engine = start_when_free(options).await;
+    assert!(engine.snapshot().paused);
+    engine.set_paused(false);
+    engine.shutdown().await;
+    drop(engine);
+    let engine = start_when_free(options).await;
+    assert!(!engine.snapshot().paused);
 }

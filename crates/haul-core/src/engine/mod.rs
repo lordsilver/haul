@@ -12,7 +12,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc, Mutex, MutexGuard, RwLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -200,6 +200,9 @@ pub struct ItemView {
     pub path: Option<String>,
     /// Finished without downloading: the file was in the download folder.
     pub existing: bool,
+    /// Comparing a file on disk with the host's checksum: `""`, `"waiting"`
+    /// (for its turn, or while paused) or `"comparing"`.
+    pub verifying: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -359,6 +362,22 @@ impl State {
     }
 }
 
+/// A row comparing a file on disk with its host's checksum. Dropped when the
+/// comparison ends or its attempt is cancelled: clears the row's stage and
+/// tells the read, which runs on another thread, to stop.
+struct Comparing {
+    engine: Engine,
+    id: String,
+    gone: Arc<AtomicBool>,
+}
+
+impl Drop for Comparing {
+    fn drop(&mut self) {
+        self.gone.store(true, Ordering::Relaxed);
+        self.engine.set_verifying(&self.id, "");
+    }
+}
+
 /// Counts a download as under way with its host, from the request to the end
 /// of the transfer.
 struct Serving<'a> {
@@ -495,6 +514,11 @@ struct Inner {
     version: watch::Sender<u64>,
     events: broadcast::Sender<Event>,
     probes: Semaphore,
+    /// One comparison with a file on disk at a time: they read whole files,
+    /// and several at once make a spinning disk seek between them.
+    verifier: Semaphore,
+    /// `State::paused`, for comparisons running outside the lock.
+    paused_now: Arc<AtomicBool>,
     save_lock: Mutex<()>,
     rename_lock: Mutex<()>,
     shutdown: CancellationToken,
@@ -549,12 +573,13 @@ impl Engine {
             .map(|i| i.id.clone())
             .collect();
 
+        let paused = store::load_paused(&data_dir);
         let engine = Engine(Arc::new(Inner {
             state: Mutex::new(State {
                 items,
                 hosts,
                 routes,
-                paused: false,
+                paused,
                 moving: false,
                 max_total: cfg.max_total.max(1),
                 dirty: false,
@@ -575,6 +600,8 @@ impl Engine {
             version: watch::Sender::new(0),
             events: broadcast::Sender::new(64),
             probes: Semaphore::new(4),
+            verifier: Semaphore::new(1),
+            paused_now: Arc::new(AtomicBool::new(paused)),
             save_lock: Mutex::new(()),
             rename_lock: Mutex::new(()),
             shutdown: CancellationToken::new(),
@@ -776,7 +803,7 @@ impl Engine {
     /// Learns the name and size up front, so the same file on several hosts
     /// is merged before anything downloads.
     async fn probe(self, id: String) {
-        let Ok(_permit) = self.0.probes.acquire().await else {
+        let Ok(permit) = self.0.probes.acquire().await else {
             return;
         };
         let (url, http) = {
@@ -796,6 +823,9 @@ impl Engine {
             .await
             .ok()
             .flatten();
+        // The slot is for asking hosts; comparing with a file on disk waits
+        // for its own turn below, so other links keep being looked up.
+        drop(permit);
         let learned = found.is_some();
         {
             let mut st = self.lock();
@@ -845,14 +875,15 @@ impl Engine {
         self.0.wake.notify_one();
     }
 
-    /// A file already in the download folder that row `id` would fetch again:
-    /// the same name and size where one of its hosts would put it and, when a
-    /// host published a checksum, the same content. Needs the name and size.
+    /// A file already in the download folder that row `id` would fetch again,
+    /// where one of its hosts would put it: the same name and, when the host
+    /// reported it, the same size; when `verify_existing` is on and the host
+    /// published a checksum, also the same content. Needs the name.
     async fn existing_file(&self, id: &str) -> Option<PathBuf> {
         let (name, size, checksum, package, hosts) = {
             let st = self.lock();
             let it = st.items.get(id)?;
-            let name = it.name.clone().filter(|_| it.size > 0)?;
+            let name = it.name.clone()?;
             let hosts: Vec<String> = it.mirrors.iter().map(|m| hosts::host_of(m)).collect();
             (
                 name,
@@ -870,17 +901,93 @@ impl Engine {
                 candidates.push(path);
             }
         }
-        tokio::task::spawn_blocking(move || {
-            candidates.into_iter().find(|path| {
-                std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.len() == size)
-                    && checksum
-                        .as_ref()
-                        .is_none_or(|c| c.matches(path).unwrap_or(false))
-            })
+        // The same name and size, from metadata alone; the name alone when the
+        // host did not say how big the file is.
+        let (same_size, other_sizes) = tokio::task::spawn_blocking(move || {
+            let mut same = None;
+            let mut others = Vec::new();
+            for path in candidates {
+                match std::fs::metadata(&path) {
+                    Ok(m) if m.is_file() && (size == 0 || m.len() == size) && same.is_none() => {
+                        same = Some(path)
+                    }
+                    Ok(m) if m.is_file() => others.push((path, m.len())),
+                    _ => {}
+                }
+            }
+            (same, others)
         })
         .await
-        .ok()
-        .flatten()
+        .ok()?;
+        let Some(path) = same_size else {
+            for (path, len) in other_sizes {
+                tracing::info!(
+                    item = id,
+                    "{} has {len} bytes, not {size}: another file",
+                    path.display()
+                );
+            }
+            return None;
+        };
+        // Name and size decide, unless the user asked for checksums too.
+        let Some(checksum) = checksum.filter(|_| size > 0 && self.cfg().verify_existing) else {
+            return Some(path);
+        };
+        // A checksum means reading the whole file: one at a time, and not
+        // while downloads are paused. Dropping this future (a cancelled
+        // attempt) stops the read too.
+        self.set_verifying(id, "waiting");
+        let comparing = Comparing {
+            engine: self.clone(),
+            id: id.to_owned(),
+            gone: Arc::new(AtomicBool::new(false)),
+        };
+        let Ok(_turn) = self.0.verifier.acquire().await else {
+            return None;
+        };
+        self.set_verifying(id, "comparing");
+        let gone = comparing.gone.clone();
+        let paused = self.0.paused_now.clone();
+        let target = path.clone();
+        let same = tokio::task::spawn_blocking(move || {
+            checksum.matches_steered(&target, &|| {
+                if gone.load(Ordering::Relaxed) {
+                    hosts::Steer::Stop
+                } else if paused.load(Ordering::Relaxed) {
+                    hosts::Steer::Wait
+                } else {
+                    hosts::Steer::Go
+                }
+            })
+        })
+        .await;
+        drop(comparing);
+        match same {
+            Ok(Ok(true)) => Some(path),
+            Ok(Ok(false)) => {
+                tracing::info!(
+                    item = id,
+                    "{} differs from the host's checksum: another file",
+                    path.display()
+                );
+                None
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(item = id, "reading {}: {e}", path.display());
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn set_verifying(&self, id: &str, stage: &'static str) {
+        let mut st = self.lock();
+        if let Some(it) = st.items.get_mut(id)
+            && it.verifying != stage
+        {
+            it.verifying = stage;
+            self.touch(&mut st);
+        }
     }
 
     // ---- scheduler
@@ -1889,6 +1996,11 @@ impl Engine {
     /// Stops starting downloads and pauses the running ones; they resume
     /// where they stopped.
     pub fn set_paused(&self, paused: bool) {
+        self.0.paused_now.store(paused, Ordering::Relaxed);
+        // Kept across restarts.
+        if let Err(e) = store::save_paused(&self.0.data_dir, paused) {
+            tracing::warn!("remembering the pause: {e}");
+        }
         let mut st = self.lock();
         st.paused = paused;
         if paused {
@@ -1984,6 +2096,7 @@ impl Engine {
                     .collect(),
                 path: it.path.clone(),
                 existing: it.existing,
+                verifying: it.verifying,
             })
             .collect();
         let mut hosts: Vec<HostView> = st

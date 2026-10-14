@@ -17,6 +17,24 @@ use crate::{config::Route, engine::StartError, item::Saved};
 pub(crate) const QUEUE: &str = "queue.json";
 pub(crate) const ROUTES: &str = "routes.json";
 pub(crate) const HOSTS: &str = "hosts.json";
+/// Present while downloads are paused, so a restart keeps them paused.
+const PAUSED: &str = "paused";
+
+pub(crate) fn load_paused(dir: &Path) -> bool {
+    dir.join(PAUSED).exists()
+}
+
+pub(crate) fn save_paused(dir: &Path, paused: bool) -> io::Result<()> {
+    let path = dir.join(PAUSED);
+    if paused {
+        std::fs::write(path, b"")
+    } else {
+        match std::fs::remove_file(path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+}
 const LOCK: &str = "haul.lock";
 
 /// Holds the data directory for this process until the file is dropped.

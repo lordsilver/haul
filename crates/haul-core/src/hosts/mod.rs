@@ -107,20 +107,45 @@ impl Checksum {
 
     /// Whether the file at `path` has this checksum. Reads all of it.
     pub fn matches(&self, path: &Path) -> std::io::Result<bool> {
+        self.matches_steered(path, &|| Steer::Go)
+    }
+
+    /// [`Checksum::matches`], asking `steer` before every read whether to go
+    /// on, wait (while downloads are paused, say) or give up, which fails
+    /// with [`std::io::ErrorKind::Interrupted`].
+    pub fn matches_steered(&self, path: &Path, steer: &dyn Fn() -> Steer) -> std::io::Result<bool> {
         let file = std::fs::File::open(path)?;
         let hex = match self.algo {
-            Algo::Md5 => hash_reader::<md5::Md5>(file)?,
-            Algo::Sha256 => hash_reader::<sha2::Sha256>(file)?,
-            Algo::Sha512 => hash_reader::<sha2::Sha512>(file)?,
+            Algo::Md5 => hash_reader::<md5::Md5>(file, steer)?,
+            Algo::Sha256 => hash_reader::<sha2::Sha256>(file, steer)?,
+            Algo::Sha512 => hash_reader::<sha2::Sha512>(file, steer)?,
         };
         Ok(hex == self.hex)
     }
 }
 
-fn hash_reader<D: Digest>(mut reader: impl Read) -> std::io::Result<String> {
+/// What a long checksum read does next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Steer {
+    Go,
+    Wait,
+    Stop,
+}
+
+fn hash_reader<D: Digest>(
+    mut reader: impl Read,
+    steer: &dyn Fn() -> Steer,
+) -> std::io::Result<String> {
     let mut hasher = D::new();
     let mut buf = vec![0; 1 << 20];
     loop {
+        loop {
+            match steer() {
+                Steer::Go => break,
+                Steer::Wait => std::thread::sleep(Duration::from_millis(250)),
+                Steer::Stop => return Err(std::io::ErrorKind::Interrupted.into()),
+            }
+        }
         match reader.read(&mut buf)? {
             0 => return Ok(to_hex(&hasher.finalize())),
             n => hasher.update(&buf[..n]),
@@ -630,5 +655,30 @@ mod tests {
             !text.contains("secret") && !text.contains("127.0.0.1"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_checksum_read_can_wait_and_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("abc");
+        std::fs::write(&file, "abc").unwrap();
+        let sha = Checksum::from_hex(
+            Algo::Sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        )
+        .unwrap();
+        let asked = std::cell::Cell::new(0);
+        let waits_twice = || {
+            asked.set(asked.get() + 1);
+            if asked.get() <= 2 {
+                Steer::Wait
+            } else {
+                Steer::Go
+            }
+        };
+        assert!(sha.matches_steered(&file, &waits_twice).unwrap());
+        assert!(asked.get() > 2);
+        let stopped = sha.matches_steered(&file, &|| Steer::Stop).unwrap_err();
+        assert_eq!(stopped.kind(), std::io::ErrorKind::Interrupted);
     }
 }

@@ -34,6 +34,7 @@ pub struct SettingsView {
     pub watch_clipboard: bool,
     pub recycle_on_remove: bool,
     pub skip_add_dialog: bool,
+    pub verify_existing: bool,
     pub resume_attempts: u32,
     pub min_speed_kbps: u32,
     pub min_speed_seconds: u64,
@@ -91,6 +92,7 @@ impl Engine {
             watch_clipboard: cfg.watch_clipboard,
             recycle_on_remove: cfg.recycle_on_remove,
             skip_add_dialog: cfg.skip_add_dialog,
+            verify_existing: cfg.verify_existing,
             resume_attempts: cfg.resume_attempts,
             min_speed_kbps: cfg.min_speed_kbps,
             min_speed_seconds: cfg.min_speed_seconds,
@@ -202,6 +204,11 @@ impl Engine {
                         .as_bool()
                         .ok_or("recycle_on_remove is true or false")?;
                     cfg.recycle_on_remove = on;
+                    writes.push(top(key, Some(on.into())));
+                }
+                "verify_existing" => {
+                    let on = value.as_bool().ok_or("verify_existing is true or false")?;
+                    cfg.verify_existing = on;
                     writes.push(top(key, Some(on.into())));
                 }
                 "skip_add_dialog" => {

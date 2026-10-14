@@ -497,6 +497,12 @@ const GLYPHS = {
   error: "error-circle",
 };
 
+// A file already in the download folder, being compared with the host's checksum.
+function diskCaption(it) {
+  if (state?.paused) return "Waiting to compare with the file on disk (paused)";
+  return it.verifying === "comparing" ? "Comparing with the file on disk…" : "Waiting to compare with the file on disk";
+}
+
 function caption(it) {
   const of = it.size ? `${bytes(it.done)} of ${bytes(it.size)}` : it.done ? bytes(it.done) : "";
   const pct = it.size ? ` · ${Math.floor((it.done / it.size) * 100)}%` : "";
@@ -506,9 +512,9 @@ function caption(it) {
     case "queued":
       return it.size ? `Queued · ${bytes(it.size)}` : "Queued";
     case "checking":
-      return "Checking the link…";
+      return it.verifying ? diskCaption(it) : "Checking the link…";
     case "resolving":
-      return "Starting…";
+      return it.verifying ? diskCaption(it) : "Starting…";
     case "waiting":
       return it.wait ? `Retrying in ${duration(it.wait)}` : "Waiting";
     case "paused":
@@ -1399,6 +1405,12 @@ function renderSettings(s) {
       "Add dropped links and files right away",
       "Off: links and .dlc / .txt files you drop on the window, or open with Haul, fill the Add dialog first, so you can check them before anything downloads.",
       toggleSwitch("skip_add_dialog", d.skip_add_dialog, "Add dropped links and files right away"),
+    ),
+    settingCard(
+      "checkmark-circle",
+      "Compare checksums of files already there",
+      "A file in the download folder with the same name and size counts as downloaded. With this on, Haul also reads it in full and compares it with the checksum its host publishes, one file at a time and never while downloads are paused: thorough, but slow on big files and spinning disks.",
+      toggleSwitch("verify_existing", d.verify_existing, "Compare checksums of files already there"),
     ),
     s.desktop
       ? settingCard(
