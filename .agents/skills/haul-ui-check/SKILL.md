@@ -17,9 +17,9 @@ for f in Season.1.Episode.01.mkv:300M ubuntu-26.04-desktop-amd64.iso:180M holida
          photos-backup.part1.rar:25M Season.1.Episode.02.mkv:400M; do truncate -s ${f#*:} $D/files/cdn/${f%%:*}; done
 printf '<title>Download project-files.7z</title>captcha' > $D/files/getfile.html
 (cd $D/files && python3 -m http.server 8799 --bind 127.0.0.1 >/dev/null 2>&1 &)
-cargo build -p haul-web && (target/debug/haul --port 8766 --data-dir $D/data --dir $D/dl >$D/haul.log 2>&1 &)
+cargo build -p haul-web && (HAUL_UI_DIR=$PWD/crates/haul-web/ui target/debug/haul --port 8766 --data-dir $D/data --dir $D/dl >$D/haul.log 2>&1 &)
 B=http://127.0.0.1:8766 F=http://127.0.0.1:8799
-curl -s -H 'Content-Type: application/json' -d '{"max_total":4,"rate_mbps":6}' $B/api/settings
+curl -s -H 'Content-Type: application/json' -d '{"max_total":4,"rate_limit_mbps":6}' $B/api/settings
 curl -s -H 'Content-Type: application/json' -d "{\"text\":\"$F/cdn/Season.1.Episode.01.mkv http://localhost:8799/cdn/Season.1.Episode.01.mkv $F/cdn/ubuntu-26.04-desktop-amd64.iso $F/cdn/holiday-photos.zip $F/getfile.html $F/cdn/missing-file.zip http://localhost:8799/cdn/photos-backup.part1.rar http://localhost:8799/cdn/Season.1.Episode.02.mkv\"}" $B/api/add
 sleep 2; id=$(curl -s $B/api/state | jq -r '.items[] | select(.name=="Season.1.Episode.02.mkv") | .id'); curl -s -X POST $B/api/item/$id/pause
 ```
@@ -36,6 +36,8 @@ shot dialog "$B/#/add/https%3A%2F%2Fpixeldrain.com%2Fu%2Fx"  # the Add dialog, f
 ```
 
 Check both themes for contrast and that nothing is clipped; the narrow shot must keep labels on buttons inside InfoBars.
+
+When done, stop the server and the file server and delete `$D`: the downloads are real bytes, on a disk that has run full.
 
 ## The desktop app and the in-app browser
 

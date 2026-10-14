@@ -12,6 +12,7 @@
 
 - Every manual run and test uses its own data folder (`--data-dir` or `HAUL_DATA_DIR`) and port (`--port` or `HAUL_PORT`), never the user's real queue.
 - To look at the UI or run the desktop app from WSL, use the `haul-ui-check` skill. The desktop app must be forced onto a virtual display, or WSLg puts its windows on the user's desktop.
+- A debug build started with `HAUL_UI_DIR=crates/haul-web/ui` reads the UI files from there on every request, so a change to them shows on the next reload without rebuilding. Release builds ignore the variable and serve the embedded copy.
 
 ## Pull requests
 

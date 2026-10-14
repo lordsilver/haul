@@ -73,24 +73,32 @@ pub async fn serve(
     axum::serve(listener, router(engine, desktop, port)).await
 }
 
-/// The UI, built into the binary: path, content type, body.
-const ASSETS: [(&str, &str, &str); 7] = [
+/// The UI, built into the binary: path, file in `ui/`, content type, body.
+const ASSETS: [(&str, &str, &str, &str); 7] = [
     (
         "/",
+        "index.html",
         "text/html; charset=utf-8",
         include_str!("../ui/index.html"),
     ),
     (
         "/app.css",
+        "app.css",
         "text/css; charset=utf-8",
         include_str!("../ui/app.css"),
     ),
-    ("/app.js", JS, include_str!("../ui/app.js")),
-    ("/icons.js", JS, include_str!("../ui/icons.js")),
-    ("/theme.js", JS, include_str!("../ui/theme.js")),
-    ("/icon.svg", "image/svg+xml", include_str!("../ui/icon.svg")),
+    ("/app.js", "app.js", JS, include_str!("../ui/app.js")),
+    ("/icons.js", "icons.js", JS, include_str!("../ui/icons.js")),
+    ("/theme.js", "theme.js", JS, include_str!("../ui/theme.js")),
+    (
+        "/icon.svg",
+        "icon.svg",
+        "image/svg+xml",
+        include_str!("../ui/icon.svg"),
+    ),
     (
         "/favicon.ico",
+        "icon.svg",
         "image/svg+xml",
         include_str!("../ui/icon.svg"),
     ),
@@ -104,8 +112,8 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         port,
     };
     let mut router = Router::new();
-    for (path, content_type, body) in ASSETS {
-        router = router.route(path, get(move || page(content_type, body)));
+    for (path, file, content_type, body) in ASSETS {
+        router = router.route(path, get(move || page(file, content_type, body)));
     }
     router
         .route("/api/state", get(state))
@@ -160,8 +168,21 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
-async fn page(content_type: &'static str, body: &'static str) -> Response {
-    let mut resp = body.into_response();
+/// Debug builds read the UI from `HAUL_UI_DIR` when it is set, so a change to
+/// the page shows on the next reload without a rebuild.
+fn ui_from_disk(file: &str) -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let dir = std::env::var_os("HAUL_UI_DIR")?;
+    std::fs::read_to_string(std::path::Path::new(&dir).join(file)).ok()
+}
+
+async fn page(file: &'static str, content_type: &'static str, body: &'static str) -> Response {
+    let mut resp = match ui_from_disk(file) {
+        Some(text) => text.into_response(),
+        None => body.into_response(),
+    };
     let h = resp.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
