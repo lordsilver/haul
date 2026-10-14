@@ -797,7 +797,7 @@ input[type="number"] {
   color: var(--text-2);
 }
 
-.empty .icon {
+.empty > .icon {
   width: 48px;
   height: 48px;
   color: var(--text-3);
@@ -809,8 +809,28 @@ input[type="number"] {
   font: 600 20px/28px var(--font-display);
 }
 
-.empty .button {
-  margin-top: 12px;
+/* With no downloads, the list is where links and files go: a dashed area in
+   the strong control stroke that lights up while something is dragged over
+   the window. */
+.empty.dropzone {
+  min-height: min(420px, 60vh);
+  align-content: center;
+  margin-top: 8px;
+  border: 2px dashed var(--text-3);
+  border-radius: 8px;
+  background: var(--card);
+  transition:
+    border-color 0.1s,
+    background-color 0.1s;
+}
+
+.empty.dropzone > .icon {
+  color: var(--accent-text);
+}
+
+.empty.dropzone.over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
 }
 
 /* ---- hosts and settings: cards like Windows Settings */
@@ -1108,32 +1128,41 @@ input.wide {
   }
 }
 
+/* While something is dragged over a window that has downloads, the whole
+   window becomes a drop zone like the empty list's, lit up. */
 .drop {
   position: fixed;
   inset: 0;
   z-index: 20;
   display: grid;
-  place-items: center;
+  padding: 12px;
   background: var(--overlay);
   pointer-events: none;
 }
 
 .drop-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 24px 32px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 16px;
   border: 2px dashed var(--accent);
   border-radius: 8px;
-  background: var(--dialog);
-  box-shadow: var(--shadow-dialog);
-  font: 600 16px/24px var(--font-display);
+  background: color-mix(in srgb, var(--accent) 12%, var(--layer));
+  color: var(--text-2);
+  text-align: center;
 }
 
-.drop-card .icon {
-  width: 24px;
-  height: 24px;
+.drop-card > .icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 8px;
   color: var(--accent-text);
+}
+
+.drop-card > strong {
+  color: var(--text);
+  font: 600 20px/28px var(--font-display);
 }
 
 .sr {

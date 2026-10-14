@@ -37,6 +37,16 @@ shot dialog "$B/#/add/https%3A%2F%2Fpixeldrain.com%2Fu%2Fx"  # the Add dialog, f
 
 Check both themes for contrast and that nothing is clipped; the narrow shot must keep labels on buttons inside InfoBars.
 
+Also capture the empty list: a second server with its own empty data folder shows the drop zone a new user starts from, and it is easy to miss because every demo has downloads in it. Look at icons inside buttons in particular: a descendant rule such as `.empty .icon` reaches into any button placed there and blows its icon up to the size of the illustration.
+
+Drag states cannot be triggered in a headless screenshot. Copy `crates/haul-web/ui` to a scratch folder, append one line to the copy's `app.js` that forces the state, and point another server's `HAUL_UI_DIR` at the copy:
+
+```sh
+cp -r crates/haul-web/ui $D/ui-drag
+echo '$("drop").hidden = false;' >> $D/ui-drag/app.js                # the window-wide drop zone, over the list
+# echo '$("empty").classList.add("over");' >> $D/ui-drag/app.js      # or the empty list's zone, lit up
+```
+
 When done, stop the server and the file server and delete `$D`: the downloads are real bytes, on a disk that has run full.
 
 ## The desktop app and the in-app browser

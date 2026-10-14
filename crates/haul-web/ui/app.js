@@ -627,14 +627,16 @@ function renderEmpty(s, shown) {
   const key = shown ? "" : `${view}|${s.items.length > 0}|${query}`;
   if (shown || key === emptyKey) return;
   emptyKey = key;
+  // With no downloads at all, the empty list is the drop target, and looks it.
+  const dropzone = !query && (!s.items.length || view === "all");
+  box.classList.toggle("dropzone", dropzone);
   if (query) {
     box.replaceChildren(icon("search"), el("strong", {}, "No matches"), `Nothing here matches “${query}”.`);
-  } else if (!s.items.length || view === "all") {
+  } else if (dropzone) {
     box.replaceChildren(
       icon("arrow-download"),
-      el("strong", {}, "No downloads yet"),
-      "Paste links anywhere in Haul, or drop links and .dlc / .txt files on the window.",
-      button("Add links", { icon: "add", kind: "accent", onclick: () => openAdd() }),
+      el("strong", {}, "Drop links or files here"),
+      "Or paste links anywhere with Ctrl+V. Files can be .dlc containers or text files with links in them.",
     );
   } else {
     const [title, text] = EMPTY[view];
@@ -1210,20 +1212,32 @@ document.addEventListener("keydown", (e) => {
 // Drop links or container files anywhere.
 let dragDepth = 0;
 const carriesData = (e) => [...(e.dataTransfer?.types ?? [])].some((t) => t === "Files" || t.startsWith("text/"));
-$("drop").firstElementChild.append(icon("arrow-download"), "Drop to add to Haul");
+$("drop").firstElementChild.append(
+  icon("arrow-download"),
+  el("strong", {}, "Drop to add to Haul"),
+  "Links, .dlc containers and text files with links in them.",
+);
+// The empty list's drop zone lights up while it is on screen; otherwise the
+// whole window turns into one, the same way.
 addEventListener("dragenter", (e) => {
   if (!carriesData(e) || dialog.open) return;
   dragDepth += 1;
-  $("drop").hidden = false;
+  const zone = $("empty");
+  if (zone.classList.contains("dropzone") && zone.offsetParent) zone.classList.add("over");
+  else $("drop").hidden = false;
 });
+function endDrag() {
+  dragDepth = 0;
+  $("drop").hidden = true;
+  $("empty").classList.remove("over");
+}
 addEventListener("dragleave", () => {
   dragDepth = Math.max(0, dragDepth - 1);
-  if (!dragDepth) $("drop").hidden = true;
+  if (!dragDepth) endDrag();
 });
 addEventListener("dragover", (e) => e.preventDefault());
 addEventListener("drop", (e) => {
-  dragDepth = 0;
-  $("drop").hidden = true;
+  endDrag();
   const data = e.dataTransfer;
   if (data.files.length) {
     e.preventDefault();
