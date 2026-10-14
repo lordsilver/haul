@@ -5,7 +5,7 @@
 - Keep host, queue and transfer logic in `haul-core`, the HTTP API and the web UI in `haul-web`, and only window, tray and webview code in `haul-desktop`. The engine must keep running headless, and the desktop shell must stay thin enough to replace.
 - The UI is one set of static files in `crates/haul-web/ui` (vanilla JS modules, no build step) served by the engine. The desktop app loads it from the local server and uses the same HTTP API; do not add Tauri IPC. Keep the Windows 11 (Fluent) look: WinUI theme colors in both themes, Fluent System Icons, Segoe UI Variable.
 - Resolvers use public APIs, guest tokens and the user's own accounts only. Do not add captcha solving, wait-timer bypasses, per-download IP rotation or anything else that evades a host's limits. A host that needs a person raises `ResolveError::NeedsUser`; the in-app browser or a pasted link takes it from there.
-- Never run, debug or tune host support against links to third-party copyrighted content. Verify hosts with files the user uploaded themselves. Never commit link lists, `queue.json` or `config.toml`.
+- Never run, debug or tune host support against links to third-party copyrighted content. Verify hosts with files the user uploaded themselves. To learn how a host's API behaves, use the `host-research` skill. Never commit link lists, `queue.json` or `config.toml`.
 - While the version is `0.x`, backward compatibility of config keys, state files and the API is not a default requirement; name any break in the release notes. Keep `queue.json` readable in the Python prototype's format unless a break has a concrete benefit.
 
 ## Running it
