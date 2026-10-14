@@ -114,12 +114,21 @@ jobs:
           subject-path: dist/*
       - name: Release notes
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        # The notes are the signed tag's message after its first line. Tags
-        # are created with --cleanup=verbatim so Markdown headings survive.
+        # The notes are the signed tag's message after its first line, without
+        # its signature. Tags are created with --cleanup=verbatim so Markdown
+        # headings survive. The API serves the message even though the checkout
+        # keeps no credentials and the repository may be private.
         run: |
-          git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
-          git tag -l --format='%(contents:body)' "$TAG" | sed '/./,$!d' > notes.md
+          set -euo pipefail
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+          if [ "${ref%% *}" = tag ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/${ref#* }" --jq .message |
+              sed '/^-----BEGIN \(SSH\|PGP\) SIGNATURE-----$/,$d' | sed '1d' | sed '/./,$!d' > notes.md
+          else
+            : > notes.md
+          fi
           cat notes.md
       - name: Publish
         env:
