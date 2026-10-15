@@ -24,7 +24,7 @@ Early. Working today:
 
 ## Install
 
-Windows: download the installer from the [releases](https://github.com/garysassano/haul/releases) (`Haul_<version>_x64-setup.exe`). It asks whether to install for you alone, in `%LOCALAPPDATA%\Haul` without administrator rights, or for everyone on the computer, in Program Files; on an administrator account Windows asks for permission as it starts. For a silent install, pass `/S` with `/CurrentUser` or `/AllUsers`. The `.msi` always installs for everyone. The installer is not code-signed yet, so SmartScreen asks once: **More info**, then **Run anyway**. Windows 10 and 11 ship the WebView2 runtime the app needs.
+Windows: download the installer from the [releases](https://github.com/garysassano/haul/releases) (`Haul_<version>_x64-setup.exe`). It asks whether to install for you alone, in `%LOCALAPPDATA%\Haul` without administrator rights, or for everyone on the computer, in Program Files; on an administrator account Windows asks for permission as it starts. For a silent install, pass `/S` with `/CurrentUser` or `/AllUsers`. To update, run the new version's installer: it installs over the old version and keeps your downloads and settings. The `.msi` always installs for everyone. The installer is not code-signed yet, so SmartScreen asks once: **More info**, then **Run anyway**. Windows 10 and 11 ship the WebView2 runtime the app needs.
 
 From source, with Rust stable:
 
