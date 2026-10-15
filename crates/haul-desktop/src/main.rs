@@ -20,6 +20,7 @@ use std::{
 };
 
 use haul_core::{Engine, Event, Options, Theme, paths};
+use haul_web::Desktop;
 use tauri::{
     AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
     webview::NewWindowResponse,
@@ -29,6 +30,9 @@ use tauri_plugin_notification::NotificationExt;
 use tokio::{net::TcpListener, sync::broadcast::error::RecvError};
 
 pub const MAIN: &str = "main";
+
+/// The id of the "Needs you" notification; a click on it opens what waits.
+const NEEDS_YOU: i32 = 1;
 
 /// The port browser integrations expect; another free one when it is taken.
 const PORT: u16 = 8765;
@@ -121,15 +125,13 @@ async fn start(app: &AppHandle, data_dir: PathBuf) -> Result<(), String> {
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     tracing::info!("UI and API on http://127.0.0.1:{port}/");
 
-    let browser = browser::Browser::new(app.clone(), engine.clone());
-    tauri::async_runtime::spawn(haul_web::serve(
-        listener,
-        engine.clone(),
-        Some(Arc::new(browser)),
-    ));
+    let browser = Arc::new(browser::Browser::new(app.clone(), engine.clone()));
+    app.manage(browser.clone());
+    tauri::async_runtime::spawn(haul_web::serve(listener, engine.clone(), Some(browser)));
     app.manage(engine.clone());
     main_window(app, port, engine.theme()).map_err(|e| e.to_string())?;
     tray::create(app, &engine).map_err(|e| e.to_string())?;
+    spawn_notification_actions(app.clone());
     spawn_notifications(app.clone(), &engine);
     spawn_theme_sync(app.clone(), &engine);
     clipboard::spawn(app.clone(), engine.clone());
@@ -192,7 +194,23 @@ pub fn show_main(app: &AppHandle) {
 }
 
 pub fn notify(app: &AppHandle, title: &str, body: &str) {
-    if let Err(e) = app.notification().builder().title(title).body(body).show() {
+    show_notification(app, title, body, false);
+}
+
+/// The "Needs you" notification. Its id tells a click on it that a host is
+/// waiting, so the click can go straight to the download.
+fn notify_waiting(app: &AppHandle, title: &str, body: &str) {
+    show_notification(app, title, body, true);
+}
+
+fn show_notification(app: &AppHandle, title: &str, body: &str, waiting: bool) {
+    let builder = app.notification().builder().title(title).body(body);
+    let builder = if waiting {
+        builder.id(NEEDS_YOU)
+    } else {
+        builder
+    };
+    if let Err(e) = builder.show() {
         tracing::debug!("notification: {e}");
     }
 }
@@ -324,15 +342,68 @@ fn spawn_notifications(app: AppHandle, engine: &Engine) {
                 .get_webview_window(MAIN)
                 .is_some_and(|w| w.is_focused().unwrap_or(false));
             if !focused {
-                for (title, body) in summarize(&batch) {
-                    notify(&app, &title, &body);
+                for (title, body, waiting) in summarize(&batch) {
+                    if waiting {
+                        notify_waiting(&app, &title, &body);
+                    } else {
+                        notify(&app, &title, &body);
+                    }
                 }
             }
         }
     });
 }
 
-fn summarize(events: &[Event]) -> Vec<(String, String)> {
+/// A click on a notification brings Haul forward. A click on "Needs you" also
+/// lands on the list that waits, and with a single download waiting opens its
+/// page right away: that page is the step the user was asked for.
+fn spawn_notification_actions(app: AppHandle) {
+    let _ = app.clone().notification().on_action(move |performed| {
+        if performed.action_id() != "tap" {
+            return;
+        }
+        let waiting = performed
+            .notification()
+            .is_some_and(|n| n.id() == NEEDS_YOU);
+        reveal_waiting(&app, waiting);
+    });
+}
+
+fn reveal_waiting(app: &AppHandle, from_waiting: bool) {
+    let Some(engine) = app.try_state::<Engine>().map(|e| e.inner().clone()) else {
+        return;
+    };
+    let waiting: Vec<String> = if from_waiting {
+        engine
+            .snapshot()
+            .items
+            .iter()
+            .filter(|it| it.status == "captcha")
+            .map(|it| it.id.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Haul opens on the list that waits, not on whatever was shown last.
+    if !waiting.is_empty()
+        && let Some(window) = app.get_webview_window(MAIN)
+        && let Ok(mut url) = window.url()
+    {
+        url.set_fragment(Some("/attention"));
+        let _ = window.navigate(url);
+    }
+    show_main(app);
+    // One download waiting: the click meant that one, so open its page too.
+    if let [id] = waiting.as_slice()
+        && let Some(browser) = app.try_state::<Arc<browser::Browser>>()
+        && let Some(page) = engine.page_for(id)
+        && let Err(e) = browser.browse(id, &page, None)
+    {
+        tracing::warn!("opening {page}: {e}");
+    }
+}
+
+fn summarize(events: &[Event]) -> Vec<(String, String, bool)> {
     let mut finished = Vec::new();
     let mut waiting = Vec::new();
     let mut failed = Vec::new();
@@ -355,8 +426,8 @@ fn summarize(events: &[Event]) -> Vec<(String, String)> {
     let mut out = Vec::new();
     match finished.len() {
         0 => {}
-        1 => out.push(("Downloaded".into(), finished[0].to_string())),
-        n => out.push((format!("{n} downloads finished"), list(&finished))),
+        1 => out.push(("Downloaded".into(), finished[0].to_string(), false)),
+        n => out.push((format!("{n} downloads finished"), list(&finished), false)),
     }
     if !waiting.is_empty() {
         out.push((
@@ -365,11 +436,12 @@ fn summarize(events: &[Event]) -> Vec<(String, String)> {
                 "{}: open it in Haul to solve the host's page",
                 list(&waiting)
             ),
+            true,
         ));
     }
     match failed.len() {
         0 => {}
-        1 => out.push(("Download failed".into(), failed[0].clone())),
+        1 => out.push(("Download failed".into(), failed[0].clone(), false)),
         n => out.push((
             format!("{n} downloads failed"),
             failed
@@ -378,6 +450,7 @@ fn summarize(events: &[Event]) -> Vec<(String, String)> {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join("\n"),
+            false,
         )),
     }
     out
@@ -385,6 +458,28 @@ fn summarize(events: &[Event]) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn a_waiting_download_is_marked_as_needing_the_user() {
+        let events = [
+            Event::NeedsUser {
+                id: "waiting".into(),
+                name: "a.bin".into(),
+            },
+            Event::Finished {
+                id: "done".into(),
+                name: "b.bin".into(),
+            },
+        ];
+        let out = summarize(&events);
+        let waiting: Vec<_> = out.iter().filter(|(_, _, waiting)| *waiting).collect();
+        assert_eq!(waiting.len(), 1, "{out:?}");
+        assert_eq!(waiting[0].0, "Needs you");
+        assert!(waiting[0].1.contains("a.bin"));
+        assert!(out.iter().any(|(title, _, _)| title == "Downloaded"));
+    }
+
     #[test]
     fn the_data_folder_follows_the_app_identifier() {
         let conf = include_str!("../tauri.conf.json");

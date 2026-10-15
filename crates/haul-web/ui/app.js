@@ -119,17 +119,41 @@ async function api(path, body) {
 
 // ---- toasts
 
-function toast(message, kind = "info") {
+// A toast can offer one action: a button (`onclick`) or a link (`href` opens
+// it). One that offers something stays longer, to be read and used.
+function toast(message, kind = "info", action = null) {
   const names = { info: "info", success: "checkmark-circle", error: "error-circle" };
-  const node = el("div", { class: `toast ${kind}` }, icon(names[kind] ?? "info"), el("div", {}, message));
+  const body = el("div", { class: "toast-body" }, el("div", {}, message));
+  const node = el("div", { class: `toast ${kind}` }, icon(names[kind] ?? "info"), body);
+  if (action) {
+    const run = (e) => {
+      e.stopPropagation();
+      const close = () => node.remove();
+      // A link opens on its own; a button's work may take a moment.
+      Promise.resolve(action.onclick?.()).then(close, close);
+    };
+    body.append(
+      action.href
+        ? el(
+            "a",
+            { class: "button accent small", href: action.href, target: "_blank", rel: "noopener noreferrer", onclick: run },
+            action.icon ? icon(action.icon) : null,
+            el("span", { class: "command-label" }, action.label),
+          )
+        : button(action.label, { icon: action.icon, kind: "accent small", onclick: run }),
+    );
+  }
+  node.addEventListener("click", () => node.remove());
   const box = $("toasts");
   box.append(node);
   while (box.childElementCount > 4) box.firstElementChild.remove();
-  setTimeout(() => node.remove(), kind === "error" ? 7000 : 4000);
+  setTimeout(() => node.remove(), action ? 12000 : kind === "error" ? 7000 : 4000);
 }
 
 const report = (error) => toast(error.message, "error");
 const act = (id, action) => api(`/api/item/${encodeURIComponent(id)}/${action}`).catch(report);
+// The in-app browser window for a page that needs a person.
+const openHere = (id) => api(`/api/item/${encodeURIComponent(id)}/browse`, { user_agent: navigator.userAgent }).catch(report);
 
 function addedMessage(r) {
   const parts = [`${r.added} added`];
@@ -224,11 +248,58 @@ const THEMES = [
   ["dark", "Dark", "weather-moon"],
 ];
 
+// ---- calls for attention
+
+// Downloads that entered the "Needs you" state, gathered for a moment so a
+// burst shares one toast. The first state after opening Haul raises nothing:
+// those downloads were already parked where they are.
+let seenStatus = null;
+const needsPending = new Map();
+let needsTimer = null;
+
+function spotNeedsUser(s) {
+  const statuses = new Map(s.items.map((it) => [it.id, it.status]));
+  if (seenStatus) {
+    for (const it of s.items) {
+      if (it.status === "captcha" && seenStatus.get(it.id) !== "captcha") needsPending.set(it.id, it);
+    }
+    if (needsPending.size && !needsTimer) {
+      needsTimer = setTimeout(() => {
+        needsTimer = null;
+        // One resolved in the moment since (a pasted link, a try) is not
+        // announced after the fact.
+        const items = [...needsPending.values()].filter((it) =>
+          state?.items.some((now) => now.id === it.id && now.status === "captcha"),
+        );
+        needsPending.clear();
+        if (items.length) needsToast(items);
+      }, 1200);
+    }
+  }
+  seenStatus = statuses;
+}
+
+function needsToast(items) {
+  const one = items.length === 1 ? items[0] : null;
+  let action = null;
+  if (one && state?.desktop) {
+    action = { label: "Open here", icon: "globe", onclick: () => openHere(one.id) };
+  } else if (one) {
+    const url = one.open_urls.find(isWebLink);
+    // Opens the page in a tab of its own; Haul lands on the list that waits,
+    // ready for the link the page hands back.
+    if (url) action = { label: "Open page", icon: "open", href: url, onclick: () => go("attention") };
+  }
+  action ??= { label: "Show", icon: "warning", onclick: () => go("attention") };
+  toast(one ? `${one.name} needs you` : `${items.length} downloads need you`, "info", action);
+}
+
 // ---- render
 
 function render(s) {
   state = s;
   if (s.theme !== theme) applyTheme(s.theme);
+  spotNeedsUser(s);
   renderNav(s);
   renderHead(s);
   const isList = view in LISTS;
@@ -617,8 +688,7 @@ function helpBar(r, it, s) {
       button("Open here", {
         icon: "globe",
         kind: "accent",
-        onclick: () =>
-          api(`/api/item/${encodeURIComponent(it.id)}/browse`, { user_agent: navigator.userAgent }).catch(report),
+        onclick: () => openHere(it.id),
       }),
     );
   }
@@ -1756,14 +1826,25 @@ $("add-file").addEventListener("change", async (e) => {
   e.target.value = "";
 });
 
-// Paste links anywhere outside a text field.
+// Paste links anywhere outside a text field. With one download waiting for a
+// person, a single pasted link is the one its page just handed back: it goes
+// to that download rather than starting a new one.
 document.addEventListener("paste", (e) => {
   if (e.target.closest?.("input, textarea") || dialog.open) return;
   const text = e.clipboardData?.getData("text") ?? "";
-  if (/https?:\/\//i.test(text)) {
-    e.preventDefault();
-    openAdd(text);
+  if (!/https?:\/\//i.test(text)) return;
+  e.preventDefault();
+  const link = text.trim();
+  const waiting = state ? state.items.filter((i) => i.status === "captcha") : [];
+  if (waiting.length === 1 && !/\s/.test(link)) {
+    const it = waiting[0];
+    api(`/api/item/${encodeURIComponent(it.id)}/direct`, { url: link }).then(
+      () => toast(`Using your link for ${it.name}`, "success"),
+      report,
+    );
+    return;
   }
+  openAdd(text);
 });
 
 document.addEventListener("keydown", (e) => {

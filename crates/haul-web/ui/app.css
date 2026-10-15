@@ -1249,6 +1249,14 @@ input.wide {
   overflow-wrap: anywhere;
 }
 
+.toast-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
 .toast .icon {
   width: 20px;
   height: 20px;
