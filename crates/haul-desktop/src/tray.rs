@@ -12,8 +12,11 @@ use tauri::{
 use crate::show_main;
 
 pub fn create(app: &AppHandle, engine: &Engine) -> tauri::Result<()> {
+    let pause_label = |paused| if paused { "Resume all" } else { "Pause all" };
+    // A pause is kept across restarts, so the menu may start on Resume.
+    let paused = engine.paused();
     let show = MenuItem::with_id(app, "show", "Show Haul", true, None::<&str>)?;
-    let pause = MenuItem::with_id(app, "pause", "Pause all", true, None::<&str>)?;
+    let pause = MenuItem::with_id(app, "pause", pause_label(paused), true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Haul", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -26,7 +29,7 @@ pub fn create(app: &AppHandle, engine: &Engine) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "show" => show_main(app),
-            "pause" => toggle.set_paused(!toggle.snapshot().paused),
+            "pause" => toggle.set_paused(!toggle.paused()),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -47,7 +50,7 @@ pub fn create(app: &AppHandle, engine: &Engine) -> tauri::Result<()> {
 
     let engine = engine.clone();
     tauri::async_runtime::spawn(async move {
-        let mut shown = (String::new(), false);
+        let mut shown = (String::new(), paused);
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let s = engine.snapshot();
@@ -61,7 +64,7 @@ pub fn create(app: &AppHandle, engine: &Engine) -> tauri::Result<()> {
                 let _ = tray.set_tooltip(Some(&tip));
             }
             if s.paused != shown.1 {
-                let _ = pause.set_text(if s.paused { "Resume all" } else { "Pause all" });
+                let _ = pause.set_text(pause_label(s.paused));
             }
             shown = (tip, s.paused);
         }

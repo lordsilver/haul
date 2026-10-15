@@ -9,7 +9,7 @@ use std::{collections::BTreeMap, convert::Infallible, sync::Arc, time::Duration}
 
 use axum::{
     Json, Router,
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{DefaultBodyLimit, Multipart, Path, Request, State},
     http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
@@ -140,7 +140,37 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/settings/download-dir/pick", post(pick_download_dir))
         .route("/api/open/{place}", post(open_place))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
+        .layer(middleware::map_response(json_errors))
         .with_state(app)
+}
+
+/// axum answers some errors itself, in plain text (a body or a path that does
+/// not parse, an unknown route), and so does [`guard`]. The API answers every
+/// error as `{"error": "…"}`, so those are wrapped.
+async fn json_errors(resp: Response) -> Response {
+    let status = resp.status();
+    let is_json = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v.as_bytes().starts_with(b"application/json"));
+    if !(status.is_client_error() || status.is_server_error()) || is_json {
+        return resp;
+    }
+    let (mut parts, body) = resp.into_parts();
+    let text = axum::body::to_bytes(body, 16 << 10)
+        .await
+        .unwrap_or_default();
+    let text = String::from_utf8_lossy(&text);
+    let message = match text.trim() {
+        "" => status.canonical_reason().unwrap_or("error").to_lowercase(),
+        text => text.to_string(),
+    };
+    parts.headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, Body::from(json!({ "error": message }).to_string()))
 }
 
 fn is_local(authority: &str, port: u16) -> bool {
@@ -376,8 +406,10 @@ async fn item(State(app): State<App>, Path((id, action)): Path<(String, String)>
 }
 
 async fn host_limit(State(app): State<App>, Path((name, n)): Path<(String, usize)>) -> Response {
-    app.engine.set_host_limit(&name, n);
-    ok()
+    match app.engine.set_host_limit(&name, n) {
+        Ok(()) => ok(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
 }
 
 #[derive(Deserialize)]
@@ -499,7 +531,7 @@ async fn reveal(State(app): State<App>, Path(id): Path<String>) -> Response {
 /// Opens one of the app's own places; never a path the caller names.
 async fn open_place(State(app): State<App>, Path(place): Path<String>) -> Response {
     let path = match place.as_str() {
-        "downloads" => app.engine.download_dir().to_path_buf(),
+        "downloads" => app.engine.download_dir(),
         "data" => app.engine.data_dir().to_path_buf(),
         "config" => match app.engine.config_path() {
             Some(path) => path.to_path_buf(),

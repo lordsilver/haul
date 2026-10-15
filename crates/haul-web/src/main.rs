@@ -83,8 +83,38 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        _ = tokio::signal::ctrl_c() => ExitCode::SUCCESS,
+        () = stop_requested() => ExitCode::SUCCESS,
     };
     engine.shutdown().await;
     code
+}
+
+/// Ctrl+C, or the system asking the server to stop: SIGTERM from a service
+/// manager or `kill`, or the console closing or Windows shutting down. Each
+/// leaves time to stop the transfers and save the queue.
+async fn stop_requested() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        if let Ok(mut term) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+            return;
+        }
+    }
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows::{ctrl_close, ctrl_shutdown};
+        if let (Ok(mut close), Ok(mut shutdown)) = (ctrl_close(), ctrl_shutdown()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = close.recv() => {}
+                _ = shutdown.recv() => {}
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }

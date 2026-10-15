@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+use reqwest::header::HeaderValue;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -259,6 +260,9 @@ impl Engine {
                 }
                 "user_agent" => {
                     let agent = text(value, key)?;
+                    if HeaderValue::from_str(&agent).is_err() {
+                        return Err("the user agent must be text on one line".into());
+                    }
                     writes.push(top(key, (!agent.is_empty()).then(|| agent.as_str().into())));
                     cfg.user_agent = if agent.is_empty() {
                         config::DEFAULT_USER_AGENT.into()
@@ -302,7 +306,7 @@ impl Engine {
     }
 
     /// Files downloaded from `host` at the same time.
-    pub fn set_host_limit(&self, host: &str, n: usize) {
+    pub fn set_host_limit(&self, host: &str, n: usize) -> Result<(), String> {
         let n = n.clamp(1, FALLBACK_LIMIT);
         let mut cfg = (*self.cfg()).clone();
         cfg.limits.insert(host.to_string(), n);
@@ -310,11 +314,14 @@ impl Engine {
             vec!["limits".into(), host.to_string()],
             Some((n as i64).into()),
         );
-        self.log_failure(self.write_and_apply(cfg, vec![write]));
+        self.write_and_apply(cfg, vec![write])?;
         // The user's choice replaces what Haul learned from the host.
-        if let Some(h) = self.lock().hosts.get_mut(host) {
+        let mut st = self.lock();
+        if let Some(h) = st.hosts.get_mut(host) {
             h.cap = None;
         }
+        self.touch(&mut st);
+        Ok(())
     }
 
     /// The subfolder of the download folder for files from `host`; an empty
@@ -477,6 +484,13 @@ impl Engine {
                     continue;
                 }
                 *seen = now;
+            }
+            if now.is_none() {
+                // Deleted, or an editor that removes the old file before it
+                // writes the new one: the defaults would drop the proxy and
+                // move the download folder, so what is in effect stays.
+                tracing::warn!("{} is gone; the settings in effect stay", path.display());
+                continue;
             }
             match Config::load(&path) {
                 Ok(mut cfg) => {

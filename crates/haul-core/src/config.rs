@@ -13,7 +13,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::paths;
+use crate::{paths, store};
 
 /// File name of the configuration inside the data directory.
 pub const FILE: &str = "config.toml";
@@ -324,7 +324,7 @@ pub fn write_key(path: &Path, key: &[&str], value: Option<toml_edit::Value>) -> 
         }
         _ => return Err(io::Error::other(format!("bad settings key {key:?}"))),
     }
-    write_atomic(path, &doc.to_string())
+    store::write_atomic(path, doc.to_string().as_bytes())
 }
 
 /// Turns the commented `# key = …` line among the top-level keys into
@@ -400,12 +400,6 @@ fn disable_line(text: &str, key: &str) -> Option<String> {
         }
     }
     found.then_some(out)
-}
-
-fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
 }
 
 /// Creates `path` from [`TEMPLATE`] unless it exists.

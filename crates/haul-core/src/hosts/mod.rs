@@ -24,13 +24,12 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use sha2::Digest;
-
 use regex::Regex;
 use reqwest::header::{
     CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, HeaderMap, RETRY_AFTER,
 };
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 use crate::config::Config;
 
@@ -154,7 +153,12 @@ fn hash_reader<D: Digest>(
 }
 
 fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    bytes
+        .iter()
+        .flat_map(|b| [DIGITS[usize::from(b >> 4)], DIGITS[usize::from(b & 0xf)]])
+        .map(char::from)
+        .collect()
 }
 
 /// The checksum a server publishes for the whole file in its headers, by
@@ -295,17 +299,23 @@ pub fn is_download_link(url: &str) -> bool {
     if KNOWN_HOSTS.contains(&host_of(url).as_str()) {
         return true;
     }
-    guess_name(url).is_some_and(|name| {
-        let ext = name
-            .rsplit('.')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        !matches!(
-            ext.as_str(),
-            "html" | "htm" | "shtml" | "xhtml" | "php" | "asp" | "aspx" | "jsp" | "cgi"
-        )
-    })
+    // A page that names a file (`name.rar.html`) is still a page.
+    last_segment(url).is_some_and(|last| page_extension(&last).is_none())
+        && guess_name(url).is_some()
+}
+
+/// Extensions of web pages, as opposed to files.
+const PAGE_EXTENSIONS: [&str; 9] = [
+    "html", "htm", "shtml", "xhtml", "php", "asp", "aspx", "jsp", "cgi",
+];
+
+/// `name` without its extension when that extension is a web page's.
+fn page_extension(name: &str) -> Option<&str> {
+    let (stem, ext) = name.rsplit_once('.')?;
+    PAGE_EXTENSIONS
+        .iter()
+        .any(|page| page.eq_ignore_ascii_case(ext))
+        .then_some(stem)
 }
 
 /// HTTP clients for one route (direct or through the proxy). Both share a
@@ -379,14 +389,24 @@ pub fn host_of(url: &str) -> String {
 
 static FILE_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.\w{2,5}$").unwrap());
 
-/// The file name in a link's path, when it looks like one.
+/// The last part of a link's path, decoded.
+fn last_segment(url: &str) -> Option<String> {
+    let url = url::Url::parse(url).ok()?;
+    let last = url.path().trim_end_matches('/').rsplit('/').next()?;
+    Some(
+        percent_encoding::percent_decode_str(last)
+            .decode_utf8_lossy()
+            .into_owned(),
+    )
+}
+
+/// The file name in a link's path, when it looks like one. File hosts' pages
+/// often add `.html` to the name of the file they offer (`name.rar.html`),
+/// which names `name.rar`; a page of its own (`index.php`) names no file.
 pub fn guess_name(url: &str) -> Option<String> {
-    let path = url::Url::parse(url).ok()?.path().to_string();
-    let last = path.trim_end_matches('/').rsplit('/').next()?;
-    let last = percent_encoding::percent_decode_str(last)
-        .decode_utf8_lossy()
-        .into_owned();
-    FILE_NAME.is_match(&last).then_some(last)
+    let last = last_segment(url)?;
+    let name = page_extension(&last).unwrap_or(&last);
+    FILE_NAME.is_match(name).then(|| name.to_string())
 }
 
 /// Direct links for `url`. Folders and lists expand to several entries.
@@ -421,8 +441,10 @@ pub async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
     }
 }
 
+/// RFC 5987's `filename*=UTF-8'<language>'<percent-encoded name>`, with the
+/// language usually left empty.
 static CD_EXT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)filename\*\s*=\s*UTF-8''([^;]+)"#).unwrap());
+    LazyLock::new(|| Regex::new(r#"(?i)filename\*\s*=\s*UTF-8'[^']*'([^;]+)"#).unwrap());
 static CD_PLAIN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)filename\s*=\s*"?([^";]+)"#).unwrap());
 
@@ -504,6 +526,17 @@ mod tests {
         );
         assert_eq!(guess_name("https://h.example/d/abc123"), None);
         assert_eq!(guess_name("https://1fichier.com/?abc&af=1"), None);
+        // A host's page for a file names the file; a page of its own names none.
+        assert_eq!(
+            guess_name("https://rapidgator.net/file/0123abcd/game.part1.rar.html").as_deref(),
+            Some("game.part1.rar")
+        );
+        assert_eq!(
+            guess_name("https://h.example/f/Clip%20One.mkv.HTM").as_deref(),
+            Some("Clip One.mkv")
+        );
+        assert_eq!(guess_name("https://h.example/getfile.html"), None);
+        assert_eq!(guess_name("https://h.example/download.php?id=7"), None);
     }
 
     #[test]
@@ -515,6 +548,7 @@ mod tests {
         ));
         assert!(!is_download_link("https://news.example/story.html"));
         assert!(!is_download_link("https://example.com/index.php"));
+        assert!(!is_download_link("https://files.example/a1/video.mkv.html"));
         assert!(!is_download_link("https://github.com/garysassano/haul"));
     }
 
@@ -528,6 +562,11 @@ mod tests {
             ),
         );
         assert_eq!(disposition_name(&h).as_deref(), Some("résumé.zip"));
+        h.insert(
+            CONTENT_DISPOSITION,
+            HeaderValue::from_static("attachment; filename*=utf-8'en'Caf%C3%A9.7z"),
+        );
+        assert_eq!(disposition_name(&h).as_deref(), Some("Café.7z"));
         h.insert(
             CONTENT_DISPOSITION,
             HeaderValue::from_static("attachment; filename=plain.rar"),

@@ -348,8 +348,21 @@ async fn rapidgator_logs_in_once_and_relogs_after_errors() {
     let good = "https://rapidgator.net/file/abcdefabcdefabcdefabcdefabcdefab/game.part1.rar.html";
     let e = rapidgator::resolve(&cx, good).await.unwrap();
     assert_eq!(e[0].url, "https://dl.rapidgator.example/f");
+    assert_eq!(
+        e[0].name.as_deref(),
+        Some("game.part1.rar"),
+        "the page's .html is no part of the file's name"
+    );
     rapidgator::resolve(&cx, good).await.unwrap();
     assert_eq!(logins.load(Ordering::SeqCst), 1);
+    assert!(
+        matches!(rapidgator::resolve(&cx, "https://rapidgator.net/folder/1").await, Err(ResolveError::Failed(m)) if m.contains("url"))
+    );
+    assert_eq!(
+        logins.load(Ordering::SeqCst),
+        1,
+        "a link that names no file costs no login"
+    );
     let missing = "https://rapidgator.net/file/0bcdefabcdefabcdefabcdefabcdefab";
     assert_eq!(
         rapidgator::resolve(&cx, missing).await,

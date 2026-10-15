@@ -49,13 +49,14 @@
         <div class="dialog-body">
           <h2 id="add-title">Add links</h2>
           <label class="field-label" for="add-text">Links, or any text with links in it</label>
-          <textarea id="add-text" rows="7" spellcheck="false" placeholder="https://pixeldrain.com/u/…&#10;https://gofile.io/d/…"></textarea>
+          <textarea id="add-text" rows="7" spellcheck="false" required placeholder="https://pixeldrain.com/u/…&#10;https://gofile.io/d/…"></textarea>
           <label class="field-label" for="add-package">Package <span class="hint">optional subfolder</span></label>
           <input id="add-package" type="text" autocomplete="off" />
           <p class="hint">Tip: paste anywhere in Haul, or drop links and .dlc / .txt files on the window.</p>
         </div>
         <div class="dialog-foot">
-          <label class="button" id="add-import"><input id="add-file" type="file" accept=".dlc,.txt,.crawljob" multiple hidden /></label>
+          <button type="button" class="button" id="add-import"></button>
+          <input id="add-file" type="file" accept=".dlc,.txt,.crawljob" multiple hidden />
           <span class="grow"></span>
           <button type="submit" class="button accent" id="add-submit" value="add">Add</button>
           <button type="button" class="button" id="add-cancel">Cancel</button>

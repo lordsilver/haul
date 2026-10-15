@@ -19,6 +19,7 @@ pub(crate) const ROUTES: &str = "routes.json";
 pub(crate) const HOSTS: &str = "hosts.json";
 /// Present while downloads are paused, so a restart keeps them paused.
 const PAUSED: &str = "paused";
+const LOCK: &str = "haul.lock";
 
 pub(crate) fn load_paused(dir: &Path) -> bool {
     dir.join(PAUSED).exists()
@@ -35,7 +36,6 @@ pub(crate) fn save_paused(dir: &Path, paused: bool) -> io::Result<()> {
         }
     }
 }
-const LOCK: &str = "haul.lock";
 
 /// Holds the data directory for this process until the file is dropped.
 pub(crate) fn lock(dir: &Path) -> Result<File, StartError> {
@@ -96,15 +96,21 @@ pub(crate) fn load_hosts(dir: &Path) -> BTreeMap<String, SavedHost> {
     })
 }
 
-/// Writes through a temporary file and a rename, so a crash never leaves a
-/// half-written file behind.
+/// Writes `value` as JSON to `dir/name`; see [`write_atomic`].
 pub(crate) fn write(dir: &Path, name: &str, value: &impl Serialize) -> io::Result<()> {
     let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-    let path = dir.join(name);
-    let tmp = dir.join(format!("{name}.tmp"));
+    write_atomic(&dir.join(name), &bytes)
+}
+
+/// Replaces `path` through a temporary file, synced before the rename, so a
+/// crash leaves the old file or the new one, never half of one.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
     let mut f = File::create(&tmp)?;
-    f.write_all(&bytes)?;
+    f.write_all(bytes)?;
     f.sync_all()?;
     drop(f);
-    std::fs::rename(&tmp, &path)
+    std::fs::rename(&tmp, path)
 }

@@ -30,7 +30,7 @@ use crate::{
     config::{self, Config, Route, Theme},
     container::{self, Link},
     hosts::{self, Cx, Entry, Http, ResolveError, Tokens},
-    item::{Item, Status},
+    item::{Item, Status, Verifying},
     limiter::Limiter,
     paths, store,
 };
@@ -200,9 +200,8 @@ pub struct ItemView {
     pub path: Option<String>,
     /// Finished without downloading: the file was in the download folder.
     pub existing: bool,
-    /// Comparing a file on disk with the host's checksum: `""`, `"waiting"`
-    /// (for its turn, or while paused) or `"comparing"`.
-    pub verifying: &'static str,
+    /// Comparing a file on disk with the host's checksum.
+    pub verifying: Verifying,
 }
 
 #[derive(Debug, Serialize)]
@@ -374,7 +373,7 @@ struct Comparing {
 impl Drop for Comparing {
     fn drop(&mut self) {
         self.gone.store(true, Ordering::Relaxed);
-        self.engine.set_verifying(&self.id, "");
+        self.engine.set_verifying(&self.id, Verifying::No);
     }
 }
 
@@ -553,7 +552,16 @@ impl Engine {
             .unwrap_or_else(paths::download_dir);
         let clients = Clients::new(&cfg).map_err(StartError::Proxy)?;
 
-        let saved = store::load_queue(&data_dir)?;
+        let mut saved = store::load_queue(&data_dir)?;
+        // A row with no link to fetch it from (a hand-edited queue, say) could
+        // only sit there.
+        saved.retain(|id, s| {
+            let usable = !s.mirrors.is_empty();
+            if !usable {
+                tracing::warn!(item = id, "dropping a saved download without links");
+            }
+            usable
+        });
         let now = unix_now();
         let hosts: IndexMap<String, HostStats> = store::load_hosts(&data_dir)
             .iter()
@@ -680,6 +688,11 @@ impl Engine {
     pub fn proxy_for(&self, host: &str) -> Option<String> {
         let direct = self.lock().routes.get(host) == Some(&Route::Direct);
         if direct { None } else { self.proxy() }
+    }
+
+    /// Whether downloads are paused.
+    pub fn paused(&self) -> bool {
+        self.lock().paused
     }
 
     /// A counter that moves whenever the queue changes.
@@ -936,7 +949,7 @@ impl Engine {
         // A checksum means reading the whole file: one at a time, and not
         // while downloads are paused. Dropping this future (a cancelled
         // attempt) stops the read too.
-        self.set_verifying(id, "waiting");
+        self.set_verifying(id, Verifying::Waiting);
         let comparing = Comparing {
             engine: self.clone(),
             id: id.to_owned(),
@@ -945,7 +958,7 @@ impl Engine {
         let Ok(_turn) = self.0.verifier.acquire().await else {
             return None;
         };
-        self.set_verifying(id, "comparing");
+        self.set_verifying(id, Verifying::Comparing);
         let gone = comparing.gone.clone();
         let paused = self.0.paused_now.clone();
         let target = path.clone();
@@ -980,7 +993,7 @@ impl Engine {
         }
     }
 
-    fn set_verifying(&self, id: &str, stage: &'static str) {
+    fn set_verifying(&self, id: &str, stage: Verifying) {
         let mut st = self.lock();
         if let Some(it) = st.items.get_mut(id)
             && it.verifying != stage
@@ -1604,9 +1617,12 @@ impl Engine {
             return Err(Fail::Error(message));
         } else {
             let name = self.lock().items.get(id).and_then(|i| i.name.clone());
-            if hosts::content_type(resp.headers()).contains("text/html")
-                && !name.as_deref().is_some_and(|n| n.ends_with(".html"))
-            {
+            let wants_a_page = name.as_deref().is_some_and(|n| {
+                Path::new(n).extension().is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm")
+                })
+            });
+            if hosts::content_type(resp.headers()).contains("text/html") && !wants_a_page {
                 return Err(Fail::NeedsUser(
                     "got a web page, not the file (link dead or needs a browser)".into(),
                 ));
@@ -1699,7 +1715,7 @@ impl Engine {
                         }
                         (mark, mark_bytes) = (Instant::now(), done);
                     }
-                    let h = st.host(host, &self.cfg());
+                    let h = st.host(host, &cfg);
                     h.bytes += chunk.len() as u64;
                     if let Some(speed) = speed {
                         h.ema = if h.ema == 0.0 {
@@ -1861,11 +1877,16 @@ impl Engine {
 
     // ---- controls
 
+    /// Returns false when there is no such item. A finished download only
+    /// goes away: there is nothing to pause, resume or retry.
     pub fn item_action(&self, id: &str, action: ItemAction) -> bool {
         let mut st = self.lock();
         let Some(it) = st.items.get_mut(id) else {
             return false;
         };
+        if it.status == Status::Done && action != ItemAction::Remove {
+            return true;
+        }
         match action {
             ItemAction::Pause => {
                 it.status = Status::Paused;
@@ -1950,6 +1971,10 @@ impl Engine {
         }
         let mut st = self.lock();
         let it = st.items.get_mut(id).ok_or("no such item")?;
+        if it.status == Status::Done {
+            // Another mirror may have finished it while the user was busy.
+            return Err("it is downloaded already".into());
+        }
         if it.name.is_none() {
             it.name = name_hint
                 .filter(|n| !n.is_empty())

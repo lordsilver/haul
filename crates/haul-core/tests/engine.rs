@@ -21,7 +21,8 @@ use axum::{
     routing::get,
 };
 use haul_core::{
-    Config, Engine, Event, ItemAction, Options, Route, Snapshot, StartError, config::Endpoints,
+    Config, Engine, Event, ItemAction, Options, Route, Snapshot, StartError, Verifying,
+    config::Endpoints,
 };
 use serde_json::json;
 
@@ -444,6 +445,49 @@ async fn downloads_a_direct_link() {
     let again = engine.add_text(&format!("{}/files/a.bin", t.ip), "");
     assert_eq!((again.added, again.duplicates), (0, 1));
     assert_eq!(engine.add_text("ftp://nope.example/x.bin", "").added, 0);
+
+    // A finished download has nothing to pause, resume or retry.
+    let id = s.items[0].id.clone();
+    for action in [
+        ItemAction::Pause,
+        ItemAction::Resume,
+        ItemAction::Retry,
+        ItemAction::RetryManual,
+    ] {
+        assert!(engine.item_action(&id, action));
+        let s = engine.snapshot();
+        assert_eq!(
+            (s.items[0].status, s.items[0].existing),
+            ("done", false),
+            "{action:?}"
+        );
+    }
+    assert!(
+        engine
+            .set_direct(
+                &id,
+                &format!("{}/files/a.bin", t.name),
+                BTreeMap::new(),
+                None
+            )
+            .is_err(),
+        "no second download through a link handed in late"
+    );
+    assert_eq!(engine.snapshot().items[0].status, "done");
+}
+
+#[tokio::test]
+async fn a_saved_row_without_links_is_dropped() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("data")).unwrap();
+    std::fs::write(
+        t.root.join("data/queue.json"),
+        r#"{"empty":{"mirrors":[],"status":"queued"},"kept":{"mirrors":["http://127.0.0.1:9/k.bin"],"status":"paused"}}"#,
+    )
+    .unwrap();
+    let engine = t.engine().await;
+    let ids: Vec<String> = engine.snapshot().items.into_iter().map(|i| i.id).collect();
+    assert_eq!(ids, ["kept"]);
 }
 
 #[tokio::test]
@@ -474,8 +518,9 @@ async fn resumes_after_a_broken_connection() {
 async fn merges_mirrors_by_name_and_fails_over() {
     let t = Setup::new().await;
     let engine = t.engine().await;
+    // A host's page for the file (`name.html`) names the same file.
     let added = engine.add_text(
-        &format!("{0}/missing/c.bin\n{1}/files/c.bin", t.ip, t.name),
+        &format!("{0}/missing/c.bin.html\n{1}/files/c.bin", t.ip, t.name),
         "pkg",
     );
     assert_eq!((added.added, added.merged), (1, 1));
@@ -679,7 +724,7 @@ async fn queue_and_settings_survive_restart_and_a_second_instance_is_refused() {
     engine.item_action(&id, ItemAction::Pause);
     engine.set_route("127.0.0.1", Route::Direct).unwrap();
     engine.set_max_total(3);
-    engine.set_host_limit("127.0.0.1", 2);
+    engine.set_host_limit("127.0.0.1", 2).unwrap();
     engine.shutdown().await;
     drop(engine);
 
@@ -739,6 +784,15 @@ async fn edits_to_the_settings_file_apply_while_running() {
     std::fs::write(&path, "max_total = 5\n").unwrap();
     let s = wait_for(&engine, "the fix", |s| s.max_total == 5).await;
     assert_eq!(s.config_error, None);
+
+    // A file that vanishes (an editor saving it, say) is no reason to fall
+    // back to the defaults.
+    std::fs::remove_file(&path).unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let s = engine.snapshot();
+    assert_eq!((s.max_total, s.config_error), (5, None));
+    std::fs::write(&path, "max_total = 6\n").unwrap();
+    wait_for(&engine, "the file back", |s| s.max_total == 6).await;
 }
 
 #[tokio::test]
@@ -958,7 +1012,7 @@ async fn preferred_hosts_go_first_and_are_waited_for() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     engine.set_preferred("localhost", true).unwrap();
-    engine.set_host_limit("localhost", 1);
+    engine.set_host_limit("localhost", 1).unwrap();
     let both = |name: &str| format!("{}/slow/{name} {}/slow/{name}", t.ip, t.name);
     engine.add_text(&format!("{} {}", both("q1.bin"), both("q2.bin")), "");
     let s = wait_for(&engine, "done", |s| s.items.len() == 2 && all_done(s)).await;
@@ -1144,7 +1198,7 @@ async fn a_busy_host_is_capped_instead_of_failing() {
     );
 
     // The user's own limit replaces what was learned.
-    engine.set_host_limit("127.0.0.1", 6);
+    engine.set_host_limit("127.0.0.1", 6).unwrap();
     let h = engine
         .snapshot()
         .hosts
@@ -1360,7 +1414,7 @@ async fn a_pause_holds_comparisons_and_survives_a_restart() {
     engine.add_text("https://pixeldrain.com/u/held", "");
     // The link is looked up, but the file on disk is not read while paused.
     wait_for(&engine, "the name", |s| {
-        s.items[0].name == "held.bin" && !s.items[0].verifying.is_empty()
+        s.items[0].name == "held.bin" && s.items[0].verifying != Verifying::No
     })
     .await;
     tokio::time::sleep(Duration::from_millis(800)).await;

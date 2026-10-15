@@ -39,8 +39,6 @@ const PORT: u16 = 8765;
 
 fn main() {
     let data_dir = paths::data_dir();
-    init_logging(&data_dir);
-    paths::adopt_old_data(&data_dir);
     let app = tauri::Builder::default()
         // First, so a second launch hands over its arguments and quits early.
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
@@ -50,6 +48,10 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            // Only the instance that runs gets here, so a second launch
+            // leaves this one's log and data alone.
+            init_logging(&data_dir);
+            paths::adopt_old_data(&data_dir);
             let handle = app.handle().clone();
             if let Err(message) = tauri::async_runtime::block_on(start(&handle, data_dir)) {
                 tracing::error!("{message}");

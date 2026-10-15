@@ -480,7 +480,12 @@ button.status-item:hover {
   min-height: 28px;
 }
 
-.button.danger {
+/* A button asking for its second click; the pointer is usually still on it,
+   so its hover and press states keep the color (a subtle button's would
+   otherwise win). */
+.button.danger,
+.button.danger:hover,
+.button.danger:active {
   background: var(--critical);
   border-color: transparent;
   color: var(--base);
@@ -660,8 +665,11 @@ input[type="number"] {
   grid-area: 1 / 1;
 }
 
+/* Transparent rather than gone while it is not shown, so the keyboard can
+   reach it. */
 .row .check {
-  display: none;
+  display: grid;
+  opacity: 0;
   place-items: center;
   width: 20px;
   height: 20px;
@@ -678,12 +686,18 @@ input[type="number"] {
 }
 
 .row:hover .check,
-.list.selecting .row .check {
-  display: grid;
+.list.selecting .row .check,
+.row .check:focus-visible {
+  opacity: 1;
 }
 
 .row:hover .glyph,
 .list.selecting .row .glyph {
+  visibility: hidden;
+}
+
+/* A rule of its own: an engine without :has() drops only this one. */
+.row .lead:has(.check:focus-visible) .glyph {
   visibility: hidden;
 }
 
@@ -852,6 +866,13 @@ input[type="number"] {
 
 .row:not(:hover):not(:focus-within) .actions .button.subtle {
   opacity: 0;
+}
+
+/* A touch screen never hovers, so there the actions always show. */
+@media (hover: none) {
+  .row:not(:hover):not(:focus-within) .actions .button.subtle {
+    opacity: 1;
+  }
 }
 
 /* InfoBar inside a row, and on top of the list */

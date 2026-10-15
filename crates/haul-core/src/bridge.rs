@@ -9,6 +9,7 @@ use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{Arc, RwLock},
+    time::Duration,
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -92,8 +93,15 @@ impl Bridge {
         let current = upstream.clone();
         tokio::spawn(async move {
             loop {
-                let Ok((client, _)) = listener.accept().await else {
-                    continue;
+                let client = match listener.accept().await {
+                    Ok((client, _)) => client,
+                    Err(e) => {
+                        // Out of file handles, say: give the system a moment
+                        // instead of spinning on the same error.
+                        tracing::debug!("bridge: {e}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
                 };
                 let up = current.read().unwrap_or_else(|e| e.into_inner()).clone();
                 // Without a proxy there is nowhere to go: drop the connection.

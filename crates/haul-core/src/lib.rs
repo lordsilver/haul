@@ -20,3 +20,4 @@ pub use engine::{
     Added, Engine, Event, HostView, ItemAction, ItemView, Options, SettingsView, Snapshot,
     StartError,
 };
+pub use item::Verifying;

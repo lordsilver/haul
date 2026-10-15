@@ -193,6 +193,9 @@ let state = null;
 let view = "all";
 let query = "";
 let offline = false;
+// The version that served this page, and whether another one answers now.
+let pageVersion = null;
+let updated = false;
 
 function currentView() {
   const name = location.hash.replace(/^#\/?/, "");
@@ -402,7 +405,9 @@ function renderHead(s) {
   const failed = s.items.filter((i) => i.status === "error");
   const done = s.items.some((i) => i.status === "done");
   const picked = s.items.filter((i) => selected.has(i.id));
-  const key = `${s.paused}|${failed.length}|${done}|${view}|${picked.map((i) => `${i.id}:${i.status}`).join(",")}`;
+  // What the selection's Remove asks depends on partial files and the bin setting too.
+  const pickedKey = picked.map((i) => `${i.id}:${i.status}:${i.done > 0}`).join(",");
+  const key = `${s.paused}|${failed.length}|${done}|${view}|${s.recycle_on_remove}|${pickedKey}`;
   if (key === commandsKey) return;
   commandsKey = key;
   if (!commandButtons) makeCommands();
@@ -492,6 +497,16 @@ function clearSelection() {
   if (state) render(state);
 }
 
+// Space or Enter on a row's checkbox works like a Ctrl+click on the row, so
+// the keyboard picks rows too.
+function onCheckKeys(check, toggle) {
+  check.addEventListener("keydown", (e) => {
+    if (e.key !== " " && e.key !== "Enter") return;
+    e.preventDefault();
+    toggle();
+  });
+}
+
 // Each action on every picked row it applies to; one report if any fail.
 async function bulk(items, action) {
   const results = await Promise.allSettled(items.map((i) => api(`/api/item/${encodeURIComponent(i.id)}/${action}`)));
@@ -547,12 +562,19 @@ let bannerKey = null;
 
 // App-wide state only. A download that needs you has its own row and the Needs you badge.
 function renderBanner(s) {
-  const key = `${offline}|${s.paused}|${s.config_error}`;
+  const key = `${offline}|${updated}|${s.paused}|${s.config_error}`;
   if (key === bannerKey) return;
   bannerKey = key;
   const bars = [];
   if (offline) {
     bars.push(infobar("critical", "error-circle", "Lost the connection to Haul.", "Reconnecting…"));
+  }
+  if (updated) {
+    bars.push(
+      infobar("info", "info", "Haul was updated.", "Reload this page to use the new version.", [
+        button("Reload", { icon: "arrow-clockwise", onclick: () => location.reload() }),
+      ]),
+    );
   }
   if (s.config_error) {
     bars.push(
@@ -633,6 +655,9 @@ function rowActions(it, s) {
     const recycle = () =>
       api(`/api/item/${encodeURIComponent(it.id)}/remove`).then(() => toast(`Moved ${it.name} to the ${s.bin}`, "success"), report);
     out.push(subtle(`Move to the ${s.bin}`, "delete", recycle));
+  } else if (it.status !== "done" && it.done > 0) {
+    // Its partial file goes with it, so it asks twice, as Remove does for a selection.
+    out.push(confirmButton("Remove", "Delete partial file?", () => act(it.id, "remove"), { icon: "dismiss", kind: "subtle small", iconOnly: true }));
   } else {
     out.push(subtle(it.status === "done" ? "Clear from list" : "Remove", "dismiss", () => act(it.id, "remove")));
   }
@@ -715,7 +740,8 @@ function helpBar(r, it, s) {
 function makeRow() {
   const r = { actionsKey: null, helpKey: null, glyphKey: null, editing: false, bar: null };
   r.glyph = el("span", { class: "glyph" });
-  r.check = el("span", { class: "check", role: "checkbox", "aria-checked": "false", "aria-label": "Select" }, icon("checkmark"));
+  r.check = el("span", { class: "check", role: "checkbox", tabindex: "0", "aria-checked": "false", "aria-label": "Select" }, icon("checkmark"));
+  onCheckKeys(r.check, () => pick(r.node.dataset.id, { toggle: true }));
   r.name = el("div", { class: "name" });
   r.sub = el("div", { class: "sub" });
   r.fill = el("i");
@@ -757,10 +783,12 @@ function updateRow(r, it, s, member = false) {
   if (r.glyphKey !== it.status) {
     r.glyphKey = it.status;
     r.glyph.replaceChildren(icon(GLYPHS[it.status] ?? "clock"));
-    r.glyph.title = caption(it);
   }
-  setText(r.name, it.name);
-  r.name.title = it.name;
+  if (r.name.textContent !== it.name) {
+    r.name.textContent = it.name;
+    r.name.title = it.name;
+    r.check.setAttribute("aria-label", `Select ${it.name}`);
+  }
 
   const sub = [shownHost(it)];
   if (it.mirrors.length > 1) sub.push(`${it.mirrors.length} mirrors`);
@@ -785,7 +813,7 @@ function updateRow(r, it, s, member = false) {
     r.rate.replaceChildren(...(speed ? [el("b", {}, speed), left ? `${left} left` : ""] : []));
   }
 
-  const actionsKey = `${it.status}|${Boolean(it.path)}|${s.recycle_on_remove}`;
+  const actionsKey = `${it.status}|${Boolean(it.path)}|${s.recycle_on_remove}|${it.done > 0}`;
   if (r.actionsKey !== actionsKey) {
     r.actionsKey = actionsKey;
     r.actions.replaceChildren(...rowActions(it, s));
@@ -965,7 +993,8 @@ const URGENCY = ["error", "captcha", "downloading", "resolving", "waiting", "che
 function makeGroupRow(key) {
   const g = { actionsKey: null, glyphKey: null, members: [] };
   g.glyph = el("span", { class: "glyph" });
-  g.check = el("span", { class: "check", role: "checkbox", "aria-checked": "false", "aria-label": "Select its parts" }, icon("checkmark"), icon("subtract"));
+  g.check = el("span", { class: "check", role: "checkbox", tabindex: "0", "aria-checked": "false", "aria-label": "Select its parts" }, icon("checkmark"), icon("subtract"));
+  onCheckKeys(g.check, () => pickMany(g.members, { toggle: true }));
   g.toggle = button("Show the parts", { icon: "chevron-right", kind: "subtle small", iconOnly: true, onclick: () => toggleGroup(key) });
   g.toggle.setAttribute("aria-expanded", "false");
   g.name = el("div", { class: "name" });
@@ -1015,8 +1044,11 @@ function updateGroupRow(g, entry) {
     g.glyphKey = status;
     g.glyph.replaceChildren(icon(GLYPHS[status] ?? "clock"));
   }
-  setText(g.name, entry.archive);
-  g.name.title = entry.archive;
+  if (g.name.textContent !== entry.archive) {
+    g.name.textContent = entry.archive;
+    g.name.title = entry.archive;
+    g.check.setAttribute("aria-label", `Select the parts of ${entry.archive}`);
+  }
 
   const size = parts.reduce((n, i) => n + i.size, 0);
   const done = parts.reduce((n, i) => n + (i.status === "done" ? i.size : Math.min(i.done, i.size || i.done)), 0);
@@ -1136,25 +1168,33 @@ function setLimit(name, delta) {
   if (host) api(`/api/host/${encodeURIComponent(name)}/limit/${Math.max(1, slotsOf(host) + delta)}`).catch(report);
 }
 
-// A button that wants a second click within a few seconds.
+// A button that wants a second click within a few seconds. An icon-only one
+// spells out its question while it waits.
 function confirmButton(label, confirmLabel, action, options = {}) {
   const node = button(label, options);
   const plain = node.className;
+  const text = options.iconOnly ? el("span", { class: "command-label" }) : node.lastChild;
   let timer = null;
-  const reset = () => {
-    timer = null;
-    node.className = plain;
-    node.lastChild.textContent = label;
+  const show = (asking) => {
+    node.className = asking ? `${plain.replace(" icon-only", "")} danger` : plain;
+    text.textContent = asking ? confirmLabel : label;
+    if (!options.iconOnly) return;
+    if (asking) node.append(text);
+    else text.remove();
+    node.setAttribute("aria-label", asking ? confirmLabel : label);
   };
   node.addEventListener("click", () => {
     if (!timer) {
-      node.className = `${plain} danger`;
-      node.lastChild.textContent = confirmLabel;
-      timer = setTimeout(reset, 4000);
+      show(true);
+      timer = setTimeout(() => {
+        timer = null;
+        show(false);
+      }, 4000);
       return;
     }
     clearTimeout(timer);
-    reset();
+    timer = null;
+    show(false);
     action().catch(report);
   });
   return node;
@@ -1194,25 +1234,24 @@ function editFolder(c, name) {
   input.focus();
 }
 
+// The most slots a host can have, as the engine allows (FALLBACK_LIMIT).
+const MAX_SLOTS = 32;
+
 function makeHostCard(name) {
   const c = { key: null, preferred: false };
   c.star = button("Prefer this host", { icon: "star", kind: "subtle small", iconOnly: true, onclick: () => setPreferred(name, !c.preferred) });
   c.stats = el("div", { class: "sub" });
   c.pills = el("span", { class: "controls" });
   c.slots = el("output");
+  c.fewer = button("Fewer slots", { icon: "subtract", kind: "subtle small", iconOnly: true, onclick: () => setLimit(name, -1) });
+  c.more = button("More slots", { icon: "add", kind: "subtle small", iconOnly: true, onclick: () => setLimit(name, 1) });
   c.node = el(
     "div",
     { class: "card with-bar" },
     icon("server"),
     el("div", { class: "text" }, el("div", {}, name), c.stats),
     c.pills,
-    el(
-      "span",
-      { class: "stepper", title: "Files downloaded from this host at the same time" },
-      button("Fewer slots", { icon: "subtract", kind: "subtle small", iconOnly: true, onclick: () => setLimit(name, -1) }),
-      c.slots,
-      button("More slots", { icon: "add", kind: "subtle small", iconOnly: true, onclick: () => setLimit(name, 1) }),
-    ),
+    el("span", { class: "stepper", title: "Files downloaded from this host at the same time" }, c.fewer, c.slots, c.more),
     c.star,
     button("Folder for this host's files", { icon: "folder", kind: "subtle small", iconOnly: true, onclick: () => editFolder(c, name) }),
   );
@@ -1253,7 +1292,10 @@ function renderHosts(s) {
     const stats = [h.speed ? `${bytes(h.speed)}/s per file` : "Speed not measured yet", `${h.ok} done`, `${h.fails} failed`, `${bytes(h.bytes)} total`];
     if (h.cooldown) stats.push(`cooling down ${duration(h.cooldown)}`);
     setText(c.stats, stats.join(" · "));
-    setText(c.slots, `${h.active} / ${slotsOf(h)} ${slotsOf(h) === 1 ? "slot" : "slots"}`);
+    const slots = slotsOf(h);
+    setText(c.slots, `${h.active} / ${slots} ${slots === 1 ? "slot" : "slots"}`);
+    c.fewer.disabled = slots <= 1;
+    c.more.disabled = slots >= MAX_SLOTS;
     const best = h.name === fastest;
     const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}`;
     if (c.key !== key) {
@@ -1349,6 +1391,7 @@ function numberField(key, value, { min, max, step = 1, label, unit }) {
     const n = Number(input.value);
     if (!Number.isFinite(n) || n < min || (max !== undefined && n > max)) {
       input.value = value;
+      toast(max === undefined ? `${label}: ${min} or more` : `${label}: from ${min} to ${max}`, "error");
       return;
     }
     save({ [key]: n });
@@ -1753,12 +1796,21 @@ function clipboardFlyout(anchor) {
 
 const dialog = $("add-dialog");
 
-function openAdd(text = "") {
+// Opens the Add dialog, or adds `text` to it when it is open already; `pkg`
+// fills in the package unless one is typed in. Each time it opens it starts
+// empty: a package left over from a dropped container would otherwise quietly
+// put the next links in its folder.
+function openAdd(text = "", pkg = "") {
+  if (!dialog.open) {
+    $("add-text").value = "";
+    $("add-package").value = "";
+    dialog.showModal();
+  }
   if (text) {
     const current = $("add-text").value.trim();
     $("add-text").value = current ? `${current}\n${text}` : text;
   }
-  if (!dialog.open) dialog.showModal();
+  if (pkg && !$("add-package").value.trim()) $("add-package").value = pkg;
   $("add-text").focus();
 }
 
@@ -1799,20 +1851,17 @@ async function readFiles(files) {
       toast("No links in that file", "info");
       return;
     }
-    if (r.package && !$("add-package").value.trim()) $("add-package").value = r.package;
-    openAdd(r.links.join("\n"));
+    openAdd(r.links.join("\n"), r.package);
   } catch (error) {
     toast(`Import failed: ${error.message}`, "error");
   }
 }
 
-$("add-import").prepend(icon("arrow-upload"), "Import file…");
+$("add-import").append(icon("arrow-upload"), "Import file…");
+$("add-import").addEventListener("click", () => $("add-file").click());
 $("add-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (await addText($("add-text").value, $("add-package").value.trim())) {
-    $("add-text").value = "";
-    dialog.close();
-  }
+  if (await addText($("add-text").value, $("add-package").value.trim())) dialog.close();
 });
 $("add-cancel").addEventListener("click", () => dialog.close());
 $("add-text").addEventListener("keydown", (e) => {
@@ -1918,13 +1967,21 @@ function connect() {
     clearTimeout(timer);
     timer = null;
     offline = false;
-    render(JSON.parse(e.data));
+    const s = JSON.parse(e.data);
+    // Another version means Haul was updated and restarted under this page,
+    // whose code the new one may no longer understand.
+    pageVersion ??= s.version;
+    updated = s.version !== pageVersion;
+    render(s);
   });
   events.addEventListener("error", () => {
     timer ??= setTimeout(() => {
       offline = true;
       if (state) render(state);
     }, 1500);
+    // The browser reconnects by itself, except after an answer that is no
+    // event stream (an error page while Haul starts up, say): start over.
+    if (events.readyState === EventSource.CLOSED) setTimeout(connect, 3000);
   });
 }
 

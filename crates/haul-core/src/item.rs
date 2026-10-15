@@ -21,6 +21,20 @@ pub enum Status {
     Error,
 }
 
+/// Where a row stands with comparing a file already on disk to the
+/// checksum its host published. Serialized as `""`, `"waiting"` and
+/// `"comparing"`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Verifying {
+    #[default]
+    #[serde(rename = "")]
+    No,
+    /// For its turn, or while downloads are paused.
+    Waiting,
+    Comparing,
+}
+
 impl Status {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -53,10 +67,7 @@ pub(crate) struct Item {
     pub pre_for: Option<String>,
     /// The name is known, so there is nothing to look up before scheduling.
     pub probed: bool,
-    /// Where the row stands with comparing a file on disk to the host's
-    /// checksum: `""`, `"waiting"` (for its turn, or while paused) or
-    /// `"comparing"`.
-    pub verifying: &'static str,
+    pub verifying: Verifying,
     pub status: Status,
     pub error: String,
     pub size: u64,
@@ -95,7 +106,7 @@ impl Item {
             manual_urls: HashSet::new(),
             manual: false,
             probed: name.is_some(),
-            verifying: "",
+            verifying: Verifying::No,
             name,
             package,
             pre: None,

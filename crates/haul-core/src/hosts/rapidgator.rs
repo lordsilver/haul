@@ -27,6 +27,9 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             "rapidgator needs premium: set rapidgator_user/rapidgator_pass",
         ));
     };
+    let id = FILE_ID
+        .captures(url)
+        .ok_or_else(|| ResolveError::failed("bad rapidgator url"))?;
     let base = &cx.cfg.endpoints.rapidgator;
     let cached = cx
         .tokens
@@ -62,9 +65,6 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             t.to_string()
         }
     };
-    let id = FILE_ID
-        .captures(url)
-        .ok_or_else(|| ResolveError::failed("bad rapidgator url"))?;
     let j: Value = cx
         .http
         .client

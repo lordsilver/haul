@@ -5,7 +5,7 @@ use std::time::Duration;
 use haul_core::{Config, Engine, Options};
 use reqwest::{
     StatusCode,
-    header::{CONTENT_SECURITY_POLICY, HOST, ORIGIN},
+    header::{CONTENT_SECURITY_POLICY, CONTENT_TYPE, HOST, ORIGIN},
 };
 use serde_json::{Value, json};
 
@@ -192,6 +192,7 @@ async fn adds_imports_and_controls_items() {
     let items = state["items"].as_array().unwrap();
     assert_eq!(items[0]["mirrors"], json!(["a.example", "b.example"]));
     assert_eq!(items[0]["package"], "Pkg");
+    assert_eq!(items[0]["verifying"], "", "not comparing anything");
     let id = items[0]["id"].as_str().unwrap();
 
     assert_eq!(
@@ -323,6 +324,7 @@ async fn settings_round_trip_and_secrets_stay_out_of_the_stream() {
         json!({"max_total": "many"}),
         json!({"proxy": "ftp://nope"}),
         json!({"download_dir": "relative/path"}),
+        json!({"user_agent": "two\nlines"}),
         json!({"no_such_setting": 1}),
     ] {
         let r = s.post("/api/settings", bad.clone()).await;
@@ -346,6 +348,40 @@ async fn settings_round_trip_and_secrets_stay_out_of_the_stream() {
 
     let picker = s.post("/api/settings/download-dir/pick", json!({})).await;
     assert_eq!(picker.status(), StatusCode::NOT_IMPLEMENTED);
+}
+
+#[tokio::test]
+async fn every_error_is_json() {
+    let s = start().await;
+    let url = |path: &str| format!("{}{path}", s.base);
+    let answers = [
+        s.http
+            .post(url("/api/add"))
+            .header(CONTENT_TYPE, "application/json")
+            .body("{")
+            .send()
+            .await
+            .unwrap(),
+        s.post("/api/add", json!({"txt": "no text field"})).await,
+        s.post("/api/host/a.example/limit/many", json!({})).await,
+        s.http.get(url("/api/no-such-route")).send().await.unwrap(),
+        s.http.get(url("/api/add")).send().await.unwrap(),
+        s.http
+            .get(url("/api/state"))
+            .header(HOST, "evil.example")
+            .send()
+            .await
+            .unwrap(),
+    ];
+    for r in answers {
+        let status = r.status();
+        assert!(status.is_client_error(), "{status}");
+        let body: Value = r.json().await.unwrap();
+        assert!(
+            body["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "{status}: {body}"
+        );
+    }
 }
 
 #[tokio::test]

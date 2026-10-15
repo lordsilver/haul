@@ -34,7 +34,7 @@ Loopback-only servers are still reachable from any page the user visits. The API
 
 ## One settings file, two editors
 
-Every setting can be changed in the app, and every setting lives in `config.toml`: the app writes each change into the file with `toml_edit`, which keeps the user's comments and layout (a cleared value is commented out, not deleted, so its explanation stays), and it reloads the file within a second of an edit on disk. A file that does not parse leaves the previous settings in effect and the app shows the error until it is fixed. There is never a second store that silently overrides the file; per-host route choices moved there from `routes.json` for that reason.
+Every setting can be changed in the app, and every setting lives in `config.toml`: the app writes each change into the file with `toml_edit`, which keeps the user's comments and layout (a cleared value is commented out, not deleted, so its explanation stays), and it reloads the file within a second of an edit on disk. A file that does not parse leaves the previous settings in effect and the app shows the error until it is fixed. One that disappears while Haul runs leaves them in effect too: some editors delete the file before they write it anew, and falling back to the defaults for that moment would drop the proxy and move the download folder. There is never a second store that silently overrides the file; per-host route choices moved there from `routes.json` for that reason.
 
 Account secrets are part of the settings, but they never ride the state stream that every open view receives: the settings view fetches them separately when it opens. Values an environment variable sets are shown as such and cannot change in the app, since the file would not win anyway.
 
