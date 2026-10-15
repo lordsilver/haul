@@ -18,6 +18,10 @@ env:
   # Incremental state is never reused on fresh runners; leaving it out keeps
   # the cached target lean.
   CARGO_INCREMENTAL: "0"
+  # Build-script output stays in the target tree, which the cache carries. In
+  # mbx's shared folder it was lost on every restore, so the scripts ran again
+  # and everything depending on them rebuilt.
+  MBX_SHARE_OUT_DIR: "0"
 
 jobs:
   check:
@@ -32,7 +36,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
+        id: rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
+          echo "version=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
       - name: Install WebKitGTK
         if: runner.os == 'Linux'
         run: |
@@ -40,11 +48,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
       # Mr. Boxington target mode: restores the pruned target tree and Cargo
       # registry, so a change rebuilds only what it touches. Main saves the
-      # baseline; each pull request saves its own revisions on top of it.
+      # cache, and only when the Rust version or the dependencies change:
+      # packing it takes 4 to 30 minutes on Windows, longer than the build it
+      # spares. Pull requests restore it without saving.
       - uses: jdx/mr-boxington-action@47ce49b32025d93a7a2f4570815afaa2b7092240 # v1.7.2
         with:
           version: "1.24.0"
-          save-on-pull-request: true
+          cache-key: mbx-target-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: mbx-target-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: runner.os == 'Linux'
         with:
