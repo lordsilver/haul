@@ -293,23 +293,22 @@ function renderNav(s) {
   }
 }
 
-// The download folder, above Hosts and Settings: where files go, opened with
-// one click.
+// The download folder, above Hosts and Settings: opened with one click, its
+// path shown on hover.
 let folderNav = null;
 
 function renderFolderNav(s) {
   if (!folderNav) {
-    const label = el("span", { class: "label" });
-    const node = el("button", { type: "button", class: "nav-item", onclick: () => openPlace("downloads") }, icon("folder-open"), label);
-    $("nav-footer").prepend(node);
-    folderNav = { node, label };
+    folderNav = el(
+      "button",
+      { type: "button", class: "nav-item", onclick: () => openPlace("downloads") },
+      icon("folder-open"),
+      el("span", { class: "label" }, "Download folder"),
+    );
+    $("nav-footer").prepend(folderNav);
   }
-  setText(folderNav.label, folderLabel(s.download_dir, s.home));
-  const title = `Open the download folder: ${s.download_dir}`;
-  if (folderNav.node.title !== title) {
-    folderNav.node.title = title;
-    folderNav.node.setAttribute("aria-label", `Open the download folder, ${s.download_dir}`);
-  }
+  const title = `Open ${s.download_dir}`;
+  if (folderNav.title !== title) folderNav.title = title;
 }
 
 let commandsKey = null;
@@ -1026,16 +1025,17 @@ function renderEmpty(s, shown) {
   const key = shown ? "" : `${view}|${s.items.length > 0}|${query}`;
   if (shown || key === emptyKey) return;
   emptyKey = key;
-  // With no downloads at all, the empty list is the drop target, and looks it.
-  const dropzone = !query && (!s.items.length || view === "all");
-  box.classList.toggle("dropzone", dropzone);
+  // With no downloads at all, the empty list says how to add some. It is no
+  // box to drop into, since the whole window takes drops.
+  const start = !query && (!s.items.length || view === "all");
+  box.classList.toggle("start", start);
   if (query) {
     box.replaceChildren(icon("search"), el("strong", {}, "No matches"), `Nothing here matches “${query}”.`);
-  } else if (dropzone) {
+  } else if (start) {
     box.replaceChildren(
       icon("arrow-download"),
-      el("strong", {}, "Drop links or files here"),
-      "Or paste links anywhere with Ctrl+V. Files can be .dlc containers or text files with links in them.",
+      el("strong", {}, "Drop links or files anywhere"),
+      "Or paste links with Ctrl+V. Files can be .dlc containers or text files with links in them.",
     );
   } else {
     const [title, text] = EMPTY[view];
@@ -1183,7 +1183,7 @@ function renderHosts(s) {
     const stats = [h.speed ? `${bytes(h.speed)}/s per file` : "Speed not measured yet", `${h.ok} done`, `${h.fails} failed`, `${bytes(h.bytes)} total`];
     if (h.cooldown) stats.push(`cooling down ${duration(h.cooldown)}`);
     setText(c.stats, stats.join(" · "));
-    setText(c.slots, `${h.active} / ${slotsOf(h)}`);
+    setText(c.slots, `${h.active} / ${slotsOf(h)} ${slotsOf(h) === 1 ? "slot" : "slots"}`);
     const best = h.name === fastest;
     const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}`;
     if (c.key !== key) {
@@ -1330,18 +1330,6 @@ function toggleSwitch(key, on, label) {
     el("span", { class: "toggle-text" }, on ? "On" : "Off"),
     el("span", { class: "track" }, el("span", { class: "knob" })),
   );
-}
-
-// A folder as the left bar shows it: from the user's own folder on when inside
-// it (Downloads\\Haul, ~/Downloads/Haul), in full elsewhere (D:\\Downloads\\Haul).
-function folderLabel(path, home) {
-  const windows = path.includes("\\");
-  const base = (home ?? "").replace(/[\\/]+$/, "");
-  const head = path.slice(0, base.length);
-  const inside = base && /^[\\/]./.test(path.slice(base.length)) && (windows ? head.toLowerCase() === base.toLowerCase() : head === base);
-  if (!inside) return path;
-  const rest = path.slice(base.length + 1);
-  return windows ? rest : `~/${rest}`;
 }
 
 function openPlace(place) {
@@ -1809,19 +1797,15 @@ $("drop").firstElementChild.append(
   el("strong", {}, "Drop to add to Haul"),
   "Links, .dlc containers and text files with links in them.",
 );
-// The empty list's drop zone lights up while it is on screen; otherwise the
-// whole window turns into one, the same way.
+// The whole window lights up as the drop zone while something is dragged over.
 addEventListener("dragenter", (e) => {
   if (!carriesData(e) || dialog.open) return;
   dragDepth += 1;
-  const zone = $("empty");
-  if (zone.classList.contains("dropzone") && zone.offsetParent) zone.classList.add("over");
-  else $("drop").hidden = false;
+  $("drop").hidden = false;
 });
 function endDrag() {
   dragDepth = 0;
   $("drop").hidden = true;
-  $("empty").classList.remove("over");
 }
 addEventListener("dragleave", () => {
   dragDepth = Math.max(0, dragDepth - 1);

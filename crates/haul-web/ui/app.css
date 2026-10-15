@@ -970,28 +970,9 @@ input[type="number"] {
   font: 600 20px/28px var(--font-display);
 }
 
-/* With no downloads, the list is where links and files go: a dashed area in
-   the strong control stroke that lights up while something is dragged over
-   the window. */
-.empty.dropzone {
-  min-height: min(420px, 60vh);
-  align-content: center;
-  margin-top: 8px;
-  border: 2px dashed var(--text-3);
-  border-radius: 8px;
-  background: var(--card);
-  transition:
-    border-color 0.1s,
-    background-color 0.1s;
-}
-
-.empty.dropzone > .icon {
+/* With no downloads, the empty list says how to add some, in the accent. */
+.empty.start > .icon {
   color: var(--accent-text);
-}
-
-.empty.dropzone.over {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, var(--card));
 }
 
 /* ---- hosts and settings: cards like Windows Settings */
@@ -1092,7 +1073,7 @@ input[type="number"] {
 }
 
 .stepper output {
-  min-width: 56px;
+  min-width: 96px;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -1289,8 +1270,8 @@ input.wide {
   }
 }
 
-/* While something is dragged over a window that has downloads, the whole
-   window becomes a drop zone like the empty list's, lit up. */
+/* While something is dragged over the window, all of it is the drop zone, lit
+   up. */
 .drop {
   position: fixed;
   inset: 0;
