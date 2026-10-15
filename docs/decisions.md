@@ -68,7 +68,7 @@ Tauri's NSIS installer offers both with the standard MultiUser support, which ru
 
 ## Updating over an older version
 
-Tauri's installer recommends uninstalling an older version before installing, with that option preselected, so an update ran the old uninstaller first. Haul replaces its program files in place and keeps its data elsewhere, so uninstalling first only costs time. `crates/haul-desktop/windows/installer.nsi` is Tauri's installer template with that page skipped for updates, which install over the older version as **Do not uninstall** did. Reinstalling the same version, going back to an older one and replacing a version installed from the `.msi` still show the page. The template comes from the Tauri CLI version the release workflow uses and changes with it. Updates from inside the app would need the releases to be downloadable without a GitHub login, which a private repository does not allow.
+Tauri's installer recommends uninstalling an older version before installing, with that option preselected, so an update ran the old uninstaller first. Haul replaces its program files in place and keeps its data elsewhere, so uninstalling first only costs time. `crates/haul-desktop/windows/installer.nsi` is Tauri's installer template with that page skipped for updates, which install over the older version as **Do not uninstall** did. Reinstalling the same version, going back to an older one and replacing a version installed from the `.msi` still show the page. The template comes from the Tauri CLI version the release workflow uses and changes with it.
 
 ## The data folder on Windows
 
