@@ -66,6 +66,10 @@ A host's folder is decided when a file finishes, by the host that delivered it: 
 
 Tauri's NSIS installer offers both with the standard MultiUser support, which runs at the highest privilege the account has, so an administrator sees the UAC prompt as the installer starts, whichever mode they then pick. An existing installation's mode is preselected, so updates stay where they are. Haul's data lives in each user's profile either way, never next to the program.
 
+## Updating over an older version
+
+Tauri's installer recommends uninstalling an older version before installing, with that option preselected, so an update ran the old uninstaller first. Haul replaces its program files in place and keeps its data elsewhere, so uninstalling first only costs time. `crates/haul-desktop/windows/installer.nsi` is Tauri's installer template with that page skipped for updates, which install over the older version as **Do not uninstall** did. Reinstalling the same version, going back to an older one and replacing a version installed from the `.msi` still show the page. The template comes from the Tauri CLI version the release workflow uses and changes with it. Updates from inside the app would need the releases to be downloadable without a GitHub login, which a private repository does not allow.
+
 ## The data folder on Windows
 
 The data folder is `%LOCALAPPDATA%\io.github.garysassano.haul`, not `%LOCALAPPDATA%\Haul`: that is where a per-user install puts the program, and the uninstaller's option to delete the app's data removes `%LOCALAPPDATA%\<identifier>`, which is also where WebView2 already keeps the app's browser data. On Linux nothing shares `~/.local/share/haul`, so it stays there.
