@@ -5,8 +5,6 @@ description: Find out how a file host's API behaves before changing a Haul resol
 
 # Researching a file host
 
-The scope rules in `AGENTS.md` apply: public APIs, guest tokens and the user's own accounts only, and never run or tune anything against the user's sample links. Live checks use files the user uploads themselves.
-
 ## Sources, best first
 
 1. The host's official API docs. pixeldrain's (`https://pixeldrain.com/api`) reads fine with WebFetch. gofile's docs page renders client-side and comes back empty, and WebFetch cannot fetch 1fichier.com or rapidgator.net at all.
