@@ -25,6 +25,9 @@ proxy = "socks5://user:pass@host:1080" # every host goes through it unless allow
 use_proxy = true                # false keeps the proxy above but connects directly
 preferred_hosts = ["rapidgator.net"]   # downloaded from first, in this order (default: ["pixeldrain.com"])
 disabled_hosts = ["gofile.io"]         # never downloaded from: their links are left alone
+proxies = ["socks5://u:p@nl.example:1080"]  # more proxies; downloads spread over them
+proxy_with_direct = false       # your own connection as one more of them
+proxy_fresh_connections = false # a new connection per download, for rotating endpoints
 megatools = "C:/Tools/megatools/megatools.exe" # default: found on PATH
 user_agent = "..."              # default: Haul's own
 

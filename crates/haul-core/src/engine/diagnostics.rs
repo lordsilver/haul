@@ -37,6 +37,11 @@ impl Engine {
         if let Some(proxy) = settings.get_mut("proxy") {
             *proxy = json!(without_credentials(proxy.as_str().unwrap_or_default()));
         }
+        if let Some(proxies) = settings.get_mut("proxies").and_then(Value::as_array_mut) {
+            for proxy in proxies {
+                *proxy = json!(without_credentials(proxy.as_str().unwrap_or_default()));
+            }
+        }
         let cfg = self.cfg();
         let queue: Vec<Value> = self.lock().items.values().map(item_report).collect();
         json!({

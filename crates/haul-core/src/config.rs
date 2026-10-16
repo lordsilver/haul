@@ -67,7 +67,15 @@ pub struct Config {
     /// Proxy every host goes through unless the user approves a direct route
     /// for it, such as `socks5://user:pass@host:1080`.
     pub proxy: Option<String>,
-    /// Off: the proxy stays configured, but every host connects directly.
+    /// More proxies beside `proxy`: downloads spread over all of them, so a
+    /// host's limits per address apply to each.
+    pub proxies: Vec<String>,
+    /// This machine's own connection is one more exit beside the proxies.
+    pub proxy_with_direct: bool,
+    /// A new connection for every download through a proxy, for a proxy
+    /// that gives each connection another address (a rotating endpoint).
+    pub proxy_fresh_connections: bool,
+    /// Off: the proxies stay configured, but every host connects directly.
     pub use_proxy: bool,
     pub user_agent: String,
     /// Parallel downloads per host; unlisted hosts get [`FALLBACK_LIMIT`].
@@ -116,6 +124,9 @@ impl Default for Config {
             min_speed_seconds: 60,
             retry_failed_minutes: 15,
             proxy: None,
+            proxies: Vec::new(),
+            proxy_with_direct: false,
+            proxy_fresh_connections: false,
             use_proxy: true,
             user_agent: DEFAULT_USER_AGENT.into(),
             limits: BTreeMap::new(),
@@ -219,9 +230,26 @@ impl Config {
             .clamp(1, FALLBACK_LIMIT)
     }
 
-    /// The proxy in use: configured, and not switched off.
+    /// The first proxy in use: configured, and not switched off.
     pub fn proxy(&self) -> Option<&str> {
-        secret(&self.proxy).filter(|_| self.use_proxy)
+        self.proxy_pool().first().copied()
+    }
+
+    /// Every proxy in use, `proxy` first, each once; none when switched off.
+    pub fn proxy_pool(&self) -> Vec<&str> {
+        if !self.use_proxy {
+            return Vec::new();
+        }
+        let mut pool: Vec<&str> = Vec::new();
+        let listed = secret(&self.proxy)
+            .into_iter()
+            .chain(self.proxies.iter().map(|p| p.trim()));
+        for proxy in listed {
+            if !proxy.is_empty() && !pool.contains(&proxy) {
+                pool.push(proxy);
+            }
+        }
+        pool
     }
 
     /// Where `host` stands among the preferred hosts, 0 being the first.
@@ -489,7 +517,17 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # Every host goes through this proxy unless you allow a direct route for it
 # in Hosts. HAUL_PROXY overrides it.
 # proxy = "socks5://user:pass@host:1080"
-# false keeps the proxy above but connects every host directly.
+# More proxies: each download takes the one with the fewest downloads from its
+# host, so a host's limits per address (downloads at once, free quotas, waits)
+# apply to each of them. A SOCKS5 server of a VPN subscription, a local
+# WireGuard-to-SOCKS5 port or a bought list all fit.
+# proxies = ["socks5://user:pass@amsterdam.example:1080", "http://127.0.0.1:8118"]
+# This machine's own connection as one more of them (it shows your address).
+# proxy_with_direct = false
+# A new connection for every download, for a proxy that gives each connection
+# another address (a rotating endpoint).
+# proxy_fresh_connections = false
+# false keeps the proxies above but connects every host directly.
 # use_proxy = true
 
 # Accounts. HAUL_<KEY> environment variables (HAUL_1FICHIER_KEY, ...) fill

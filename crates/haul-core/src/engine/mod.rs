@@ -6,6 +6,7 @@
 //! and has measured the best throughput.
 
 use std::{
+    collections::HashMap,
     collections::{BTreeMap, HashSet},
     fs::File,
     path::{Path, PathBuf},
@@ -235,6 +236,21 @@ pub struct WrapperView {
     pub found: Option<Found>,
 }
 
+/// A host's daily allowance at full speed, over the addresses it was asked
+/// from.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct QuotaView {
+    /// Bytes per address per day at full speed.
+    pub limit: u64,
+    /// The least used of the addresses: what the next download gets.
+    pub used: u64,
+    /// Addresses past it, and the speed they get.
+    pub slowed: usize,
+    pub slowed_to: u64,
+    /// Addresses it was asked from.
+    pub known: usize,
+}
+
 #[derive(Debug, Serialize)]
 pub struct HostView {
     pub name: String,
@@ -254,13 +270,24 @@ pub struct HostView {
     pub preferred: Option<usize>,
     /// Turned off by the user: its links are never tried.
     pub disabled: bool,
+    /// Addresses it may be reached from: its slots and its learned limit
+    /// count for each.
+    pub exits: usize,
+    /// What it allows at full speed per address today, when it says.
+    pub quota: Option<QuotaView>,
     /// The most downloads it takes at once, learned when it refused one more
     /// than it was serving; `None` until it does.
     pub cap: Option<usize>,
 }
 
-struct HostStats {
-    limit: usize,
+/// Where a download leaves this machine from: 0 is its own connection, `n`
+/// the n-th proxy of the pool ([`Config::proxy_pool`]).
+pub type Exit = usize;
+
+/// One host as seen from one exit: what it allows one address, the limit it
+/// showed and the waits it asked for, since hosts count those per address.
+#[derive(Debug, Default)]
+struct Lane {
     /// Download requests to it in flight and transfers from it in progress:
     /// what a refusal is measured against. Counting requests that may still be
     /// refused can only overstate it, and the next refusal corrects that.
@@ -272,6 +299,36 @@ struct HostStats {
     cap: Option<usize>,
     active: usize,
     cooldown: Option<Instant>,
+    /// What the host says this address may still fetch at full speed today
+    /// (pixeldrain publishes it).
+    quota: Option<hosts::pixeldrain::Quota>,
+}
+
+impl Lane {
+    fn slowed(&self) -> bool {
+        self.quota.is_some_and(|q| q.slowed())
+    }
+
+    fn cooling(&self, now: Instant) -> bool {
+        self.cooldown.is_some_and(|c| now < c)
+    }
+
+    /// Downloads that may run at once: the user's limit, or fewer when the
+    /// host showed it takes fewer.
+    fn slots(&self, limit: usize) -> usize {
+        self.cap.map_or(limit, |cap| cap.min(limit))
+    }
+
+    fn free(&self, limit: usize, now: Instant) -> bool {
+        self.active < self.slots(limit)
+            && !self.cooling(now)
+            && self.settle_until.is_none_or(|t| now >= t)
+    }
+}
+
+struct HostStats {
+    /// The user's limit of downloads at once, per exit.
+    limit: usize,
     /// Smoothed bytes per second of one stream.
     ema: f64,
     /// When `ema` last changed, in seconds since 1970.
@@ -316,30 +373,9 @@ impl HostStats {
         speed / (1.0 + self.penalty(now) * 0.5)
     }
 
-    fn cooling(&self, now: Instant) -> bool {
-        self.cooldown.is_some_and(|c| now < c)
-    }
-
-    /// Downloads that may run at once: the user's limit, or fewer when the
-    /// host showed it takes fewer.
-    fn slots(&self) -> usize {
-        self.cap.map_or(self.limit, |cap| cap.min(self.limit))
-    }
-
-    fn free(&self, now: Instant) -> bool {
-        self.active < self.slots()
-            && !self.cooling(now)
-            && self.settle_until.is_none_or(|t| now >= t)
-    }
-
     fn new(limit: usize) -> Self {
         Self {
             limit,
-            serving: 0,
-            settle_until: None,
-            cap: None,
-            active: 0,
-            cooldown: None,
             ema: 0.0,
             measured: 0,
             fails: 0,
@@ -378,6 +414,8 @@ impl HostStats {
 struct State {
     items: IndexMap<String, Item>,
     hosts: IndexMap<String, HostStats>,
+    /// Each host from each exit it was reached from.
+    lanes: HashMap<(String, Exit), Lane>,
     routes: BTreeMap<String, Route>,
     paused: bool,
     /// The download folder is changing: start nothing new.
@@ -391,6 +429,45 @@ impl State {
         self.hosts
             .entry(name.to_string())
             .or_insert_with(|| HostStats::new(cfg.limit_for(name)))
+    }
+
+    fn lane(&mut self, host: &str, exit: Exit) -> &mut Lane {
+        self.lanes.entry((host.to_string(), exit)).or_default()
+    }
+
+    /// The lanes of `host`, from whichever exits it was reached from.
+    fn lanes_of<'a>(&'a self, host: &'a str) -> impl Iterator<Item = &'a Lane> + 'a {
+        self.lanes
+            .iter()
+            .filter(move |((h, _), _)| h == host)
+            .map(|(_, lane)| lane)
+    }
+
+    /// The exit among `exits` with a free slot for `host` and the fewest of
+    /// its downloads running, so parallel downloads spread over addresses.
+    fn open_exit(
+        &mut self,
+        host: &str,
+        exits: &[Exit],
+        cfg: &Config,
+        now: Instant,
+    ) -> Option<Exit> {
+        let limit = self.host(host, cfg).limit;
+        // An address the host has slowed for the day comes last.
+        let mut best: Option<(Exit, (bool, usize))> = None;
+        for &exit in exits {
+            let lane = self.lane(host, exit);
+            let rank = (lane.slowed(), lane.active);
+            if lane.free(limit, now) && best.is_none_or(|(_, r)| rank < r) {
+                best = Some((exit, rank));
+            }
+        }
+        best.map(|(exit, _)| exit)
+    }
+
+    /// Whether every exit of `host` is cooling down.
+    fn cooling(&mut self, host: &str, exits: &[Exit], now: Instant) -> bool {
+        exits.iter().all(|e| self.lane(host, *e).cooling(now))
     }
 }
 
@@ -410,27 +487,49 @@ impl Drop for Comparing {
     }
 }
 
+fn quota_view(quotas: impl Iterator<Item = hosts::pixeldrain::Quota>) -> Option<QuotaView> {
+    let quotas: Vec<_> = quotas.collect();
+    let first = quotas.first()?;
+    Some(QuotaView {
+        limit: first.limit,
+        used: quotas.iter().map(|q| q.used).min().unwrap_or(0),
+        slowed: quotas.iter().filter(|q| q.slowed()).count(),
+        slowed_to: first.slowed_to,
+        known: quotas.len(),
+    })
+}
+
+/// An exit as the log names it: `direct`, or `proxy 2`.
+fn exit_name(exit: Exit) -> String {
+    if exit == 0 {
+        "direct".into()
+    } else {
+        format!("proxy {exit}")
+    }
+}
+
 /// Counts a download as under way with its host, from the request to the end
 /// of the transfer.
 struct Serving<'a> {
     engine: &'a Engine,
     host: &'a str,
+    exit: Exit,
 }
 
 impl<'a> Serving<'a> {
-    fn start(engine: &'a Engine, host: &'a str) -> Self {
-        engine.lock().host(host, &engine.cfg()).serving += 1;
-        Self { engine, host }
+    fn start(engine: &'a Engine, host: &'a str, exit: Exit) -> Self {
+        engine.lock().lane(host, exit).serving += 1;
+        Self { engine, host, exit }
     }
 }
 
 impl Drop for Serving<'_> {
     fn drop(&mut self) {
-        if let Some(h) = self.engine.lock().hosts.get_mut(self.host) {
-            h.serving = h.serving.saturating_sub(1);
-            if h.cap.is_some() {
-                h.settle_until = Some(Instant::now() + SETTLE);
-            }
+        let mut st = self.engine.lock();
+        let lane = st.lane(self.host, self.exit);
+        lane.serving = lane.serving.saturating_sub(1);
+        if lane.cap.is_some() {
+            lane.settle_until = Some(Instant::now() + SETTLE);
         }
     }
 }
@@ -508,21 +607,27 @@ async fn or_cancel<T>(cancel: &CancellationToken, fut: impl Future<Output = T>) 
 #[derive(Clone)]
 pub struct Engine(Arc<Inner>);
 
-/// HTTP clients for both routes, rebuilt when the proxy or user agent changes.
+/// HTTP clients for every exit, rebuilt when the proxies or the user agent
+/// change: `exits[0]` is the direct connection, `exits[n]` the n-th proxy.
 struct Clients {
-    direct: Http,
-    proxy: Option<Http>,
+    exits: Vec<Http>,
 }
 
 impl Clients {
     fn new(cfg: &Config) -> Result<Self, String> {
-        Ok(Self {
-            direct: Http::new(None, &cfg.user_agent)?,
-            proxy: cfg
-                .proxy()
-                .map(|p| Http::new(Some(p), &cfg.user_agent))
-                .transpose()?,
-        })
+        let mut exits = vec![Http::new(None, &cfg.user_agent)?];
+        for proxy in cfg.proxy_pool() {
+            exits.push(Http::with(
+                Some(proxy),
+                &cfg.user_agent,
+                cfg.proxy_fresh_connections,
+            )?);
+        }
+        Ok(Self { exits })
+    }
+
+    fn on(&self, exit: Exit) -> Http {
+        self.exits.get(exit).unwrap_or(&self.exits[0]).clone()
     }
 }
 
@@ -625,6 +730,7 @@ impl Engine {
             state: Mutex::new(State {
                 items,
                 hosts,
+                lanes: HashMap::new(),
                 routes,
                 paused,
                 moving: false,
@@ -669,6 +775,7 @@ impl Engine {
             tokio::spawn(engine.clone().probe(id));
         }
         tokio::spawn(engine.clone().scheduler());
+        tokio::spawn(engine.clone().watch_quotas());
         tokio::spawn(engine.clone().saver());
         tokio::spawn(engine.clone().watch_config());
         Ok(engine)
@@ -697,12 +804,27 @@ impl Engine {
             .clone()
     }
 
-    fn http_for(&self, host: &str, st: &State) -> Http {
-        let clients = self.clients();
-        match &clients.proxy {
-            Some(proxy) if st.routes.get(host) != Some(&Route::Direct) => proxy.clone(),
-            _ => clients.direct.clone(),
+    /// The exits `host` may be reached from: every proxy of the pool (and
+    /// this machine's connection too when the user added it), or only the
+    /// direct connection when there is no proxy or the user let the host go
+    /// direct.
+    fn exits_for(&self, host: &str, st: &State) -> Vec<Exit> {
+        let cfg = self.cfg();
+        let proxies = cfg.proxy_pool().len();
+        if proxies == 0 || st.routes.get(host) == Some(&Route::Direct) {
+            return vec![0];
         }
+        let mut exits: Vec<Exit> = (1..=proxies).collect();
+        if cfg.proxy_with_direct {
+            exits.push(0);
+        }
+        exits
+    }
+
+    /// The client for lookups on `host` (a probe, a wrapper's solve): its
+    /// first exit.
+    fn http_for(&self, host: &str, st: &State) -> Http {
+        self.clients().on(self.exits_for(host, st)[0])
     }
 
     /// The route to JDownloader's key service, which decrypts `.dlc` files.
@@ -727,8 +849,8 @@ impl Engine {
         self.cfg().proxy().map(str::to_string)
     }
 
-    /// The proxy that `host` is reached through: the configured one, unless
-    /// the user approved a direct route for that host.
+    /// The proxy a page of `host` opens through in the in-app browser: the
+    /// first of the pool, unless the user approved a direct route for it.
     pub fn proxy_for(&self, host: &str) -> Option<String> {
         let direct = self.lock().routes.get(host) == Some(&Route::Direct);
         if direct { None } else { self.proxy() }
@@ -1163,6 +1285,54 @@ impl Engine {
 
     // ---- scheduler
 
+    /// Asks pixeldrain, through each exit, how much it still allows that
+    /// address at full speed today, while the queue holds pixeldrain links;
+    /// once a minute, as downloads use it up.
+    async fn watch_quotas(self) {
+        const HOST: &str = "pixeldrain.com";
+        let mut changes = self.watch();
+        let mut checked: Option<Instant> = None;
+        loop {
+            let due = checked.is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
+            let wanted = due && {
+                let st = self.lock();
+                st.items.values().any(|i| {
+                    i.status != Status::Done && i.mirrors.iter().any(|m| hosts::host_of(m) == HOST)
+                })
+            };
+            if wanted && !self.cfg().is_disabled(HOST) {
+                checked = Some(Instant::now());
+                let exits = self.exits_for(HOST, &self.lock());
+                let cfg = self.cfg();
+                for exit in exits {
+                    let http = self.clients().on(exit);
+                    let cx = Cx {
+                        http: &http,
+                        cfg: &cfg,
+                        tokens: &self.0.tokens,
+                        key_service: &http,
+                    };
+                    let quota = hosts::pixeldrain::quota(&cx).await;
+                    let mut st = self.lock();
+                    let lane = st.lane(HOST, exit);
+                    if quota.is_some() && lane.quota != quota {
+                        if let Some(q) = quota {
+                            tracing::debug!(exit = %exit_name(exit), used = q.used, limit = q.limit, "pixeldrain quota");
+                        }
+                        lane.quota = quota;
+                        self.touch(&mut st);
+                    }
+                }
+            }
+            // A pixeldrain link just added is asked about at once.
+            tokio::select! {
+                _ = self.0.shutdown.cancelled() => return,
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+                _ = changes.changed() => {}
+            }
+        }
+    }
+
     async fn scheduler(self) {
         loop {
             tokio::select! {
@@ -1215,10 +1385,11 @@ impl Engine {
                 let size = it.size;
                 let before = it.status;
                 match self.pick(&mut st, &id, now) {
-                    Some(url) => {
+                    Some((url, exit)) => {
                         let host = hosts::host_of(&url);
-                        tracing::debug!(item = %id, url = %url, "starting from {host}");
-                        st.host(&host, &self.cfg()).active += 1;
+                        let via = exit_name(exit);
+                        tracing::debug!(item = %id, url = %url, "starting from {host} via {via}");
+                        st.lane(&host, exit).active += 1;
                         let cancel = CancellationToken::new();
                         let it = st.items.get_mut(&id).expect("item checked above");
                         it.host = host.clone();
@@ -1227,7 +1398,7 @@ impl Engine {
                         running += 1;
                         busy += size;
                         changed = true;
-                        tokio::spawn(self.clone().work(id, url, host, cancel));
+                        tokio::spawn(self.clone().work(id, url, host, exit, cancel));
                     }
                     None => {
                         let it = &st.items[&id];
@@ -1261,7 +1432,7 @@ impl Engine {
     /// The best mirror whose host has a free slot, ranked by measured speed.
     /// Hosts the user turned off are never picked. Parks the item when no
     /// mirror is left.
-    fn pick(&self, st: &mut State, id: &str, now: Instant) -> Option<String> {
+    fn pick(&self, st: &mut State, id: &str, now: Instant) -> Option<(String, Exit)> {
         let cfg = self.cfg();
         let off = |m: &String| cfg.is_disabled(&hosts::host_of(m));
         let it = &st.items[id];
@@ -1303,38 +1474,51 @@ impl Engine {
         let mut preferred: Vec<(usize, String)> = Vec::new();
         for m in &candidates {
             let name = hosts::host_of(m);
+            let exits = self.exits_for(&name, st);
             if let Some(rank) = cfg.preference(&name)
-                && !st.host(&name, &cfg).cooling(now)
+                && !st.cooling(&name, &exits, now)
             {
                 preferred.push((rank, m.clone()));
             }
         }
         if !preferred.is_empty() {
             preferred.sort_by_key(|(rank, _)| *rank);
-            return preferred
-                .into_iter()
-                .find(|(_, m)| st.host(&hosts::host_of(m), &cfg).free(now))
-                .map(|(_, m)| m);
+            for (_, m) in preferred {
+                let name = hosts::host_of(&m);
+                let exits = self.exits_for(&name, st);
+                if let Some(exit) = st.open_exit(&name, &exits, &cfg, now) {
+                    return Some((m, exit));
+                }
+            }
+            return None;
         }
-        let mut best: Option<(String, f64)> = None;
+        let mut best: Option<(String, Exit, f64)> = None;
         for m in candidates {
-            let host = st.host(&hosts::host_of(&m), &cfg);
-            if !host.free(now) {
+            let name = hosts::host_of(&m);
+            let exits = self.exits_for(&name, st);
+            let Some(exit) = st.open_exit(&name, &exits, &cfg, now) else {
                 continue;
-            }
-            let score = host.score(now);
-            if best.as_ref().is_none_or(|(_, s)| score > *s) {
-                best = Some((m, score));
+            };
+            let score = st.host(&name, &cfg).score(now);
+            if best.as_ref().is_none_or(|(_, _, s)| score > *s) {
+                best = Some((m, exit, score));
             }
         }
-        best.map(|(m, _)| m)
+        best.map(|(m, exit, _)| (m, exit))
     }
 
     // ---- attempts
 
-    async fn work(self, id: String, url: String, host: String, cancel: CancellationToken) {
-        let result = self.attempt(&id, &url, &host, &cancel).await;
-        self.finish(&id, &url, &host, result);
+    async fn work(
+        self,
+        id: String,
+        url: String,
+        host: String,
+        exit: Exit,
+        cancel: CancellationToken,
+    ) {
+        let result = self.attempt(&id, &url, &host, exit, &cancel).await;
+        self.finish(&id, &url, &host, exit, result);
     }
 
     async fn attempt(
@@ -1342,6 +1526,7 @@ impl Engine {
         id: &str,
         url: &str,
         host: &str,
+        exit: Exit,
         cancel: &CancellationToken,
     ) -> Result<Outcome, Fail> {
         let (pre, name, http, key_service) = {
@@ -1353,7 +1538,7 @@ impl Engine {
                 .clone()
                 .filter(|_| it.pre_for.as_deref().is_none_or(|p| p == url));
             let name = it.name.clone();
-            (pre, name, self.http_for(host, &st), self.key_service(&st))
+            (pre, name, self.clients().on(exit), self.key_service(&st))
         };
         let entry = match pre {
             Some(entry) if !entry.deferred => entry,
@@ -1440,7 +1625,7 @@ impl Engine {
         }
         match &entry.exec {
             Some(exec) => self.run_exec(id, &entry, host, exec, cancel).await?,
-            None => return self.fetch(id, &entry, host, &http, cancel).await,
+            None => return self.fetch(id, &entry, (host, exit), &http, cancel).await,
         }
         Ok(Outcome::Done)
     }
@@ -1570,15 +1755,15 @@ impl Engine {
         probe
     }
 
-    fn finish(&self, id: &str, url: &str, host: &str, result: Result<Outcome, Fail>) {
+    fn finish(&self, id: &str, url: &str, host: &str, exit: Exit, result: Result<Outcome, Fail>) {
         let mut events = Vec::new();
         let mut removed = Vec::new();
         {
             let mut st = self.lock();
             let now = Instant::now();
             {
-                let h = st.host(host, &self.cfg());
-                h.active = h.active.saturating_sub(1);
+                let lane = st.lane(host, exit);
+                lane.active = lane.active.saturating_sub(1);
             }
             log_outcome(id, url, &result);
             // An attempt that got data in before it stopped starts the counts
@@ -1657,7 +1842,8 @@ impl Engine {
                 }
                 Err(Fail::Wait { seconds, message }) => {
                     let until = now + Duration::from_secs(seconds);
-                    st.host(host, &self.cfg()).cooldown = Some(until);
+                    // The wait is asked of this address.
+                    st.lane(host, exit).cooldown = Some(until);
                     if let Some(it) = st.items.get_mut(id) {
                         it.status = Status::Waiting;
                         it.not_before = Some(until);
@@ -1682,8 +1868,8 @@ impl Engine {
                 Err(Fail::Busy { allowed, .. })
                     if st.items.get(id).is_some_and(|it| it.busy < BUSY_REFUSALS) =>
                 {
-                    let h = st.host(host, &self.cfg());
-                    h.cap = Some(h.cap.map_or(allowed, |cap| cap.min(allowed)));
+                    let lane = st.lane(host, exit);
+                    lane.cap = Some(lane.cap.map_or(allowed, |cap| cap.min(allowed)));
                     let it = st.items.get_mut(id).expect("checked by the guard");
                     it.busy += 1;
                     it.status = Status::Waiting;
@@ -1839,7 +2025,7 @@ impl Engine {
         &self,
         id: &str,
         entry: &Entry,
-        host: &str,
+        (host, exit): (&str, Exit),
         http: &Http,
         cancel: &CancellationToken,
     ) -> Result<Outcome, Fail> {
@@ -1860,7 +2046,7 @@ impl Engine {
             req = req.header(RANGE, format!("bytes={have}-"));
         }
         // Counted from the request to the end of the transfer.
-        let _serving = Serving::start(self, host);
+        let _serving = Serving::start(self, host, exit);
         let mut resp = or_cancel(cancel, req.send()).await??;
         let status = resp.status().as_u16();
         if matches!(status, 429 | 503) {
@@ -1886,11 +2072,8 @@ impl Engine {
         } else if status != 200 && status != 206 {
             // Other downloads from the host under way: a refusal then means it
             // takes no more at once.
-            let others = self
-                .lock()
-                .hosts
-                .get(host)
-                .map_or(0, |h| h.serving.saturating_sub(1));
+            // Counted on this exit: a host limits one address.
+            let others = self.lock().lane(host, exit).serving.saturating_sub(1);
             let mut note = "";
             if matches!(status, 403 | 451) && http.via_proxy && others == 0 {
                 // Flag only: never switch to a direct connection on our own.
@@ -2516,7 +2699,7 @@ impl Engine {
     pub fn snapshot(&self) -> Snapshot {
         let st = self.lock();
         let now = Instant::now();
-        let has_proxy = self.clients().proxy.is_some();
+        let has_proxy = self.clients().exits.len() > 1;
         let cfg = self.cfg();
         let wait = |it: &Item| {
             it.not_before
@@ -2597,23 +2780,37 @@ impl Engine {
         let mut hosts: Vec<HostView> = st
             .hosts
             .iter()
-            .map(|(name, h)| HostView {
-                name: name.clone(),
-                limit: h.limit,
-                active: h.active,
-                speed: h.ema,
-                fails: h.fails,
-                ok: h.ok,
-                bytes: h.bytes,
-                blocked: h.blocked,
-                route: route(name),
-                cooldown: h
-                    .cooldown
-                    .map_or(0, |c| c.saturating_duration_since(now).as_secs()),
-                folder: cfg.folder_for(name).display().to_string(),
-                preferred: cfg.preference(name),
-                disabled: cfg.is_disabled(name),
-                cap: h.cap,
+            .map(|(name, h)| {
+                let exits = self.exits_for(name, &st);
+                let lane = |e: &Exit| st.lanes.get(&(name.clone(), *e));
+                // Waiting only when every address it may use was asked to.
+                let cooldown = exits
+                    .iter()
+                    .map(|e| {
+                        lane(e)
+                            .and_then(|l| l.cooldown)
+                            .map_or(0, |c| c.saturating_duration_since(now).as_secs())
+                    })
+                    .min()
+                    .unwrap_or(0);
+                HostView {
+                    name: name.clone(),
+                    limit: h.limit,
+                    active: st.lanes_of(name).map(|l| l.active).sum(),
+                    speed: h.ema,
+                    fails: h.fails,
+                    ok: h.ok,
+                    bytes: h.bytes,
+                    blocked: h.blocked,
+                    route: route(name),
+                    cooldown,
+                    folder: cfg.folder_for(name).display().to_string(),
+                    preferred: cfg.preference(name),
+                    disabled: cfg.is_disabled(name),
+                    cap: st.lanes_of(name).filter_map(|l| l.cap).min(),
+                    quota: quota_view(exits.iter().filter_map(|e| lane(e).and_then(|l| l.quota))),
+                    exits: exits.len(),
+                }
             })
             .collect();
         // A host shows before Haul has reached it when it is preferred or
@@ -2651,6 +2848,12 @@ impl Engine {
                 preferred: cfg.preference(&name),
                 disabled: cfg.is_disabled(&name),
                 cap: None,
+                exits: self.exits_for(&name, &st).len(),
+                quota: quota_view(
+                    self.exits_for(&name, &st)
+                        .iter()
+                        .filter_map(|e| st.lanes.get(&(name.clone(), *e)).and_then(|l| l.quota)),
+                ),
                 name,
             });
         }
@@ -2868,5 +3071,78 @@ mod tests {
         assert!(!recycle(&file, None).unwrap(), "gone already");
         assert!(!recycle(dir.path(), None).unwrap(), "folders stay");
         assert!(dir.path().exists());
+    }
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+
+    fn state() -> State {
+        State {
+            items: IndexMap::new(),
+            hosts: IndexMap::new(),
+            lanes: HashMap::new(),
+            routes: BTreeMap::new(),
+            paused: false,
+            moving: false,
+            max_total: 8,
+            dirty: false,
+        }
+    }
+
+    /// Downloads from one host spread over the exits, a limit the host showed
+    /// one address holds for that address only, and a wait it asked of one
+    /// leaves the others free.
+    #[test]
+    fn downloads_spread_over_exits() {
+        let cfg = Config::default();
+        let mut st = state();
+        let now = Instant::now();
+        let exits = [1, 2, 3];
+        let mut used = Vec::new();
+        for _ in 0..3 {
+            let exit = st.open_exit("pixeldrain.com", &exits, &cfg, now).unwrap();
+            st.lane("pixeldrain.com", exit).active += 1;
+            used.push(exit);
+        }
+        used.sort();
+        assert_eq!(used, [1, 2, 3], "one each before any gets a second");
+
+        st.lane("pixeldrain.com", 1).cap = Some(1);
+        st.lane("pixeldrain.com", 2).cooldown = Some(now + Duration::from_secs(60));
+        assert_eq!(st.open_exit("pixeldrain.com", &exits, &cfg, now), Some(3));
+        assert!(!st.cooling("pixeldrain.com", &exits, now));
+        st.lane("pixeldrain.com", 1).cooldown = Some(now + Duration::from_secs(60));
+        st.lane("pixeldrain.com", 3).cooldown = Some(now + Duration::from_secs(60));
+        assert!(st.cooling("pixeldrain.com", &exits, now));
+        assert_eq!(st.open_exit("pixeldrain.com", &exits, &cfg, now), None);
+        // Another host is counted apart.
+        assert_eq!(st.open_exit("gofile.io", &exits, &cfg, now), Some(1));
+        assert_eq!(
+            st.lanes_of("pixeldrain.com")
+                .map(|l| l.active)
+                .sum::<usize>(),
+            3
+        );
+    }
+
+    #[test]
+    fn the_pool_is_every_proxy_once() {
+        let mut cfg = Config {
+            proxy: Some("socks5://a:1".into()),
+            proxies: vec![
+                " socks5://b:2 ".into(),
+                "socks5://a:1".into(),
+                String::new(),
+            ],
+            ..Config::default()
+        };
+        assert_eq!(cfg.proxy_pool(), ["socks5://a:1", "socks5://b:2"]);
+        assert_eq!(cfg.proxy(), Some("socks5://a:1"));
+        cfg.use_proxy = false;
+        assert!(cfg.proxy_pool().is_empty());
+        assert_eq!(exit_name(0), "direct");
+        assert_eq!(exit_name(2), "proxy 2");
     }
 }

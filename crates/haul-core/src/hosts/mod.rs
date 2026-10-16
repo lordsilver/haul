@@ -17,7 +17,7 @@ mod gofile;
 mod mega;
 mod nitroflare;
 mod onefichier;
-mod pixeldrain;
+pub mod pixeldrain;
 mod rapidgator;
 
 use std::{
@@ -364,6 +364,12 @@ pub struct Http {
 
 impl Http {
     pub fn new(proxy: Option<&str>, user_agent: &str) -> Result<Self, String> {
+        Self::with(proxy, user_agent, false)
+    }
+
+    /// With `fresh`, no connection is kept for the next request, so a proxy
+    /// that gives each connection another address gives each download one.
+    pub fn with(proxy: Option<&str>, user_agent: &str, fresh: bool) -> Result<Self, String> {
         let jar = Arc::new(reqwest::cookie::Jar::default());
         let build = |follow: bool| {
             let mut b = reqwest::Client::builder()
@@ -374,6 +380,9 @@ impl Http {
                 .read_timeout(Duration::from_secs(60));
             if !follow {
                 b = b.redirect(reqwest::redirect::Policy::none());
+            }
+            if fresh {
+                b = b.pool_max_idle_per_host(0);
             }
             if let Some(p) = proxy {
                 b = b.proxy(reqwest::Proxy::all(remote_dns(p)).map_err(|e| format!("proxy: {e}"))?);

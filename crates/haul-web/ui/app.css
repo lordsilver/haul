@@ -1532,3 +1532,9 @@ input.wide {
     display: none;
   }
 }
+
+/* The proxy list: one address per line, wide enough not to wrap. */
+.card textarea.wide {
+  width: min(560px, 55vw);
+  resize: vertical;
+}

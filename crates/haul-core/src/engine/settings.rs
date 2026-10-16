@@ -42,6 +42,9 @@ pub struct SettingsView {
     pub min_speed_seconds: u64,
     pub retry_failed_minutes: u64,
     pub proxy: String,
+    pub proxies: Vec<String>,
+    pub proxy_with_direct: bool,
+    pub proxy_fresh_connections: bool,
     pub use_proxy: bool,
     pub user_agent: String,
     pub default_user_agent: &'static str,
@@ -102,6 +105,9 @@ impl Engine {
             min_speed_seconds: cfg.min_speed_seconds,
             retry_failed_minutes: cfg.retry_failed_minutes,
             proxy: shown(&cfg.proxy),
+            proxies: cfg.proxies.clone(),
+            proxy_with_direct: cfg.proxy_with_direct,
+            proxy_fresh_connections: cfg.proxy_fresh_connections,
             use_proxy: cfg.use_proxy,
             user_agent: cfg.user_agent.clone(),
             default_user_agent: config::DEFAULT_USER_AGENT,
@@ -249,16 +255,49 @@ impl Engine {
                 "proxy" => {
                     let proxy = text(value, key)?;
                     if !proxy.is_empty() {
-                        let scheme = proxy.split("://").next().unwrap_or_default();
-                        if !matches!(scheme, "socks5" | "socks5h" | "http" | "https")
-                            || !proxy.contains("://")
-                        {
-                            return Err("the proxy is a socks5:// or http:// address".into());
-                        }
-                        Http::new(Some(&proxy), &cfg.user_agent)?;
+                        check_proxy(&proxy, &cfg.user_agent)?;
                     }
                     writes.push(top(key, (!proxy.is_empty()).then(|| proxy.as_str().into())));
                     cfg.proxy = (!proxy.is_empty()).then_some(proxy);
+                }
+                "proxies" => {
+                    // A list, or text with one proxy per line.
+                    let list: Vec<String> = match value.as_array() {
+                        Some(items) => items
+                            .iter()
+                            .map(|v| v.as_str().map(str::trim).map(str::to_string))
+                            .collect::<Option<_>>()
+                            .ok_or("proxies are text")?,
+                        None => text(value, key)?
+                            .lines()
+                            .map(|l| l.trim().to_string())
+                            .collect(),
+                    };
+                    let list: Vec<String> = list.into_iter().filter(|p| !p.is_empty()).collect();
+                    for proxy in &list {
+                        check_proxy(proxy, &cfg.user_agent)?;
+                    }
+                    writes.push(top(
+                        key,
+                        Some(toml_edit::Value::Array(
+                            list.iter().map(String::as_str).collect(),
+                        )),
+                    ));
+                    cfg.proxies = list;
+                }
+                "proxy_with_direct" => {
+                    let on = value
+                        .as_bool()
+                        .ok_or("proxy_with_direct is true or false")?;
+                    cfg.proxy_with_direct = on;
+                    writes.push(top(key, Some(on.into())));
+                }
+                "proxy_fresh_connections" => {
+                    let on = value
+                        .as_bool()
+                        .ok_or("proxy_fresh_connections is true or false")?;
+                    cfg.proxy_fresh_connections = on;
+                    writes.push(top(key, Some(on.into())));
                 }
                 "use_proxy" => {
                     let on = value.as_bool().ok_or("use_proxy is true or false")?;
@@ -324,8 +363,10 @@ impl Engine {
         self.write_and_apply(cfg, vec![write])?;
         // The user's choice replaces what Haul learned from the host.
         let mut st = self.lock();
-        if let Some(h) = st.hosts.get_mut(host) {
-            h.cap = None;
+        for ((h, _), lane) in st.lanes.iter_mut() {
+            if h == host {
+                lane.cap = None;
+            }
         }
         self.touch(&mut st);
         Ok(())
@@ -505,7 +546,10 @@ impl Engine {
         if new.detailed_log != old.detailed_log {
             crate::logging::set_detailed(new.detailed_log);
         }
-        if new.proxy() != old.proxy() || new.user_agent != old.user_agent {
+        if new.proxy_pool() != old.proxy_pool()
+            || new.proxy_fresh_connections != old.proxy_fresh_connections
+            || new.user_agent != old.user_agent
+        {
             match Clients::new(&new) {
                 Ok(clients) => {
                     *self.0.clients.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(clients);
@@ -731,4 +775,28 @@ fn move_partials(from: &Path, to: &Path) -> std::io::Result<usize> {
     }
     let _ = std::fs::remove_dir(from);
     Ok(moved)
+}
+
+/// A proxy address Haul can use: `socks5://`, `socks5h://`, `http://` or
+/// `https://`, with credentials if it needs them.
+fn check_proxy(proxy: &str, user_agent: &str) -> Result<(), String> {
+    let scheme = proxy.split("://").next().unwrap_or_default();
+    if !matches!(scheme, "socks5" | "socks5h" | "http" | "https") || !proxy.contains("://") {
+        return Err(format!(
+            "{} is not a socks5:// or http:// address",
+            redact_proxy(proxy)
+        ));
+    }
+    Http::new(Some(proxy), user_agent).map(|_| ())
+}
+
+/// A proxy address without its user and password, for messages.
+fn redact_proxy(proxy: &str) -> String {
+    match proxy.rsplit_once('@') {
+        Some((head, host)) => {
+            let scheme = head.split("://").next().unwrap_or_default();
+            format!("{scheme}://…@{host}")
+        }
+        None => proxy.to_string(),
+    }
 }

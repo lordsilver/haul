@@ -504,6 +504,14 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/api/misc/rate_limits",
+            // This address is past its day's full-speed bytes.
+            get(|| async {
+                Json(json!({"server_overload": false, "speed_limit": 1_048_576, "download_limit": 10000,
+                    "download_limit_used": 3, "transfer_limit": 6_000_000_000u64, "transfer_limit_used": 9_494_305_080u64}))
+            }),
+        )
+        .route(
             "/api/list/{id}",
             get(|UrlPath(id): UrlPath<String>| async move {
                 Json(match id.as_str() {
@@ -2138,4 +2146,71 @@ async fn hosts_turned_off_are_never_tried() {
     engine.set_disabled("127.0.0.1", false).unwrap();
     let s = wait_for(&engine, "the file again", all_done).await;
     assert!(s.items.iter().any(|i| i.host == "127.0.0.1"));
+}
+
+/// With several proxies, downloads from one host spread over them: here two
+/// test servers stand in as HTTP proxies, each answering the files it is
+/// asked for, and each serves one of the two downloads.
+#[tokio::test]
+async fn downloads_from_one_host_spread_over_the_proxies() {
+    let t = Setup::new().await;
+    let (second, port) = start_server().await;
+    let mut cfg = t.config();
+    cfg.proxies = vec![t.ip.clone(), format!("http://127.0.0.1:{port}")];
+    let engine = Engine::start(Options {
+        config: Some(cfg),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.set_paused(true);
+    // A host the machine cannot reach itself: only the proxies know it.
+    engine.add_text(
+        "http://files.example/files/a.bin http://files.example/files/b.bin",
+        "",
+    );
+    wait_for(&engine, "both probed", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.status == "queued")
+    })
+    .await;
+    engine.set_paused(false);
+    let s = wait_for(&engine, "the downloads", all_done).await;
+    let first = t.server.requests("/files/").len();
+    let other = second.requests("/files/").len();
+    assert!(
+        first >= 1 && other >= 1,
+        "one through each proxy: {first} and {other}"
+    );
+    let host = s.hosts.iter().find(|h| h.name == "files.example").unwrap();
+    assert_eq!(host.exits, 2);
+    assert_eq!(t.downloaded("a.bin"), content("a.bin", SIZE));
+    assert_eq!(t.downloaded("b.bin"), content("b.bin", SIZE));
+}
+
+/// pixeldrain says how much each address may still fetch at full speed
+/// today; the Hosts view shows it.
+#[tokio::test]
+async fn pixeldrains_quota_shows_with_the_host() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text("https://pixeldrain.com/u/abc", "");
+    let s = wait_for(&engine, "the quota", |s| {
+        s.hosts
+            .iter()
+            .any(|h| h.name == "pixeldrain.com" && h.quota.is_some())
+    })
+    .await;
+    let q = s
+        .hosts
+        .iter()
+        .find(|h| h.name == "pixeldrain.com")
+        .unwrap()
+        .quota
+        .clone()
+        .unwrap();
+    assert_eq!(
+        (q.limit, q.used, q.slowed, q.slowed_to, q.known),
+        (6_000_000_000, 9_494_305_080, 1, 1_048_576, 1)
+    );
 }

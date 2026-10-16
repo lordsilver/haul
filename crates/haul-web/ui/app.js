@@ -1651,9 +1651,11 @@ function renderHosts(s) {
     }
     const stats = [h.speed ? `${bytes(h.speed)}/s per file` : "Speed not measured yet", `${h.ok} done`, `${h.fails} failed`, `${bytes(h.bytes)} total`];
     if (h.cooldown) stats.push(`cooling down ${duration(h.cooldown)}`);
+    // Its own word on what an address may fetch at full speed today.
+    if (h.quota) stats.push(`${bytes(h.quota.used)} of ${bytes(h.quota.limit)} a day at full speed used`);
     setText(c.stats, stats.join(" · "));
     const slots = slotsOf(h);
-    setText(c.slots, `${h.active} / ${slots} ${slots === 1 ? "slot" : "slots"}`);
+    setText(c.slots, `${h.active} / ${slots} ${slots === 1 ? "slot" : "slots"}${h.exits > 1 ? ` × ${h.exits}` : ""}`);
     c.fewer.disabled = slots <= 1;
     c.more.disabled = slots >= MAX_SLOTS;
     // The slot buttons show when a limit is set or learned, or asked for.
@@ -1662,7 +1664,8 @@ function renderHosts(s) {
     c.limitButton.hidden = !c.stepper.hidden || h.disabled;
     const best = h.name === fastest;
     const place = order.indexOf(h.name);
-    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}|${place}|${h.disabled}`;
+    const quota = h.quota ? `${h.quota.slowed}/${h.quota.known}` : "";
+    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}|${place}|${h.disabled}|${h.exits}|${quota}`;
     if (c.key !== key) {
       c.key = key;
       c.disabled = h.disabled;
@@ -1690,6 +1693,12 @@ function renderHosts(s) {
       c.star.setAttribute("aria-pressed", String(c.preferred));
       if (c.preferred) pills.push(el("span", { class: "pill preferred" }, icon("star-filled"), `${ordinal(h.preferred + 1)} choice`));
       if (h.disabled) pills.push(el("span", { class: "pill caution" }, "Never used"));
+      if (h.exits > 1) pills.push(el("span", { class: "pill", title: "Downloads spread over these addresses; its limits count for each" }, icon("shield"), `${h.exits} addresses`));
+      if (h.quota?.slowed) {
+        const all = h.quota.slowed === h.quota.known;
+        const title = "Past the bytes it allows an address at full speed today; it serves the rest slowly";
+        pills.push(el("span", { class: `pill${all ? " caution" : ""}`, title }, icon("top-speed"), all ? `Slowed to ${bytes(h.quota.slowed_to)}/s` : `${h.quota.known - h.quota.slowed} of ${h.quota.known} addresses at full speed`));
+      }
       if (best && !h.disabled) pills.push(el("span", { class: "pill success" }, "Fastest"));
       if (h.folder) pills.push(el("span", { class: "pill", title: "Its files go to this subfolder" }, icon("folder"), h.folder));
       if (h.cap && h.cap < h.limit) {
@@ -1805,6 +1814,21 @@ function textField(key, value, { label, placeholder = "", secret = false, wide =
     if (e.key === "Enter") input.blur();
   });
   return secret ? withReveal(input) : input;
+}
+
+// The extra proxies, one per line; saved when the box loses focus.
+function proxyList(d) {
+  const box = el("textarea", {
+    rows: Math.min(8, Math.max(3, d.proxies.length + 1)),
+    spellcheck: "false",
+    autocomplete: "off",
+    class: "wide mono",
+    "aria-label": "More proxies, one per line",
+    placeholder: "socks5://user:pass@amsterdam.example:1080\nsocks5://127.0.0.1:1081",
+  });
+  box.value = d.proxies.join("\n");
+  box.addEventListener("change", () => save({ proxies: box.value }));
+  return box;
 }
 
 // A password field with a button that shows what it holds.
@@ -1984,6 +2008,23 @@ function renderSettings(s) {
       textField("proxy", d.proxy, { label: "Proxy", placeholder: "socks5://user:pass@host:1080", secret: true, wide: true }),
       d.proxy ? toggleSwitch("use_proxy", d.use_proxy, "Use the proxy") : null,
     ),
+    settingCard(
+      "shield",
+      "More proxies",
+      "One per line. Each download takes the proxy with the fewest downloads from its host, so a host's limits per address (downloads at once, daily quotas, waits) apply to each one. A VPN's SOCKS5 servers, local WireGuard-to-SOCKS5 ports or a bought list all fit.",
+      proxyList(d),
+    ),
+    d.proxy || d.proxies.length
+      ? settingCard("desktop", "My own connection too", "Adds this computer's connection to the proxies, as one more address. Hosts then see your real IP address.", toggleSwitch("proxy_with_direct", d.proxy_with_direct, "My own connection too"))
+      : null,
+    d.proxy || d.proxies.length
+      ? settingCard(
+          "arrow-clockwise",
+          "New connection for every download",
+          "For a proxy that gives each connection another address (a rotating endpoint), so each download gets its own.",
+          toggleSwitch("proxy_fresh_connections", d.proxy_fresh_connections, "New connection for every download"),
+        )
+      : null,
     el("h2", {}, "Accounts"),
     settingCard("key", "1fichier", envNote("1fichier_key") ?? "API key: no free-mode wait or captcha.", accountField("1fichier_key", "API key")),
     settingCard("key", "pixeldrain", envNote("pixeldrain_key") ?? "API key.", accountField("pixeldrain_key", "API key")),
