@@ -76,6 +76,8 @@ pub struct Config {
     /// Hosts a file with mirrors downloads from first, in this order
     /// (pixeldrain.com until the list is changed).
     pub preferred_hosts: Vec<String>,
+    /// Hosts never downloaded from: their links are left alone.
+    pub disabled_hosts: Vec<String>,
     #[serde(rename = "1fichier_key")]
     pub onefichier_key: Option<String>,
     pub pixeldrain_key: Option<String>,
@@ -116,6 +118,7 @@ impl Default for Config {
             routes: BTreeMap::new(),
             folders: BTreeMap::new(),
             preferred_hosts: vec!["pixeldrain.com".into()],
+            disabled_hosts: Vec::new(),
             onefichier_key: None,
             pixeldrain_key: None,
             rapidgator_user: None,
@@ -222,6 +225,13 @@ impl Config {
         self.preferred_hosts
             .iter()
             .position(|h| h.eq_ignore_ascii_case(host))
+    }
+
+    /// Whether the user turned `host` off: its links are never tried.
+    pub fn is_disabled(&self, host: &str) -> bool {
+        self.disabled_hosts
+            .iter()
+            .any(|h| h.eq_ignore_ascii_case(host))
     }
 
     /// The subfolder for files from `host`, relative to the download folder;
@@ -492,6 +502,10 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # slot on a preferred host rather than starting on another one, unless the
 # preferred host is cooling down or has failed for that file.
 # preferred_hosts = ["rapidgator.net", "pixeldrain.com"]
+
+# Hosts never downloaded from: their links are left alone, and a file whose
+# links are all on these hosts fails until one of them is turned back on.
+# disabled_hosts = ["gofile.io"]
 
 # Sent to hosts with every request.
 # user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0"

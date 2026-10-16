@@ -252,6 +252,8 @@ pub struct HostView {
     pub folder: String,
     /// Where it stands among the preferred hosts, 0 being the first.
     pub preferred: Option<usize>,
+    /// Turned off by the user: its links are never tried.
+    pub disabled: bool,
     /// The most downloads it takes at once, learned when it refused one more
     /// than it was serving; `None` until it does.
     pub cap: Option<usize>,
@@ -878,8 +880,15 @@ impl Engine {
         let (url, http, key_service) = {
             let st = self.lock();
             let Some(it) = st.items.get(&id) else { return };
-            let url = it.mirrors[0].clone();
-            let http = self.http_for(&hosts::host_of(&url), &st);
+            // A host the user turned off is not asked either; with only such
+            // hosts, nothing is.
+            let cfg = self.cfg();
+            let url = it
+                .mirrors
+                .iter()
+                .find(|m| !cfg.is_disabled(&hosts::host_of(m)))
+                .cloned();
+            let http = self.http_for(&hosts::host_of(url.as_deref().unwrap_or_default()), &st);
             (url, http, self.key_service(&st))
         };
         let cfg = self.cfg();
@@ -889,10 +898,13 @@ impl Engine {
             tokens: &self.0.tokens,
             key_service: &key_service,
         };
-        let found = tokio::time::timeout(Duration::from_secs(25), hosts::probe(&cx, &url))
-            .await
-            .ok()
-            .flatten();
+        let found = match &url {
+            Some(url) => tokio::time::timeout(Duration::from_secs(25), hosts::probe(&cx, url))
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        };
         // The slot is for asking hosts; comparing with a file on disk waits
         // for its own turn below, so other links keep being looked up.
         drop(permit);
@@ -1240,19 +1252,35 @@ impl Engine {
     }
 
     /// The best mirror whose host has a free slot, ranked by measured speed.
-    /// Parks the item when no mirror is left.
+    /// Hosts the user turned off are never picked. Parks the item when no
+    /// mirror is left.
     fn pick(&self, st: &mut State, id: &str, now: Instant) -> Option<String> {
+        let cfg = self.cfg();
+        let off = |m: &String| cfg.is_disabled(&hosts::host_of(m));
         let it = &st.items[id];
         let candidates: Vec<String> = it
             .mirrors
             .iter()
-            .filter(|m| !it.failed.contains(*m) && !it.manual_urls.contains(*m))
+            .filter(|m| !it.failed.contains(*m) && !it.manual_urls.contains(*m) && !off(m))
             .cloned()
             .collect();
         if candidates.is_empty() {
+            let asks = it.manual_urls.iter().any(|m| !off(m));
+            let only_off: Vec<String> = it
+                .mirrors
+                .iter()
+                .filter(|m| !it.failed.contains(*m) && off(m))
+                .map(|m| hosts::host_of(m))
+                .collect();
             let it = st.items.get_mut(id).expect("caller checked");
-            if !it.manual_urls.is_empty() && it.status != Status::Error {
+            if asks && it.status != Status::Error {
                 it.status = Status::Captcha;
+            } else if !only_off.is_empty() {
+                // Nothing to retry until the user turns a host back on.
+                let mut names = only_off;
+                names.dedup();
+                it.status = Status::Error;
+                it.error = format!("only on hosts you turned off: {}", names.join(", "));
             } else {
                 it.status = Status::Error;
                 if it.error.is_empty() {
@@ -1262,7 +1290,6 @@ impl Engine {
             }
             return None;
         }
-        let cfg = self.cfg();
         // Preferred hosts first, in the user's order. One that is only busy
         // is waited for; one cooling down is passed over like any other.
         let mut preferred: Vec<(usize, String)> = Vec::new();
@@ -2366,6 +2393,28 @@ impl Engine {
         }
     }
 
+    /// Starts again the downloads that failed for having only hosts the user
+    /// turned off, now that `host` is back on and holds one of their links.
+    pub(crate) fn retry_turned_on(&self, host: &str) {
+        let ids: Vec<String> = self
+            .lock()
+            .items
+            .values()
+            .filter(|i| {
+                i.status == Status::Error
+                    && !i.wrapper
+                    && i.error.starts_with("only on hosts you turned off")
+                    && i.mirrors
+                        .iter()
+                        .any(|m| hosts::host_of(m).eq_ignore_ascii_case(host))
+            })
+            .map(|i| i.id.clone())
+            .collect();
+        for id in ids {
+            self.item_action(&id, ItemAction::Retry);
+        }
+    }
+
     /// Clears finished downloads off the list; unwrapped wrappers stay in
     /// their section.
     pub fn clear_done(&self) {
@@ -2554,14 +2603,29 @@ impl Engine {
                     .map_or(0, |c| c.saturating_duration_since(now).as_secs()),
                 folder: cfg.folder_for(name).display().to_string(),
                 preferred: cfg.preference(name),
+                disabled: cfg.is_disabled(name),
                 cap: h.cap,
             })
             .collect();
-        // A preferred host shows before Haul has reached it, so the
-        // preference, the default one included, can be seen and changed.
-        for name in &cfg.preferred_hosts {
-            let name = name.to_ascii_lowercase();
-            if name.is_empty() || hosts.iter().any(|h| h.name == name) {
+        // A host shows before Haul has reached it when it is preferred or
+        // turned off, so the choice can be seen and changed, and when a
+        // download has a link on it, so it can be turned off before it is
+        // tried. A wrapper's site is a source of links, not a host.
+        let mut names: Vec<String> = cfg
+            .preferred_hosts
+            .iter()
+            .chain(&cfg.disabled_hosts)
+            .map(|h| h.to_ascii_lowercase())
+            .collect();
+        for it in st.items.values().filter(|i| !i.wrapper) {
+            names.extend(it.mirrors.iter().map(|m| hosts::host_of(m)));
+        }
+        hosts.retain(|h| !hosts::wraps(&format!("https://{}/", h.name)));
+        for name in names {
+            if name.is_empty()
+                || hosts::wraps(&format!("https://{name}/"))
+                || hosts.iter().any(|h| h.name == name)
+            {
                 continue;
             }
             hosts.push(HostView {
@@ -2576,16 +2640,20 @@ impl Engine {
                 cooldown: 0,
                 folder: cfg.folder_for(&name).display().to_string(),
                 preferred: cfg.preference(&name),
+                disabled: cfg.is_disabled(&name),
                 cap: None,
                 name,
             });
         }
-        // In the order downloads pick them: preferred, then fastest.
+        // In the order downloads pick them: preferred, then fastest, and the
+        // ones turned off last.
         hosts.sort_by(|a, b| {
             let rank = |h: &HostView| h.preferred.unwrap_or(usize::MAX);
-            rank(a)
-                .cmp(&rank(b))
+            a.disabled
+                .cmp(&b.disabled)
+                .then_with(|| rank(a).cmp(&rank(b)))
                 .then_with(|| b.speed.total_cmp(&a.speed))
+                .then_with(|| a.name.cmp(&b.name))
         });
         Snapshot {
             speed: items.iter().map(|i| i.speed).sum(),

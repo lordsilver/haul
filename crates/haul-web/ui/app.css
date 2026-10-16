@@ -1118,6 +1118,31 @@ input[type="number"] {
   color: var(--caution);
 }
 
+/* Where a group of hosts starts: preferred, the rest, off. */
+.host-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin: 16px 4px 2px;
+  font-size: 14px;
+}
+
+.host-group:first-child {
+  margin-top: 0;
+}
+
+.host-group .sub {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+/* A host turned off: still there to turn on, but out of the way. */
+.card.host.off > .card-icon,
+.card.host.off > .text {
+  opacity: 0.55;
+}
+
 .stepper {
   display: inline-flex;
   align-items: center;

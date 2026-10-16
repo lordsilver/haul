@@ -101,3 +101,7 @@ Ads also lay a layer over the page, an ad's frame or an invisible sheet above ev
 ## Pages come compressed, files as stored
 
 Resolvers read whole pages, and some are large: a filecrypt.cc container is 660 KB of HTML, 169 KB gzipped. Haul asks for gzip, which costs one small crate beside the deflate code already in the build, and decompresses as it reads. A file is asked for uncompressed (`Accept-Encoding: identity`) on every request that downloads it or reads its size, because resuming counts the stored bytes and a compressed answer would report another length.
+
+## Hosts can be switched off
+
+A release behind a wrapper sits on a dozen hosts, and some of them only ever ask for an account, a person or a paid tier. The user chooses which hosts Haul may use at all, next to the order of the preferred ones: a host switched off (`disabled_hosts`) is never picked, probed or asked for a person, so its links stay in a file's row without costing anything. A file whose links are all on hosts that are off fails with that reason rather than waiting for nothing, and switching one of those hosts back on starts it again. Switching a host off takes it out of the preferred hosts, and starring one switches it back on. This is the deny list the first wrapper review left out; the owner asked for it.

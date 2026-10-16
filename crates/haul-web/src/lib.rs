@@ -139,6 +139,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/host/{name}/limit/{n}", post(host_limit))
         .route("/api/host/{name}/folder", post(host_folder))
         .route("/api/host/{name}/preferred", post(host_preferred))
+        .route("/api/host/{name}/disabled", post(host_disabled))
         .route("/api/preferred-hosts", post(preferred_hosts))
         .route("/api/host/{name}/route/{mode}", post(host_route))
         .route("/api/global/{action}", post(global))
@@ -466,6 +467,23 @@ async fn host_preferred(
     match app.engine.set_preferred(&name, body.preferred) {
         Ok(()) => ok(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct Disabled {
+    disabled: bool,
+}
+
+/// Turns a host off, so its links are never tried, or back on.
+async fn host_disabled(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    Json(body): Json<Disabled>,
+) -> Response {
+    match app.engine.set_disabled(&name, body.disabled) {
+        Ok(()) => ok(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
     }
 }
 

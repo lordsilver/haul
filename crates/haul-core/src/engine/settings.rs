@@ -352,6 +352,13 @@ impl Engine {
         }
         if preferred {
             cfg.preferred_hosts.push(host.to_string());
+            // A host the user prefers is one they want used.
+            if cfg.is_disabled(host) {
+                cfg.disabled_hosts.retain(|h| !h.eq_ignore_ascii_case(host));
+                self.write_hosts(cfg)?;
+                self.retry_turned_on(host);
+                return Ok(());
+            }
         } else {
             cfg.preferred_hosts
                 .retain(|h| !h.eq_ignore_ascii_case(host));
@@ -380,6 +387,46 @@ impl Engine {
         }
         cfg.preferred_hosts = list;
         self.write_preferred(cfg)
+    }
+
+    /// Turns `host` off (its links are never tried, and it leaves the
+    /// preferred hosts) or back on, which starts again the downloads that
+    /// failed for having only turned-off hosts.
+    pub fn set_disabled(&self, host: &str, disabled: bool) -> Result<(), String> {
+        let host = host.trim();
+        if host.is_empty() {
+            return Err("a host needs a name".into());
+        }
+        let mut cfg = (*self.cfg()).clone();
+        if disabled == cfg.is_disabled(host) {
+            return Ok(());
+        }
+        if disabled {
+            cfg.disabled_hosts.push(host.to_ascii_lowercase());
+            cfg.preferred_hosts
+                .retain(|h| !h.eq_ignore_ascii_case(host));
+        } else {
+            cfg.disabled_hosts.retain(|h| !h.eq_ignore_ascii_case(host));
+        }
+        self.write_hosts(cfg)?;
+        if !disabled {
+            self.retry_turned_on(host);
+        }
+        Ok(())
+    }
+
+    /// Puts `cfg` in effect with both host lists written whole.
+    fn write_hosts(&self, cfg: Config) -> Result<(), String> {
+        let list = |hosts: &[String]| {
+            Some(toml_edit::Value::Array(
+                hosts.iter().map(String::as_str).collect(),
+            ))
+        };
+        let writes = vec![
+            top("preferred_hosts", list(&cfg.preferred_hosts)),
+            top("disabled_hosts", list(&cfg.disabled_hosts)),
+        ];
+        self.write_and_apply(cfg, writes)
     }
 
     /// Puts `cfg` in effect with its preferred hosts written whole. Written

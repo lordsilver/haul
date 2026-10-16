@@ -80,7 +80,15 @@ function duration(seconds) {
 const isWebLink = (url) => /^https?:\/\//i.test(url);
 
 // The host a row names: the one in use, else the first mirror's.
-const shownHost = (it) => it.host || it.mirrors[0] || "";
+// The host a row downloads from, or before it starts the one it would try
+// first: the best preferred host it has, else its first host that is on.
+const shownHost = (it) => {
+  if (it.host) return it.host;
+  const hosts = new Map((state?.hosts ?? []).map((h) => [h.name, h]));
+  const on = it.mirrors.filter((m) => !hosts.get(m)?.disabled);
+  const rank = (m) => hosts.get(m)?.preferred ?? Infinity;
+  return [...on].sort((a, b) => rank(a) - rank(b))[0] || it.mirrors[0] || "";
+};
 
 // Errors arrive as "host: message"; the host is on screen already.
 function withoutHost(message, host) {
@@ -449,7 +457,11 @@ function renderHead(s) {
   const picked = s.items.filter((i) => selected.has(i.id));
   // What the selection's Remove asks depends on partial files and the bin setting too.
   const pickedKey = picked.map((i) => `${i.id}:${i.status}:${i.done > 0}`).join(",");
-  const key = `${s.paused}|${failed.length}|${done}|${view}|${s.recycle_on_remove}|${pickedKey}`;
+  // Downloads in this view that wait for the user: never started, or paused.
+  const inView = LISTS[view]?.test ?? (() => false);
+  const waiting = s.items.filter((i) => i.status === "paused" && inView(i));
+  const fresh = waiting.length > 0 && waiting.every(notStarted);
+  const key = `${s.paused}|${failed.length}|${done}|${view}|${s.recycle_on_remove}|${pickedKey}|${waiting.length}|${fresh}`;
   if (key === commandsKey) return;
   commandsKey = key;
   if (!commandButtons) makeCommands();
@@ -471,9 +483,17 @@ function renderHead(s) {
           disabled: !done,
           onclick: () => api("/api/global/clear_done").catch(report),
         });
-  commandButtons.replaceChildren(
+  commandButtons.replaceChildren(...[
     button("Add links", { icon: "add", kind: "accent", onclick: () => openAdd() }),
-    button(s.paused ? "Resume all" : "Pause all", {
+    // Starts what waits for the user; the pause switch below does not.
+    waiting.length
+      ? button(`${fresh ? "Start" : "Resume"} ${waiting.length}`, {
+          icon: "play",
+          kind: "subtle",
+          onclick: () => bulk(waiting, "resume"),
+        })
+      : null,
+    button(s.paused ? "Unpause" : "Pause all", {
       icon: s.paused ? "play" : "pause",
       kind: "subtle",
       onclick: () => api(`/api/global/${s.paused ? "resume" : "pause"}`).catch(report),
@@ -485,7 +505,7 @@ function renderHead(s) {
       onclick: () => api("/api/global/retry_failed").catch(report),
     }),
     clear,
-  );
+  ].filter(Boolean));
 }
 
 function plural(n, word) {
@@ -631,7 +651,7 @@ function renderBanner(s) {
   if (held) {
     bars.push(
       infobar("info", "pause-circle", "Downloads are paused.", "Nothing new starts until you resume.", [
-        button("Resume all", { icon: "play", onclick: () => api("/api/global/resume").catch(report) }),
+        button("Unpause", { icon: "play", onclick: () => api("/api/global/resume").catch(report) }),
       ]),
     );
   }
@@ -836,11 +856,16 @@ function updateRow(r, it, s, member = false) {
     r.check.setAttribute("aria-label", `Select ${it.name}`);
   }
 
-  const sub = [shownHost(it)];
-  if (it.mirrors.length > 1) sub.push(`${it.mirrors.length} mirrors`);
+  // The host it comes from, starred when it is a preferred one, and how many
+  // other hosts that are on could take over.
+  const host = shownHost(it);
+  const known = new Map((state?.hosts ?? []).map((h) => [h.name, h]));
+  const sub = [`${known.get(host)?.preferred != null ? "★ " : ""}${host}`];
+  const others = it.mirrors.filter((m) => m !== host && !known.get(m)?.disabled).length;
+  if (others) sub.push(`${others} other ${others === 1 ? "host" : "hosts"}`);
   if (it.package) sub.push(it.package);
   if (wrapperNames.has(it.source)) sub.push(`from ${wrapperNames.get(it.source)}`);
-  const error = ["error", "waiting"].includes(it.status) ? withoutHost(it.error, sub[0]) : "";
+  const error = ["error", "waiting"].includes(it.status) ? withoutHost(it.error, host) : "";
   const subKey = `${sub.join(" · ")}|${error}`;
   if (r.sub.dataset.key !== subKey) {
     r.sub.dataset.key = subKey;
@@ -1338,6 +1363,11 @@ function setPreferred(name, preferred) {
   api(`/api/host/${encodeURIComponent(name)}/preferred`, { preferred }).catch(report);
 }
 
+// Off: its links are never tried; on again, files that waited for it start.
+function setDisabled(name, disabled) {
+  api(`/api/host/${encodeURIComponent(name)}/disabled`, { disabled }).catch(report);
+}
+
 // The preferred hosts in the order downloads try them.
 function preferredOrder(s) {
   return s.hosts
@@ -1498,7 +1528,18 @@ function editFolder(c, name) {
 const MAX_SLOTS = 32;
 
 function makeHostCard(name) {
-  const c = { name, key: null, preferred: false, movable: false };
+  const c = { name, key: null, preferred: false, movable: false, disabled: false, showSlots: false };
+  c.power = el("button", { type: "button", role: "switch", class: "toggle", onclick: () => setDisabled(name, !c.disabled) }, el("span", { class: "toggle-text" }), el("span", { class: "track" }, el("span", { class: "knob" })));
+  c.limitButton = button("Limit downloads at once", {
+    icon: "top-speed",
+    kind: "subtle small",
+    iconOnly: true,
+    onclick: () => {
+      c.showSlots = true;
+      c.key = null;
+      if (state) renderHosts(state);
+    },
+  });
   c.star = button("Prefer this host", { icon: "star", kind: "subtle small", iconOnly: true, onclick: () => setPreferred(name, !c.preferred) });
   c.up = button("Move up in the preferred order", { icon: "arrow-up", kind: "subtle small move", iconOnly: true, onclick: () => movePreferred(name, -1) });
   c.down = button("Move down in the preferred order", { icon: "arrow-down", kind: "subtle small move", iconOnly: true, onclick: () => movePreferred(name, 1) });
@@ -1522,10 +1563,12 @@ function makeHostCard(name) {
     el(
       "span",
       { class: "host-actions" },
-      el("span", { class: "stepper", title: "Files downloaded from this host at the same time" }, c.fewer, c.slots, c.more),
+      (c.stepper = el("span", { class: "stepper", title: "Files downloaded from this host at the same time" }, c.fewer, c.slots, c.more)),
+      c.limitButton,
       c.order,
       c.star,
       button("Folder for this host's files", { icon: "folder", kind: "subtle small", iconOnly: true, onclick: () => editFolder(c, name) }),
+      c.power,
     ),
   );
   // Draggable only from the grip, so text in the card stays selectable; a
@@ -1558,6 +1601,26 @@ function routeBars(h, s) {
   return [];
 }
 
+const hostHeadings = new Map();
+
+function hostHeading(kind) {
+  let heading = hostHeadings.get(kind);
+  if (!heading) {
+    const [title, sub] = {
+      preferred: ["Preferred, in order", "A file downloads from the first of these that has it."],
+      other: ["Other hosts", "Used when no preferred host has the file, the fastest first."],
+      off: ["Off", "Never used: their links are left alone."],
+    }[kind];
+    heading = el("div", { class: "host-group" }, el("strong", {}, title), el("span", { class: "sub" }, sub));
+    hostHeadings.set(kind, heading);
+  }
+  return heading;
+}
+
+function ordinal(n) {
+  return n === 1 ? "1st" : n === 2 ? "2nd" : n === 3 ? "3rd" : `${n}th`;
+}
+
 function renderHosts(s) {
   // A card being dragged stays put; the drag's end renders again.
   if (dragged) return;
@@ -1569,8 +1632,18 @@ function renderHosts(s) {
   const fastest = s.hosts.reduce((a, h) => (h.speed > (a?.speed ?? 0) ? h : a), null)?.name;
   const order = preferredOrder(s);
   const preferredCount = order.length;
+  let group = null;
   s.hosts.forEach((h, index) => {
     seen.add(h.name);
+    // A heading where the next group starts: preferred, the rest, off.
+    const now = h.disabled ? "off" : h.preferred !== null ? "preferred" : "other";
+    if (now !== group) {
+      group = now;
+      const heading = hostHeading(now);
+      const want = previous ? previous.node.nextSibling : box.firstChild;
+      if (want !== heading) box.insertBefore(heading, want);
+      previous = { node: heading };
+    }
     let c = hostCards.get(h.name);
     if (!c) {
       c = makeHostCard(h.name);
@@ -1583,11 +1656,21 @@ function renderHosts(s) {
     setText(c.slots, `${h.active} / ${slots} ${slots === 1 ? "slot" : "slots"}`);
     c.fewer.disabled = slots <= 1;
     c.more.disabled = slots >= MAX_SLOTS;
+    // The slot buttons show when a limit is set or learned, or asked for.
+    const limited = h.limit < MAX_SLOTS || h.cap !== null;
+    c.stepper.hidden = !(limited || c.showSlots) || h.disabled;
+    c.limitButton.hidden = !c.stepper.hidden || h.disabled;
     const best = h.name === fastest;
     const place = order.indexOf(h.name);
-    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}|${place}`;
+    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}|${place}|${h.disabled}`;
     if (c.key !== key) {
       c.key = key;
+      c.disabled = h.disabled;
+      c.node.classList.toggle("off", h.disabled);
+      c.power.setAttribute("aria-checked", String(!h.disabled));
+      c.power.setAttribute("aria-label", h.disabled ? `Use ${h.name}` : `Never use ${h.name}`);
+      c.power.title = h.disabled ? "Off: its links are never tried. Click to use it again." : "On: click to never use this host";
+      c.power.querySelector(".toggle-text").textContent = h.disabled ? "Off" : "On";
       c.node.classList.toggle("best", best);
       // Two preferred hosts or more can trade places.
       c.movable = place >= 0 && preferredCount > 1;
@@ -1605,8 +1688,9 @@ function renderHosts(s) {
       c.star.title = starTitle;
       c.star.setAttribute("aria-label", starTitle);
       c.star.setAttribute("aria-pressed", String(c.preferred));
-      if (c.preferred) pills.push(el("span", { class: "pill preferred" }, icon("star-filled"), preferredCount > 1 ? `Preferred · ${h.preferred + 1}` : "Preferred"));
-      if (best) pills.push(el("span", { class: "pill success" }, "Fastest"));
+      if (c.preferred) pills.push(el("span", { class: "pill preferred" }, icon("star-filled"), `${ordinal(h.preferred + 1)} choice`));
+      if (h.disabled) pills.push(el("span", { class: "pill caution" }, "Never used"));
+      if (best && !h.disabled) pills.push(el("span", { class: "pill success" }, "Fastest"));
       if (h.folder) pills.push(el("span", { class: "pill", title: "Its files go to this subfolder" }, icon("folder"), h.folder));
       if (h.cap && h.cap < h.limit) {
         const title = "It refused one more download while these ran, so Haul runs no more than this. The slot buttons set your own limit.";
@@ -1621,6 +1705,9 @@ function renderHosts(s) {
     if (want !== c.node) box.insertBefore(c.node, want);
     previous = c;
   });
+  for (const [kind, heading] of hostHeadings) {
+    if (!s.hosts.some((h) => (h.disabled ? "off" : h.preferred !== null ? "preferred" : "other") === kind)) heading.remove();
+  }
   for (const [name, c] of hostCards) {
     if (!seen.has(name)) {
       c.node.remove();

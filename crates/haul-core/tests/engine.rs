@@ -2084,3 +2084,58 @@ async fn a_pause_holds_comparisons_and_survives_a_restart() {
     let engine = start_when_free(options).await;
     assert!(!engine.snapshot().paused);
 }
+
+/// A host the user turned off is never tried: its file downloads from
+/// another mirror, a file only on such hosts fails saying so, and turning a
+/// host back on starts that file again.
+#[tokio::test]
+async fn hosts_turned_off_are_never_tried() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_disabled("127.0.0.1", true).unwrap();
+    // Turning a host off takes it out of the preferred hosts.
+    engine.set_preferred("localhost", true).unwrap();
+    engine.set_disabled("localhost", true).unwrap();
+    let s = engine.snapshot();
+    let off: Vec<&str> = s
+        .hosts
+        .iter()
+        .filter(|h| h.disabled)
+        .map(|h| h.name.as_str())
+        .collect();
+    assert_eq!(off, ["127.0.0.1", "localhost"]);
+    assert!(s.hosts.iter().all(|h| h.preferred.is_none() || !h.disabled));
+    engine.set_disabled("localhost", false).unwrap();
+
+    engine.add_text(
+        &format!("{0}/files/off.bin {1}/files/off.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "the file", all_done).await;
+    assert_eq!(s.items.len(), 1, "one file, two mirrors");
+    assert_eq!(s.items[0].host, "localhost", "never the host turned off");
+
+    engine.set_disabled("localhost", true).unwrap();
+    engine.add_text(
+        &format!("{0}/files/later.bin {1}/files/later.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "the file to fail", |s| {
+        s.items.iter().any(|i| i.status == "error")
+    })
+    .await;
+    let failed = s.items.iter().find(|i| i.status == "error").unwrap();
+    assert!(
+        failed.error.contains("only on hosts you turned off"),
+        "{}",
+        failed.error
+    );
+    assert!(
+        t.server.requests("/files/later.bin").is_empty(),
+        "no host was asked"
+    );
+
+    engine.set_disabled("127.0.0.1", false).unwrap();
+    let s = wait_for(&engine, "the file again", all_done).await;
+    assert!(s.items.iter().any(|i| i.host == "127.0.0.1"));
+}
