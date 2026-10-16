@@ -41,6 +41,7 @@ fn config(base: &str) -> Config {
             dlc_service: format!("{base}/dlc"),
             fileguard: base.into(),
             filecrypt: base.into(),
+            vikingfile: base.into(),
             router: format!("{base}/igddesc.xml"),
             nordvpn: base.into(),
         },
@@ -1083,4 +1084,46 @@ async fn files_are_asked_for_uncompressed() {
             .await
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn vikingfile_checks_the_file_then_wants_a_person() {
+    let app = Router::new().route(
+        "/api/check-file",
+        post(|Form(form): Form<HashMap<String, String>>| async move {
+            let hash = form["hash"].clone();
+            Json(match hash.as_str() {
+                "acXWYKlHX0" => json!([{
+                    "exist": true, "hash": hash, "name": "big.rar", "size": 5_320_312_809_u64
+                }]),
+                _ => json!([{ "exist": false, "hash": hash }]),
+            })
+        }),
+    );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
+
+    let probed = probe(&cx, "https://vikingfile.com/f/acXWYKlHX0")
+        .await
+        .unwrap();
+    assert_eq!(
+        (probed.name.as_str(), probed.size),
+        ("big.rar", Some(5_320_312_809))
+    );
+    assert!(matches!(
+        resolve(&cx, "https://vik1ngfile.site/f/acXWYKlHX0").await,
+        Err(ResolveError::NeedsUser(_))
+    ));
+    assert!(probe(&cx, "https://vikingfile.com/f/gone").await.is_none());
+    assert!(matches!(
+        resolve(&cx, "https://vikingfile.com/f/gone").await,
+        Err(ResolveError::Failed(m)) if m.contains("gone")
+    ));
 }

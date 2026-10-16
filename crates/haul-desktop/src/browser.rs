@@ -1,7 +1,9 @@
 //! The in-app browser for hosts that need a person: the user solves the
 //! host's page in a window of its own, and when the page starts the download,
 //! the app stops it and hands the link (with the page's cookies) to the
-//! engine, which downloads it with resume and the usual limits.
+//! engine, which downloads it with resume and the usual limits. On a page
+//! whose link Haul knows where to find (vikingfile's), the window takes it as
+//! soon as the page has it, without the download button.
 //!
 //! With a proxy configured, the window goes through it too, by way of the
 //! local bridge, because browser engines cannot pass proxy credentials.
@@ -97,17 +99,23 @@ impl Desktop for Browser {
             stay: stay.clone(),
         };
         let on_download = capture.clone();
+        let on_handoff = capture.clone();
         let on_navigation = stay.clone();
         let mut builder = WebviewWindowBuilder::new(&self.app, &label, WebviewUrl::External(page))
-            .title(format!(
-                "{host}: solve the page, then click its download button"
-            ))
+            .title(format!("{host}: solve the page to start the download"))
             .inner_size(1100.0, 800.0)
             .data_directory(profile)
             .initialization_script(OVERLAYS)
+            .initialization_script(HANDOFF)
             .on_download(move |_, event| on_download.on_download(event))
             .on_new_window(move |url, _| capture.on_popup(url))
-            .on_navigation(move |url| lock(&on_navigation).navigating(url.as_str()))
+            .on_navigation(move |url| match handed_off(url) {
+                Some((link, name)) => {
+                    on_handoff.take(link, name);
+                    false
+                }
+                None => lock(&on_navigation).navigating(url.as_str()),
+            })
             .on_page_load(move |window, load| {
                 // A page, not a download, is taking the window's place.
                 if load.event() == PageLoadEvent::Started
@@ -171,6 +179,26 @@ impl Desktop for Browser {
 
 /// Takes the layers ads lay over a page off it (see the script).
 const OVERLAYS: &str = include_str!("overlays.js");
+
+/// Hands Haul the link a host's page receives (see the script).
+const HANDOFF: &str = include_str!("handoff.js");
+
+/// The link and file name the hand-off script sends, when `url` is its.
+fn handed_off(url: &Url) -> Option<(Url, Option<String>)> {
+    if url.host_str() != Some("haul.invalid") || url.path() != "/take" {
+        return None;
+    }
+    let pair = |key: &str| {
+        url.query_pairs()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.into_owned())
+    };
+    let link: Url = pair("url")?.parse().ok()?;
+    if !matches!(link.scheme(), "http" | "https") {
+        return None;
+    }
+    Some((link, pair("name").filter(|n| !n.is_empty())))
+}
 
 fn lock(stay: &Mutex<Stay>) -> MutexGuard<'_, Stay> {
     stay.lock().unwrap_or_else(|e| e.into_inner())
@@ -283,5 +311,28 @@ impl Capture {
                 Err(e) => notify(&this.app, "Could not use that download", &e),
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_hands_off_its_link() {
+        let sent: Url =
+            "https://haul.invalid/take?url=https%3A%2F%2Fcdn.example%2Fa%20b.rar&name=a+b.rar"
+                .parse()
+                .unwrap();
+        let (link, name) = handed_off(&sent).unwrap();
+        assert_eq!(link.as_str(), "https://cdn.example/a%20b.rar");
+        assert_eq!(name.as_deref(), Some("a b.rar"));
+        for other in [
+            "https://vik1ngfile.site/f/x",
+            "https://haul.invalid/take?url=javascript%3Aalert(1)",
+            "https://haul.invalid/take",
+        ] {
+            assert_eq!(handed_off(&other.parse().unwrap()), None, "{other}");
+        }
     }
 }

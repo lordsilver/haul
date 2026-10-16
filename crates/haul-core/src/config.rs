@@ -644,6 +644,7 @@ pub struct Endpoints {
     pub dlc_service: String,
     pub fileguard: String,
     pub filecrypt: String,
+    pub vikingfile: String,
     /// The router's description; empty to look for it on the network.
     pub router: String,
     pub nordvpn: String,
@@ -661,6 +662,7 @@ impl Default for Endpoints {
             dlc_service: "http://service.jdownloader.org/dlcrypt/service.php".into(),
             fileguard: "https://fileguard.cc".into(),
             filecrypt: "https://filecrypt.cc".into(),
+            vikingfile: "https://vikingfile.com".into(),
             router: String::new(),
             nordvpn: "https://api.nordvpn.com".into(),
         }
