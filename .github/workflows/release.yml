@@ -36,7 +36,13 @@ jobs:
         shell: bash
         run: |
           mkdir dist
-          cp target/release/bundle/nsis/*.exe target/release/bundle/msi/*.msi dist/
+          cp target/release/bundle/nsis/*.exe dist/
+          # Tauri names an MSI after its language (one MSI per language);
+          # Haul builds English only, so the name drops it.
+          for msi in target/release/bundle/msi/*.msi; do
+            name=$(basename "$msi")
+            cp "$msi" "dist/${name/_en-US/}"
+          done
           ls -l dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
