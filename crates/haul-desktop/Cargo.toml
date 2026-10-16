@@ -11,8 +11,8 @@ tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
 arboard = { version = "3.6.1", default-features = false }
-haul-core = { version = "0.6.0", path = "../haul-core" }
-haul-web = { version = "0.6.0", path = "../haul-web" }
+haul-core = { version = "0.7.0", path = "../haul-core" }
+haul-web = { version = "0.7.0", path = "../haul-web" }
 open = "5.4.4"
 tauri = { version = "2.12.3", features = ["tray-icon"] }
 tauri-plugin-dialog = "2.8.2"
