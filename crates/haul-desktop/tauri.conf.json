@@ -29,7 +29,14 @@
     "windows": {
       "nsis": {
         "installMode": "both",
-        "installerHooks": "windows/hooks.nsh"
+        "installerHooks": "windows/hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "windows/art/header.bmp",
+        "sidebarImage": "windows/art/sidebar.bmp"
+      },
+      "wix": {
+        "bannerPath": "windows/art/banner.bmp",
+        "dialogImagePath": "windows/art/dialog.bmp"
       }
     }
   }

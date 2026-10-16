@@ -1,0 +1,156 @@
+<!doctype html>
+<!--
+  The installers' artwork, one piece per address fragment, each the size
+  its installer gives it (render.py shoots them at twice that):
+    #sidebar  NSIS welcome and finish pages, 164x314
+    #header   NSIS page header, 150x57 (on white, at the right)
+    #dialog   MSI welcome and finish dialogs, 493x312 (text on the right)
+    #banner   MSI page banner, 493x58 (title text on the left)
+  The logo is crates/haul-web/ui/icon.svg; the light variant is its
+  gradients lifted for a dark ground.
+-->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * {
+        margin: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        overflow: hidden;
+        background: #fff;
+        font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif;
+      }
+      .piece {
+        display: none;
+        position: relative;
+        overflow: hidden;
+      }
+      /* The deep ground the sidebar and the dialog's left side share. */
+      .ground {
+        position: absolute;
+        background:
+          radial-gradient(120% 60% at 50% 30%, rgba(76, 194, 255, 0.35), transparent 60%),
+          radial-gradient(90% 50% at 100% 100%, rgba(27, 127, 224, 0.45), transparent 70%),
+          linear-gradient(170deg, #0b4fa8 0%, #073a80 45%, #041d45 100%);
+      }
+      /* Falling streaks: the downloads the logo stands for. */
+      .streak {
+        position: absolute;
+        width: 2px;
+        border-radius: 2px;
+        background: linear-gradient(to bottom, transparent, rgba(160, 225, 255, 0.55));
+      }
+      .mark {
+        position: absolute;
+        filter: drop-shadow(0 4px 14px rgba(76, 194, 255, 0.55));
+      }
+      .word {
+        position: absolute;
+        color: #fff;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+      }
+      .tag {
+        position: absolute;
+        color: rgba(220, 240, 255, 0.78);
+        font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+        font-size: 11px;
+        line-height: 1.35;
+        text-align: center;
+      }
+
+      #sidebar,
+      #sidebar .ground {
+        width: 164px;
+        height: 314px;
+      }
+      #dialog {
+        width: 493px;
+        height: 312px;
+      }
+      #dialog .ground {
+        width: 164px;
+        height: 312px;
+      }
+      #header {
+        width: 150px;
+        height: 57px;
+      }
+      #banner {
+        width: 493px;
+        height: 58px;
+      }
+
+      :target {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <svg width="0" height="0" style="position: absolute">
+      <defs>
+        <linearGradient id="arrow-light" gradientUnits="userSpaceOnUse" x1="0" y1="6" x2="0" y2="42">
+          <stop offset="0" stop-color="#e6f7ff" />
+          <stop offset="1" stop-color="#6fd0ff" />
+        </linearGradient>
+        <linearGradient id="tray-light" gradientUnits="userSpaceOnUse" x1="0" y1="34" x2="0" y2="56">
+          <stop offset="0" stop-color="#9fdcff" />
+          <stop offset="1" stop-color="#4cb0f5" />
+        </linearGradient>
+        <linearGradient id="arrow" gradientUnits="userSpaceOnUse" x1="0" y1="6" x2="0" y2="42">
+          <stop offset="0" stop-color="#4cc2ff" />
+          <stop offset="1" stop-color="#0a6fd8" />
+        </linearGradient>
+        <linearGradient id="tray" gradientUnits="userSpaceOnUse" x1="0" y1="34" x2="0" y2="56">
+          <stop offset="0" stop-color="#1b7fe0" />
+          <stop offset="1" stop-color="#0b4fa8" />
+        </linearGradient>
+        <symbol id="logo-light" viewBox="0 0 64 64">
+          <path d="M12 38v8a6 6 0 0 0 6 6h28a6 6 0 0 0 6-6v-8" fill="none" stroke="url(#tray-light)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M32 9v27M20 25l12 12 12-12" fill="none" stroke="url(#arrow-light)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+        </symbol>
+        <symbol id="logo" viewBox="0 0 64 64">
+          <path d="M12 38v8a6 6 0 0 0 6 6h28a6 6 0 0 0 6-6v-8" fill="none" stroke="url(#tray)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M32 9v27M20 25l12 12 12-12" fill="none" stroke="url(#arrow)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <div class="piece" id="sidebar">
+      <div class="ground"></div>
+      <div class="streak" style="left: 22px; top: 18px; height: 54px; opacity: 0.6"></div>
+      <div class="streak" style="left: 138px; top: 40px; height: 72px; opacity: 0.45"></div>
+      <div class="streak" style="left: 40px; top: 196px; height: 40px; opacity: 0.35"></div>
+      <div class="streak" style="left: 124px; top: 228px; height: 58px; opacity: 0.5"></div>
+      <div class="streak" style="left: 150px; top: 150px; height: 30px; opacity: 0.3"></div>
+      <svg class="mark" style="left: 42px; top: 58px" width="80" height="80"><use href="#logo-light" /></svg>
+      <div class="word" style="left: 0; width: 164px; top: 146px; text-align: center; font-size: 34px">Haul</div>
+      <div class="tag" style="left: 12px; width: 140px; top: 194px">Every host, one queue.<br />Resumes, never repeats.</div>
+    </div>
+
+    <div class="piece" id="dialog">
+      <div class="ground"></div>
+      <div class="streak" style="left: 22px; top: 16px; height: 54px; opacity: 0.6"></div>
+      <div class="streak" style="left: 138px; top: 38px; height: 72px; opacity: 0.45"></div>
+      <div class="streak" style="left: 40px; top: 196px; height: 40px; opacity: 0.35"></div>
+      <div class="streak" style="left: 124px; top: 226px; height: 58px; opacity: 0.5"></div>
+      <svg class="mark" style="left: 42px; top: 58px" width="80" height="80"><use href="#logo-light" /></svg>
+      <div class="word" style="left: 0; width: 164px; top: 146px; text-align: center; font-size: 34px">Haul</div>
+      <div class="tag" style="left: 12px; width: 140px; top: 194px">Every host, one queue.<br />Resumes, never repeats.</div>
+    </div>
+
+    <div class="piece" id="header">
+      <svg style="position: absolute; right: 52px; top: 11px" width="36" height="36"><use href="#logo" /></svg>
+      <div style="position: absolute; right: 6px; top: 13px; font-size: 22px; font-weight: 600; color: #0b3f86; letter-spacing: -0.02em">Haul</div>
+    </div>
+
+    <div class="piece" id="banner">
+      <div style="position: absolute; right: 0; top: 0; width: 170px; height: 58px; background: linear-gradient(to right, rgba(255, 255, 255, 0), rgba(11, 79, 168, 0.12) 40%, rgba(11, 79, 168, 0.2))"></div>
+      <svg style="position: absolute; right: 64px; top: 10px" width="38" height="38"><use href="#logo" /></svg>
+      <div style="position: absolute; right: 14px; top: 13px; font-size: 22px; font-weight: 600; color: #0b3f86; letter-spacing: -0.02em">Haul</div>
+    </div>
+  </body>
+</html>
