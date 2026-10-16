@@ -107,10 +107,7 @@ impl Desktop for Browser {
             .initialization_script(OVERLAYS)
             .on_download(move |_, event| on_download.on_download(event))
             .on_new_window(move |url, _| capture.on_popup(url))
-            .on_navigation(move |url| {
-                lock(&on_navigation).navigating(url.as_str());
-                true
-            })
+            .on_navigation(move |url| lock(&on_navigation).navigating(url.as_str()))
             .on_page_load(move |window, load| {
                 // A page, not a download, is taking the window's place.
                 if load.event() == PageLoadEvent::Started

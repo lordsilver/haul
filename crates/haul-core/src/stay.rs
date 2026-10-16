@@ -14,9 +14,14 @@
 //! other hosts, so its window is never sent back. A site the page keeps
 //! going to by itself, three times within half a minute, is taken as part
 //! of the host's flow rather than an ad.
+//!
+//! A site a window was sent back from is an ad's: for as long as Haul runs,
+//! a page from it is not even loaded, in any window. Only a page that
+//! loaded is remembered so, never a download.
 
 use std::{
     collections::{HashMap, HashSet},
+    sync::{LazyLock, Mutex},
     time::{Duration, Instant},
 };
 
@@ -30,6 +35,13 @@ const SENDING: Duration = Duration::from_secs(2);
 /// A site sent back from this many times within [`WITHIN`] is let be.
 const TIMES: u32 = 3;
 const WITHIN: Duration = Duration::from_secs(30);
+
+/// The sites windows were sent back from, while Haul runs.
+static ADS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+fn ads() -> std::sync::MutexGuard<'static, HashSet<String>> {
+    ADS.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Where to send a window that left the host's site.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,12 +91,18 @@ impl Stay {
         !is_web(url) || self.sites.contains(&site_of(url))
     }
 
-    /// The page starts to navigate to `url`. On the host's site that is the
-    /// page going on by itself, so a window it opened is not loaded in place.
-    pub fn navigating(&mut self, url: &str) {
-        if is_web(url) && self.is_home(url) {
-            self.opened = None;
+    /// The page starts to navigate to `url`: false to refuse it, a page of
+    /// a site a window was sent back from. On the host's site it is the page
+    /// going on by itself, so a window it opened is not loaded in place.
+    pub fn navigating(&mut self, url: &str) -> bool {
+        if !is_web(url) {
+            return true;
         }
+        if self.is_home(url) {
+            self.opened = None;
+            return true;
+        }
+        !(self.send_back && ads().contains(&site_of(url)))
     }
 
     /// A page started loading in the window: where to send the window back
@@ -120,6 +138,7 @@ impl Stay {
         }
         if *times >= TIMES {
             tracing::info!("{site} keeps coming back: taken as part of the host's pages");
+            ads().remove(&site);
             self.sites.insert(site);
             self.last = url.to_string();
             return None;
@@ -127,6 +146,7 @@ impl Stay {
         *times += 1;
         self.sending = Some(now);
         tracing::info!("sent the window back from {site}");
+        ads().insert(site);
         Some(match self.opened.take() {
             Some((page, _)) => SendBack {
                 page,
@@ -187,6 +207,27 @@ mod tests {
         // Back on the host, a later ad is sent back again.
         assert_eq!(stay.landed(PAGE, now), None);
         assert!(stay.landed("https://gtcinfight.cfd/y", now).is_some());
+    }
+
+    #[test]
+    fn an_ads_site_is_not_loaded_again() {
+        let now = Instant::now();
+        let mut first = Stay::new("https://one.example/f/a", true);
+        first.landed("https://one.example/f/a", now);
+        assert!(
+            first.navigating("https://casino-ad.test/x"),
+            "not known yet"
+        );
+        assert!(first.landed("https://casino-ad.test/x", now).is_some());
+        // Any window, from then on: refused before it loads.
+        let mut other = Stay::new("https://two.example/f/b", true);
+        other.landed("https://two.example/f/b", now);
+        assert!(!other.navigating("https://www.casino-ad.test/y"));
+        assert!(other.navigating("https://two.example/next"));
+        assert!(other.navigating("https://cdn.elsewhere.test/file.bin"));
+        // A wrapper's window goes where its links lead.
+        let mut wrapper = Stay::new("https://filecrypt.cc/Container/X.html", false);
+        assert!(wrapper.navigating("https://casino-ad.test/z"));
     }
 
     #[test]
