@@ -12,17 +12,21 @@ use super::{
 };
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
-    let mut r = cx.http.client.head(url).send().await?;
-    if matches!(r.status().as_u16(), 405 | 501) {
-        // No HEAD support: ask for one byte instead.
-        r = cx
-            .http
-            .client
-            .get(url)
-            .header(RANGE, "bytes=0-0")
-            .send()
-            .await?;
-    }
+    // HEAD first, for the headers it is cheaper for. A 405/501, or a host
+    // that never answers it (transfer.it stalls HEAD), gets one byte through
+    // a ranged GET instead.
+    let head = cx.http.client.head(url).send().await;
+    let r = match head {
+        Ok(r) if !matches!(r.status().as_u16(), 405 | 501) => r,
+        _ => {
+            cx.http
+                .client
+                .get(url)
+                .header(RANGE, "bytes=0-0")
+                .send()
+                .await?
+        }
+    };
     let status = r.status().as_u16();
     if matches!(status, 429 | 503) {
         let seconds = retry_after(r.headers(), 90);

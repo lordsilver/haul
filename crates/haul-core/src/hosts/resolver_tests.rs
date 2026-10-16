@@ -425,6 +425,22 @@ async fn generic_links_and_probes() {
             .head(|| async { StatusCode::METHOD_NOT_ALLOWED }),
         )
         .route(
+            "/stall/data.bin",
+            get(|headers: HeaderMap| async move {
+                assert_eq!(headers.get("range").unwrap(), "bytes=0-0");
+                (
+                    StatusCode::PARTIAL_CONTENT,
+                    [("content-range", "bytes 0-0/999")],
+                    vec![1u8],
+                )
+            })
+            .head(|| async {
+                // Never answers HEAD, like transfer.it.
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                StatusCode::OK
+            }),
+        )
+        .route(
             "/page",
             get(|| async {
                 (
@@ -476,6 +492,29 @@ async fn generic_links_and_probes() {
         .await
         .unwrap();
     assert_eq!(e[0].size, Some(999));
+    // A host that never answers HEAD still gets its chance: the stalled HEAD
+    // times out and the same ranged GET is sent instead.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(300))
+        .build()
+        .unwrap();
+    let quick = Http {
+        no_redirect: client.clone(),
+        client,
+        via_proxy: false,
+    };
+    let stall_cx = Cx {
+        http: &quick,
+        cfg: &cfg,
+        tokens: &tokens,
+    };
+    let e = generic::resolve(&stall_cx, &format!("{base}/stall/data.bin"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (e[0].name.as_deref(), e[0].size),
+        (Some("data.bin"), Some(999))
+    );
     assert!(matches!(
         generic::resolve(&cx, &format!("{base}/page")).await,
         Err(ResolveError::NeedsUser(_))
