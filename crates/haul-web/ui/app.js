@@ -1146,7 +1146,9 @@ function updateGroupRow(g, entry) {
   }
 
   const open = isOpen(entry.key);
-  g.toggle.hidden = Boolean(query);
+  // A search opens every group, so the button has nothing to do; it keeps
+  // its place, so the title does not jump while typing.
+  g.toggle.style.visibility = query ? "hidden" : "";
   if (g.toggle.getAttribute("aria-expanded") !== String(open)) {
     const label = open ? "Hide the parts" : "Show the parts";
     g.toggle.setAttribute("aria-expanded", String(open));
