@@ -1267,6 +1267,20 @@ async fn a_wrapper_unwraps_into_files_that_wait_to_be_started() {
     assert_eq!((s.items.len(), s.wrappers.len()), (0, 0));
 }
 
+/// A wrapper whose last file is removed goes with it: it stood for its
+/// files, and there is nothing left to start.
+#[tokio::test]
+async fn removing_a_wrappers_last_file_takes_the_wrapper() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://fileguard.cc/vault/abc", "");
+    wrapper_settled(&engine, "done").await;
+    let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    assert!(engine.remove(&s.items[0].id).await.unwrap());
+    let s = engine.snapshot();
+    assert_eq!((s.items.len(), s.wrappers.len()), (0, 0));
+}
+
 /// A release in parts lists part 1, part 2… on every host: one row per part,
 /// each with every host as a mirror, named after the links that name it.
 #[tokio::test]

@@ -121,6 +121,14 @@ impl FromStr for ItemAction {
     }
 }
 
+/// Takes off the list the unwrapped wrappers none of whose files is on it
+/// any more: they stood for those files, and starting or removing them
+/// would do nothing.
+fn drop_spent_wrappers(items: &mut IndexMap<String, Item>) {
+    let sources: HashSet<String> = items.values().filter_map(|i| i.source.clone()).collect();
+    items.retain(|id, i| !(i.wrapper && i.status == Status::Done && !sources.contains(id)));
+}
+
 /// Things worth telling the user about outside the queue view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
@@ -775,10 +783,12 @@ impl Engine {
             })
             .collect();
         let routes = cfg.routes.clone();
-        let items: IndexMap<String, Item> = saved
+        let mut items: IndexMap<String, Item> = saved
             .into_iter()
             .map(|(id, s)| (id.clone(), Item::restore(id, s)))
             .collect();
+        // Left by versions that kept them.
+        drop_spent_wrappers(&mut items);
         let unprobed: Vec<String> = items
             .values()
             .filter(|i| !i.probed && i.status == Status::Queued)
@@ -2510,6 +2520,7 @@ impl Engine {
                     t.cancel();
                 }
                 st.items.shift_remove(id);
+                drop_spent_wrappers(&mut st.items);
                 if !running {
                     self.discard_parts([id.to_string()]);
                 }
@@ -2711,10 +2722,7 @@ impl Engine {
         let mut st = self.lock();
         st.items
             .retain(|_, i| i.status != Status::Done || i.wrapper);
-        let sources: std::collections::HashSet<String> =
-            st.items.values().filter_map(|i| i.source.clone()).collect();
-        st.items
-            .retain(|id, i| !(i.wrapper && i.status == Status::Done && !sources.contains(id)));
+        drop_spent_wrappers(&mut st.items);
         self.touch(&mut st);
     }
 
