@@ -1564,3 +1564,22 @@ input.wide {
   font-size: 13px;
   cursor: pointer;
 }
+
+/* A VPN service's servers in use, one per line. */
+.servers {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  gap: 2px 16px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.servers li {
+  display: contents;
+}
+
+.error-text {
+  margin-bottom: 4px;
+  color: var(--critical);
+}

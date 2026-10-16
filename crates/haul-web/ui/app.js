@@ -1843,8 +1843,25 @@ function nordvpnCards(s, d) {
       ),
     ),
   );
-  const using = v.nordvpn.length
-    ? `In use: ${v.nordvpn.map((x) => `${x.city || x.country} ${x.host.split(".")[0].replace("socks-", "")} (${x.load}% busy)`).join(", ")}.`
+  // Each server in use: where it is, its name, the address downloads
+  // through it come from (once checked) and how busy it is.
+  const servers = v.nordvpn.length
+    ? el(
+        "ul",
+        { class: "servers" },
+        v.nordvpn.map((x) =>
+          el(
+            "li",
+            {},
+            el("span", {}, `${x.city || x.country} ${x.host.split(".")[0].replace("socks-", "")}`),
+            el("span", { class: "mono" }, x.address ?? "not checked yet"),
+            el("span", { class: "sub" }, `${x.load}% busy`),
+          ),
+        ),
+      )
+    : null;
+  const about = v.nordvpn.length
+    ? "Each is checked through itself before use, and again every hour; one that does not answer gives way to the next least busy."
     : "Set the service credentials and a number of servers to use them.";
   return el(
     "div",
@@ -1856,9 +1873,25 @@ function nordvpnCards(s, d) {
       accountField("nordvpn_user", "Service user", false),
       accountField("nordvpn_password", "Service password"),
     ),
-    settingCard("shield", "Servers", `${using}${v.error ? ` ${v.error}.` : ""}`, numberField("nordvpn_servers", d.nordvpn_servers, { min: 0, max: 100, label: "Servers", unit: "servers" })),
+    settingCard(
+      "shield",
+      "Servers",
+      el("div", {}, v.error ? el("div", { class: "error-text" }, v.error) : null, about, servers),
+      v.nordvpn.length || v.error ? button("Check again", { icon: "arrow-clockwise", onclick: checkNordvpn }) : null,
+      numberField("nordvpn_servers", d.nordvpn_servers, { min: 0, max: 100, label: "Servers", unit: "servers" }),
+    ),
     v.nordvpn_countries.length ? settingCard("globe", "Countries", "None ticked means every country; the least loaded servers come first.", countries) : null,
   );
+}
+
+// Fetches NordVPN's list again and checks the servers anew.
+async function checkNordvpn() {
+  try {
+    await api("/api/nordvpn/servers");
+    toast("Checked NordVPN's servers", "success");
+  } catch (error) {
+    report(error);
+  }
 }
 
 // ---- settings

@@ -506,17 +506,6 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
-            "/v1/servers",
-            // A stand-in for NordVPN's list of SOCKS5 servers.
-            get(|| async {
-                Json(json!([
-                    {"hostname": "socks-se17.nordvpn.com", "load": 9, "locations": [{"country": {"name": "Sweden", "city": {"name": "Stockholm"}}}]},
-                    {"hostname": "socks-us34.nordvpn.com", "load": 4, "locations": [{"country": {"name": "United States", "city": {"name": "Chicago"}}}]},
-                    {"hostname": "socks-nl4.nordvpn.com", "load": 34, "locations": [{"country": {"name": "Netherlands", "city": {"name": "Amsterdam"}}}]}
-                ]))
-            }),
-        )
-        .route(
             "/igddesc.xml",
             // A stand-in router: an Internet Gateway Device with a WAN service.
             get(|| async {
@@ -2300,35 +2289,131 @@ async fn the_router_gets_a_new_address() {
     assert!(s.reconnect.note.unwrap().contains("Got a new address"));
 }
 
+/// A stand-in SOCKS5 server: username and password auth with these
+/// credentials, then CONNECT to wherever it is asked.
+async fn socks5(user: &'static str, password: &'static str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut c, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let mut head = [0u8; 2];
+                c.read_exact(&mut head).await?;
+                let mut methods = vec![0u8; head[1] as usize];
+                c.read_exact(&mut methods).await?;
+                c.write_all(&[5, 2]).await?;
+                let field = |n: usize| vec![0u8; n];
+                let mut b = [0u8; 2];
+                c.read_exact(&mut b).await?;
+                let mut u = field(b[1] as usize);
+                c.read_exact(&mut u).await?;
+                let mut n = [0u8; 1];
+                c.read_exact(&mut n).await?;
+                let mut p = field(n[0] as usize);
+                c.read_exact(&mut p).await?;
+                if u != user.as_bytes() || p != password.as_bytes() {
+                    return c.write_all(&[1, 1]).await;
+                }
+                c.write_all(&[1, 0]).await?;
+                let mut req = [0u8; 4];
+                c.read_exact(&mut req).await?;
+                let host = match req[3] {
+                    1 => {
+                        let mut ip = [0u8; 4];
+                        c.read_exact(&mut ip).await?;
+                        std::net::Ipv4Addr::from(ip).to_string()
+                    }
+                    _ => {
+                        c.read_exact(&mut n).await?;
+                        let mut name = field(n[0] as usize);
+                        c.read_exact(&mut name).await?;
+                        String::from_utf8_lossy(&name).into_owned()
+                    }
+                };
+                let mut port = [0u8; 2];
+                c.read_exact(&mut port).await?;
+                let mut up =
+                    tokio::net::TcpStream::connect((host.as_str(), u16::from_be_bytes(port)))
+                        .await?;
+                c.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+                tokio::io::copy_bidirectional(&mut c, &mut up)
+                    .await
+                    .map(|_| ())
+            });
+        }
+    });
+    addr.to_string()
+}
+
 /// NordVPN's least loaded SOCKS5 servers in the countries chosen join the
-/// proxies, one exit each, once its service credentials are set.
+/// proxies, one exit each, once its service credentials are set; each is
+/// checked through itself first, and one that does not answer gives way to
+/// the next. Credentials turned away are told, and the servers stay.
 #[tokio::test]
 async fn nordvpn_servers_join_the_proxies() {
     let t = Setup::new().await;
-    let mut cfg = t.config();
-    cfg.nordvpn_user = Some("svc".into());
-    cfg.nordvpn_password = Some("pw".into());
-    cfg.nordvpn_servers = 2;
-    cfg.nordvpn_countries = vec!["Sweden".into(), "Netherlands".into()];
-    let engine = Engine::start(Options {
-        config: Some(cfg),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+    let (good1, good2) = (socks5("svc", "pw").await, socks5("svc", "pw").await);
+    // Nothing listens there.
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().to_string()
+    };
+    let list = json!([
+        {"hostname": dead, "load": 1, "locations": [{"country": {"name": "Netherlands", "city": {"name": "Amsterdam"}}}]},
+        {"hostname": good1, "load": 9, "locations": [{"country": {"name": "Sweden", "city": {"name": "Stockholm"}}}]},
+        {"hostname": "socks-us34.nordvpn.com", "load": 4, "locations": [{"country": {"name": "United States", "city": {"name": "Chicago"}}}]},
+        {"hostname": good2, "load": 34, "locations": [{"country": {"name": "Netherlands", "city": {"name": "Amsterdam"}}}]}
+    ]);
+    let api = Router::new()
+        .route("/v1/servers", get(move || async move { Json(list) }))
+        .route(
+            "/v1/helpers/ips/insights",
+            get(|| async { Json(json!({"ip": "198.51.100.7", "protected": true})) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let api_at = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, api).await.unwrap() });
+
+    let start = |password: &str, data: &str| {
+        let mut cfg = t.config();
+        cfg.endpoints.nordvpn = api_at.clone();
+        cfg.nordvpn_user = Some("svc".into());
+        cfg.nordvpn_password = Some(password.into());
+        cfg.nordvpn_servers = 2;
+        cfg.nordvpn_countries = vec!["Sweden".into(), "Netherlands".into()];
+        Engine::start(Options {
+            config: Some(cfg),
+            data_dir: t.root.join(data),
+            ..t.options()
+        })
+    };
+    let engine = start("pw", "data").await.unwrap();
     engine.set_paused(true);
     engine.add_text("https://pixeldrain.com/u/abc", "");
     let s = wait_for(&engine, "the servers", |s| s.services.nordvpn.len() == 2).await;
-    let hosts: Vec<&str> = s.services.nordvpn.iter().map(|v| v.host.as_str()).collect();
+    let picked: Vec<(&str, Option<&str>)> = s
+        .services
+        .nordvpn
+        .iter()
+        .map(|v| (v.host.as_str(), v.address.as_deref()))
+        .collect();
     assert_eq!(
-        hosts,
-        ["socks-se17.nordvpn.com", "socks-nl4.nordvpn.com"],
-        "least loaded, chosen countries"
+        picked,
+        [
+            (good1.as_str(), Some("198.51.100.7")),
+            (good2.as_str(), Some("198.51.100.7"))
+        ],
+        "least loaded in the countries chosen that answer, the dead one replaced"
     );
+    assert_eq!(s.services.error, None);
     assert_eq!(
         s.services.nordvpn_countries,
         [
-            ("Netherlands".to_string(), 1),
+            ("Netherlands".to_string(), 2),
             ("Sweden".to_string(), 1),
             ("United States".to_string(), 1)
         ]
@@ -2340,4 +2425,18 @@ async fn nordvpn_servers_join_the_proxies() {
     })
     .await;
     assert!(s.proxy, "the status bar says proxies are on");
+    engine.shutdown().await;
+
+    let engine = start("wrong", "other").await.unwrap();
+    let s = wait_for(&engine, "the refusal", |s| s.services.error.is_some()).await;
+    assert!(
+        s.services
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("turned the service credentials away"),
+        "{:?}",
+        s.services.error
+    );
+    assert_eq!(s.services.nordvpn.len(), 2, "kept, so nothing goes direct");
 }

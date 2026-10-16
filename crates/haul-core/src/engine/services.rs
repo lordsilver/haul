@@ -1,9 +1,14 @@
 //! VPN services whose servers join the proxies (see [`crate::vpn`]): their
 //! list is fetched when the service is set up or its settings change, and
-//! once an hour after; the servers picked become exits after the proxies of
-//! the settings. When the pick changes, what was learned about the proxy
+//! once an hour after; the servers picked are checked, one that does not
+//! answer gives way to the next, and they become exits after the proxies
+//! of the settings. When the pick changes, what was learned about the proxy
 //! exits (limits, waits, allowances) goes, since an exit may now be another
 //! address.
+//!
+//! Credentials NordVPN turns away keep the servers anyway, with the error
+//! shown: downloads meant for the VPN then wait, rather than leave through
+//! the user's own line.
 
 use std::{
     sync::Arc,
@@ -105,6 +110,7 @@ impl Engine {
             let s = self.services();
             s.fetched.is_none_or(|t| t.elapsed() >= REFRESH) || s.asked.as_deref() != Some(&asked)
         };
+        let mut checked = None;
         if wanted && stale {
             let api = cfg.endpoints.nordvpn.clone();
             match vpn::nordvpn_servers(&self.clients().on(0).client, &api).await {
@@ -119,10 +125,22 @@ impl Engine {
                     self.services().error = Some(e);
                 }
             }
+            let candidates = vpn::nordvpn_candidates(&cfg, &self.services().nordvpn);
+            checked = Some(self.check_servers(candidates).await);
         }
         let (picked, proxies) = {
-            let s = self.services();
-            let picked = vpn::nordvpn_pick(&cfg, &s.nordvpn);
+            let mut s = self.services();
+            let picked = match checked {
+                Some((picked, error)) => {
+                    if error.is_some() {
+                        s.error = error;
+                    }
+                    picked
+                }
+                // Between checks the servers in use stay, as checked.
+                None if wanted => s.picked.clone(),
+                None => Vec::new(),
+            };
             let proxies = vpn::nordvpn_proxies(&cfg, &picked);
             (picked, proxies)
         };
@@ -153,6 +171,67 @@ impl Engine {
             }
         }
         self.0.wake.notify_one();
+    }
+
+    /// The first `nordvpn_servers` of `candidates` that work, each checked
+    /// through itself, a few at a time; and why there are fewer, when there
+    /// are. Credentials turned away stop the checks: the servers asked for
+    /// are kept as they are, with the error.
+    async fn check_servers(&self, candidates: Vec<Server>) -> (Vec<Server>, Option<String>) {
+        let cfg = self.cfg();
+        let want = cfg.nordvpn_servers.min(candidates.len());
+        let mut picked: Vec<Server> = Vec::new();
+        let mut down = 0;
+        let mut rest = candidates.iter();
+        while picked.len() < want {
+            let batch: Vec<Server> = rest.by_ref().take(want - picked.len()).cloned().collect();
+            if batch.is_empty() {
+                break;
+            }
+            let mut checks = tokio::task::JoinSet::new();
+            for (n, server) in batch.iter().enumerate() {
+                let proxy = vpn::nordvpn_proxies(&cfg, std::slice::from_ref(server)).remove(0);
+                let (api, agent) = (cfg.endpoints.nordvpn.clone(), cfg.user_agent.clone());
+                checks.spawn(async move { (n, vpn::nordvpn_check(&api, &proxy, &agent).await) });
+            }
+            let mut results = checks.join_all().await;
+            results.sort_by_key(|(n, _)| *n);
+            for (n, result) in results {
+                let server = &batch[n];
+                match result {
+                    vpn::Checked::Works(address) => {
+                        tracing::info!("NordVPN {}: {address}", server.host);
+                        picked.push(Server {
+                            address: Some(address),
+                            ..server.clone()
+                        });
+                    }
+                    vpn::Checked::Refused => {
+                        tracing::warn!("NordVPN turned the service credentials away");
+                        let mut kept = candidates;
+                        kept.truncate(want);
+                        return (
+                            kept,
+                            Some(
+                                "NordVPN turned the service credentials away: use the ones under manual setup in your Nord Account, not your login"
+                                    .into(),
+                            ),
+                        );
+                    }
+                    vpn::Checked::Down(why) => {
+                        tracing::warn!("NordVPN {} left out: {why}", server.host);
+                        down += 1;
+                    }
+                }
+            }
+        }
+        let short = (picked.len() < want).then(|| {
+            format!(
+                "{} of {want} servers answered ({down} did not)",
+                picked.len()
+            )
+        });
+        (picked, short)
     }
 
     /// Keeps the services' servers up to date: when their settings change,

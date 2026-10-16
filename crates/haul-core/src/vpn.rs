@@ -5,7 +5,10 @@
 //!
 //! NordVPN publishes its SOCKS5 servers (and their load) without a login;
 //! the subscription's service credentials (not the account's login) open
-//! them. Haul takes the least loaded ones in the countries chosen.
+//! them. Haul takes the least loaded ones in the countries chosen, and
+//! checks each through itself with NordVPN's own "where am I" API: the
+//! credentials are taken, the address it shows, and that NordVPN calls the
+//! connection protected. One that does not answer gives way to the next.
 
 use std::time::Duration;
 
@@ -15,13 +18,16 @@ use serde::{Deserialize, Serialize};
 use crate::config::{Config, secret};
 
 /// One server of a service, as the views show it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Server {
     pub host: String,
     pub country: String,
     pub city: String,
     /// Percent busy, as the service says.
     pub load: u32,
+    /// The public address downloads through it come from, once checked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
 }
 
 /// Characters a proxy address's user and password keep as they are.
@@ -32,10 +38,12 @@ const USERINFO: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'~');
 
 impl Server {
-    /// The proxy address for this server with the service's credentials.
+    /// The proxy address for this server with the service's credentials:
+    /// port 1080, unless the host name carries a port of its own.
     pub fn proxy(&self, user: &str, password: &str) -> String {
+        let port = if self.host.contains(':') { "" } else { ":1080" };
         format!(
-            "socks5://{}:{}@{}:1080",
+            "socks5://{}:{}@{}{port}",
             utf8_percent_encode(user, USERINFO),
             utf8_percent_encode(password, USERINFO),
             self.host
@@ -88,6 +96,7 @@ pub async fn nordvpn_servers(http: &reqwest::Client, api: &str) -> Result<Vec<Se
                 country: place.country.name,
                 city: place.country.city.name,
                 load: s.load,
+                address: None,
             })
         })
         .collect();
@@ -99,6 +108,14 @@ pub async fn nordvpn_servers(http: &reqwest::Client, api: &str) -> Result<Vec<Se
 /// countries chosen (every country when none is), once the service
 /// credentials are set.
 pub fn nordvpn_pick(cfg: &Config, servers: &[Server]) -> Vec<Server> {
+    let mut picked = nordvpn_candidates(cfg, servers);
+    picked.truncate(cfg.nordvpn_servers);
+    picked
+}
+
+/// Every server in the countries chosen, least loaded first; none until
+/// the service credentials and a number of servers are set.
+pub fn nordvpn_candidates(cfg: &Config, servers: &[Server]) -> Vec<Server> {
     if secret(&cfg.nordvpn_password).is_none() || cfg.nordvpn_servers == 0 {
         return Vec::new();
     }
@@ -111,9 +128,63 @@ pub fn nordvpn_pick(cfg: &Config, servers: &[Server]) -> Vec<Server> {
                     .iter()
                     .any(|c| c.eq_ignore_ascii_case(&s.country))
         })
-        .take(cfg.nordvpn_servers)
         .cloned()
         .collect()
+}
+
+/// What checking a server through itself found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Checked {
+    /// It works; downloads through it come from this address.
+    Works(String),
+    /// It turned the service credentials away.
+    Refused,
+    /// It did not answer, or not as a protected connection.
+    Down(String),
+}
+
+#[derive(Deserialize)]
+struct Insights {
+    ip: String,
+    #[serde(default)]
+    protected: bool,
+}
+
+/// Checks `proxy` (a server's address with the credentials) by asking
+/// NordVPN's API at `api`, through it, where the request comes from.
+pub async fn nordvpn_check(api: &str, proxy: &str, user_agent: &str) -> Checked {
+    let http = match crate::hosts::Http::with(Some(proxy), user_agent, true) {
+        Ok(http) => http,
+        Err(e) => return Checked::Down(e),
+    };
+    let answer = http
+        .client
+        .get(format!("{api}/v1/helpers/ips/insights"))
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await;
+    let response = match answer {
+        Ok(r) => r,
+        Err(e) => {
+            let said = crate::hosts::error_text(e);
+            return if refused(&said) {
+                Checked::Refused
+            } else {
+                Checked::Down(said)
+            };
+        }
+    };
+    match response.json::<Insights>().await {
+        Ok(i) if i.protected => Checked::Works(i.ip),
+        Ok(i) => Checked::Down(format!("NordVPN does not call {} protected", i.ip)),
+        Err(e) => Checked::Down(e.without_url().to_string()),
+    }
+}
+
+/// Whether a connection error is a SOCKS5 server turning the credentials
+/// away.
+fn refused(said: &str) -> bool {
+    said.contains("credentials not accepted") || said.contains("authentication")
 }
 
 /// The proxy addresses of the servers picked.
@@ -131,9 +202,17 @@ mod tests {
         Server {
             host: host.into(),
             country: country.into(),
-            city: String::new(),
             load,
+            ..Server::default()
         }
+    }
+
+    #[test]
+    fn a_refusal_is_told_from_a_server_down() {
+        assert!(refused(
+            "error sending request: SOCKS error: credentials not accepted"
+        ));
+        assert!(!refused("error sending request: connection refused"));
     }
 
     #[test]
