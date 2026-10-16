@@ -665,6 +665,17 @@ async fn open_place(State(app): State<App>, Path(place): Path<String>) -> Respon
             Some(path) => path.to_path_buf(),
             None => return error(StatusCode::NOT_FOUND, "started without a settings file"),
         },
+        // The log, picked out in its folder.
+        "log" => {
+            let log = haul_core::logging::path(app.engine.data_dir());
+            return match os::reveal(&log) {
+                Ok(()) => ok(),
+                Err(e) => error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("{}: {e}", log.display()),
+                ),
+            };
+        }
         _ => return error(StatusCode::BAD_REQUEST, "unknown place"),
     };
     let prepared = if place == "config" {

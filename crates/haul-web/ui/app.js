@@ -2221,7 +2221,8 @@ function renderSettings(s) {
     settingCard(
       "document",
       "Detailed log",
-      "Writes every request, retry and mirror choice to the log, for reproducing a problem before you save the report. Off, the log keeps notable events. Each download keeps its last events either way.",
+      "Writes every request, retry and mirror choice to the log (haul.log in the data folder), for reproducing a problem before you save the report. Off, the log keeps notable events. Each download keeps its last events either way.",
+      button("Show log", { onclick: () => openPlace("log") }),
       toggleSwitch("detailed_log", d.detailed_log, "Detailed log"),
     ),
   );

@@ -44,7 +44,7 @@ The parts of a multi-part archive (`name.part01.rar`, `name.rar` with `name.r00`
 
 ## Reporting a problem
 
-**Settings › Diagnostics › Save diagnostics…** saves a report of what Haul is doing: every download and wrapper with its links, state and error and its last 40 events (added, which host it started from, what each host answered, retries), the hosts, the settings, and the end of the log and of the one before it. Account keys, the proxy's user and password, and mega.nz keys are left out. The log itself is `haul.log` in the data folder, one JSON object per line, kept up to 10 MB with the five files before it; the headless server also prints it to the terminal. To reproduce a problem, switch on **Detailed log** first: the log then records every request, retry and mirror choice, until you switch it off.
+**Settings › Diagnostics › Save diagnostics…** saves a report of what Haul is doing: every download and wrapper with its links, state and error and its last 40 events (added, which host it started from, what each host answered, retries), the hosts, the settings, and the end of the log and of the one before it. Account keys, the proxy's user and password, and mega.nz keys are left out. The log itself is `haul.log` in the data folder (**Show log**, beside the **Detailed log** switch, opens the folder with it picked out), one JSON object per line, kept up to 10 MB with the five files before it; the headless server also prints it to the terminal. To reproduce a problem, switch on **Detailed log** first: the log then records every request, retry and mirror choice, until you switch it off.
 
 ## Status bar
 
