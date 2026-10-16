@@ -32,7 +32,7 @@ use serde::Serialize;
 use sha1::{Digest, Sha1};
 
 use super::{
-    Cx, Entry, ResolveError, StopOnDrop, Unwrapped, content_type, group_mirrors, guess_name,
+    Cx, Entry, ResolveError, StopOnDrop, Unwrapped, content_type, group_named, guess_name,
     page_text, retry_after,
 };
 use crate::container;
@@ -49,6 +49,10 @@ static WIDGET: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?is)<div\b[^>]*\bid="pow-captcha"[^>]*>"#).unwrap());
 static DATA: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"\bdata-([a-z-]+)="([^"]*)""#).unwrap());
+/// A row of a solved page's link table: its status, then the file's name.
+static ROW_NAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?s)<tr\b[^>]*>\s*<td class="status">.*?</td>\s*<td title="([^"]*)""#).unwrap()
+});
 /// A solved page's Click'n'Load data: `CNLPOP(id, key, links, package)`.
 static CNL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"CNLPOP\(\s*'[^']*'\s*,\s*'([0-9A-Fa-f]+)'\s*,\s*'([^']+)'").unwrap()
@@ -362,17 +366,30 @@ fn dlc_on(html: &str) -> Option<String> {
 /// else its `.dlc`.
 async fn solved(cx: &Cx<'_>, html: &str) -> Result<Unwrapped, ResolveError> {
     let title = HEADING.captures(html).and_then(|h| page_text(&h[1]));
-    let mut seen = HashSet::new();
     let urls: Vec<String> = CNL
         .captures_iter(html)
         .filter_map(|cnl| container::parse_cnl(&cnl[1], &cnl[2]).ok())
         .flatten()
-        .filter(|url| seen.insert(url.clone()))
         .collect();
     if !urls.is_empty() {
+        // The table above lists each link's file in the same order: names
+        // for hosts whose links carry none, so their files merge with the
+        // same ones elsewhere before anything downloads.
+        let names = row_names(html);
+        let names = if names.len() == urls.len() {
+            names.into_iter().map(Some).collect()
+        } else {
+            vec![None; urls.len()]
+        };
+        let mut seen = HashSet::new();
+        let links = urls
+            .into_iter()
+            .zip(names)
+            .filter(|(url, _)| seen.insert(url.clone()))
+            .collect();
         return Ok(Unwrapped {
             title,
-            files: group_mirrors(urls),
+            files: group_named(links),
         });
     }
     let Some(id) = dlc_on(html) else {
@@ -385,6 +402,14 @@ async fn solved(cx: &Cx<'_>, html: &str) -> Result<Unwrapped, ResolveError> {
         title: title.or(found.title),
         files: found.files,
     })
+}
+
+/// The file name of each row of a solved page's link table, in order.
+fn row_names(html: &str) -> Vec<String> {
+    ROW_NAME
+        .captures_iter(html)
+        .filter_map(|c| page_text(&c[1]))
+        .collect()
 }
 
 /// Whether a page shows the container's links rather than its gate.
@@ -656,6 +681,21 @@ pub(super) fn decode_report(form: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_solved_page_names_its_rows() {
+        let row = |name: &str, link: &str| {
+            format!(
+                r#"<tr class="kwj3"><td class="status"><i class="online small"></i></td><td title="{name}">{name}<span><a href="http://vikingfile.com" class="external_link">vikingfile.com</a></span></td><td>2.00 GB</td><td><a href="/Link/{link}.html" class="button download"></a></td></tr>"#
+            )
+        };
+        let html = format!(
+            "<table><tr><th>Status</th><th>Name</th></tr>{}{}</table>",
+            row("R.part01.rar", "998E063144"),
+            row("R &amp; Co.part02.rar", "11AA")
+        );
+        assert_eq!(row_names(&html), ["R.part01.rar", "R & Co.part02.rar"]);
+    }
 
     #[test]
     fn proof_of_work_is_the_workers() {

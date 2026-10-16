@@ -15,7 +15,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Deserialize;
 
-use super::{Cx, Entry, Probed, ResolveError};
+use super::{Cx, Entry, Probed, ResolveError, retry_after};
 
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/f/([A-Za-z0-9]+)").unwrap());
 
@@ -33,13 +33,30 @@ async fn check(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
         .map(|c| c[1].to_string())
         .ok_or_else(|| ResolveError::failed(format!("vikingfile: not a file link: {url}")))?;
     let base = &cx.cfg.endpoints.vikingfile;
-    let r = cx
-        .http
-        .client
-        .post(format!("{base}/api/check-file"))
-        .form(&[("hash", id.as_str())])
-        .send()
-        .await?;
+    // It turns away a burst (a wrapper's thirty parts looked up at once)
+    // with 429 for a second or two.
+    let mut tries = 0;
+    let r = loop {
+        let r = cx
+            .http
+            .client
+            .post(format!("{base}/api/check-file"))
+            .form(&[("hash", id.as_str())])
+            .send()
+            .await?;
+        tries += 1;
+        if r.status() != 429 || tries == 4 {
+            break r;
+        }
+        let seconds = retry_after(r.headers(), 2).clamp(1, 5);
+        tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+    };
+    if r.status() == 429 {
+        return Err(ResolveError::Wait {
+            seconds: 30,
+            message: "vikingfile: too many requests".into(),
+        });
+    }
     if !r.status().is_success() {
         return Err(ResolveError::Network(format!(
             "vikingfile: check-file answered {}",

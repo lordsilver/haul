@@ -1088,17 +1088,26 @@ async fn files_are_asked_for_uncompressed() {
 
 #[tokio::test]
 async fn vikingfile_checks_the_file_then_wants_a_person() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
     let app = Router::new().route(
         "/api/check-file",
-        post(|Form(form): Form<HashMap<String, String>>| async move {
-            let hash = form["hash"].clone();
-            Json(match hash.as_str() {
-                "acXWYKlHX0" => json!([{
-                    "exist": true, "hash": hash, "name": "big.rar", "size": 5_320_312_809_u64
-                }]),
-                _ => json!([{ "exist": false, "hash": hash }]),
-            })
-        }),
+        post(
+            move |Form(form): Form<HashMap<String, String>>| async move {
+                // The first request meets a burst limit.
+                if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return (StatusCode::TOO_MANY_REQUESTS, [("retry-after", "1")]).into_response();
+                }
+                let hash = form["hash"].clone();
+                Json(match hash.as_str() {
+                    "acXWYKlHX0" => json!([{
+                        "exist": true, "hash": hash, "name": "big.rar", "size": 5_320_312_809_u64
+                    }]),
+                    _ => json!([{ "exist": false, "hash": hash }]),
+                })
+                .into_response()
+            },
+        ),
     );
     let base = serve(app).await;
     let cfg = config(&base);
@@ -1117,6 +1126,7 @@ async fn vikingfile_checks_the_file_then_wants_a_person() {
         (probed.name.as_str(), probed.size),
         ("big.rar", Some(5_320_312_809))
     );
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "asked again after the 429");
     assert!(matches!(
         resolve(&cx, "https://vik1ngfile.site/f/acXWYKlHX0").await,
         Err(ResolveError::NeedsUser(_))

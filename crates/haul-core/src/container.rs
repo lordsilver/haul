@@ -106,7 +106,8 @@ pub fn parse_cnl(jk: &str, crypted: &str) -> Result<Vec<String>, String> {
     let n = decrypt(&key, &key, &mut data)
         .map_err(|_| "the Click'n'Load data is not a whole number of blocks".to_string())?;
     Ok(extract_urls(
-        String::from_utf8_lossy(&data[..n]).trim_end_matches('\0'),
+        // Zero padding, and block padding after it on some pages.
+        String::from_utf8_lossy(&data[..n]).trim_end_matches(|c: char| c.is_control()),
     ))
 }
 

@@ -22,7 +22,7 @@ mod rapidgator;
 mod vikingfile;
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     io::Read,
     path::Path,
     sync::{
@@ -730,9 +730,20 @@ pub fn wraps(url: &str) -> bool {
 /// link to another wrapper stands for more links, not a file, so it is an
 /// entry of its own.
 fn group_mirrors(urls: Vec<String>) -> Vec<Entry> {
-    let (nested, links): (Vec<String>, Vec<String>) = urls.into_iter().partition(|u| wraps(u));
+    group_named(urls.into_iter().map(|url| (url, None)).collect())
+}
+
+/// [`group_mirrors`] for links a wrapper names: a link's own name wins over
+/// the one its address suggests.
+fn group_named(links: Vec<(String, Option<String>)>) -> Vec<Entry> {
+    let (nested, links): (Vec<_>, Vec<_>) = links.into_iter().partition(|(u, _)| wraps(u));
+    let named: HashMap<String, String> = links
+        .iter()
+        .filter_map(|(u, n)| Some((u.clone(), n.clone()?)))
+        .collect();
+    let guess_name = |url: &str| named.get(url).cloned().or_else(|| guess_name(url));
     let mut hosts: IndexMap<String, Vec<String>> = IndexMap::new();
-    for url in links {
+    for (url, _) in links {
         hosts.entry(host_of(&url)).or_default().push(url);
     }
     let count = hosts.values().next().map_or(0, Vec::len);
@@ -772,7 +783,7 @@ fn group_mirrors(urls: Vec<String>) -> Vec<Entry> {
             })
             .collect()
     };
-    out.extend(nested.into_iter().map(|url| Entry {
+    out.extend(nested.into_iter().map(|(url, _)| Entry {
         url,
         deferred: true,
         ..Entry::default()
