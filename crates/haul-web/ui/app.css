@@ -630,6 +630,14 @@ input[type="number"] {
 
 .row {
   --row-gap: 16px;
+  /* A card, not text: no I-beam, no stray selection on a click. */
+  cursor: default;
+  user-select: none;
+}
+
+.row .check,
+.selecting .row {
+  cursor: pointer;
 }
 
 .row-main {

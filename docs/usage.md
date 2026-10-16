@@ -34,7 +34,7 @@ A wrapper link (fileguard.cc, filecrypt.cc, a `.dlc` link) is unwrapped as soon 
 
 ## Selecting and removing
 
-Click a row to select it; once something is selected, a click anywhere on another row adds or drops it (Ctrl+click does too), Shift+click for a range, Ctrl+A for everything in the view, Esc to let go. The toolbar then acts on the selection: Retry, Pause, Resume and Remove (the Delete key too), asking twice when that deletes partial files. In **Failed**, the broom clears every failed download; elsewhere **Clear completed** clears finished downloads, and a finished wrapper with none of its files left.
+Tick a row's checkbox (it shows when you point at the row) to start a selection; once something is selected, a click anywhere on a row adds or drops it (Ctrl+click does too, and starts one as well), Shift+click for a range, Ctrl+A for everything in the view, Esc to let go. The toolbar then acts on the selection: Retry, Pause, Resume and Remove (the Delete key too), asking twice when that deletes partial files. In **Failed**, the broom clears every failed download; elsewhere **Clear completed** clears finished downloads, and a finished wrapper with none of its files left.
 
 The ✕ on a row takes the download off the list and leaves its file alone, unless **Settings › Move removed files to the Recycle Bin** is on; then a finished download's file goes to the Recycle Bin. On a download that has started, the ✕ asks for a second click, since its partial file goes too. **Clear completed** only tidies the list.
 

@@ -531,6 +531,14 @@ function visibleIds() {
   return entriesOf(visible, state.items).flatMap((e) => (e.members ? e.members.map((i) => i.id) : [e.it.id]));
 }
 
+// Whether a click on a row picks it. A selection starts at a checkbox (or
+// with Ctrl or Shift), so a stray click on a row picks nothing; once one
+// has started, a click anywhere on a row adds or drops it, as in Gmail.
+// Esc or Clear selection ends it.
+function picking(e) {
+  return Boolean(e.target.closest(".check")) || e.ctrlKey || e.metaKey || e.shiftKey || selected.size > 0;
+}
+
 function pick(id, options) {
   pickMany([id], options);
 }
@@ -834,17 +842,15 @@ function makeRow() {
       r.actions,
     ),
   );
-  // A click picks the row (Ctrl adds or drops it, Shift picks a range); the
-  // row's own buttons, links and forms keep their clicks.
+  // The checkbox picks the row (Ctrl adds or drops it, Shift picks a
+  // range); the row's own buttons, links and forms keep their clicks.
   r.node.addEventListener("mousedown", (e) => {
     if (e.shiftKey) e.preventDefault(); // no text selection on Shift+click
   });
   r.node.addEventListener("click", (e) => {
     if (e.target.closest("button, a, input, textarea, form")) return;
-    const viaCheck = Boolean(e.target.closest(".check"));
-    // With something picked already, a click anywhere adds or drops, as in
-    // Outlook or Gmail; Esc or Clear selection ends it.
-    pick(r.node.dataset.id, { toggle: viaCheck || e.ctrlKey || e.metaKey || selected.size > 0, range: e.shiftKey });
+    if (!picking(e)) return;
+    pick(r.node.dataset.id, { toggle: true, range: e.shiftKey });
   });
   return r;
 }
@@ -1103,8 +1109,8 @@ function makeGroupRow(key) {
   });
   g.node.addEventListener("click", (e) => {
     if (e.target.closest("button, a, input")) return;
-    const viaCheck = Boolean(e.target.closest(".check"));
-    pickMany(g.members, { toggle: viaCheck || e.ctrlKey || e.metaKey || selected.size > 0, range: e.shiftKey });
+    if (!picking(e)) return;
+    pickMany(g.members, { toggle: true, range: e.shiftKey });
   });
   return g;
 }
