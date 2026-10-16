@@ -1702,7 +1702,7 @@ function renderHosts(s) {
       if (best && !h.disabled) pills.push(el("span", { class: "pill success" }, "Fastest"));
       if (h.folder) pills.push(el("span", { class: "pill", title: "Its files go to this subfolder" }, icon("folder"), h.folder));
       if (h.cap && h.cap < h.limit) {
-        const title = "It refused one more download while these ran, so Haul runs no more than this. The slot buttons set your own limit.";
+        const title = "It refused one more download while these ran, so Haul runs no more than this, and tries one more after ten quiet minutes. The slot buttons set your own limit.";
         pills.push(el("span", { class: "pill", title }, icon("info"), `Takes ${h.cap} at a time`));
       }
       if (s.proxy) pills.push(el("span", { class: `pill${h.route === "direct" ? " caution" : ""}` }, icon("shield"), `via ${h.route}`));

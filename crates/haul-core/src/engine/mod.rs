@@ -297,6 +297,9 @@ struct Lane {
     /// See [`HostView::cap`]. Kept until a restart or until the user sets the
     /// host's slots.
     cap: Option<usize>,
+    /// When `cap` last changed: one more is allowed after [`CAP_RELAX`]
+    /// without a refusal.
+    cap_since: Option<Instant>,
     active: usize,
     cooldown: Option<Instant>,
     /// What the host says this address may still fetch at full speed today
@@ -305,6 +308,32 @@ struct Lane {
 }
 
 impl Lane {
+    /// A limit the host showed is tried one higher after [`CAP_RELAX`]
+    /// without a refusal, and dropped once it reaches the user's: a refusal
+    /// can be a moment's crowding, and a host can loosen up.
+    fn relax(&mut self, limit: usize, now: Instant) {
+        if let (Some(cap), Some(since)) = (self.cap, self.cap_since)
+            && now.duration_since(since) >= CAP_RELAX
+        {
+            if cap + 1 >= limit {
+                self.cap = None;
+                self.cap_since = None;
+            } else {
+                self.cap = Some(cap + 1);
+                self.cap_since = Some(now);
+            }
+        }
+    }
+
+    /// The address behind this exit is a new one, or the host's day turned
+    /// over: what was learned about the old one no longer holds.
+    fn fresh_start(&mut self) {
+        self.cap = None;
+        self.cap_since = None;
+        self.cooldown = None;
+        self.settle_until = None;
+    }
+
     fn slowed(&self) -> bool {
         self.quota.is_some_and(|q| q.slowed())
     }
@@ -343,6 +372,9 @@ struct HostStats {
 }
 
 const PENALTY_HALF_LIFE: f64 = 600.0;
+
+/// How long a limit a host showed holds before one more is tried.
+const CAP_RELAX: Duration = Duration::from_secs(600);
 
 /// Saved host speeds older than this are forgotten, so a host that had a bad
 /// day gets measured again.
@@ -457,6 +489,7 @@ impl State {
         let mut best: Option<(Exit, (bool, usize))> = None;
         for &exit in exits {
             let lane = self.lane(host, exit);
+            lane.relax(limit, now);
             let rank = (lane.slowed(), lane.active);
             if lane.free(limit, now) && best.is_none_or(|(_, r)| rank < r) {
                 best = Some((exit, rank));
@@ -1315,6 +1348,15 @@ impl Engine {
                     let quota = hosts::pixeldrain::quota(&cx).await;
                     let mut st = self.lock();
                     let lane = st.lane(HOST, exit);
+                    // Less used than before: another address (a router that
+                    // got a new one, say) or a new day. What held for the
+                    // old one does not.
+                    if let (Some(old), Some(new)) = (lane.quota, quota)
+                        && new.used < old.used
+                    {
+                        tracing::info!(exit = %exit_name(exit), "pixeldrain sees a fresh address: its limits start over");
+                        lane.fresh_start();
+                    }
                     if quota.is_some() && lane.quota != quota {
                         if let Some(q) = quota {
                             tracing::debug!(exit = %exit_name(exit), used = q.used, limit = q.limit, "pixeldrain quota");
@@ -1870,6 +1912,7 @@ impl Engine {
                 {
                     let lane = st.lane(host, exit);
                     lane.cap = Some(lane.cap.map_or(allowed, |cap| cap.min(allowed)));
+                    lane.cap_since = Some(now);
                     let it = st.items.get_mut(id).expect("checked by the guard");
                     it.busy += 1;
                     it.status = Status::Waiting;
@@ -3125,6 +3168,26 @@ mod exit_tests {
                 .sum::<usize>(),
             3
         );
+    }
+
+    #[test]
+    fn a_limit_the_host_showed_loosens_again() {
+        let now = Instant::now();
+        let mut lane = Lane {
+            cap: Some(4),
+            cap_since: Some(now),
+            ..Lane::default()
+        };
+        lane.relax(32, now + Duration::from_secs(60));
+        assert_eq!(lane.cap, Some(4), "not yet");
+        lane.relax(32, now + CAP_RELAX);
+        assert_eq!(lane.cap, Some(5), "one more after a quiet while");
+        lane.relax(6, now + CAP_RELAX * 2);
+        assert_eq!(lane.cap, None, "gone once it reaches the user's own limit");
+        lane.cap = Some(2);
+        lane.cooldown = Some(now);
+        lane.fresh_start();
+        assert_eq!((lane.cap, lane.cooldown), (None, None));
     }
 
     #[test]
