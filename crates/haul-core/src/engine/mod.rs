@@ -667,6 +667,11 @@ impl Engine {
         }
     }
 
+    /// The route to JDownloader's key service, which decrypts `.dlc` files.
+    fn key_service(&self, st: &State) -> Http {
+        self.http_for(&hosts::host_of(&self.cfg().endpoints.dlc_service), st)
+    }
+
     pub fn data_dir(&self) -> &Path {
         &self.0.data_dir
     }
@@ -801,10 +806,7 @@ impl Engine {
         filename: &str,
         bytes: &[u8],
     ) -> Result<Vec<container::Link>, String> {
-        let http = {
-            let st = self.lock();
-            self.http_for("service.jdownloader.org", &st)
-        };
+        let http = self.key_service(&self.lock());
         container::read(
             &http.client,
             &self.cfg().endpoints.dlc_service,
@@ -820,18 +822,19 @@ impl Engine {
         let Ok(permit) = self.0.probes.acquire().await else {
             return;
         };
-        let (url, http) = {
+        let (url, http, key_service) = {
             let st = self.lock();
             let Some(it) = st.items.get(&id) else { return };
             let url = it.mirrors[0].clone();
             let http = self.http_for(&hosts::host_of(&url), &st);
-            (url, http)
+            (url, http, self.key_service(&st))
         };
         let cfg = self.cfg();
         let cx = Cx {
             http: &http,
             cfg: &cfg,
             tokens: &self.0.tokens,
+            key_service: &key_service,
         };
         let found = tokio::time::timeout(Duration::from_secs(25), hosts::probe(&cx, &url))
             .await
@@ -1170,7 +1173,7 @@ impl Engine {
         host: &str,
         cancel: &CancellationToken,
     ) -> Result<Outcome, Fail> {
-        let (pre, name, http) = {
+        let (pre, name, http, key_service) = {
             let mut st = self.lock();
             let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
             it.attempt_from = it.done;
@@ -1179,22 +1182,26 @@ impl Engine {
                 .clone()
                 .filter(|_| it.pre_for.as_deref().is_none_or(|p| p == url));
             let name = it.name.clone();
-            (pre, name, self.http_for(host, &st))
+            (pre, name, self.http_for(host, &st), self.key_service(&st))
         };
         let entry = match pre {
-            Some(entry) => entry,
-            None => {
+            Some(entry) if !entry.deferred => entry,
+            pre => {
+                // A wrapper link the user handed back stands in for the
+                // row's own link.
+                let source = pre.as_ref().map_or(url, |p| p.url.as_str());
                 let cfg = self.cfg();
                 let cx = Cx {
                     http: &http,
                     cfg: &cfg,
                     tokens: &self.0.tokens,
+                    key_service: &key_service,
                 };
-                let mut entries = or_cancel(cancel, hosts::resolve(&cx, url)).await??;
+                let mut entries = or_cancel(cancel, hosts::resolve(&cx, source)).await??;
                 // A wrapper answers with links to resolve each in its own
                 // turn: one row per entry, the same shape a pasted link has.
                 if entries.iter().any(|e| e.deferred) {
-                    for id in self.expand(id, url, entries) {
+                    for id in self.expand(id, source, entries) {
                         tokio::spawn(self.clone().probe(id));
                     }
                     return Ok(Outcome::Gone);
@@ -1210,7 +1217,7 @@ impl Engine {
                         .find(|e| e.name.as_deref() == Some(name.as_str()))
                         .ok_or_else(|| Fail::Error(format!("{name} is no longer in the folder")))?,
                     (_, None) => {
-                        self.expand(id, url, entries);
+                        self.expand(id, source, entries);
                         return Ok(Outcome::Gone);
                     }
                 }
@@ -1278,9 +1285,18 @@ impl Engine {
         };
         let row_package = st.items[at].package.clone();
         st.items.shift_remove_index(at);
+        // A wrapper's link already in the queue stays where it is, as a
+        // pasted one does: the same wrapper added twice, or two that share a
+        // mirror, download nothing twice. Nor does a page that lists itself
+        // come back, which would resolve forever.
+        let mut known: HashSet<String> = st
+            .items
+            .values()
+            .flat_map(|i| i.mirrors.iter().cloned())
+            .collect();
+        known.insert(url.to_string());
         for e in entries {
-            if e.deferred && e.url == url {
-                // A page that lists itself would resolve forever.
+            if e.deferred && !known.insert(e.url.clone()) {
                 continue;
             }
             let package = if row_package.is_empty() {
@@ -2011,32 +2027,24 @@ impl Engine {
             // Another mirror may have finished it while the user was busy.
             return Err("it is downloaded already".into());
         }
-        if it.name.is_none() {
+        // A wrapper link (the `.dlc` a gate hands out) is further links, not
+        // the file: the row unpacks it on its next turn and becomes its
+        // files. The row's own links stay, so one that fails asks for the page
+        // again like any link handed back, and it names nothing.
+        let deferred = hosts::unwraps(url);
+        if it.name.is_none() && !deferred {
             it.name = name_hint
                 .filter(|n| !n.is_empty())
                 .or_else(|| hosts::guess_name(url));
         }
-        if hosts::unwraps(url) {
-            // A wrapper link is further links, not the file: it becomes the
-            // row's only link and unpacks on the row's next turn, the same
-            // path a wrapper link added in the dialog takes. A wrapper link
-            // that later dies is asked for again like any hand-back.
-            it.mirrors = vec![url.into()];
-            it.pre = None;
-            it.pre_for = None;
-        } else {
-            it.pre = Some(Entry {
-                url: url.into(),
-                name: it.name.clone(),
-                size: None,
-                headers,
-                exec: None,
-                checksum: None,
-                package: None,
-                deferred: false,
-            });
-            it.pre_for = None;
-        }
+        it.pre = Some(Entry {
+            url: url.into(),
+            name: if deferred { None } else { it.name.clone() },
+            headers,
+            deferred,
+            ..Entry::default()
+        });
+        it.pre_for = None;
         it.manual = true;
         it.probed = true;
         if !it.running() {
@@ -2172,6 +2180,13 @@ impl Engine {
                 verifying: it.verifying,
             })
             .collect();
+        let route = |name: &str| {
+            st.routes.get(name).copied().unwrap_or(if has_proxy {
+                Route::Proxy
+            } else {
+                Route::Direct
+            })
+        };
         let mut hosts: Vec<HostView> = st
             .hosts
             .iter()
@@ -2184,11 +2199,7 @@ impl Engine {
                 ok: h.ok,
                 bytes: h.bytes,
                 blocked: h.blocked,
-                route: st.routes.get(name).copied().unwrap_or(if has_proxy {
-                    Route::Proxy
-                } else {
-                    Route::Direct
-                }),
+                route: route(name),
                 cooldown: h
                     .cooldown
                     .map_or(0, |c| c.saturating_duration_since(now).as_secs()),
@@ -2197,6 +2208,29 @@ impl Engine {
                 cap: h.cap,
             })
             .collect();
+        // A preferred host shows before Haul has reached it, so the
+        // preference, the default one included, can be seen and changed.
+        for name in &cfg.preferred_hosts {
+            let name = name.to_ascii_lowercase();
+            if name.is_empty() || hosts.iter().any(|h| h.name == name) {
+                continue;
+            }
+            hosts.push(HostView {
+                limit: cfg.limit_for(&name),
+                active: 0,
+                speed: 0.0,
+                fails: 0,
+                ok: 0,
+                bytes: 0,
+                blocked: false,
+                route: route(&name),
+                cooldown: 0,
+                folder: cfg.folder_for(&name).display().to_string(),
+                preferred: cfg.preference(&name),
+                cap: None,
+                name,
+            });
+        }
         // In the order downloads pick them: preferred, then fastest.
         hosts.sort_by(|a, b| {
             let rank = |h: &HostView| h.preferred.unwrap_or(usize::MAX);

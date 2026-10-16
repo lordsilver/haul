@@ -154,9 +154,15 @@ pub async fn parse_dlc(
         for file in FILE.captures_iter(pkg) {
             let file = &file[1];
             if let Some(url) = FILE_URL.captures(file) {
+                // "n.A." is how a container says it does not know the name:
+                // taken as a name, it would merge unrelated files into one row.
+                let name = FILE_NAME
+                    .captures(file)
+                    .map(|n| b64_text(&n[1]).trim().to_string())
+                    .filter(|n| !n.is_empty() && n != "n.A.");
                 out.push(Link {
                     url: b64_text(&url[1]).trim().to_string(),
-                    name: FILE_NAME.captures(file).map(|n| b64_text(&n[1])),
+                    name,
                     package: package.clone(),
                 });
             }
@@ -199,11 +205,13 @@ mod tests {
     fn sample_dlc(file_key: &[u8; 16]) -> (Vec<u8>, String) {
         let e = |s: &str| STANDARD.encode(s);
         let xml = format!(
-            r#"<dlc><header/><content><package name="{}"><file><url>{}</url><filename>{}</filename></file><file><url>{}</url></file></package></content></dlc>"#,
+            r#"<dlc><header/><content><package name="{}"><file><url>{}</url><filename>{}</filename></file><file><url>{}</url></file><file><url>{}</url><filename>{}</filename></file></package></content></dlc>"#,
             e("My Package"),
             e("https://host.example/f/abc"),
             e("abc.part1.rar"),
             e("https://other.example/x.zip"),
+            e("https://third.example/d/abc"),
+            e("n.A."),
         );
         let body = STANDARD.encode(encrypt(file_key, file_key, STANDARD.encode(xml).as_bytes()));
         let dlc_key = "K".repeat(88);
@@ -250,6 +258,12 @@ mod tests {
                 },
                 Link {
                     url: "https://other.example/x.zip".into(),
+                    name: None,
+                    package: "My Package".into()
+                },
+                // A name the container marks unknown is no name.
+                Link {
+                    url: "https://third.example/d/abc".into(),
                     name: None,
                     package: "My Package".into()
                 },

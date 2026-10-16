@@ -388,6 +388,9 @@ pub struct Cx<'a> {
     pub http: &'a Http,
     pub cfg: &'a Config,
     pub tokens: &'a Tokens,
+    /// The route to JDownloader's key service, which a `.dlc` is decrypted
+    /// through: the service's own, not that of the host the file came from.
+    pub key_service: &'a Http,
 }
 
 /// Lower-case host name without port or `www.`.
@@ -433,6 +436,12 @@ pub fn unwraps(url: &str) -> bool {
         "filecrypt.cc" => filecrypt::is_dlc(url),
         _ => false,
     }
+}
+
+/// Whether the link is a wrapper's, gated page or container alike: it
+/// stands for further links, never for one file.
+fn is_wrapper(url: &str) -> bool {
+    matches!(host_of(url).as_str(), "fileguard.cc" | "filecrypt.cc")
 }
 
 /// Direct links for `url`. Folders and lists expand to several entries.

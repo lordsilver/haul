@@ -8,7 +8,7 @@ Any file whose name does not end in `.dlc` is read as text, so `.txt` is the com
 
 ## `.dlc` files
 
-A `.dlc` holds an encrypted list of links, and decrypting it needs JDownloader's key service once: the file's last 88 characters go to the service, its answer decrypts the file key, and that key decrypts the list. Import therefore works while the service is reachable, and the names and the package (the subfolder its links get) come out of the decrypted list.
+A `.dlc` holds an encrypted list of links, and decrypting it needs JDownloader's key service once: the file's last 88 characters go to the service, its answer decrypts the file key, and that key decrypts the list. Import therefore works while the service is reachable, and the names and the package (the subfolder its links get) come out of the decrypted list; a name the list marks unknown (`n.A.`) counts as none, so that link is named the way a pasted one is. The service goes through the proxy like a host, even for a `.dlc` fetched from a host you let go direct.
 
 ## Wrapper pages
 
@@ -16,4 +16,6 @@ A wrapper page holds one release's links on many hosts behind a gate; filecrypt.
 
 A fileguard.cc link needs no person: its gate is a proof of work, and Haul solves it. When the page lists one file — one link per host — the hosts become mirrors of one row, so the host you prefer downloads it and the others are failovers; a page that lists several files gives each link a row of its own.
 
-A filecrypt.cc page needs a real browser. Solve its gate in the app's browser (it goes through the proxy like the downloads) and the page offers the container as a `.dlc` download: hand the link back, or add it later, and Haul fetches and unpacks it like any dropped container. Until then the page waits under **Needs you**.
+A filecrypt.cc page needs a real browser. Solve its gate in the app's browser (it goes through the proxy like the downloads) and the page offers the container as a `.dlc` download: hand the link back, or add it later, and Haul fetches and unpacks it like any dropped container. Until then the page waits under **Needs you**, and it waits there again if the link handed back fails.
+
+Either way, a link the queue already holds is not added again, so the same wrapper added twice downloads nothing twice.

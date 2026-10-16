@@ -20,7 +20,7 @@ In the desktop app, **Open here** opens the page in Haul's own browser window: c
 
 ## Hosts
 
-The **Hosts** view shows the transfer speed per host, the star that makes it preferred (pixeldrain.com is starred from the start), slots (files downloaded from it at once), the folder its files go to (a subfolder of the download folder), and the proxy route. A host that refused more downloads at once shows _Takes N at a time_; the slot buttons set your own limit and drop the learned one. A host that looks blocked through the proxy offers **Allow direct**, which needs a second click because it reveals your real IP address to that host.
+The **Hosts** view lists each host Haul has reached and each preferred one, with the transfer speed per host, the star that makes it preferred (pixeldrain.com is starred from the start), slots (files downloaded from it at once), the folder its files go to (a subfolder of the download folder), and the proxy route. A host that refused more downloads at once shows _Takes N at a time_; the slot buttons set your own limit and drop the learned one. A host that looks blocked through the proxy offers **Allow direct**, which needs a second click because it reveals your real IP address to that host.
 
 ## Selecting and removing
 

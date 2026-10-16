@@ -1,20 +1,29 @@
 //! fileguard.cc: a wrapper page that lists one file's links on many hosts
 //! behind an ALTCHA proof of work. That gate asks for no person — the
-//! challenge is a SHA-256 hash the client can search — so one solve here
-//! yields every mirror link at once.
+//! challenge is a hash (SHA-256 today) the client can search — so one solve
+//! here yields every mirror link at once.
 
-use std::{collections::HashSet, sync::LazyLock};
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use base64::Engine as _;
 use regex::Regex;
 use reqwest::header::REFERER;
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
+use sha2::{Digest, Sha256, Sha512};
 
-use super::{Cx, Entry, ResolveError, guess_name, host_of, retry_after, to_hex};
+use super::{Cx, Entry, ResolveError, guess_name, host_of, is_wrapper, retry_after};
 
 static CSRF: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"name="csrf_token"\s+value="([^"]+)""#).unwrap());
+/// Where the page's widget fetches its challenge.
+static CHALLENGE_URL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)<altcha-widget\s[^>]*challengeurl="([^"]+)""#).unwrap());
 static ANCHOR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)<a\s[^>]*>"#).unwrap());
 static HREF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\shref="([^"]+)""#).unwrap());
 
@@ -40,14 +49,56 @@ struct Solution<'a> {
     signature: &'a str,
 }
 
-/// The number whose `sha256(salt + number)` is the challenge.
-fn solve(salt: &str, challenge: &str, max_number: u64) -> Option<u64> {
-    (0..=max_number).find(|number| {
-        let mut hash = sha2::Sha256::new();
-        hash.update(salt.as_bytes());
-        hash.update(number.to_string().as_bytes());
-        to_hex(&hash.finalize()).eq_ignore_ascii_case(challenge)
-    })
+/// The number whose hash of `salt + number` is `challenge`, searched up to
+/// `max_number` unless `stop` is set first.
+fn solve<D: Digest + Clone>(
+    salt: &str,
+    challenge: &[u8],
+    max_number: u64,
+    stop: &AtomicBool,
+) -> Option<u64> {
+    let mut salted = D::new();
+    salted.update(salt.as_bytes());
+    (0..=max_number)
+        .take_while(|number| !number.is_multiple_of(4096) || !stop.load(Ordering::Relaxed))
+        .find(|number| {
+            let mut hash = salted.clone();
+            hash.update(number.to_string().as_bytes());
+            hash.finalize()[..] == *challenge
+        })
+}
+
+/// The search for the algorithm a challenge names; ALTCHA's are spelled
+/// `SHA-256` and the like.
+type Search = fn(&str, &[u8], u64, &AtomicBool) -> Option<u64>;
+
+fn search_for(algorithm: &str) -> Option<Search> {
+    match algorithm.to_ascii_uppercase().as_str() {
+        "SHA-256" => Some(solve::<Sha256>),
+        "SHA-512" => Some(solve::<Sha512>),
+        _ => None,
+    }
+}
+
+/// `hex` as bytes, when it is hexadecimal.
+fn unhex(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+/// Tells a search on another thread to stop once the resolve that started it
+/// is dropped, as a paused or removed download's is.
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// The links on the solved page: every anchor marked as a target.
@@ -66,15 +117,23 @@ fn target_links(html: &str) -> Vec<String> {
 /// release's mirrors; when the links that name the file agree on one name,
 /// every entry gets it, so their rows merge before anything downloads.
 /// Several links on one host, or names that disagree, are several files and
-/// stay as they are.
+/// stay as they are. A link to another wrapper is more links, not the file,
+/// so it keeps a row of its own.
 fn rows(urls: Vec<String>) -> Vec<Entry> {
     let hosts: HashSet<String> = urls.iter().map(|url| host_of(url)).collect();
-    let names: HashSet<String> = urls.iter().filter_map(|url| guess_name(url)).collect();
+    let names: HashSet<String> = urls
+        .iter()
+        .filter(|url| !is_wrapper(url))
+        .filter_map(|url| guess_name(url))
+        .collect();
     let shared = (urls.len() == hosts.len() && names.len() == 1)
         .then(|| names.into_iter().next().expect("one name"));
     urls.into_iter()
         .map(|url| {
-            let name = shared.clone().or_else(|| guess_name(&url));
+            let name = match &shared {
+                Some(name) if !is_wrapper(&url) => Some(name.clone()),
+                _ => guess_name(&url),
+            };
             Entry {
                 name,
                 url,
@@ -116,10 +175,18 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             "fileguard.cc answered without its proof-of-work form; open the page".into(),
         ));
     };
+    // Where the page's own widget asks, and where fileguard.cc has it otherwise.
+    let challenge_url = CHALLENGE_URL
+        .captures(&html)
+        .and_then(|c| {
+            let page = url::Url::parse(&page).ok()?;
+            page.join(&c[1].replace("&amp;", "&")).ok()
+        })
+        .map_or_else(|| format!("{base}/altcha_challenge.php"), String::from);
     let r = cx
         .http
         .client
-        .get(format!("{base}/altcha_challenge.php"))
+        .get(challenge_url)
         .header(REFERER, &page)
         .send()
         .await?;
@@ -139,18 +206,40 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             "fileguard.cc challenge answered HTTP {status}; open the page"
         )));
     }
-    let challenge: Challenge = r.json().await?;
+    let challenge: Challenge = match r.json().await {
+        Ok(challenge) => challenge,
+        // A page where the challenge should be, a browser check say.
+        Err(e) if e.is_decode() => {
+            return Err(ResolveError::NeedsUser(
+                "fileguard.cc answered without its proof-of-work challenge; open the page".into(),
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    // A challenge Haul cannot work is still one a browser can.
+    let unsolved = |why: &str| {
+        ResolveError::NeedsUser(format!("fileguard.cc's proof of work {why}; open the page"))
+    };
+    let Some(search) = search_for(&challenge.algorithm) else {
+        return Err(unsolved(&format!(
+            "uses {}, which Haul does not do",
+            challenge.algorithm
+        )));
+    };
+    let Some(target) = unhex(&challenge.challenge) else {
+        return Err(unsolved("is not hexadecimal"));
+    };
     let number = {
-        let (salt, hash, max) = (
-            challenge.salt.clone(),
-            challenge.challenge.clone(),
-            challenge.max_number,
-        );
+        let (salt, max) = (challenge.salt.clone(), challenge.max_number);
+        let stop = Arc::new(AtomicBool::new(false));
+        // Dropping this resolve (the download paused or removed) stops the
+        // search as well; the host decides how long it may be.
+        let _stop = StopOnDrop(stop.clone());
         // The search is CPU work with no await in it: keep it off the reactor.
-        tokio::task::spawn_blocking(move || solve(&salt, &hash, max))
+        tokio::task::spawn_blocking(move || search(&salt, &target, max, &stop))
             .await
             .map_err(|e| ResolveError::failed(e.to_string()))?
-            .ok_or_else(|| ResolveError::failed("proof of work out of range"))?
+            .ok_or_else(|| unsolved("has no answer Haul can find"))?
     };
     let solution = Solution {
         algorithm: &challenge.algorithm,
@@ -199,19 +288,38 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
 mod tests {
     use super::*;
 
+    fn digest<D: Digest>(salt: &str, number: u64) -> Vec<u8> {
+        let mut hash = D::new();
+        hash.update(salt.as_bytes());
+        hash.update(number.to_string().as_bytes());
+        hash.finalize().to_vec()
+    }
+
     #[test]
     fn proof_of_work_finds_the_number() {
         let salt = "cc348abfe0f7d4fded4b8dba?expires=1792121341";
         let number = 13186;
-        let challenge = {
-            let mut hash = sha2::Sha256::new();
-            hash.update(salt.as_bytes());
-            hash.update(number.to_string().as_bytes());
-            to_hex(&hash.finalize())
-        };
-        assert_eq!(solve(salt, &challenge, 180_000), Some(number));
-        assert_eq!(solve(salt, &challenge, number - 1), None);
-        assert_eq!(solve(salt, &"0".repeat(64), 100), None);
+        let go = AtomicBool::new(false);
+        let challenge = digest::<Sha256>(salt, number);
+        assert_eq!(
+            solve::<Sha256>(salt, &challenge, 180_000, &go),
+            Some(number)
+        );
+        assert_eq!(solve::<Sha256>(salt, &challenge, number - 1, &go), None);
+        assert_eq!(solve::<Sha256>(salt, &[0; 32], 100, &go), None);
+        // The algorithm the challenge names.
+        let sha512 = search_for("SHA-512").unwrap();
+        assert_eq!(
+            sha512(salt, &digest::<Sha512>(salt, number), 180_000, &go),
+            Some(number)
+        );
+        assert!(search_for("SHA-1").is_none());
+        // A search told to stop gives up, however far it may go.
+        let stop = AtomicBool::new(true);
+        assert_eq!(solve::<Sha256>(salt, &challenge, u64::MAX, &stop), None);
+        assert_eq!(unhex("0aFf"), Some(vec![0x0a, 0xff]));
+        assert_eq!(unhex("0a0"), None);
+        assert_eq!(unhex("zz"), None);
     }
 
     #[test]
@@ -256,6 +364,24 @@ mod tests {
                 .map(|e| e.name.as_deref())
                 .collect::<Vec<_>>(),
             [Some("one.rar"), Some("two.rar")]
+        );
+
+        // Another wrapper's links are more links, not this file: they neither
+        // take its name nor stop the others sharing it.
+        let nested = rows(vec![
+            "https://rapidgator.net/file/xyz/Sledders.RUNE.rar".into(),
+            "https://pixeldrain.com/u/VF18oYXa".into(),
+            "https://fileguard.cc/0123456789/pixeldrain".into(),
+            "https://filecrypt.cc/DLC/ABCDEF.dlc".into(),
+        ]);
+        assert_eq!(
+            nested.iter().map(|e| e.name.as_deref()).collect::<Vec<_>>(),
+            [
+                Some("Sledders.RUNE.rar"),
+                Some("Sledders.RUNE.rar"),
+                None,
+                Some("ABCDEF.dlc")
+            ]
         );
     }
 

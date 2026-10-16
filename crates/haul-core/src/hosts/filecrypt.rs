@@ -58,19 +58,26 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         ));
     }
     let bytes = r.bytes().await?;
-    let links = container::parse_dlc(&cx.http.client, &cx.cfg.endpoints.dlc_service, &bytes)
-        .await
-        .map_err(ResolveError::failed)?;
+    if bytes.trim_ascii().is_empty() {
+        // What filecrypt.cc sends for an id its page has not handed out.
+        return Err(ResolveError::failed(
+            "sent an empty .dlc: use the .dlc link its solved page offers",
+        ));
+    }
+    let links = container::parse_dlc(
+        &cx.key_service.client,
+        &cx.cfg.endpoints.dlc_service,
+        &bytes,
+    )
+    .await
+    .map_err(ResolveError::failed)?;
     if links.is_empty() {
         return Err(ResolveError::failed("the .dlc held no links"));
     }
     Ok(links
         .into_iter()
         .map(|link| Entry {
-            name: link
-                .name
-                .filter(|n| !n.trim().is_empty() && n != "n.A.")
-                .or_else(|| guess_name(&link.url)),
+            name: link.name.or_else(|| guess_name(&link.url)),
             package: (!link.package.is_empty()).then_some(link.package),
             url: link.url,
             deferred: true,

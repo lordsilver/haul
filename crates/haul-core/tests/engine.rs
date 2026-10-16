@@ -353,9 +353,13 @@ async fn start_server() -> (Server, u16) {
                 )
             })
             .post(
-                |headers: HeaderMap, Form(form): Form<HashMap<String, String>>| async move {
+                |State(s): State<Server>,
+                 UrlPath(id): UrlPath<String>,
+                 headers: HeaderMap,
+                 Form(form): Form<HashMap<String, String>>| async move {
                     use base64::{Engine as _, engine::general_purpose::STANDARD};
 
+                    log(&s, &format!("/vault/{id} solved"), &headers);
                     assert_eq!(form.get("csrf_token").map(String::as_str), Some("tok-1"));
                     let raw = STANDARD.decode(form.get("altcha").unwrap()).unwrap();
                     let solved: serde_json::Value = serde_json::from_slice(&raw).unwrap();
@@ -397,12 +401,14 @@ async fn start_server() -> (Server, u16) {
         .route(
             "/DLC/{file}",
             get(|headers: HeaderMap, UrlPath(file): UrlPath<String>| async move {
-                assert_eq!(file, "abc123.dlc");
+                if file != "abc123.dlc" {
+                    return StatusCode::NOT_FOUND.into_response();
+                }
                 let host = headers
                     .get(header::HOST)
                     .and_then(|h| h.to_str().ok())
                     .unwrap_or_default();
-                dlc_fixture(host).0
+                dlc_fixture(host).0.into_response()
             }),
         )
         .route(
@@ -534,6 +540,14 @@ async fn wait_for(engine: &Engine, what: &str, f: impl Fn(&Snapshot) -> bool) ->
 
 fn all_done(s: &Snapshot) -> bool {
     !s.items.is_empty() && s.items.iter().all(|i| i.status == "done")
+}
+
+/// Downloads under way from `host`.
+fn active(s: &Snapshot, host: &str) -> usize {
+    s.hosts
+        .iter()
+        .find(|h| h.name == host)
+        .map_or(0, |h| h.active)
 }
 
 #[tokio::test]
@@ -737,7 +751,7 @@ async fn pause_resume_and_remove() {
     assert!(engine.item_action(&f, ItemAction::Pause));
     // Paused once its attempt has let go of the host slot and the file.
     let s = wait_for(&engine, "pause", |s| {
-        s.items[0].status == "paused" && s.hosts[0].active == 1
+        s.items[0].status == "paused" && active(s, "127.0.0.1") == 1
     })
     .await;
     let kept = std::fs::metadata(t.partial(&f)).unwrap().len();
@@ -746,7 +760,7 @@ async fn pause_resume_and_remove() {
 
     assert!(engine.item_action(&g, ItemAction::Remove));
     wait_for(&engine, "removal", |s| {
-        s.items.len() == 1 && s.hosts[0].active == 0
+        s.items.len() == 1 && active(s, "127.0.0.1") == 0
     })
     .await;
     // The attempt deletes it right after giving its slot back.
@@ -1019,7 +1033,7 @@ async fn pause_all_pauses_running_transfers() {
     engine.add_text(&format!("{}/slow/m.bin", t.ip), "");
     wait_for(&engine, "progress", |s| s.items[0].done > 0).await;
     engine.set_paused(true);
-    let s = wait_for(&engine, "a stop", |s| s.hosts[0].active == 0).await;
+    let s = wait_for(&engine, "a stop", |s| active(s, "127.0.0.1") == 0).await;
     assert_eq!(
         s.items[0].status, "queued",
         "it resumes with everything else"
@@ -1089,6 +1103,30 @@ async fn a_wrapper_link_expands_into_mirrors_that_merge() {
     }
 }
 
+/// A wrapper's links already in the queue are not added again, so the same
+/// wrapper added twice (copied again, say) downloads nothing twice.
+#[tokio::test]
+async fn a_wrapper_added_again_downloads_nothing_twice() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://fileguard.cc/vault/abc", "");
+    let first = wait_for(&engine, "the wrapper's file", |s| {
+        s.items.len() == 1 && all_done(s)
+    })
+    .await;
+    let fetched = t.server.requests("/api/file/kept").len();
+
+    assert_eq!(
+        engine.add_text("https://fileguard.cc/vault/abc", "").added,
+        1
+    );
+    let s = wait_for(&engine, "the second solve", |s| s.items.len() == 1).await;
+    assert_eq!(t.server.requests("/vault/abc solved").len(), 2);
+    assert_eq!(s.items[0].id, first.items[0].id);
+    assert_eq!(s.items[0].status, "done");
+    assert_eq!(t.server.requests("/api/file/kept").len(), fetched);
+}
+
 #[tokio::test]
 async fn a_filecrypt_gate_hands_back_its_dlc_that_unpacks() {
     let t = Setup::new().await;
@@ -1115,6 +1153,48 @@ async fn a_filecrypt_gate_hands_back_its_dlc_that_unpacks() {
     assert_eq!(t.downloaded("My Package/two.bin"), content("two.bin", SIZE));
     assert_eq!(files_in(&t.root.join("dl")), ["My Package"]);
     assert_eq!(s.items.len(), 2, "the container row itself is gone");
+}
+
+/// A container link handed back that turns out dead asks for the gate's page
+/// again, as any link handed back does, and does not name the row.
+#[tokio::test]
+async fn a_dead_container_link_asks_for_the_page_again() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let page = "https://filecrypt.cc/Container/abc.html".to_string();
+    engine.add_text(&page, "");
+    let s = wait_for(&engine, "the gate", |s| s.items[0].status == "captcha").await;
+    let id = s.items[0].id.clone();
+    engine
+        .set_direct(
+            &id,
+            "https://filecrypt.cc/DLC/gone.dlc",
+            BTreeMap::new(),
+            Some("gone.dlc".into()),
+        )
+        .unwrap();
+    let s = wait_for(&engine, "the gate again", |s| {
+        s.items[0].status == "captcha" && s.items[0].error.contains("404")
+    })
+    .await;
+    assert_eq!(s.items[0].open_urls, std::slice::from_ref(&page));
+    assert_eq!(engine.page_for(&id).as_deref(), Some(page.as_str()));
+    assert_eq!(s.items[0].name, page, "a container names no file");
+
+    // The page's next hand-back is the container that unpacks.
+    engine
+        .set_direct(
+            &id,
+            "https://filecrypt.cc/DLC/abc123.dlc",
+            BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+    wait_for(&engine, "the container's files", |s| {
+        s.items.len() == 2 && all_done(s)
+    })
+    .await;
+    assert_eq!(t.downloaded("My Package/one.bin"), content("one.bin", SIZE));
 }
 
 #[tokio::test]
@@ -1250,10 +1330,23 @@ async fn clearing_the_default_preference_sticks() {
         .config_path()
         .expect("started from a settings file")
         .to_path_buf();
+    // Listed before any download reached it, so it can be seen and unstarred.
+    let hosts = engine.snapshot().hosts;
+    assert_eq!(
+        hosts
+            .iter()
+            .map(|h| (h.name.as_str(), h.preferred, h.ok))
+            .collect::<Vec<_>>(),
+        [("pixeldrain.com", Some(0), 0)]
+    );
     engine.set_preferred("pixeldrain.com", false).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("preferred_hosts = []"), "{text}");
     assert!(Config::parse(&text).unwrap().preferred_hosts.is_empty());
+    assert!(
+        engine.snapshot().hosts.is_empty(),
+        "never reached, not preferred"
+    );
 }
 
 #[tokio::test]

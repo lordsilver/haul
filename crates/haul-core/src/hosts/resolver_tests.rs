@@ -80,6 +80,7 @@ async fn pixeldrain_file_list_and_captcha() {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &http,
     };
 
     let file = pixeldrain::resolve(&cx, "https://pixeldrain.com/u/abc")
@@ -171,6 +172,7 @@ async fn gofile_guest_token_and_folders() {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &http,
     };
 
     let entries = gofile::resolve(&cx, "https://gofile.io/d/abc")
@@ -219,6 +221,7 @@ async fn buzzheavier_redirects_rate_limits_and_gone_files() {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &http,
     };
 
     let e = buzzheavier::resolve(&cx, "https://buzzheavier.com/ok")
@@ -271,6 +274,7 @@ async fn onefichier_api_key_and_free_mode() {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &http,
     };
 
     let e = onefichier::resolve(&cx, &format!("{base}/?ready&af=99"))
@@ -294,6 +298,7 @@ async fn onefichier_api_key_and_free_mode() {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &http,
     };
     let e = onefichier::resolve(&cx, "https://1fichier.com/?abc&af=1")
         .await
@@ -335,6 +340,7 @@ async fn rapidgator_logs_in_once_and_relogs_after_errors() {
             http: &http,
             cfg: &cfg,
             tokens: &tokens,
+            key_service: &http,
         };
         assert!(
             matches!(rapidgator::resolve(&cx, "https://rapidgator.net/file/x").await, Err(ResolveError::Failed(m)) if m.contains("premium"))
@@ -346,6 +352,7 @@ async fn rapidgator_logs_in_once_and_relogs_after_errors() {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &http,
     };
     let good = "https://rapidgator.net/file/abcdefabcdefabcdefabcdefabcdefab/game.part1.rar.html";
     let e = rapidgator::resolve(&cx, good).await.unwrap();
@@ -392,6 +399,7 @@ async fn nitroflare_premium_link() {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &http,
     };
     let e = nitroflare::resolve(&cx, "https://nitroflare.com/view/ABC123/n.zip")
         .await
@@ -477,6 +485,7 @@ async fn generic_links_and_probes() {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &http,
     };
 
     let e = generic::resolve(&cx, &format!("{base}/file/data.bin"))
@@ -509,6 +518,7 @@ async fn generic_links_and_probes() {
         http: &quick,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &quick,
     };
     let e = generic::resolve(&stall_cx, &format!("{base}/stall/data.bin"))
         .await
@@ -564,35 +574,63 @@ async fn fileguard_solves_the_proof_of_work_and_lists_links() {
         </div>"#;
     let challenge_route = challenge.clone();
     let challenge_post = challenge.clone();
+    // The gate's form, its widget fetching the challenge from `challenge_url`
+    // (none: the widget does not say).
+    let gate = |challenge_url: Option<&'static str>| {
+        let widget = challenge_url
+            .map(|url| format!(r#"<altcha-widget challengeurl="{url}" hidelogo></altcha-widget>"#))
+            .unwrap_or_default();
+        let html = format!(
+            r#"<form method="post" action="/vault/abc/1fichier">
+                 <input type="hidden" name="csrf_token" value="tok-1">
+                 {widget}
+               </form>"#
+        );
+        move || {
+            let html = html.clone();
+            async move { ([("content-type", "text/html")], html) }
+        }
+    };
+    let sha1 = || async {
+        Json(json!({
+            "algorithm": "SHA-1",
+            "challenge": "00".repeat(20),
+            "maxNumber": 10u64,
+            "salt": "s",
+            "signature": "sig",
+        }))
+    };
     let app = Router::new()
         .route(
             "/vault/abc/1fichier",
-            get(|| async {
-                (
-                    [("content-type", "text/html")],
-                    r#"<form method="post" action="/vault/abc/1fichier">
-                         <input type="hidden" name="csrf_token" value="tok-1">
-                         <altcha-widget challengeurl="/altcha_challenge.php"></altcha-widget>
-                       </form>"#,
-                )
-            })
-            .post(move |Form(form): Form<HashMap<String, String>>| {
-                let challenge = challenge_post.clone();
-                async move {
-                    assert_eq!(form.get("csrf_token").map(String::as_str), Some("tok-1"));
-                    let raw = STANDARD.decode(form.get("altcha").unwrap()).unwrap();
-                    let solved: Value = serde_json::from_slice(&raw).unwrap();
-                    assert_eq!(solved["number"].as_u64(), Some(13_186));
-                    assert_eq!(solved["challenge"].as_str(), Some(challenge.as_str()));
-                    ([("content-type", "text/html")], solved_html)
-                }
-            }),
+            // The challenge where the page's widget says, not where
+            // fileguard.cc has it today.
+            get(gate(Some("/pow/challenge?v=1&amp;b=2"))).post(
+                move |Form(form): Form<HashMap<String, String>>| {
+                    let challenge = challenge_post.clone();
+                    async move {
+                        assert_eq!(form.get("csrf_token").map(String::as_str), Some("tok-1"));
+                        let raw = STANDARD.decode(form.get("altcha").unwrap()).unwrap();
+                        let solved: Value = serde_json::from_slice(&raw).unwrap();
+                        assert_eq!(solved["number"].as_u64(), Some(13_186));
+                        assert_eq!(solved["challenge"].as_str(), Some(challenge.as_str()));
+                        ([("content-type", "text/html")], solved_html)
+                    }
+                },
+            ),
         )
         .route(
-            "/altcha_challenge.php",
-            get(move || {
+            "/pow/challenge",
+            get(move |Query(q): Query<HashMap<String, String>>| {
                 let challenge = challenge_route.clone();
                 async move {
+                    assert_eq!(
+                        (
+                            q.get("v").map(String::as_str),
+                            q.get("b").map(String::as_str)
+                        ),
+                        (Some("1"), Some("2"))
+                    );
                     Json(json!({
                         "algorithm": "SHA-256",
                         "challenge": challenge,
@@ -602,7 +640,22 @@ async fn fileguard_solves_the_proof_of_work_and_lists_links() {
                     }))
                 }
             }),
-        );
+        )
+        .route("/vault/sha1", get(gate(Some("/pow/sha1"))))
+        .route("/pow/sha1", get(sha1))
+        .route("/vault/check", get(gate(Some("/pow/check"))))
+        .route(
+            "/pow/check",
+            get(|| async {
+                (
+                    [("content-type", "text/html")],
+                    "<html>Checking your browser</html>",
+                )
+            }),
+        )
+        // A page whose widget does not say: fileguard.cc's own address.
+        .route("/vault/plain", get(gate(None)))
+        .route("/altcha_challenge.php", get(sha1));
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
@@ -610,6 +663,7 @@ async fn fileguard_solves_the_proof_of_work_and_lists_links() {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &http,
     };
 
     let entries = fileguard::resolve(&cx, &format!("{base}/vault/abc/1fichier"))
@@ -637,6 +691,21 @@ async fn fileguard_solves_the_proof_of_work_and_lists_links() {
         matches!(&err, ResolveError::Failed(m) if m.contains("404")),
         "{err:?}"
     );
+
+    // What Haul cannot solve, a person in a browser still can.
+    for (vault, says) in [
+        ("sha1", "uses SHA-1"),
+        ("check", "without its proof-of-work challenge"),
+        ("plain", "uses SHA-1"),
+    ] {
+        let err = fileguard::resolve(&cx, &format!("{base}/vault/{vault}"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ResolveError::NeedsUser(m) if m.contains(says)),
+            "{vault}: {err:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -698,6 +767,11 @@ async fn filecrypt_dlc_links_become_entries() {
             }),
         )
         .route(
+            "/DLC/unlisted.dlc",
+            // An id the solved page did not hand out: a container of nothing.
+            get(|| async { "" }),
+        )
+        .route(
             "/DLC/gate.dlc",
             // A wrong id: the host answers its page rather than a container.
             get(|| async {
@@ -709,22 +783,31 @@ async fn filecrypt_dlc_links_become_entries() {
         )
         .route(
             "/dlc",
-            get(move |Query(q): Query<HashMap<String, String>>| {
-                let rc = rc.clone();
-                async move {
-                    assert_eq!(q.get("srcType").map(String::as_str), Some("dlc"));
-                    assert_eq!(q.get("data").map(String::len), Some(88));
-                    format!("<rc>{rc}</rc>")
-                }
-            }),
+            get(
+                move |Query(q): Query<HashMap<String, String>>, headers: HeaderMap| {
+                    let rc = rc.clone();
+                    async move {
+                        // Reached through the key service's own route.
+                        assert_eq!(
+                            headers.get("user-agent").and_then(|v| v.to_str().ok()),
+                            Some("key-service-agent")
+                        );
+                        assert_eq!(q.get("srcType").map(String::as_str), Some("dlc"));
+                        assert_eq!(q.get("data").map(String::len), Some(88));
+                        format!("<rc>{rc}</rc>")
+                    }
+                },
+            ),
         );
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
+    let key_service = Http::new(None, "key-service-agent").unwrap();
     let cx = Cx {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
+        key_service: &key_service,
     };
 
     let entries = filecrypt::resolve(&cx, &format!("{base}/DLC/abc123.dlc"))
@@ -750,6 +833,14 @@ async fn filecrypt_dlc_links_become_entries() {
         .unwrap_err();
     assert!(
         matches!(&err, ResolveError::Failed(m) if m.contains("no links")),
+        "{err:?}"
+    );
+
+    let err = filecrypt::resolve(&cx, &format!("{base}/DLC/unlisted.dlc"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ResolveError::Failed(m) if m.contains("empty .dlc")),
         "{err:?}"
     );
 
