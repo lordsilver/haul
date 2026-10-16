@@ -1,5 +1,7 @@
 //! Any host without its own resolver: a link that answers with a file is used
-//! as is; one that answers with a web page needs a person.
+//! as is; one that answers with a web page needs a person, unless the page
+//! links files on hosts Haul knows (a release's page on a blog or forum,
+//! say): then it is a wrapper of those links ([`page_links`]).
 
 use std::sync::LazyLock;
 
@@ -7,8 +9,9 @@ use regex::Regex;
 use reqwest::header::{ACCEPT_ENCODING, RANGE};
 
 use super::{
-    Cx, Entry, Probed, ResolveError, content_length, content_range, content_type, disposition_name,
-    guess_name, header_checksum, host_of, retry_after,
+    Cx, Entry, Probed, ResolveError, Unwrapped, content_length, content_range, content_type,
+    disposition_name, group_mirrors, guess_name, header_checksum, host_of, known, page_text,
+    retry_after, wraps,
 };
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
@@ -131,4 +134,100 @@ pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
             checksum: None,
         })
     })
+}
+
+/// The most of a page read for its links.
+const PAGE: usize = 4 * 1024 * 1024;
+
+/// Addresses in a page: in `href`s, and written out in its text.
+static HREF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)\bhref\s*=\s*["']([^"'#\s]+)"#).unwrap());
+static BARE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>()\[\]{}]+"#).unwrap());
+
+/// The links of a web page to files on hosts Haul knows and to wrappers,
+/// each once, in the page's order; mirrors of one file grouped as a
+/// wrapper's are. Links elsewhere (the site's own pages, ads) are left out,
+/// and a page with none is not one: it waits for a person as before.
+pub(super) async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
+    let mut r = cx.http.client.get(url).send().await?;
+    let status = r.status().as_u16();
+    if matches!(status, 429 | 503) {
+        let seconds = retry_after(r.headers(), 90);
+        return Err(ResolveError::Wait {
+            seconds,
+            message: format!("{status} rate limited"),
+        });
+    }
+    if status >= 400 {
+        return Err(ResolveError::Failed(format!("HTTP {status}")));
+    }
+    if !content_type(r.headers()).contains("html") {
+        return Err(ResolveError::failed("not a web page"));
+    }
+    let base = r.url().clone();
+    let mut page = Vec::new();
+    while page.len() < PAGE {
+        match r.chunk().await {
+            Ok(Some(chunk)) => page.extend_from_slice(&chunk),
+            _ => break,
+        }
+    }
+    let page = String::from_utf8_lossy(&page);
+    let urls = links_in(&page, &base, url);
+    if urls.is_empty() {
+        return Err(ResolveError::NeedsUser(format!(
+            "{} answers with a web page that links no host Haul knows: it wants a browser",
+            host_of(url)
+        )));
+    }
+    let title = [&OG_TITLE, &TITLE]
+        .into_iter()
+        .find_map(|pattern| page_text(&pattern.captures(&page)?[1]));
+    Ok(Unwrapped {
+        title,
+        files: group_mirrors(urls),
+    })
+}
+
+/// The links in `page` to known hosts and wrappers, absolute, each once.
+fn links_in(page: &str, base: &url::Url, own: &str) -> Vec<String> {
+    let found = HREF
+        .captures_iter(page)
+        .map(|c| c.get(1).expect("one group").as_str())
+        .chain(BARE.find_iter(page).map(|m| m.as_str()));
+    let mut seen = std::collections::HashSet::new();
+    found
+        .filter_map(|raw| base.join(&raw.replace("&amp;", "&")).ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .map(|u| u.to_string())
+        .filter(|u| u != own && (wraps(u) || known(&host_of(u)).is_some_and(|k| !k.wraps())))
+        // A host's front page is not a file.
+        .filter(|u| url::Url::parse(u).is_ok_and(|p| p.path().len() > 1 || p.query().is_some()))
+        .filter(|u| seen.insert(u.clone()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_gives_its_links_to_known_hosts() {
+        let page = r#"<a href="/about">About</a>
+            <a href="https://casino.example/win">Ad</a>
+            <a href="https://filecrypt.cc/Container/679EC150BC.html">Mirror 1</a>
+            <a href='https://rapidgator.net/file/abc/R.part1.rar.html'>Part 1</a>
+            <a href="https://rapidgator.net/">Rapidgator</a>
+            <p>Also: https://pixeldrain.com/u/xyz and https://filecrypt.cc/Container/679EC150BC.html again</p>"#;
+        let base = url::Url::parse("https://blog.example/post/1").unwrap();
+        assert_eq!(
+            links_in(page, &base, "https://blog.example/post/1"),
+            [
+                "https://filecrypt.cc/Container/679EC150BC.html",
+                "https://rapidgator.net/file/abc/R.part1.rar.html",
+                "https://pixeldrain.com/u/xyz",
+            ]
+        );
+    }
 }

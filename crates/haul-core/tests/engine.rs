@@ -570,6 +570,23 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/blog/{post}",
+            // A release's post on a site Haul has no code for: its links to
+            // hosts Haul knows, among the site's own and an ad.
+            get(|UrlPath(post): UrlPath<String>| async move {
+                let body = match post.as_str() {
+                    "release" => r#"<html><head><title>Release R</title></head><body>
+                        <a href="/blog/other">Older post</a>
+                        <a href="https://casino.example/win">Win big</a>
+                        <a href="https://pixeldrain.com/u/postone">Part 1</a>
+                        <a href="https://pixeldrain.com/u/posttwo">Part 2</a>
+                        </body></html>"#,
+                    _ => "<html><head><title>Nothing here</title></head><body><a href=\"/\">Home</a></body></html>",
+                };
+                ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
+            }),
+        )
+        .route(
             "/api/file/{id}",
             get(|State(s): State<Server>, UrlPath(id): UrlPath<String>, headers: HeaderMap| async move {
                 log(&s, &format!("/api/file/{id}"), &headers);
@@ -1268,6 +1285,39 @@ async fn removing_a_wrappers_last_file_takes_the_wrapper() {
     assert!(engine.remove(&s.items[0].id).await.unwrap());
     let s = engine.snapshot();
     assert_eq!((s.items.len(), s.wrappers.len()), (0, 0));
+}
+
+/// A web page on a site Haul has no code for, linking files on hosts it
+/// knows, is a wrapper of those links; one linking none waits for a person.
+#[tokio::test]
+async fn a_page_of_links_is_a_wrapper() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/blog/release", t.ip), "");
+    let s = wrapper_settled(&engine, "done").await;
+    assert_eq!(s.wrappers[0].title.as_deref(), Some("Release R"));
+    assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 2 }));
+    let s = wait_for(&engine, "the files, named", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.name.ends_with(".bin"))
+    })
+    .await;
+    let mut names: Vec<(&str, &str)> = s
+        .items
+        .iter()
+        .map(|i| (i.name.as_str(), i.status))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [("postone.bin", "paused"), ("posttwo.bin", "paused")]
+    );
+
+    engine.add_text(&format!("{}/blog/empty", t.ip), "");
+    let s = wait_for(&engine, "the page without links", |s| {
+        s.items.iter().any(|i| i.status == "captcha")
+    })
+    .await;
+    assert_eq!(s.wrappers.len(), 1, "not a wrapper");
 }
 
 /// A release in parts lists part 1, part 2… on every host: one row per part,

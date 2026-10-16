@@ -824,13 +824,21 @@ pub fn wrapper_key(url: &str) -> String {
     key.unwrap_or_else(|| url.to_string())
 }
 
-/// The files behind a wrapper link, once its gate is passed.
+/// The files behind a wrapper link, once its gate is passed; for a web page
+/// on a host Haul has no code for, the links it holds to hosts it does.
 pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
     match kind_of(url) {
         Some(Kind::Fileguard) => fileguard::unwrap(cx, url).await,
         Some(Kind::Filecrypt) => filecrypt::unwrap(cx, url).await,
+        None => generic::page_links(cx, url).await,
         _ => Err(ResolveError::failed("not a wrapper link")),
     }
+}
+
+/// Whether `url` may be a web page that lists links: a host Haul has no
+/// code for.
+pub fn may_list_links(url: &str) -> bool {
+    kind_of(url).is_none()
 }
 
 /// Direct links for `url`. Folders and lists expand to several entries.
