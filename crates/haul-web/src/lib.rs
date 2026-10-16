@@ -36,6 +36,10 @@ pub trait Desktop: Send + Sync + 'static {
     /// Asks the user for a folder, starting in `start`; blocks until they
     /// answer. `None` when they cancel.
     fn pick_folder(&self, start: &std::path::Path) -> Option<std::path::PathBuf>;
+
+    /// Asks the user where to save `contents`, suggesting `name`, and saves
+    /// it there; blocks until they answer. `None` when they cancel.
+    fn save_file(&self, name: &str, contents: &[u8]) -> Result<Option<std::path::PathBuf>, String>;
 }
 
 #[derive(Clone)]
@@ -131,6 +135,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/item/{id}/browse", post(browse))
         .route("/api/item/{id}/reveal", post(reveal))
         .route("/api/item/{id}/{action}", post(item))
+        .route("/api/wrapper/{id}/{action}", post(wrapper))
         .route("/api/host/{name}/limit/{n}", post(host_limit))
         .route("/api/host/{name}/folder", post(host_folder))
         .route("/api/host/{name}/preferred", post(host_preferred))
@@ -139,6 +144,8 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/global/{action}", post(global))
         .route("/api/settings", get(settings).post(update_settings))
         .route("/api/settings/download-dir/pick", post(pick_download_dir))
+        .route("/api/diagnostics", get(diagnostics))
+        .route("/api/diagnostics/save", post(save_diagnostics))
         .route("/api/open/{place}", post(open_place))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .layer(middleware::map_response(json_errors))
@@ -406,6 +413,21 @@ async fn item(State(app): State<App>, Path((id, action)): Path<(String, String)>
     }
 }
 
+/// A wrapper's own actions: start the files it added that wait, or take it
+/// off the list with those that never started. A wrapper's id also takes
+/// the item actions that apply to it: `retry`, `browse`, `direct`.
+async fn wrapper(State(app): State<App>, Path((id, action)): Path<(String, String)>) -> Response {
+    match action.as_str() {
+        "start" => match app.engine.start_wrapper(&id) {
+            Some(started) => Json(json!({ "started": started })).into_response(),
+            None => error(StatusCode::NOT_FOUND, "no such wrapper"),
+        },
+        "remove" if app.engine.remove_wrapper(&id) => ok(),
+        "remove" => error(StatusCode::NOT_FOUND, "no such wrapper"),
+        _ => error(StatusCode::BAD_REQUEST, "unknown action"),
+    }
+}
+
 async fn host_limit(State(app): State<App>, Path((name, n)): Path<(String, usize)>) -> Response {
     match app.engine.set_host_limit(&name, n) {
         Ok(()) => ok(),
@@ -525,6 +547,54 @@ async fn pick_download_dir(State(app): State<App>) -> Response {
     match app.engine.update_settings(&change) {
         Ok(()) => ok(),
         Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+/// The diagnostics report and the name to save it under.
+fn report(engine: &Engine) -> (String, Vec<u8>) {
+    let report = engine.diagnostics();
+    let stamp: String = report["created"]
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect();
+    let body = serde_json::to_vec_pretty(&report).unwrap_or_default();
+    (format!("haul-diagnostics-{stamp}.json"), body)
+}
+
+/// The diagnostics report, as a file to save: what Haul is doing, with
+/// account keys and proxy credentials left out.
+async fn diagnostics(State(app): State<App>) -> Response {
+    let (name, body) = report(&app.engine);
+    (
+        [
+            (header::CONTENT_TYPE, "application/json".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Desktop app only (501 elsewhere): saves the report where the user picks
+/// in the system's dialog.
+async fn save_diagnostics(State(app): State<App>) -> Response {
+    let Some(desktop) = app.desktop.clone() else {
+        return error(
+            StatusCode::NOT_IMPLEMENTED,
+            "only the desktop app has a save dialog; GET /api/diagnostics instead",
+        );
+    };
+    let (name, body) = report(&app.engine);
+    match tokio::task::spawn_blocking(move || desktop.save_file(&name, &body)).await {
+        Ok(Ok(Some(path))) => Json(json!({ "saved": path.display().to_string() })).into_response(),
+        Ok(Ok(None)) => Json(json!({ "cancelled": true })).into_response(),
+        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 

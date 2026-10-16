@@ -30,11 +30,12 @@ use crate::{
     config::{self, Config, Route, Theme},
     container::{self, Link},
     hosts::{self, Cx, Entry, Http, ResolveError, Tokens},
-    item::{Item, Status, Verifying},
+    item::{Found, Item, Status, Verifying},
     limiter::Limiter,
     paths, store,
 };
 
+mod diagnostics;
 mod settings;
 
 pub use settings::SettingsView;
@@ -145,11 +146,14 @@ pub struct Added {
     pub duplicates: usize,
     /// Links that are not http(s).
     pub invalid: usize,
+    /// Wrapper links (fileguard.cc, filecrypt.cc), unwrapped as they come.
+    pub wrappers: usize,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Snapshot {
     pub items: Vec<ItemView>,
+    pub wrappers: Vec<WrapperView>,
     pub hosts: Vec<HostView>,
     pub paused: bool,
     /// Bytes per second over every transfer.
@@ -202,6 +206,33 @@ pub struct ItemView {
     pub existing: bool,
     /// Comparing a file on disk with the host's checksum.
     pub verifying: Verifying,
+    /// The wrapper it came from.
+    pub source: Option<String>,
+}
+
+/// A wrapper link: a page or container of further links, which unwrapping
+/// turns into files that wait for the user to start them.
+#[derive(Debug, Serialize)]
+pub struct WrapperView {
+    pub id: String,
+    /// The link as added.
+    pub url: String,
+    pub host: String,
+    /// The page's own name for what it holds, once unwrapped.
+    pub title: Option<String>,
+    pub package: String,
+    /// `unwrapping`, `waiting` (to try again), `captcha` (a person has to
+    /// pass its gate), `paused`, `error` or `done` (unwrapped).
+    pub status: &'static str,
+    pub error: String,
+    /// Seconds until it is tried again.
+    pub wait: u64,
+    /// Seconds until a failed one is tried again on its own; 0 when never.
+    pub retry_in: u64,
+    /// Pages a person has to open.
+    pub open_urls: Vec<String>,
+    /// What unwrapping found.
+    pub found: Option<Found>,
 }
 
 #[derive(Debug, Serialize)]
@@ -413,6 +444,8 @@ enum Outcome {
     /// Too big to download next to the files already downloading, within
     /// `max_active_gb`: back in the queue.
     Deferred,
+    /// A wrapper's files are in the queue, not started; the row is done.
+    Unwrapped,
 }
 
 enum Fail {
@@ -753,6 +786,7 @@ impl Engine {
                 .values()
                 .flat_map(|i| i.mirrors.iter().cloned())
                 .collect();
+            let mut wrappers = wrapper_keys(&st);
             for link in links {
                 let ok = url::Url::parse(&link.url)
                     .is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
@@ -764,15 +798,31 @@ impl Engine {
                     added.duplicates += 1;
                     continue;
                 }
+                if hosts::wraps(&link.url) {
+                    // One wrapper whichever of its links came: every link of a
+                    // fileguard.cc vault shows the same page.
+                    if !wrappers.insert(hosts::wrapper_key(&link.url)) {
+                        added.duplicates += 1;
+                        continue;
+                    }
+                    let mut it = Item::new(vec![link.url], None, link.package);
+                    it.wrapper = true;
+                    // Unwrapped right away, as a name is looked up.
+                    probe.push(it.id.clone());
+                    st.items.insert(it.id.clone(), it);
+                    added.wrappers += 1;
+                    continue;
+                }
                 let name = link
                     .name
                     .filter(|n| !n.is_empty())
                     .or_else(|| hosts::guess_name(&link.url));
                 // The same file name on another host is another mirror.
                 if let Some(name) = &name
-                    && let Some(it) = st.items.values_mut().find(|it| {
-                        it.status != Status::Done && it.key_name().as_deref() == Some(name)
-                    })
+                    && let Some(it) = st
+                        .items
+                        .values_mut()
+                        .find(|it| it.status != Status::Done && it.same_file(name, 0))
                 {
                     it.mirrors.push(link.url);
                     added.merged += 1;
@@ -788,7 +838,7 @@ impl Engine {
             self.touch(&mut st);
         }
         for id in probe {
-            tokio::spawn(self.clone().probe(id));
+            self.spawn_probe(id);
         }
         self.0.wake.notify_one();
         added
@@ -819,6 +869,9 @@ impl Engine {
     /// Learns the name and size up front, so the same file on several hosts
     /// is merged before anything downloads.
     async fn probe(self, id: String) {
+        if self.lock().items.get(&id).is_some_and(|it| it.wrapper) {
+            return self.unwrap_now(id).await;
+        }
         let Ok(permit) = self.0.probes.acquire().await else {
             return;
         };
@@ -888,6 +941,89 @@ impl Engine {
         drop(st);
         if adopted {
             self.discard_parts([id]);
+        }
+        self.0.wake.notify_one();
+    }
+
+    /// Looks a new row up in a task of its own: a wrapper is unwrapped, a
+    /// file's name and size are probed.
+    fn spawn_probe(&self, id: String) {
+        tokio::spawn(self.clone().probe(id));
+    }
+
+    /// Unwraps a wrapper as soon as it is added, whatever the queue is
+    /// doing, since its files only wait for the user. What this cannot
+    /// settle (a page for a person, a refusal, the network) is left to the
+    /// wrapper's turn in the queue, which retries, waits or asks as usual.
+    async fn unwrap_now(self, id: String) {
+        let (url, http, key_service) = {
+            let st = self.lock();
+            let Some(it) = st.items.get(&id) else { return };
+            let url = it.mirrors[0].clone();
+            let http = self.http_for(&hosts::host_of(&url), &st);
+            (url, http, self.key_service(&st))
+        };
+        let cfg = self.cfg();
+        let cx = Cx {
+            http: &http,
+            cfg: &cfg,
+            tokens: &self.0.tokens,
+            key_service: &key_service,
+        };
+        let found = tokio::time::timeout(Duration::from_secs(60), hosts::unwrap(&cx, &url)).await;
+        match found {
+            Ok(Ok(found)) => {
+                for id in self.unwrapped(&id, &url, found) {
+                    self.spawn_probe(id);
+                }
+            }
+            // A gate for a person (filecrypt.cc's) says so at once, even
+            // while downloads are paused.
+            Ok(Err(ResolveError::NeedsUser(message))) => {
+                let mut st = self.lock();
+                let mut event = None;
+                if let Some(it) = st.items.get_mut(&id)
+                    && !it.running()
+                {
+                    it.probed = true;
+                    it.manual_urls.insert(url.clone());
+                    it.error = message;
+                    it.status = Status::Captcha;
+                    event = Some(Event::NeedsUser {
+                        id: id.clone(),
+                        name: display_name(it),
+                    });
+                }
+                self.touch(&mut st);
+                drop(st);
+                if let Some(e) = event {
+                    let _ = self.0.events.send(e);
+                }
+            }
+            // So does a link that is dead (a vault gone, 404), failing as a
+            // download's dead mirror does: retried later on its own if set.
+            Ok(Err(ResolveError::Failed(message))) => {
+                let mut st = self.lock();
+                let mut event = None;
+                if let Some(it) = st.items.get_mut(&id)
+                    && !it.running()
+                {
+                    it.probed = true;
+                    event = self.fail_mirror(&mut st, &id, &url, &hosts::host_of(&url), message);
+                }
+                self.touch(&mut st);
+                drop(st);
+                if let Some(e) = event {
+                    let _ = self.0.events.send(e);
+                }
+            }
+            _ => {
+                let mut st = self.lock();
+                if let Some(it) = st.items.get_mut(&id) {
+                    it.probed = true;
+                }
+                self.touch(&mut st);
+            }
         }
         self.0.wake.notify_one();
     }
@@ -1197,15 +1333,16 @@ impl Engine {
                     tokens: &self.0.tokens,
                     key_service: &key_service,
                 };
-                let mut entries = or_cancel(cancel, hosts::resolve(&cx, source)).await??;
-                // A wrapper answers with links to resolve each in its own
-                // turn: one row per entry, the same shape a pasted link has.
-                if entries.iter().any(|e| e.deferred) {
-                    for id in self.expand(id, source, entries) {
-                        tokio::spawn(self.clone().probe(id));
+                // A wrapper holds files, not a file: they join the queue, not
+                // started, and the row keeps what it found.
+                if hosts::wraps(source) {
+                    let found = or_cancel(cancel, hosts::unwrap(&cx, source)).await??;
+                    for id in self.unwrapped(id, source, found) {
+                        self.spawn_probe(id);
                     }
-                    return Ok(Outcome::Gone);
+                    return Ok(Outcome::Unwrapped);
                 }
+                let mut entries = or_cancel(cancel, hosts::resolve(&cx, source)).await??;
                 match (entries.len(), name) {
                     (0, _) => {
                         return Err(Fail::Error("nothing to download (empty folder?)".into()));
@@ -1273,55 +1410,21 @@ impl Engine {
         Ok(Outcome::Done)
     }
 
-    /// Replaces a folder or wrapper row with one row per file, in the same
-    /// place. A deferred entry becomes a row of its own link: it resolves
-    /// like a pasted link when its turn comes, and mirrors of the same name
-    /// merge into that row. Returns the new rows to probe.
-    fn expand(&self, id: &str, url: &str, entries: Vec<Entry>) -> Vec<String> {
+    /// Replaces a folder row with one row per file, in the same place, each
+    /// with its entry resolved from the folder's link.
+    fn expand(&self, id: &str, url: &str, entries: Vec<Entry>) {
         let mut st = self.lock();
-        let mut probe = Vec::new();
         let Some(mut at) = st.items.get_index_of(id) else {
-            return probe;
+            return;
         };
-        let row_package = st.items[at].package.clone();
+        let package = st.items[at].package.clone();
         st.items.shift_remove_index(at);
-        // A wrapper's link already in the queue stays where it is, as a
-        // pasted one does: the same wrapper added twice, or two that share a
-        // mirror, download nothing twice. Nor does a page that lists itself
-        // come back, which would resolve forever.
-        let mut known: HashSet<String> = st
-            .items
-            .values()
-            .flat_map(|i| i.mirrors.iter().cloned())
-            .collect();
-        known.insert(url.to_string());
         for e in entries {
-            if e.deferred && !known.insert(e.url.clone()) {
-                continue;
-            }
-            let package = if row_package.is_empty() {
-                e.package.clone().unwrap_or_default()
-            } else {
-                row_package.clone()
-            };
-            let deferred = e.deferred;
-            let mut it = if deferred {
-                Item::new(vec![e.url.clone()], e.name.clone(), package)
-            } else {
-                Item::new(vec![url.to_string()], e.name.clone(), package)
-            };
+            let mut it = Item::new(vec![url.to_string()], e.name.clone(), package.clone());
             it.size = e.size.unwrap_or(0);
-            if deferred {
-                // A named row needs no probe: a probe only finds the name.
-                it.probed = it.name.is_some();
-                if !it.probed {
-                    probe.push(it.id.clone());
-                }
-            } else {
-                it.probed = true;
-                it.pre = Some(e);
-                it.pre_for = Some(url.to_string());
-            }
+            it.probed = true;
+            it.pre = Some(e);
+            it.pre_for = Some(url.to_string());
             let new_id = it.id.clone();
             let at_most = at.min(st.items.len());
             st.items.shift_insert(at_most, new_id.clone(), it);
@@ -1330,6 +1433,103 @@ impl Engine {
             } else if let Some(i) = st.items.get_index_of(&new_id) {
                 at = i + 1;
             }
+        }
+        self.touch(&mut st);
+    }
+
+    /// Adds a wrapper's files to the queue after its row, not started, and
+    /// marks the row done with what it found. A link the queue already holds
+    /// stays where it is, as a pasted one does, so a mirror two wrappers share
+    /// downloads nothing twice; another wrapper listed on the page gets a
+    /// wrapper row of its own. Returns the new rows to probe.
+    fn unwrapped(&self, id: &str, url: &str, found: hosts::Unwrapped) -> Vec<String> {
+        let mut st = self.lock();
+        let mut probe = Vec::new();
+        let Some(row) = st.items.get(id) else {
+            return probe;
+        };
+        let package = row.package.clone();
+        let mut known: HashSet<String> = st
+            .items
+            .iter()
+            .filter(|(k, _)| k.as_str() != id)
+            .flat_map(|(_, i)| i.mirrors.iter().cloned())
+            .collect();
+        known.insert(url.to_string());
+        let mut wrappers = wrapper_keys(&st);
+        wrappers.insert(hosts::wrapper_key(url));
+        let mut seen = Found::default();
+        let mut after = id.to_string();
+        let cfg = self.cfg();
+        for e in found.files {
+            let package = if package.is_empty() {
+                e.package.clone().unwrap_or_default()
+            } else {
+                package.clone()
+            };
+            let nested = hosts::wraps(&e.url);
+            seen.links += 1 + e.mirrors.len();
+            if !nested {
+                seen.files += 1;
+            }
+            let mut urls: Vec<String> = std::iter::once(e.url)
+                .chain(e.mirrors)
+                .filter(|u| known.insert(u.clone()))
+                .collect();
+            // The hosts the user prefers first, in their order: the row shows
+            // one of them, and a probe asks it for the name.
+            urls.sort_by_key(|u| cfg.preference(&hosts::host_of(u)).unwrap_or(usize::MAX));
+            if urls.is_empty() || nested && !wrappers.insert(hosts::wrapper_key(&urls[0])) {
+                continue;
+            }
+            let mut it = if nested {
+                let mut it = Item::new(urls, None, package);
+                it.wrapper = true;
+                it
+            } else {
+                let mut it = Item::new(urls, e.name, package);
+                // Nothing a wrapper lists starts on its own: the user picks.
+                it.status = Status::Paused;
+                it.size = e.size.unwrap_or(0);
+                it
+            };
+            it.source = Some(id.to_string());
+            let new_id = it.id.clone();
+            let unprobed = !it.probed;
+            let at = st
+                .items
+                .get_index_of(&after)
+                .map_or(st.items.len(), |i| i + 1);
+            st.items.shift_insert(at, new_id.clone(), it);
+            if self.dedupe(&mut st, &new_id) {
+                st.items.shift_remove(&new_id);
+            } else {
+                after.clone_from(&new_id);
+                if unprobed {
+                    probe.push(new_id);
+                }
+            }
+        }
+        if let Some(row) = st.items.get_mut(id) {
+            if !row.wrapper {
+                // A row handed a wrapper's link is that wrapper now.
+                row.wrapper = true;
+                row.mirrors = vec![url.to_string()];
+                row.name = None;
+            }
+            row.status = Status::Done;
+            row.found = Some(seen);
+            row.title = found.title;
+            row.error.clear();
+            row.pre = None;
+            row.pre_for = None;
+            row.manual = false;
+            row.manual_urls.clear();
+            row.failed.clear();
+            row.retries = 0;
+            row.auto_retries = 0;
+            row.retry_at = None;
+            row.not_before = None;
         }
         self.touch(&mut st);
         probe
@@ -1355,7 +1555,7 @@ impl Engine {
                 it.busy = 0;
             }
             match result {
-                Ok(Outcome::Gone) => {}
+                Ok(Outcome::Gone | Outcome::Unwrapped) => {}
                 Ok(Outcome::Deferred) => {
                     if let Some(it) = st.items.get_mut(id) {
                         it.status = Status::Queued;
@@ -1520,8 +1720,9 @@ impl Engine {
 
     /// Folds other rows for the same file into `id`. Returns true when `id`
     /// itself should go: the file is done already, or another row is fetching
-    /// it (which then gets `id`'s mirrors). A folded row's partial file carries
-    /// over when both sizes are known and equal, and is deleted otherwise.
+    /// it or `id` waits for the user (the other row then gets `id`'s mirrors).
+    /// A folded row's partial file carries over when both sizes are known and
+    /// equal, and is deleted otherwise.
     fn dedupe(&self, st: &mut State, id: &str) -> bool {
         let Some(it) = st.items.get(id) else {
             return false;
@@ -1536,12 +1737,15 @@ impl Engine {
             .filter(|(k, o)| k.as_str() != id && o.same_file(&name, size))
             .map(|(k, _)| k.clone())
             .collect();
+        // A row that waits for the user (a wrapper's file, not started) joins
+        // the row already there instead of taking it over, which keeps going.
+        let waits = st.items[id].status == Status::Paused && !st.items[id].running();
         for other in others {
             let o = &st.items[&other];
             if o.status == Status::Done {
                 return true;
             }
-            if o.running() {
+            if o.running() || waits {
                 let extra: Vec<String> = st.items[id]
                     .mirrors
                     .iter()
@@ -2053,6 +2257,35 @@ impl Engine {
         // files. The row's own links stay, so one that fails asks for the page
         // again like any link handed back, and it names nothing.
         let deferred = hosts::unwraps(url);
+        if it.wrapper && !deferred {
+            // A file's own link, found on a wrapper's page: one more of the
+            // wrapper's files, not started, with what the browser sent.
+            let package = it.package.clone();
+            let name = name_hint
+                .filter(|n| !n.is_empty())
+                .or_else(|| hosts::guess_name(url));
+            let mut file = Item::new(vec![url.to_string()], name.clone(), package);
+            file.status = Status::Paused;
+            file.source = Some(id.to_string());
+            file.probed = true;
+            if !headers.is_empty() {
+                file.pre = Some(Entry {
+                    url: url.into(),
+                    name,
+                    headers,
+                    ..Entry::default()
+                });
+                file.manual = true;
+            }
+            let new_id = file.id.clone();
+            let at = st.items.get_index_of(id).map_or(st.items.len(), |i| i + 1);
+            st.items.shift_insert(at, new_id.clone(), file);
+            if self.dedupe(&mut st, &new_id) {
+                st.items.shift_remove(&new_id);
+            }
+            self.touch(&mut st);
+            return Ok(());
+        }
         if it.name.is_none() && !deferred {
             it.name = name_hint
                 .filter(|n| !n.is_empty())
@@ -2117,12 +2350,13 @@ impl Engine {
         self.0.wake.notify_one();
     }
 
+    /// Tries every failed download again; wrappers have their own section.
     pub fn retry_failed(&self) {
         let ids: Vec<String> = self
             .lock()
             .items
             .values()
-            .filter(|i| i.status == Status::Error)
+            .filter(|i| i.status == Status::Error && !i.wrapper)
             .map(|i| i.id.clone())
             .collect();
         for id in ids {
@@ -2130,10 +2364,69 @@ impl Engine {
         }
     }
 
+    /// Clears finished downloads off the list; unwrapped wrappers stay in
+    /// their section.
     pub fn clear_done(&self) {
         let mut st = self.lock();
-        st.items.retain(|_, i| i.status != Status::Done);
+        st.items
+            .retain(|_, i| i.status != Status::Done || i.wrapper);
         self.touch(&mut st);
+    }
+
+    /// Starts the files a wrapper added that are waiting to be started.
+    /// Returns how many, or `None` when there is no such wrapper.
+    pub fn start_wrapper(&self, id: &str) -> Option<usize> {
+        let mut st = self.lock();
+        if !st.items.get(id)?.wrapper {
+            return None;
+        }
+        let mut started = 0;
+        for it in st.items.values_mut() {
+            if it.source.as_deref() == Some(id) && it.status == Status::Paused && !it.wrapper {
+                it.status = Status::Queued;
+                started += 1;
+            }
+        }
+        self.touch(&mut st);
+        drop(st);
+        self.0.wake.notify_one();
+        Some(started)
+    }
+
+    /// Takes a wrapper off the list with the files it added that never
+    /// started; those that did start stay. Returns false when there is no
+    /// such wrapper.
+    pub fn remove_wrapper(&self, id: &str) -> bool {
+        let gone: Vec<String> = {
+            let mut st = self.lock();
+            let Some(w) = st.items.get(id).filter(|w| w.wrapper) else {
+                return false;
+            };
+            if let Some(t) = &w.task {
+                t.cancel();
+            }
+            let gone: Vec<String> = st
+                .items
+                .values()
+                .filter(|i| {
+                    i.source.as_deref() == Some(id)
+                        && !i.wrapper
+                        && i.status == Status::Paused
+                        && i.done == 0
+                        && !i.running()
+                })
+                .map(|i| i.id.clone())
+                .collect();
+            for k in &gone {
+                st.items.shift_remove(k);
+            }
+            st.items.shift_remove(id);
+            self.touch(&mut st);
+            gone
+        };
+        self.discard_parts(gone);
+        self.0.wake.notify_one();
+        true
     }
 
     /// Takes every failed download off the list, with its partial file.
@@ -2143,7 +2436,7 @@ impl Engine {
             let gone = st
                 .items
                 .values()
-                .filter(|i| i.status == Status::Error && !i.running())
+                .filter(|i| i.status == Status::Error && !i.running() && !i.wrapper)
                 .map(|i| i.id.clone())
                 .collect::<Vec<_>>();
             for id in &gone {
@@ -2165,9 +2458,50 @@ impl Engine {
         let now = Instant::now();
         let has_proxy = self.clients().proxy.is_some();
         let cfg = self.cfg();
+        let wait = |it: &Item| {
+            it.not_before
+                .map_or(0, |t| t.saturating_duration_since(now).as_secs())
+        };
+        let retry_in = |it: &Item| {
+            it.retry_at
+                .map_or(0, |t| t.saturating_duration_since(now).as_secs().max(1))
+        };
+        let open_urls = |it: &Item| -> Vec<String> {
+            it.mirrors
+                .iter()
+                .filter(|m| it.manual_urls.contains(*m))
+                .cloned()
+                .collect()
+        };
+        let wrappers: Vec<WrapperView> = st
+            .items
+            .values()
+            .filter(|it| it.wrapper)
+            .map(|it| WrapperView {
+                id: it.id.clone(),
+                url: it.mirrors.first().cloned().unwrap_or_default(),
+                host: it
+                    .mirrors
+                    .first()
+                    .map(|m| hosts::host_of(m))
+                    .unwrap_or_default(),
+                title: it.title.clone(),
+                package: it.package.clone(),
+                status: match it.status {
+                    Status::Queued | Status::Resolving | Status::Downloading => "unwrapping",
+                    other => other.as_str(),
+                },
+                error: it.error.clone(),
+                wait: wait(it),
+                retry_in: retry_in(it),
+                open_urls: open_urls(it),
+                found: it.found,
+            })
+            .collect();
         let items: Vec<ItemView> = st
             .items
             .values()
+            .filter(|it| !it.wrapper)
             .map(|it| ItemView {
                 id: it.id.clone(),
                 name: display_name(it),
@@ -2184,21 +2518,13 @@ impl Engine {
                 percent: it.percent,
                 host: it.host.clone(),
                 mirrors: it.mirrors.iter().map(|m| hosts::host_of(m)).collect(),
-                wait: it
-                    .not_before
-                    .map_or(0, |t| t.saturating_duration_since(now).as_secs()),
-                retry_in: it
-                    .retry_at
-                    .map_or(0, |t| t.saturating_duration_since(now).as_secs().max(1)),
-                open_urls: it
-                    .mirrors
-                    .iter()
-                    .filter(|m| it.manual_urls.contains(*m))
-                    .cloned()
-                    .collect(),
+                wait: wait(it),
+                retry_in: retry_in(it),
+                open_urls: open_urls(it),
                 path: it.path.clone(),
                 existing: it.existing,
                 verifying: it.verifying,
+                source: it.source.clone(),
             })
             .collect();
         let route = |name: &str| {
@@ -2262,6 +2588,7 @@ impl Engine {
         Snapshot {
             speed: items.iter().map(|i| i.speed).sum(),
             items,
+            wrappers,
             hosts,
             paused: st.paused,
             max_total: st.max_total,
@@ -2353,6 +2680,7 @@ fn log_outcome(id: &str, url: &str, result: &Result<Outcome, Fail>) {
             tracing::info!(item = id, url, "already downloaded: {}", path.display())
         }
         Ok(Outcome::Gone | Outcome::Deferred) | Err(Fail::Cancelled) => {}
+        Ok(Outcome::Unwrapped) => tracing::info!(item = id, url, "unwrapped"),
         Err(Fail::Wait { seconds, message }) => {
             tracing::info!(item = id, url, seconds, "host asks to wait: {message}")
         }
@@ -2400,8 +2728,21 @@ fn recycle(file: &Path, bin: Option<&Path>) -> Result<bool, String> {
 }
 
 fn display_name(it: &Item) -> String {
-    it.key_name()
-        .unwrap_or_else(|| it.mirrors.first().cloned().unwrap_or_default())
+    let link = || it.mirrors.first().cloned().unwrap_or_default();
+    if it.wrapper {
+        return it.title.clone().unwrap_or_else(link);
+    }
+    it.key_name().unwrap_or_else(link)
+}
+
+/// The wrappers in the queue, by what they point at.
+fn wrapper_keys(st: &State) -> HashSet<String> {
+    st.items
+        .values()
+        .filter(|i| i.wrapper)
+        .filter_map(|i| i.mirrors.first())
+        .map(|m| hosts::wrapper_key(m))
+        .collect()
 }
 
 #[cfg(test)]

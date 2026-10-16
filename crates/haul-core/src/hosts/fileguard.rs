@@ -1,7 +1,7 @@
-//! fileguard.cc: a wrapper page that lists one file's links on many hosts
-//! behind an ALTCHA proof of work. That gate asks for no person — the
-//! challenge is a hash (SHA-256 today) the client can search — so one solve
-//! here yields every mirror link at once.
+//! fileguard.cc: a wrapper page (a "vault") that lists a release's files on
+//! many hosts behind an ALTCHA proof of work. That gate asks for no person —
+//! the challenge is a hash (SHA-256 today) the client can search — so one
+//! solve here yields every link at once.
 
 use std::{
     collections::HashSet,
@@ -12,12 +12,17 @@ use std::{
 };
 
 use base64::Engine as _;
+use indexmap::IndexMap;
 use regex::Regex;
 use reqwest::header::REFERER;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
-use super::{Cx, Entry, ResolveError, guess_name, host_of, is_wrapper, retry_after};
+use super::{Cx, Entry, ResolveError, Unwrapped, guess_name, host_of, retry_after, wraps};
+
+/// One vault at a time: a burst of solves from one address is refused, and
+/// a session that has passed a vault's gate is shown its links straight away.
+static SOLVING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 static CSRF: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"name="csrf_token"\s+value="([^"]+)""#).unwrap());
@@ -25,6 +30,10 @@ static CSRF: LazyLock<Regex> =
 static CHALLENGE_URL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)<altcha-widget\s[^>]*challengeurl="([^"]+)""#).unwrap());
 static ANCHOR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?is)<a\s[^>]*>"#).unwrap());
+/// The vault's name, above its links.
+static TITLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)class="folder-title"[^>]*>\s*<h1[^>]*>(.*?)</h1>"#).unwrap()
+});
 static HREF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\shref="([^"]+)""#).unwrap());
 
 /// The proof-of-work challenge, as the page's `altcha_challenge.php` sends it.
@@ -113,38 +122,86 @@ fn target_links(html: &str) -> Vec<String> {
         .collect()
 }
 
-/// The rows for a solved page. A vault that lists one link per host lists one
-/// release's mirrors; when the links that name the file agree on one name,
-/// every entry gets it, so their rows merge before anything downloads.
-/// Several links on one host, or names that disagree, are several files and
-/// stay as they are. A link to another wrapper is more links, not the file,
-/// so it keeps a row of its own.
-fn rows(urls: Vec<String>) -> Vec<Entry> {
-    let hosts: HashSet<String> = urls.iter().map(|url| host_of(url)).collect();
-    let names: HashSet<String> = urls
-        .iter()
-        .filter(|url| !is_wrapper(url))
-        .filter_map(|url| guess_name(url))
-        .collect();
-    let shared = (urls.len() == hosts.len() && names.len() == 1)
-        .then(|| names.into_iter().next().expect("one name"));
-    urls.into_iter()
-        .map(|url| {
-            let name = match &shared {
-                Some(name) if !is_wrapper(&url) => Some(name.clone()),
-                _ => guess_name(&url),
-            };
-            Entry {
+/// The vault a link points at: every `/<vault>/<host>` link of one vault
+/// shows the same page, the host only choosing where it scrolls to.
+pub(super) fn key(url: &str) -> Option<String> {
+    let url = url::Url::parse(url).ok()?;
+    let vault = url.path_segments()?.find(|s| !s.is_empty())?;
+    Some(format!("fileguard.cc/{vault}"))
+}
+
+/// The vault's name, as its page shows it.
+fn title(html: &str) -> Option<String> {
+    let raw = TITLE.captures(html)?[1].trim().to_string();
+    let text = raw
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    (!text.is_empty()).then_some(text)
+}
+
+/// The files on a solved page. A page lists each host's links in the same
+/// order (one link per host for a single file; part 1, part 2… on every host
+/// for a release in parts), so when every host has as many links as the
+/// others, the n-th link of each host is the same file: one entry per file
+/// with every host's link as a mirror, named after the links that name it.
+/// When hosts differ in count, or a file's links disagree on its name, each
+/// link is an entry of its own, named after its own path. A link to another
+/// wrapper stands for more links, not a file, so it is an entry of its own.
+fn files(urls: Vec<String>) -> Vec<Entry> {
+    let (nested, links): (Vec<String>, Vec<String>) = urls.into_iter().partition(|u| wraps(u));
+    let mut hosts: IndexMap<String, Vec<String>> = IndexMap::new();
+    for url in links {
+        hosts.entry(host_of(&url)).or_default().push(url);
+    }
+    let count = hosts.values().next().map_or(0, Vec::len);
+    let aligned = hosts.values().all(|links| links.len() == count);
+    let mut grouped = Vec::with_capacity(count);
+    if aligned {
+        for n in 0..count {
+            let links: Vec<String> = hosts.values().map(|links| links[n].clone()).collect();
+            let names: HashSet<String> = links.iter().filter_map(|url| guess_name(url)).collect();
+            if names.len() > 1 {
+                grouped.clear();
+                break;
+            }
+            grouped.push((links, names.into_iter().next()));
+        }
+    }
+    let mut out: Vec<Entry> = if grouped.len() == count && aligned {
+        grouped
+            .into_iter()
+            .map(|(mut links, name)| Entry {
+                url: links.remove(0),
+                mirrors: links,
                 name,
+                deferred: true,
+                ..Entry::default()
+            })
+            .collect()
+    } else {
+        hosts
+            .into_values()
+            .flatten()
+            .map(|url| Entry {
+                name: guess_name(&url),
                 url,
                 deferred: true,
                 ..Entry::default()
-            }
-        })
-        .collect()
+            })
+            .collect()
+    };
+    out.extend(nested.into_iter().map(|url| Entry {
+        url,
+        deferred: true,
+        ..Entry::default()
+    }));
+    out
 }
 
-pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
+pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
     let base = &cx.cfg.endpoints.fileguard;
     let path = url::Url::parse(url)
         .ok()
@@ -152,6 +209,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         .filter(|path| path.len() > 1)
         .ok_or_else(|| ResolveError::failed("bad fileguard url"))?;
     let page = format!("{base}{path}");
+    let _one_at_a_time = SOLVING.lock().await;
     let r = cx.http.client.get(&page).send().await?;
     let status = r.status().as_u16();
     if matches!(status, 429 | 503) {
@@ -170,6 +228,14 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         )));
     }
     let html = r.text().await?;
+    // A session that passed this vault's gate before is shown its links.
+    let shown = target_links(&html);
+    if !shown.is_empty() {
+        return Ok(Unwrapped {
+            title: title(&html),
+            files: files(shown),
+        });
+    }
     let Some(csrf) = CSRF.captures(&html).map(|c| c[1].to_string()) else {
         return Err(ResolveError::NeedsUser(
             "fileguard.cc answered without its proof-of-work form; open the page".into(),
@@ -270,8 +336,10 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         return Err(ResolveError::Failed(format!("HTTP {status}")));
     }
     if status >= 400 {
-        return Err(ResolveError::NeedsUser(format!(
-            "fileguard.cc answered HTTP {status} to the solve; open the page"
+        // Seen as 403 when many solves came at once: worth another try later,
+        // not a page for a person.
+        return Err(ResolveError::Network(format!(
+            "refused the solve (HTTP {status})"
         )));
     }
     let solved = r.text().await?;
@@ -281,7 +349,10 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             "solved without links (expired, or the page changed)",
         ));
     }
-    Ok(rows(urls))
+    Ok(Unwrapped {
+        title: title(&solved),
+        files: files(urls),
+    })
 }
 
 #[cfg(test)]
@@ -322,67 +393,109 @@ mod tests {
         assert_eq!(unhex("zz"), None);
     }
 
+    fn names(entries: &[Entry]) -> Vec<Option<&str>> {
+        entries.iter().map(|e| e.name.as_deref()).collect()
+    }
+
     #[test]
-    fn one_file_pages_name_every_mirror() {
-        // One link per host, one of them named: every row gets that name,
-        // so their rows merge into the file's mirrors.
-        let named = rows(vec![
+    fn links_group_into_files() {
+        // One link per host: one file, named after the link that names it,
+        // every host a mirror.
+        let one = files(vec![
             "https://1fichier.com/?cu5oghhjkskhuzap8w43".into(),
             "https://pixeldrain.com/u/VF18oYXa".into(),
             "https://rapidgator.net/file/xyz/Sledders.RUNE.rar".into(),
         ]);
+        assert_eq!(names(&one), [Some("Sledders.RUNE.rar")]);
+        assert_eq!(one[0].url, "https://1fichier.com/?cu5oghhjkskhuzap8w43");
         assert_eq!(
-            named
-                .iter()
-                .filter(|e| e.name.as_deref() == Some("Sledders.RUNE.rar"))
-                .count(),
-            3
+            one[0].mirrors,
+            [
+                "https://pixeldrain.com/u/VF18oYXa",
+                "https://rapidgator.net/file/xyz/Sledders.RUNE.rar"
+            ]
         );
 
-        // Two links on one host are two files: names stay as they are.
-        let several = rows(vec![
+        // A release in parts: every host lists part 1, then part 2.
+        let parts = files(vec![
+            "https://mega.nz/file/a#k1".into(),
+            "https://mega.nz/file/b#k2".into(),
+            "https://rapidgator.net/file/1/R.part1.rar".into(),
+            "https://rapidgator.net/file/2/R.part2.rar".into(),
+            "https://pixeldrain.com/u/p1".into(),
+            "https://pixeldrain.com/u/p2".into(),
+        ]);
+        assert_eq!(names(&parts), [Some("R.part1.rar"), Some("R.part2.rar")]);
+        assert_eq!(parts[1].url, "https://mega.nz/file/b#k2");
+        assert_eq!(
+            parts[1].mirrors,
+            [
+                "https://rapidgator.net/file/2/R.part2.rar",
+                "https://pixeldrain.com/u/p2"
+            ]
+        );
+
+        // Hosts that list different counts: each link on its own.
+        let uneven = files(vec![
             "https://host.example/a/one.rar".into(),
             "https://host.example/b/two.rar".into(),
             "https://other.example/x".into(),
         ]);
-        assert_eq!(
-            several
-                .iter()
-                .map(|e| e.name.as_deref())
-                .collect::<Vec<_>>(),
-            [Some("one.rar"), Some("two.rar"), None]
-        );
+        assert_eq!(names(&uneven), [Some("one.rar"), Some("two.rar"), None]);
+        assert!(uneven.iter().all(|e| e.mirrors.is_empty()));
 
-        // Names that disagree on a one-link-per-host page stay their own.
-        let disagree = rows(vec![
+        // One link per host whose names disagree: two files, not one.
+        let disagree = files(vec![
             "https://host.example/a/one.rar".into(),
             "https://other.example/b/two.rar".into(),
         ]);
-        assert_eq!(
-            disagree
-                .iter()
-                .map(|e| e.name.as_deref())
-                .collect::<Vec<_>>(),
-            [Some("one.rar"), Some("two.rar")]
-        );
+        assert_eq!(names(&disagree), [Some("one.rar"), Some("two.rar")]);
 
-        // Another wrapper's links are more links, not this file: they neither
-        // take its name nor stop the others sharing it.
-        let nested = rows(vec![
+        // Another wrapper's links are more links: entries of their own,
+        // neither a mirror nor a name for the file.
+        let nested = files(vec![
             "https://rapidgator.net/file/xyz/Sledders.RUNE.rar".into(),
-            "https://pixeldrain.com/u/VF18oYXa".into(),
             "https://fileguard.cc/0123456789/pixeldrain".into(),
+            "https://pixeldrain.com/u/VF18oYXa".into(),
             "https://filecrypt.cc/DLC/ABCDEF.dlc".into(),
         ]);
         assert_eq!(
-            nested.iter().map(|e| e.name.as_deref()).collect::<Vec<_>>(),
+            nested
+                .iter()
+                .map(|e| (e.url.as_str(), e.name.as_deref(), e.mirrors.len()))
+                .collect::<Vec<_>>(),
             [
-                Some("Sledders.RUNE.rar"),
-                Some("Sledders.RUNE.rar"),
-                None,
-                Some("ABCDEF.dlc")
+                (
+                    "https://rapidgator.net/file/xyz/Sledders.RUNE.rar",
+                    Some("Sledders.RUNE.rar"),
+                    1
+                ),
+                ("https://fileguard.cc/0123456789/pixeldrain", None, 0),
+                ("https://filecrypt.cc/DLC/ABCDEF.dlc", None, 0),
             ]
         );
+    }
+
+    #[test]
+    fn a_vault_is_one_key_and_has_a_title() {
+        for url in [
+            "https://fileguard.cc/663fd651cb/mega",
+            "https://www.fileguard.cc/663fd651cb/transfer?x=1",
+            "https://fileguard.cc/663fd651cb",
+        ] {
+            assert_eq!(
+                key(url).as_deref(),
+                Some("fileguard.cc/663fd651cb"),
+                "{url}"
+            );
+        }
+        assert_eq!(key("https://fileguard.cc/"), None);
+        assert_eq!(
+            title(r#"<div class="folder-title"><h1>Frosthaven-RUNE &amp; more</h1></div>"#)
+                .as_deref(),
+            Some("Frosthaven-RUNE & more")
+        );
+        assert_eq!(title("<h1>Elsewhere</h1>"), None);
     }
 
     #[test]

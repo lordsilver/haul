@@ -86,12 +86,14 @@ fn main() {
 }
 
 /// Logs to `haul.log` in the data directory, since a windowed app has no
-/// console. `RUST_LOG` picks the level.
+/// console. `RUST_LOG` picks the level. The last run's log stays as
+/// `haul.old.log`, so a report saved after a restart still has it.
 fn init_logging(data_dir: &Path) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let file = std::fs::create_dir_all(data_dir)
-        .and_then(|()| std::fs::File::create(data_dir.join("haul.log")));
+    let log = data_dir.join("haul.log");
+    let _ = std::fs::rename(&log, data_dir.join("haul.old.log"));
+    let file = std::fs::create_dir_all(data_dir).and_then(|()| std::fs::File::create(&log));
     match file {
         Ok(file) => tracing_subscriber::fmt()
             .with_env_filter(filter)
@@ -375,25 +377,32 @@ fn reveal_waiting(app: &AppHandle, from_waiting: bool) {
     let Some(engine) = app.try_state::<Engine>().map(|e| e.inner().clone()) else {
         return;
     };
-    let waiting: Vec<String> = if from_waiting {
-        engine
-            .snapshot()
-            .items
-            .iter()
-            .filter(|it| it.status == "captcha")
-            .map(|it| it.id.clone())
-            .collect()
+    let (waiting, wrappers): (Vec<String>, Vec<String>) = if from_waiting {
+        let s = engine.snapshot();
+        let downloads = s.items.iter().filter(|it| it.status == "captcha");
+        let wrappers = s.wrappers.iter().filter(|w| w.status == "captcha");
+        (
+            downloads.map(|it| it.id.clone()).collect(),
+            wrappers.map(|w| w.id.clone()).collect(),
+        )
     } else {
-        Vec::new()
+        Default::default()
     };
-    // Haul opens on the list that waits, not on whatever was shown last.
-    if !waiting.is_empty()
+    // Haul opens on the list that waits, not on whatever was shown last:
+    // the waiting downloads, or the wrappers when only those wait.
+    let place = match (waiting.is_empty(), wrappers.is_empty()) {
+        (false, _) => Some("/attention"),
+        (true, false) => Some("/wrappers"),
+        (true, true) => None,
+    };
+    if let Some(place) = place
         && let Some(window) = app.get_webview_window(MAIN)
         && let Ok(mut url) = window.url()
     {
-        url.set_fragment(Some("/attention"));
+        url.set_fragment(Some(place));
         let _ = window.navigate(url);
     }
+    let waiting: Vec<String> = waiting.into_iter().chain(wrappers).collect();
     show_main(app);
     // One download waiting: the click meant that one, so open its page too.
     if let [id] = waiting.as_slice()

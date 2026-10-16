@@ -18,6 +18,6 @@ mod store;
 pub use config::{Config, Route, Theme};
 pub use engine::{
     Added, Engine, Event, HostView, ItemAction, ItemView, Options, SettingsView, Snapshot,
-    StartError,
+    StartError, WrapperView,
 };
-pub use item::Verifying;
+pub use item::{Found, Verifying};

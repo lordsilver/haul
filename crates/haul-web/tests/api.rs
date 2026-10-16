@@ -138,7 +138,7 @@ async fn adds_imports_and_controls_items() {
         .unwrap();
     assert_eq!(
         r,
-        json!({"added": 1, "merged": 1, "duplicates": 0, "invalid": 0})
+        json!({"added": 1, "merged": 1, "duplicates": 0, "invalid": 0, "wrappers": 0})
     );
 
     let links_file = || {
@@ -409,6 +409,119 @@ async fn reorders_the_preferred_hosts() {
         ["rapidgator.net", "pixeldrain.com"],
         "refused lists change nothing"
     );
+}
+
+#[tokio::test]
+async fn wrappers_have_their_own_list_and_actions() {
+    let s = start().await;
+    // A gate for a person needs no network to say so.
+    let page = "https://filecrypt.cc/Container/abc.html";
+    let r: Value = s
+        .post("/api/add", json!({ "text": page }))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (r["added"].as_u64(), r["wrappers"].as_u64()),
+        (Some(0), Some(1))
+    );
+    let mut state = s.state().await;
+    for _ in 0..100 {
+        if state["wrappers"][0]["status"] == "captcha" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        state = s.state().await;
+    }
+    let w = &state["wrappers"][0];
+    assert_eq!(
+        (w["status"].as_str(), w["url"].as_str(), w["host"].as_str()),
+        (Some("captcha"), Some(page), Some("filecrypt.cc"))
+    );
+    assert_eq!(w["open_urls"], json!([page]));
+    assert_eq!(state["items"], json!([]), "a wrapper is no download");
+    let id = w["id"].as_str().unwrap().to_string();
+
+    let r: Value = s
+        .post(&format!("/api/wrapper/{id}/start"), json!({}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r, json!({"started": 0}));
+    assert_eq!(
+        s.post(&format!("/api/wrapper/{id}/explode"), json!({}))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        s.post(&format!("/api/wrapper/{id}/remove"), json!({}))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(s.state().await["wrappers"], json!([]));
+    assert_eq!(
+        s.post(&format!("/api/wrapper/{id}/remove"), json!({}))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn diagnostics_tell_what_happened_without_secrets() {
+    let s = start().await;
+    s.post(
+        "/api/settings",
+        json!({"1fichier_key": "s3cret-key", "proxy": "socks5://me:s3cret-pw@proxy.example:1080"}),
+    )
+    .await;
+    s.post(
+        "/api/add",
+        json!({"text": "https://mega.nz/file/abc#s3cret-mega-key https://a.example/x.zip"}),
+    )
+    .await;
+    let r = s
+        .http
+        .get(format!("{}/api/diagnostics", s.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let disposition = r.headers()["content-disposition"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        disposition.starts_with("attachment; filename=\"haul-diagnostics-"),
+        "{disposition}"
+    );
+    let text = r.text().await.unwrap();
+    assert!(!text.contains("s3cret"), "{text}");
+    let report: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(report["haul"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(report["settings"]["accounts"]["1fichier_key"], true);
+    assert_eq!(report["settings"]["accounts"]["pixeldrain_key"], false);
+    assert_eq!(
+        report["settings"]["proxy"],
+        "socks5://proxy.example:1080 (with credentials)"
+    );
+    let links: Vec<&str> = report["queue"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["mirrors"][0].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        links,
+        ["https://mega.nz/file/abc", "https://a.example/x.zip"]
+    );
+
+    let save = s.post("/api/diagnostics/save", json!({})).await;
+    assert_eq!(save.status(), StatusCode::NOT_IMPLEMENTED);
 }
 
 #[tokio::test]

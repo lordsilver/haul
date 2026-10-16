@@ -62,6 +62,19 @@ pub struct Entry {
     /// host when its turn comes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deferred: bool,
+    /// The same file's links on other hosts, for an entry a wrapper lists:
+    /// one row with every host as a mirror.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mirrors: Vec<String>,
+}
+
+/// What a wrapper's page holds once its gate is passed.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Unwrapped {
+    /// The page's own name for what it holds, when it gives one.
+    pub title: Option<String>,
+    /// One entry per file, each with its links on every host.
+    pub files: Vec<Entry>,
 }
 
 /// What a probe learns about a file without downloading it.
@@ -440,8 +453,28 @@ pub fn unwraps(url: &str) -> bool {
 
 /// Whether the link is a wrapper's, gated page or container alike: it
 /// stands for further links, never for one file.
-fn is_wrapper(url: &str) -> bool {
+pub fn wraps(url: &str) -> bool {
     matches!(host_of(url).as_str(), "fileguard.cc" | "filecrypt.cc")
+}
+
+/// What a wrapper link points at, so two links to it count as one: every
+/// fileguard.cc link of a vault (`/<vault>/<host>`) shows the same page.
+pub fn wrapper_key(url: &str) -> String {
+    let key = match host_of(url).as_str() {
+        "fileguard.cc" => fileguard::key(url),
+        "filecrypt.cc" => filecrypt::key(url),
+        _ => None,
+    };
+    key.unwrap_or_else(|| url.to_string())
+}
+
+/// The files behind a wrapper link, once its gate is passed.
+pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
+    match host_of(url).as_str() {
+        "fileguard.cc" => fileguard::unwrap(cx, url).await,
+        "filecrypt.cc" => filecrypt::unwrap(cx, url).await,
+        _ => Err(ResolveError::failed("not a wrapper link")),
+    }
 }
 
 /// Direct links for `url`. Folders and lists expand to several entries.
@@ -459,8 +492,8 @@ pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError>
             name: guess_name(url),
             ..Entry::default()
         }]),
-        "fileguard.cc" => fileguard::resolve(cx, url).await,
-        "filecrypt.cc" => filecrypt::resolve(cx, url).await,
+        "fileguard.cc" => fileguard::unwrap(cx, url).await.map(|u| u.files),
+        "filecrypt.cc" => filecrypt::unwrap(cx, url).await.map(|u| u.files),
         _ => generic::resolve(cx, url).await,
     }
 }

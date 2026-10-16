@@ -85,6 +85,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
                     exec: None,
                     checksum,
                     deferred: false,
+                    mirrors: Vec::new(),
                 })
             })
             .collect());
@@ -115,6 +116,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         exec: None,
         checksum,
         deferred: false,
+        mirrors: Vec::new(),
     }])
 }
 

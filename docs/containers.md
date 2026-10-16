@@ -12,10 +12,10 @@ A `.dlc` holds an encrypted list of links, and decrypting it needs JDownloader's
 
 ## Wrapper pages
 
-A wrapper page holds one release's links on many hosts behind a gate; filecrypt.cc and fileguard.cc are the common ones.
+A wrapper page holds one release's files on many hosts behind a gate; filecrypt.cc and fileguard.cc are the common ones. Haul unwraps a wrapper link as soon as you add it, whatever else the queue is doing, and keeps it in the **Wrappers** section: what it found, or why it did not open. Its files join the list **not started**, each once, with every host as a mirror, so nothing downloads until you start it — one file, an archive's parts together, or **Start all** on the wrapper. **Remove** on the wrapper takes the files that never started with it.
 
-A fileguard.cc link needs no person: its gate is a proof of work, and Haul solves it. When the page lists one file — one link per host — the hosts become mirrors of one row, so the host you prefer downloads it and the others are failovers; a page that lists several files gives each link a row of its own.
+A fileguard.cc link needs no person: its gate is a proof of work, and Haul solves it. Every link of a vault (`fileguard.cc/<vault>/<host>`) shows the same page, so the vault is added and solved once whichever of its links you add. The page lists each host's links in the same order, so a release in parts becomes one row per part with every host as a mirror, named after the hosts whose links name it; the host you prefer downloads it and the others are failovers. Solves run one at a time, a vault Haul has solved before is read without a new solve, and a solve fileguard.cc refuses (a burst of them can be) is tried again later.
 
-A filecrypt.cc page needs a real browser. Solve its gate in the app's browser (it goes through the proxy like the downloads) and the page offers the container as a `.dlc` download: hand the link back, or add it later, and Haul fetches and unpacks it like any dropped container. Until then the page waits under **Needs you**, and it waits there again if the link handed back fails.
+A filecrypt.cc page needs a real browser. Its wrapper waits for you in **Wrappers**: solve the gate in the app's browser (it goes through the proxy like the downloads) and the page offers the container as a `.dlc` download; hand the link back, or paste it, and Haul fetches and unpacks it like any dropped container. A `.dlc` link added on its own is a wrapper too. If the link handed back fails, the page waits for you again.
 
-Either way, a link the queue already holds is not added again, so the same wrapper added twice downloads nothing twice.
+Either way, a link the queue already holds is not added again: a file the queue already has keeps its own row, state and turn, and the wrapper's links join it as mirrors.

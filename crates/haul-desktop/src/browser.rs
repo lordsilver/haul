@@ -6,7 +6,7 @@
 //! With a proxy configured, the window goes through it too, by way of the
 //! local bridge, because browser engines cannot pass proxy credentials.
 
-use std::{collections::BTreeMap, net::SocketAddr, sync::Mutex};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Mutex};
 
 use haul_core::{Engine, bridge::Bridge, hosts};
 use haul_web::Desktop;
@@ -116,6 +116,26 @@ impl Desktop for Browser {
             dialog = dialog.set_parent(&window);
         }
         dialog.blocking_pick_folder()?.into_path().ok()
+    }
+
+    fn save_file(&self, name: &str, contents: &[u8]) -> Result<Option<PathBuf>, String> {
+        use tauri_plugin_dialog::DialogExt;
+        let mut dialog = self
+            .app
+            .dialog()
+            .file()
+            .set_title("Save diagnostics")
+            .set_file_name(name)
+            .add_filter("JSON", &["json"]);
+        if let Some(window) = self.app.get_webview_window(crate::MAIN) {
+            dialog = dialog.set_parent(&window);
+        }
+        let Some(path) = dialog.blocking_save_file() else {
+            return Ok(None);
+        };
+        let path = path.into_path().map_err(|e| e.to_string())?;
+        std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Some(path))
     }
 }
 

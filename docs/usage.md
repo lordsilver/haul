@@ -22,6 +22,10 @@ In the desktop app, **Open here** opens the page in Haul's own browser window: c
 
 The **Hosts** view lists each host Haul has reached and each preferred one, with the transfer speed per host, the star that makes it preferred (pixeldrain.com is starred from the start), slots (files downloaded from it at once), the folder its files go to (a subfolder of the download folder), and the proxy route. Preferred hosts come first, in the order downloads try them: drag one by its grip, or use its arrows, to move it, and a host you star joins the end. A host that refused more downloads at once shows _Takes N at a time_; the slot buttons set your own limit and drop the learned one. A host that looks blocked through the proxy offers **Allow direct**, which needs a second click because it reveals your real IP address to that host.
 
+## Wrappers
+
+A wrapper link (fileguard.cc, filecrypt.cc, a `.dlc` link) is unwrapped as soon as it is added, and **Wrappers** shows each one: unwrapping, how many files it found from how many links, waiting for you (filecrypt.cc's gate: **Open here** in the desktop app, or open the page and paste the `.dlc` link it offers), or failed and why. Its files appear in the list **Not started**; start one with its ▶, an archive's parts with the group's ▶, or all of them with **Start all**. **Remove** on a wrapper takes the files that never started with it, after a second click. More in [Containers and wrappers](containers.md#wrapper-pages).
+
 ## Selecting and removing
 
 Click a row to select it, Ctrl+click to add or drop one, Shift+click for a range, Ctrl+A for everything in the view, Esc to let go. The toolbar then acts on the selection: Retry, Pause, Resume and Remove (the Delete key too), asking twice when that deletes partial files. In **Failed**, the broom clears every failed download.
@@ -31,6 +35,10 @@ The ✕ on a row takes the download off the list and leaves its file alone, unle
 ## Archives
 
 The parts of a multi-part archive (`name.part01.rar`, `name.rar` with `name.r00`…, `name.zip` with `name.z01`…, `name.7z.001`) show as one row, with their combined progress and what needs attention; the chevron opens it to the parts, and a click on it selects them all.
+
+## Reporting a problem
+
+**Settings › Diagnostics › Save diagnostics…** saves a report of what Haul is doing: every download and wrapper with its links, state and error, the hosts, the settings, and the end of the desktop app's log, this run's and the last one's. Account keys and the proxy's user and password are left out, and so are the keys in mega.nz links. Send it with a description of what happened.
 
 ## Status bar
 

@@ -6,10 +6,12 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::{Cx, Entry, ResolveError, content_type, guess_name, retry_after};
+use super::{Cx, Entry, ResolveError, Unwrapped, content_type, guess_name, retry_after};
 use crate::container;
 
 static DLC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^/DLC/([\w-]+)\.dlc/?$").unwrap());
+static CONTAINER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^/Container/([\w-]+)(?:\.html)?/?$").unwrap());
 
 /// The container id in a `.dlc` link, when the link is one.
 fn dlc_id(url: &str) -> Option<String> {
@@ -22,7 +24,17 @@ pub(super) fn is_dlc(url: &str) -> bool {
     dlc_id(url).is_some()
 }
 
-pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
+/// What a link points at: a container's page, or one `.dlc` it handed out.
+pub(super) fn key(url: &str) -> Option<String> {
+    if let Some(id) = dlc_id(url) {
+        return Some(format!("filecrypt.cc/dlc/{id}"));
+    }
+    let path = url::Url::parse(url).ok()?.path().to_string();
+    let id = &CONTAINER.captures(&path)?[1];
+    Some(format!("filecrypt.cc/container/{id}"))
+}
+
+pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
     let Some(id) = dlc_id(url) else {
         return Err(ResolveError::NeedsUser(
             "filecrypt.cc needs a browser: solve its gate there, then add the .dlc link the page offers"
@@ -74,7 +86,13 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     if links.is_empty() {
         return Err(ResolveError::failed("the .dlc held no links"));
     }
-    Ok(links
+    // The container's package names what it holds.
+    let title = links
+        .iter()
+        .map(|link| link.package.trim())
+        .find(|package| !package.is_empty())
+        .map(str::to_string);
+    let files = links
         .into_iter()
         .map(|link| Entry {
             name: link.name.or_else(|| guess_name(&link.url)),
@@ -83,5 +101,6 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             deferred: true,
             ..Entry::default()
         })
-        .collect())
+        .collect();
+    Ok(Unwrapped { title, files })
 }

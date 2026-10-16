@@ -16,9 +16,10 @@ Early. Working today:
 - Proxy (SOCKS5 or HTTP, with credentials) that a host leaves only when you allow it.
 - Settings editable in the app or in `config.toml`, each kept in step with the other.
 - Clipboard watching, per-host subfolders, and an optional move to the Recycle Bin when you remove a finished download.
+- A diagnostics report to save and send when something goes wrong, with account keys and passwords left out.
 - Hosts: pixeldrain, gofile, buzzheavier, 1fichier, rapidgator and nitroflare (premium accounts), mega.nz through `megatools`, and any direct link.
 - Import of JDownloader `.dlc` containers (through JDownloader's key service) and of any text file with links in it.
-- Wrapper pages: a fileguard.cc link solves its gate on its own and turns into one row with each host as a mirror; a filecrypt.cc page waits under **Needs you**, and the `.dlc` it offers is unpacked when handed back.
+- Wrapper pages: a fileguard.cc vault solves its gate on its own and each file (each part of a release) becomes one row with every host as a mirror, not started until you start it; a filecrypt.cc page waits for you in **Wrappers**, and the `.dlc` it offers is unpacked when handed back.
 - Desktop app: light and dark themes that follow Windows, tray icon (closing the window keeps downloading), notifications, single instance, `.dlc` file association, and the in-app browser for hosts that need a person.
 
 ## Install

@@ -55,4 +55,4 @@ What each download setting does is in [How downloads behave](downloading.md).
 
 The data folder is `%LOCALAPPDATA%\io.github.garysassano.haul` on Windows, which the uninstaller deletes when you ask it to remove the app's data, and `~/.local/share/haul` on Linux.
 
-It holds `config.toml`, the queue (`queue.json`), what Haul measured per host (`hosts.json`), the desktop app's log (`haul.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish, and move along when you change the download folder.
+It holds `config.toml`, the queue (`queue.json`), what Haul measured per host (`hosts.json`), the desktop app's log (`haul.log`, with the last run's kept as `haul.old.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish, and move along when you change the download folder.

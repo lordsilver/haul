@@ -21,7 +21,7 @@ use axum::{
     routing::{get, post},
 };
 use haul_core::{
-    Config, Engine, Event, ItemAction, Options, Route, Snapshot, StartError, Verifying,
+    Config, Engine, Event, Found, ItemAction, Options, Route, Snapshot, StartError, Verifying,
     config::Endpoints,
 };
 use serde_json::json;
@@ -379,6 +379,22 @@ async fn start_server() -> (Server, u16) {
                         .and_then(|h| h.to_str().ok())
                         .unwrap_or_default();
                     let port = host.rsplit(':').next().unwrap_or_default();
+                    if id == "parts" {
+                        return (
+                            [(header::CONTENT_TYPE, "text/html")],
+                            format!(
+                                r#"<div class="folder-title"><h1>Release R</h1></div>
+                                   <div class="link-group" data-host="pixeldrain.com">
+                                     <a class="target-link" href="https://pixeldrain.com/u/p1">1</a>
+                                     <a class="target-link" href="https://pixeldrain.com/u/p2">2</a>
+                                   </div>
+                                   <div class="link-group" data-host="example.com">
+                                     <a class="target-link" href="http://{host}/files/r.part1.rar">1</a>
+                                     <a class="target-link" href="http://{host}/files/r.part2.rar">2</a>
+                                   </div>"#
+                            ),
+                        );
+                    }
                     (
                         [(header::CONTENT_TYPE, "text/html")],
                         format!(
@@ -1087,54 +1103,176 @@ async fn a_folder_row_fails_over_without_reusing_the_folder_link() {
     );
 }
 
+/// The wrapper in the snapshot once it is unwrapped (or waits for a person).
+async fn wrapper_settled(engine: &Engine, status: &str) -> Snapshot {
+    wait_for(engine, &format!("the wrapper to be {status}"), |s| {
+        s.wrappers.len() == 1 && s.wrappers[0].status == status
+    })
+    .await
+}
+
+/// A wrapper is unwrapped as soon as it is added, but nothing it lists
+/// downloads until the user starts it.
 #[tokio::test]
-async fn a_wrapper_link_expands_into_mirrors_that_merge() {
+async fn a_wrapper_unwraps_into_files_that_wait_to_be_started() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     let mut events = engine.subscribe();
-    engine.add_text("https://fileguard.cc/vault/abc", "");
-    let s = wait_for(&engine, "the wrapper's links", |s| {
-        s.items.len() == 1 && all_done(s)
-    })
-    .await;
+    let added = engine.add_text("https://fileguard.cc/vault/abc", "");
+    assert_eq!((added.added, added.wrappers), (0, 1));
+    let s = wrapper_settled(&engine, "done").await;
+    let w = &s.wrappers[0];
+    assert_eq!(w.found, Some(Found { files: 1, links: 3 }));
+    // One file, every host a mirror, waiting for the user.
+    let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
     let it = &s.items[0];
-    assert_eq!(it.name, "kept.bin");
+    assert_eq!((it.name.as_str(), it.status), ("kept.bin", "paused"));
+    assert_eq!(it.source.as_deref(), Some(w.id.as_str()));
     let mut hosts = it.mirrors.clone();
     hosts.sort();
     assert_eq!(hosts, ["127.0.0.1", "localhost", "pixeldrain.com"]);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        t.server.requests("/api/file/kept").is_empty(),
+        "not started"
+    );
+
+    assert_eq!(engine.start_wrapper(&w.id), Some(1));
+    wait_for(&engine, "the file", all_done).await;
     // The default preference is pixeldrain: the file came from there, and
     // the mirrors that would need a step of their own were never asked.
     assert_eq!(t.downloaded("kept.bin"), content("kept", SIZE));
     assert!(t.server.requests("/files/kept.bin").is_empty());
     assert!(t.server.requests("/page/kept").is_empty());
-    // One file's mirrors are one row, not one row per person-needing host.
     while let Ok(e) = events.try_recv() {
         assert!(!matches!(e, Event::NeedsUser { .. }), "{e:?}");
     }
+    // The wrapper stays in its section when finished downloads are cleared.
+    engine.clear_done();
+    let s = engine.snapshot();
+    assert_eq!((s.items.len(), s.wrappers.len()), (0, 1));
 }
 
-/// A wrapper's links already in the queue are not added again, so the same
-/// wrapper added twice (copied again, say) downloads nothing twice.
+/// A release in parts lists part 1, part 2… on every host: one row per part,
+/// each with every host as a mirror, named after the links that name it.
 #[tokio::test]
-async fn a_wrapper_added_again_downloads_nothing_twice() {
+async fn a_release_in_parts_unwraps_into_one_row_per_part() {
     let t = Setup::new().await;
     let engine = t.engine().await;
+    // The page lists pixeldrain first; the user prefers the other host.
+    engine
+        .set_preferred_hosts(&["127.0.0.1".to_string()])
+        .unwrap();
+    engine.add_text("https://fileguard.cc/vault/parts", "Pkg");
+    let s = wrapper_settled(&engine, "done").await;
+    assert_eq!(s.wrappers[0].title.as_deref(), Some("Release R"));
+    assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 4 }));
+    let s = wait_for(&engine, "the parts", |s| s.items.len() == 2).await;
+    assert_eq!(
+        s.items
+            .iter()
+            .map(|i| (
+                i.name.as_str(),
+                i.status,
+                i.mirrors.len(),
+                i.package.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("r.part1.rar", "paused", 2, "Pkg"),
+            ("r.part2.rar", "paused", 2, "Pkg")
+        ]
+    );
+    // The preferred host's link comes first: the one shown and probed.
+    assert!(s.items.iter().all(|i| i.mirrors[0] == "127.0.0.1"));
+}
+
+/// What a wrapper's page says at once shows at once, even while downloads
+/// are paused: a gate for a person, or a link that is dead.
+#[tokio::test]
+async fn a_wrapper_says_at_once_when_it_cannot_unwrap() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    let mut events = engine.subscribe();
+    engine.add_text("https://fileguard.cc/vault/gone/x", "");
+    let s = wrapper_settled(&engine, "error").await;
+    assert!(
+        s.wrappers[0].error.contains("404"),
+        "{}",
+        s.wrappers[0].error
+    );
+    let e = events.recv().await.unwrap();
+    assert!(matches!(e, Event::Failed { .. }), "{e:?}");
+}
+
+/// Every link of a vault shows the same page: added once, solved once.
+#[tokio::test]
+async fn a_wrapper_counts_once_whichever_of_its_links_comes() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let added = engine.add_text(
+        "https://fileguard.cc/vault/abc https://fileguard.cc/vault/abc/mega https://www.fileguard.cc/vault/abc/pixeldrain",
+        "",
+    );
+    assert_eq!((added.wrappers, added.duplicates), (1, 2));
+    wrapper_settled(&engine, "done").await;
+    assert_eq!(
+        engine
+            .add_text("https://fileguard.cc/vault/abc/transfer", "")
+            .duplicates,
+        1,
+        "one already unwrapped counts too"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(t.server.requests("/vault/abc solved").len(), 1);
+    assert_eq!(engine.snapshot().items.len(), 1);
+}
+
+/// A file a wrapper lists that the queue already wants keeps its row and
+/// its turn: the wrapper's links join it as mirrors.
+#[tokio::test]
+async fn a_wrapper_file_joins_a_download_already_queued() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    // Nothing starts meanwhile; unwrapping goes on regardless.
+    engine.set_paused(true);
+    engine.add_text(&format!("{}/files/kept.bin", t.name), "");
     engine.add_text("https://fileguard.cc/vault/abc", "");
-    let first = wait_for(&engine, "the wrapper's file", |s| {
-        s.items.len() == 1 && all_done(s)
+    wrapper_settled(&engine, "done").await;
+    // Its own link, and the wrapper's three.
+    let s = wait_for(&engine, "the merge", |s| {
+        s.items.len() == 1 && s.items[0].mirrors.len() == 4
     })
     .await;
-    let fetched = t.server.requests("/api/file/kept").len();
+    assert_eq!(s.items[0].status, "queued", "still the user's download");
+    assert_eq!(s.items[0].source, None);
+}
 
+/// Removing a wrapper takes the files it added that never started; what
+/// the user started stays.
+#[tokio::test]
+async fn removing_a_wrapper_takes_its_files_that_never_started() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text("https://fileguard.cc/vault/parts", "");
+    let s = wrapper_settled(&engine, "done").await;
+    let w = s.wrappers[0].id.clone();
+    let s = wait_for(&engine, "the parts", |s| s.items.len() == 2).await;
+    assert!(engine.item_action(&s.items[0].id, ItemAction::Resume));
+    assert!(engine.remove_wrapper(&w));
+    let s = engine.snapshot();
+    assert!(s.wrappers.is_empty());
     assert_eq!(
-        engine.add_text("https://fileguard.cc/vault/abc", "").added,
-        1
+        s.items
+            .iter()
+            .map(|i| (i.name.as_str(), i.status))
+            .collect::<Vec<_>>(),
+        [("r.part1.rar", "queued")]
     );
-    let s = wait_for(&engine, "the second solve", |s| s.items.len() == 1).await;
-    assert_eq!(t.server.requests("/vault/abc solved").len(), 2);
-    assert_eq!(s.items[0].id, first.items[0].id);
-    assert_eq!(s.items[0].status, "done");
-    assert_eq!(t.server.requests("/api/file/kept").len(), fetched);
+    assert!(!engine.remove_wrapper(&w), "gone");
+    assert_eq!(engine.start_wrapper(&w), None);
 }
 
 #[tokio::test]
@@ -1143,9 +1281,10 @@ async fn a_filecrypt_gate_hands_back_its_dlc_that_unpacks() {
     let engine = t.engine().await;
     let page = "https://filecrypt.cc/Container/abc.html".to_string();
     engine.add_text(&page, "");
-    let s = wait_for(&engine, "the gate", |s| s.items[0].status == "captcha").await;
-    assert_eq!(s.items[0].open_urls, std::slice::from_ref(&page));
-    let id = s.items[0].id.clone();
+    let s = wrapper_settled(&engine, "captcha").await;
+    assert_eq!(s.wrappers[0].open_urls, std::slice::from_ref(&page));
+    assert!(s.items.is_empty(), "a wrapper is no download");
+    let id = s.wrappers[0].id.clone();
     // What the in-app browser or a paste hands back: the container's link.
     engine
         .set_direct(
@@ -1155,26 +1294,31 @@ async fn a_filecrypt_gate_hands_back_its_dlc_that_unpacks() {
             None,
         )
         .unwrap();
+    let s = wrapper_settled(&engine, "done").await;
+    assert_eq!(s.wrappers[0].title.as_deref(), Some("My Package"));
+    assert_eq!(s.wrappers[0].url, page, "still the container's page");
     let s = wait_for(&engine, "the container's files", |s| {
-        s.items.len() == 2 && all_done(s)
+        s.items.len() == 2 && s.items.iter().all(|i| i.status == "paused")
     })
     .await;
+    assert!(s.items.iter().all(|i| i.package == "My Package"));
+    assert_eq!(engine.start_wrapper(&id), Some(2));
+    wait_for(&engine, "the downloads", all_done).await;
     assert_eq!(t.downloaded("My Package/one.bin"), content("one.bin", SIZE));
     assert_eq!(t.downloaded("My Package/two.bin"), content("two.bin", SIZE));
     assert_eq!(files_in(&t.root.join("dl")), ["My Package"]);
-    assert_eq!(s.items.len(), 2, "the container row itself is gone");
 }
 
 /// A container link handed back that turns out dead asks for the gate's page
-/// again, as any link handed back does, and does not name the row.
+/// again, as any link handed back does, and does not name the wrapper.
 #[tokio::test]
 async fn a_dead_container_link_asks_for_the_page_again() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     let page = "https://filecrypt.cc/Container/abc.html".to_string();
     engine.add_text(&page, "");
-    let s = wait_for(&engine, "the gate", |s| s.items[0].status == "captcha").await;
-    let id = s.items[0].id.clone();
+    let s = wrapper_settled(&engine, "captcha").await;
+    let id = s.wrappers[0].id.clone();
     engine
         .set_direct(
             &id,
@@ -1184,12 +1328,12 @@ async fn a_dead_container_link_asks_for_the_page_again() {
         )
         .unwrap();
     let s = wait_for(&engine, "the gate again", |s| {
-        s.items[0].status == "captcha" && s.items[0].error.contains("404")
+        s.wrappers[0].status == "captcha" && s.wrappers[0].error.contains("404")
     })
     .await;
-    assert_eq!(s.items[0].open_urls, std::slice::from_ref(&page));
+    assert_eq!(s.wrappers[0].open_urls, std::slice::from_ref(&page));
     assert_eq!(engine.page_for(&id).as_deref(), Some(page.as_str()));
-    assert_eq!(s.items[0].name, page, "a container names no file");
+    assert_eq!(s.wrappers[0].title, None, "a container names nothing");
 
     // The page's next hand-back is the container that unpacks.
     engine
@@ -1200,27 +1344,20 @@ async fn a_dead_container_link_asks_for_the_page_again() {
             None,
         )
         .unwrap();
-    wait_for(&engine, "the container's files", |s| {
-        s.items.len() == 2 && all_done(s)
-    })
-    .await;
-    assert_eq!(t.downloaded("My Package/one.bin"), content("one.bin", SIZE));
+    wrapper_settled(&engine, "done").await;
+    wait_for(&engine, "the container's files", |s| s.items.len() == 2).await;
 }
 
 #[tokio::test]
-async fn a_dlc_link_from_a_wrapper_imports_its_container() {
+async fn a_dlc_link_is_a_wrapper_that_unpacks_its_container() {
     let t = Setup::new().await;
     let engine = t.engine().await;
-    // Named for its file at add time; what the row turns into is the
-    // container's links.
-    engine.add_text("https://filecrypt.cc/DLC/abc123.dlc", "");
-    let s = wait_for(&engine, "the container's links", |s| {
-        s.items.len() == 2 && all_done(s)
-    })
-    .await;
-    assert_eq!(t.downloaded("My Package/one.bin"), content("one.bin", SIZE));
-    assert_eq!(t.downloaded("My Package/two.bin"), content("two.bin", SIZE));
-    assert_eq!(s.items.len(), 2, "the container row itself is gone");
+    let added = engine.add_text("https://filecrypt.cc/DLC/abc123.dlc", "");
+    assert_eq!((added.added, added.wrappers), (0, 1));
+    let s = wrapper_settled(&engine, "done").await;
+    assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 2 }));
+    let s = wait_for(&engine, "the container's files", |s| s.items.len() == 2).await;
+    assert!(s.items.iter().all(|i| i.status == "paused"));
 }
 
 #[tokio::test]

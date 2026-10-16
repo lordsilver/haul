@@ -167,6 +167,9 @@ function addedMessage(r) {
 
 const ACTIVE = ["downloading", "resolving", "waiting", "queued", "checking"];
 
+// Paused before any byte came: what a wrapper's files are until started.
+const notStarted = (i) => i.status === "paused" && !i.done;
+
 const LISTS = {
   all: { label: "All downloads", icon: "apps-list", test: () => true },
   active: { label: "Active", icon: "arrow-circle-down", test: (i) => ACTIVE.includes(i.status) },
@@ -174,6 +177,11 @@ const LISTS = {
   failed: { label: "Failed", icon: "error-circle", test: (i) => i.status === "error", badge: "critical" },
   paused: { label: "Paused", icon: "pause-circle", test: (i) => i.status === "paused" },
   done: { label: "Completed", icon: "checkmark-circle", test: (i) => i.status === "done" },
+};
+
+// Wrapper links, below the lists: what each held, or why it did not open.
+const SECTIONS = {
+  wrappers: { label: "Wrappers", icon: "link" },
 };
 
 const PAGES = {
@@ -199,7 +207,7 @@ let updated = false;
 
 function currentView() {
   const name = location.hash.replace(/^#\/?/, "");
-  return name in LISTS || name in PAGES ? name : "all";
+  return name in LISTS || name in SECTIONS || name in PAGES ? name : "all";
 }
 
 // #/add/<links> opens the Add dialog with the links filled in (a bookmarklet
@@ -260,23 +268,36 @@ let seenStatus = null;
 const needsPending = new Map();
 let needsTimer = null;
 
+// A wrapper waits for a person like a download does, with its own name and
+// its own section to land on.
+function waitingNow(s) {
+  return [
+    ...s.items.filter((it) => it.status === "captcha"),
+    ...s.wrappers.filter((w) => w.status === "captcha").map((w) => ({ id: w.id, name: wrapperName(w), open_urls: w.open_urls, wrapper: true })),
+  ];
+}
+
 function spotNeedsUser(s) {
-  const statuses = new Map(s.items.map((it) => [it.id, it.status]));
+  const statuses = new Map([...s.items, ...s.wrappers].map((it) => [it.id, it.status]));
   if (seenStatus) {
-    for (const it of s.items) {
-      if (it.status === "captcha" && seenStatus.get(it.id) !== "captcha") needsPending.set(it.id, it);
+    for (const it of waitingNow(s)) {
+      if (seenStatus.get(it.id) !== "captcha") needsPending.set(it.id, it);
     }
     if (needsPending.size && !needsTimer) {
       needsTimer = setTimeout(() => {
         needsTimer = null;
         // One resolved in the moment since (a pasted link, a try) is not
         // announced after the fact.
-        const items = [...needsPending.values()].filter((it) =>
-          state?.items.some((now) => now.id === it.id && now.status === "captcha"),
-        );
+        const still = new Set(state ? waitingNow(state).map((it) => it.id) : []);
+        const items = [...needsPending.values()].filter((it) => still.has(it.id));
         needsPending.clear();
         if (items.length) needsToast(items);
       }, 1200);
+    }
+    // A wrapper just unwrapped: its files wait for a start.
+    for (const w of s.wrappers) {
+      const before = seenStatus.get(w.id);
+      if (w.status === "done" && before && before !== "done") unwrappedToast(w, s);
     }
   }
   seenStatus = statuses;
@@ -284,6 +305,7 @@ function spotNeedsUser(s) {
 
 function needsToast(items) {
   const one = items.length === 1 ? items[0] : null;
+  const place = items.every((it) => it.wrapper) ? "wrappers" : "attention";
   let action = null;
   if (one && state?.desktop) {
     action = { label: "Open here", icon: "globe", onclick: () => openHere(one.id) };
@@ -291,27 +313,37 @@ function needsToast(items) {
     const url = one.open_urls.find(isWebLink);
     // Opens the page in a tab of its own; Haul lands on the list that waits,
     // ready for the link the page hands back.
-    if (url) action = { label: "Open page", icon: "open", href: url, onclick: () => go("attention") };
+    if (url) action = { label: "Open page", icon: "open", href: url, onclick: () => go(place) };
   }
-  action ??= { label: "Show", icon: "warning", onclick: () => go("attention") };
-  toast(one ? `${one.name} needs you` : `${items.length} downloads need you`, "info", action);
+  action ??= { label: "Show", icon: "warning", onclick: () => go(place) };
+  toast(one ? `${one.name} needs you` : `${items.length} ${place === "wrappers" ? "wrappers" : "downloads"} need you`, "info", action);
+}
+
+function unwrappedToast(w, s) {
+  const waiting = s.items.filter((i) => i.source === w.id && i.status === "paused").length;
+  const action = waiting ? { label: "Start all", icon: "play", onclick: () => startWrapper(w) } : { label: "Show", icon: "link", onclick: () => go("wrappers") };
+  toast(waiting ? `${wrapperName(w)}: ${plural(waiting, "file")} ready to start` : `${wrapperName(w)} is unwrapped`, "info", action);
 }
 
 // ---- render
 
 function render(s) {
   state = s;
+  wrapperNames = new Map(s.wrappers.map((w) => [w.id, wrapperName(w)]));
   if (s.theme !== theme) applyTheme(s.theme);
   spotNeedsUser(s);
   renderNav(s);
   renderHead(s);
   const isList = view in LISTS;
   $("view-downloads").hidden = !isList;
+  $("view-wrappers").hidden = view !== "wrappers";
   $("view-hosts").hidden = view !== "hosts";
   $("view-settings").hidden = view !== "settings";
   if (isList) {
     renderBanner(s);
     renderList(s);
+  } else if (view === "wrappers") {
+    renderWrappers(s);
   } else if (view === "hosts") {
     renderHosts(s);
   } else {
@@ -338,7 +370,7 @@ function navItem(key, spec) {
 
 function renderNav(s) {
   if (!navItems.size) {
-    for (const [key, spec] of Object.entries(LISTS)) {
+    for (const [key, spec] of Object.entries({ ...LISTS, ...SECTIONS })) {
       const item = navItem(key, spec);
       navItems.set(key, item);
       $("nav").append(item.node);
@@ -357,6 +389,16 @@ function renderNav(s) {
     if (item.filled !== selected) {
       item.filled = selected;
       item.node.firstChild.replaceWith(icon(selected ? `${item.spec.icon}-filled` : item.spec.icon));
+    }
+    if (key === "wrappers") {
+      // Counted like a list; it calls for attention while one waits or failed.
+      const count = s.wrappers.length;
+      const kind = s.wrappers.some((w) => w.status === "error") ? "critical" : s.wrappers.some((w) => w.status === "captcha") ? "attention" : "";
+      setText(item.badge, count ? String(count) : "");
+      item.badge.className = `badge${kind ? ` ${kind}` : ""}`;
+      item.node.classList.toggle("attention", Boolean(kind));
+      item.node.classList.toggle("critical", kind === "critical");
+      continue;
     }
     if (!item.spec.test) continue;
     const count = s.items.filter(item.spec.test).length;
@@ -399,7 +441,7 @@ function makeCommands() {
 }
 
 function renderHead(s) {
-  const spec = LISTS[view] ?? PAGES[view];
+  const spec = LISTS[view] ?? SECTIONS[view] ?? PAGES[view];
   setText($("title"), view === "all" ? "Downloads" : spec.label);
   $("commands").hidden = !(view in LISTS);
   const failed = s.items.filter((i) => i.status === "error");
@@ -541,7 +583,7 @@ function selectionCommands(picked, s) {
     el("span", { class: "picked", role: "status" }, `${picked.length} selected`),
     retry.length ? button("Retry", { icon: "arrow-clockwise", kind: "subtle", onclick: () => bulk(retry, "retry") }) : null,
     pause.length ? button("Pause", { icon: "pause", kind: "subtle", onclick: () => bulk(pause, "pause") }) : null,
-    resume.length ? button("Resume", { icon: "play", kind: "subtle", onclick: () => bulk(resume, "resume") }) : null,
+    resume.length ? button(resume.every(notStarted) ? "Start" : "Resume", { icon: "play", kind: "subtle", onclick: () => bulk(resume, "resume") }) : null,
     removeButton,
     button("Clear selection", { icon: "dismiss", kind: "subtle", iconOnly: true, onclick: clearSelection }),
   ];
@@ -630,6 +672,7 @@ function caption(it) {
     case "waiting":
       return it.wait ? `Retrying in ${duration(it.wait)}` : "Waiting";
     case "paused":
+      if (!it.done) return it.size ? `Not started · ${bytes(it.size)}` : "Not started";
       return of ? `Paused · ${of}` : "Paused";
     case "captcha":
       return "Needs you";
@@ -646,7 +689,7 @@ function rowActions(it, s) {
   const out = [];
   const subtle = (label, name, onclick) => button(label, { icon: name, kind: "subtle small", iconOnly: true, onclick });
   if (ACTIVE.includes(it.status)) out.push(subtle("Pause", "pause", () => act(it.id, "pause")));
-  else if (it.status === "paused") out.push(subtle("Resume", "play", () => act(it.id, "resume")));
+  else if (it.status === "paused") out.push(subtle(notStarted(it) ? "Start" : "Resume", "play", () => act(it.id, "resume")));
   else if (it.status === "error") out.push(subtle("Retry", "arrow-clockwise", () => act(it.id, "retry")));
   if (it.status === "done" && it.path) {
     out.push(subtle("Show in folder", "folder-open", () => act(it.id, "reveal")));
@@ -793,6 +836,7 @@ function updateRow(r, it, s, member = false) {
   const sub = [shownHost(it)];
   if (it.mirrors.length > 1) sub.push(`${it.mirrors.length} mirrors`);
   if (it.package) sub.push(it.package);
+  if (wrapperNames.has(it.source)) sub.push(`from ${wrapperNames.get(it.source)}`);
   const error = ["error", "waiting"].includes(it.status) ? withoutHost(it.error, sub[0]) : "";
   const subKey = `${sub.join(" · ")}|${error}`;
   if (r.sub.dataset.key !== subKey) {
@@ -832,7 +876,7 @@ function updateRow(r, it, s, member = false) {
 
 function matchesQuery(it) {
   if (!query) return true;
-  return [it.name, it.package, it.host, ...it.mirrors].some((v) => v?.toLowerCase().includes(query));
+  return [it.name, it.package, it.host, wrapperNames.get(it.source), ...it.mirrors].some((v) => v?.toLowerCase().includes(query));
 }
 
 function rowFor(id) {
@@ -1053,7 +1097,8 @@ function updateGroupRow(g, entry) {
   const size = parts.reduce((n, i) => n + i.size, 0);
   const done = parts.reduce((n, i) => n + (i.status === "done" ? i.size : Math.min(i.done, i.size || i.done)), 0);
   const hosts = [...new Set(parts.map((i) => shownHost(i)))];
-  setText(g.sub, [`${parts.length} parts`, size ? bytes(size) : null, ...hosts, parts[0].package || null].filter(Boolean).join(" · "));
+  const from = wrapperNames.has(parts[0].source) ? `from ${wrapperNames.get(parts[0].source)}` : null;
+  setText(g.sub, [`${parts.length} parts`, size ? bytes(size) : null, ...hosts, parts[0].package || null, from].filter(Boolean).join(" · "));
 
   // By bytes when every unfinished part's size is known, by parts otherwise.
   const sized = parts.every((i) => i.size > 0 || i.status === "done");
@@ -1096,7 +1141,8 @@ function partsSummary(parts) {
   for (const [n, label] of [
     [count((i) => i.status === "downloading"), "downloading"],
     [count((i) => ["queued", "waiting", "checking", "resolving"].includes(i.status)), "waiting"],
-    [count((i) => i.status === "paused"), "paused"],
+    [count(notStarted), "not started"],
+    [count((i) => i.status === "paused" && !notStarted(i)), "paused"],
     [count((i) => i.status === "captcha"), "need you"],
     [count((i) => i.status === "error"), "failed"],
   ]) {
@@ -1114,7 +1160,9 @@ function groupActions(parts) {
   const failed = parts.filter((i) => i.status === "error");
   return [
     active.length ? subtle("Pause the parts", "pause", () => bulk(active, "pause")) : null,
-    !active.length && paused.length ? subtle("Resume the parts", "play", () => bulk(paused, "resume")) : null,
+    !active.length && paused.length
+      ? subtle(paused.every(notStarted) ? "Start the parts" : "Resume the parts", "play", () => bulk(paused, "resume"))
+      : null,
     failed.length ? subtle("Retry the failed parts", "arrow-clockwise", () => bulk(failed, "retry")) : null,
   ].filter(Boolean);
 }
@@ -1142,6 +1190,136 @@ function renderEmpty(s, shown) {
   } else {
     const [title, text] = EMPTY[view];
     box.replaceChildren(icon(LISTS[view].icon), el("strong", {}, title), text);
+  }
+}
+
+// ---- wrappers
+
+const wrapperCards = new Map();
+// Each wrapper's name by its id, for the rows of the files it added.
+let wrapperNames = new Map();
+
+const wrapperName = (w) => w.title || w.url;
+
+function startWrapper(w) {
+  return api(`/api/wrapper/${encodeURIComponent(w.id)}/start`).then((r) => {
+    if (r.started) toast(`Started ${plural(r.started, "file")} from ${wrapperName(w)}`, "success");
+  }, report);
+}
+
+function removeWrapper(w) {
+  return api(`/api/wrapper/${encodeURIComponent(w.id)}/remove`).catch(report);
+}
+
+// What a wrapper is doing, in a few words; once unwrapped, how its files stand.
+function wrapperStatus(w, files) {
+  switch (w.status) {
+    case "unwrapping":
+      return "Unwrapping…";
+    case "waiting":
+      return w.wait ? `Trying again in ${duration(w.wait)}` : "Waiting to try again";
+    case "captcha":
+      return "Needs you";
+    case "paused":
+      return "Paused";
+    case "error":
+      return w.retry_in ? `Failed · trying again in ${duration(w.retry_in)}` : "Failed";
+    default: {
+      const found = w.found ? `${plural(w.found.files, "file")} from ${plural(w.found.links, "link")}` : "Unwrapped";
+      return files.length ? `${found} · ${partsSummary(files)}` : found;
+    }
+  }
+}
+
+// A gate a person passes: in the app's browser, which hands back the .dlc
+// the page offers, or in their own, and a pasted link.
+function wrapperHelp(c, w, s) {
+  const it = { id: w.id, name: wrapperName(w), open_urls: w.open_urls, error: w.error, host: w.host, mirrors: [w.host] };
+  const actions = [];
+  if (s.desktop) actions.push(button("Open here", { icon: "globe", kind: "accent", onclick: () => openHere(w.id) }));
+  for (const url of w.open_urls.filter(isWebLink)) {
+    actions.push(
+      el(
+        "a",
+        { class: `button${s.desktop ? "" : " accent"}`, href: url, target: "_blank", rel: "noopener noreferrer", title: url },
+        icon("open"),
+        s.desktop ? "Open in browser" : "Open page",
+      ),
+    );
+  }
+  actions.push(button("Paste link", { icon: "link", onclick: () => openEditor(c, it) }));
+  actions.push(button("Try again", { icon: "arrow-clockwise", kind: "subtle", onclick: () => act(w.id, "retry_manual") }));
+  const hint = s.desktop
+    ? "Open here, pass the page's check and press its .dlc button: Haul unwraps what the page hands over."
+    : "Open the page, pass its check, then copy the .dlc link it offers and paste it here.";
+  const bar = infobar("caution", null, null, withoutHost(w.error, w.host), actions);
+  bar.append(el("p", { class: "hint" }, hint));
+  return bar;
+}
+
+function makeWrapperCard(id) {
+  const c = { key: null, editing: false, bar: null };
+  c.name = el("div", { class: "name" });
+  c.sub = el("div", { class: "sub" });
+  c.actions = el("span", { class: "host-actions" });
+  c.node = el("div", { class: "card with-bar", "data-wrapper": id }, icon("link"), el("div", { class: "text" }, c.name, c.sub), c.actions);
+  return c;
+}
+
+function renderWrappers(s) {
+  const box = $("wrappers");
+  let previous = null;
+  const seen = new Set();
+  for (const w of s.wrappers) {
+    seen.add(w.id);
+    let c = wrapperCards.get(w.id);
+    if (!c) {
+      c = makeWrapperCard(w.id);
+      wrapperCards.set(w.id, c);
+    }
+    const files = s.items.filter((i) => i.source === w.id);
+    const waiting = files.filter((i) => i.status === "paused");
+    const unstarted = files.filter(notStarted);
+    setText(c.name, wrapperName(w));
+    c.name.title = w.url;
+    const error = ["error", "waiting"].includes(w.status) ? withoutHost(w.error, w.host) : "";
+    const subKey = `${w.host}|${wrapperStatus(w, files)}|${error}`;
+    if (c.sub.dataset.key !== subKey) {
+      c.sub.dataset.key = subKey;
+      c.sub.replaceChildren(`${w.host} · ${wrapperStatus(w, files)}`, error ? " · " : "", error ? el("span", { class: w.status === "error" ? "error" : "" }, error) : "");
+    }
+    const key = `${w.status}|${waiting.length}|${unstarted.length}|${s.desktop}|${w.error}|${w.open_urls.join(" ")}`;
+    if (c.key !== key && !(c.editing && w.status === "captcha")) {
+      c.key = key;
+      const actions = [];
+      if (waiting.length) actions.push(button("Start all", { icon: "play", kind: "accent", onclick: () => startWrapper(w) }));
+      if (w.status === "error") actions.push(button("Try again", { icon: "arrow-clockwise", kind: "subtle", onclick: () => act(w.id, "retry") }));
+      // Its files that never started go with it, so that asks twice.
+      actions.push(
+        unstarted.length
+          ? confirmButton("Remove", `Remove ${plural(unstarted.length, "file")} too?`, () => removeWrapper(w), { icon: "dismiss", kind: "subtle" })
+          : button("Remove", { icon: "dismiss", kind: "subtle", onclick: () => removeWrapper(w) }),
+      );
+      c.actions.replaceChildren(...actions);
+      c.editing = false;
+      c.bar?.remove();
+      c.bar = w.status === "captcha" ? wrapperHelp(c, w, s) : null;
+      if (c.bar) c.node.append(c.bar);
+    }
+    const want = previous ? previous.node.nextSibling : box.firstChild;
+    if (want !== c.node) box.insertBefore(c.node, want);
+    previous = c;
+  }
+  for (const [id, c] of wrapperCards) {
+    if (!seen.has(id)) {
+      c.node.remove();
+      wrapperCards.delete(id);
+    }
+  }
+  const empty = $("no-wrappers");
+  empty.hidden = s.wrappers.length > 0;
+  if (!s.wrappers.length && !empty.childElementCount) {
+    empty.append(icon("link"), el("strong", {}, "No wrapper links yet"), "Add a fileguard.cc or filecrypt.cc link: its files join the list, not started.");
   }
 }
 
@@ -1759,7 +1937,30 @@ function renderSettings(s) {
     settingCard("folder-open", "Data folder", el("span", { class: "mono" }, s.data_dir), button("Open folder", { onclick: () => openPlace("data") })),
     el("h2", {}, "About"),
     settingCard("info", `Haul ${s.version}`, s.desktop ? "Download manager for file hosts, desktop app." : "Download manager for file hosts, web UI."),
+    settingCard(
+      "wrench",
+      "Diagnostics",
+      "A report of what Haul is doing, to send along when something goes wrong: every download and wrapper with its links, state and error, the hosts, the settings and the recent log. Account keys and proxy passwords are left out.",
+      button("Save diagnostics…", { onclick: saveDiagnostics }),
+    ),
   );
+}
+
+// The desktop app asks where to save the report; a browser downloads it.
+async function saveDiagnostics() {
+  if (!state?.desktop) {
+    const link = el("a", { href: "/api/diagnostics", download: "" });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    return;
+  }
+  try {
+    const r = await api("/api/diagnostics/save");
+    if (r.saved) toast(`Saved the report to ${r.saved}`, "success");
+  } catch (error) {
+    report(error);
+  }
 }
 
 // ---- status bar

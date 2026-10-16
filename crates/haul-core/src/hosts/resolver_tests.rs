@@ -655,7 +655,18 @@ async fn fileguard_solves_the_proof_of_work_and_lists_links() {
         )
         // A page whose widget does not say: fileguard.cc's own address.
         .route("/vault/plain", get(gate(None)))
-        .route("/altcha_challenge.php", get(sha1));
+        .route("/altcha_challenge.php", get(sha1))
+        // A session that passed this vault's gate before: the links, no form.
+        .route(
+            "/vault/open/mega",
+            get(move || async move { ([("content-type", "text/html")], solved_html) }),
+        )
+        // A solve refused, as a burst of them is.
+        .route(
+            "/vault/busy",
+            get(gate(Some("/pow/challenge?v=1&amp;b=2")))
+                .post(|| async { (StatusCode::FORBIDDEN, "Forbidden") }),
+        );
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
@@ -666,25 +677,37 @@ async fn fileguard_solves_the_proof_of_work_and_lists_links() {
         key_service: &http,
     };
 
-    let entries = fileguard::resolve(&cx, &format!("{base}/vault/abc/1fichier"))
+    let found = fileguard::unwrap(&cx, &format!("{base}/vault/abc/1fichier"))
         .await
         .unwrap();
-    assert!(entries.iter().all(|e| e.deferred));
+    assert_eq!(found.title.as_deref(), Some("Sledders New Horizons-RUNE"));
+    // One link per host: one file, every host a mirror.
+    let file = &found.files[..];
+    assert_eq!(file.len(), 1);
     assert_eq!(
-        entries
-            .iter()
-            .map(|e| (e.url.as_str(), e.name.as_deref()))
-            .collect::<Vec<_>>(),
-        [
-            (
-                "https://1fichier.com/?cu5oghhjkskhuzap8w43&af=2701919",
-                None
-            ),
-            ("https://pixeldrain.com/u/VF18oYXa", None),
-        ]
+        (file[0].url.as_str(), file[0].name.as_deref()),
+        (
+            "https://1fichier.com/?cu5oghhjkskhuzap8w43&af=2701919",
+            None
+        )
+    );
+    assert_eq!(file[0].mirrors, ["https://pixeldrain.com/u/VF18oYXa"]);
+
+    // A page that shows its links already is read as it is.
+    let open = fileguard::unwrap(&cx, &format!("{base}/vault/open/mega"))
+        .await
+        .unwrap();
+    assert_eq!(open, found);
+
+    let err = fileguard::unwrap(&cx, &format!("{base}/vault/busy"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ResolveError::Network(m) if m.contains("refused the solve (HTTP 403)")),
+        "worth another try, not a page for a person: {err:?}"
     );
 
-    let err = fileguard::resolve(&cx, &format!("{base}/vault/gone"))
+    let err = fileguard::unwrap(&cx, &format!("{base}/vault/gone"))
         .await
         .unwrap_err();
     assert!(
@@ -698,7 +721,7 @@ async fn fileguard_solves_the_proof_of_work_and_lists_links() {
         ("check", "without its proof-of-work challenge"),
         ("plain", "uses SHA-1"),
     ] {
-        let err = fileguard::resolve(&cx, &format!("{base}/vault/{vault}"))
+        let err = fileguard::unwrap(&cx, &format!("{base}/vault/{vault}"))
             .await
             .unwrap_err();
         assert!(
@@ -810,9 +833,11 @@ async fn filecrypt_dlc_links_become_entries() {
         key_service: &key_service,
     };
 
-    let entries = filecrypt::resolve(&cx, &format!("{base}/DLC/abc123.dlc"))
+    let found = filecrypt::unwrap(&cx, &format!("{base}/DLC/abc123.dlc"))
         .await
         .unwrap();
+    assert_eq!(found.title.as_deref(), Some("My Package"));
+    let entries = found.files;
     assert!(entries.iter().all(|e| e.deferred));
     assert_eq!(entries[0].package.as_deref(), Some("My Package"));
     assert_eq!(
@@ -828,7 +853,7 @@ async fn filecrypt_dlc_links_become_entries() {
         ]
     );
 
-    let err = filecrypt::resolve(&cx, &format!("{base}/DLC/empty.dlc"))
+    let err = filecrypt::unwrap(&cx, &format!("{base}/DLC/empty.dlc"))
         .await
         .unwrap_err();
     assert!(
@@ -836,7 +861,7 @@ async fn filecrypt_dlc_links_become_entries() {
         "{err:?}"
     );
 
-    let err = filecrypt::resolve(&cx, &format!("{base}/DLC/unlisted.dlc"))
+    let err = filecrypt::unwrap(&cx, &format!("{base}/DLC/unlisted.dlc"))
         .await
         .unwrap_err();
     assert!(
@@ -844,7 +869,7 @@ async fn filecrypt_dlc_links_become_entries() {
         "{err:?}"
     );
 
-    let err = filecrypt::resolve(&cx, &format!("{base}/DLC/gate.dlc"))
+    let err = filecrypt::unwrap(&cx, &format!("{base}/DLC/gate.dlc"))
         .await
         .unwrap_err();
     assert!(
@@ -852,7 +877,7 @@ async fn filecrypt_dlc_links_become_entries() {
         "{err:?}"
     );
 
-    let err = filecrypt::resolve(&cx, &format!("{base}/Container/abc.html"))
+    let err = filecrypt::unwrap(&cx, &format!("{base}/Container/abc.html"))
         .await
         .unwrap_err();
     assert!(

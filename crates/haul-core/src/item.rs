@@ -50,6 +50,15 @@ impl Status {
     }
 }
 
+/// What unwrapping a wrapper found on its page.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Found {
+    /// Files: the rows it added, or merged into rows already there.
+    pub files: usize,
+    /// Links to those files, mirrors counted.
+    pub links: usize,
+}
+
 #[derive(Debug)]
 pub(crate) struct Item {
     pub id: String,
@@ -95,6 +104,14 @@ pub(crate) struct Item {
     pub existing: bool,
     /// Cancels the running attempt; present exactly while one runs.
     pub task: Option<CancellationToken>,
+    /// A wrapper's row: a link to further links, never a file. Unwrapping it
+    /// adds its files, not started, and leaves it done with what it found.
+    pub wrapper: bool,
+    /// The wrapper row a file came from.
+    pub source: Option<String>,
+    /// A wrapper page's own name for what it holds.
+    pub title: Option<String>,
+    pub found: Option<Found>,
 }
 
 impl Item {
@@ -128,6 +145,10 @@ impl Item {
             checksum: None,
             existing: false,
             task: None,
+            wrapper: false,
+            source: None,
+            title: None,
+            found: None,
         }
     }
 
@@ -144,8 +165,10 @@ impl Item {
 
     /// Whether this row holds the file `name` of `size` bytes (0 = unknown):
     /// the names match, and so do the sizes when both are known.
+    /// A wrapper's row holds no file, so it is never the same as one.
     pub fn same_file(&self, name: &str, size: u64) -> bool {
-        self.key_name().as_deref() == Some(name)
+        !self.wrapper
+            && self.key_name().as_deref() == Some(name)
             && (self.size == 0 || size == 0 || self.size == size)
     }
 
@@ -163,6 +186,10 @@ impl Item {
             path: self.path.clone(),
             checksum: self.checksum.clone(),
             existing: self.existing,
+            wrapper: self.wrapper,
+            source: self.source.clone(),
+            title: self.title.clone(),
+            found: self.found,
         }
     }
 
@@ -200,6 +227,10 @@ impl Item {
         it.path = s.path;
         it.checksum = s.checksum;
         it.existing = s.existing;
+        it.wrapper = s.wrapper;
+        it.source = s.source;
+        it.title = s.title;
+        it.found = s.found;
         it.status = match s.status {
             Status::Done | Status::Paused | Status::Error => s.status,
             _ => Status::Queued,
@@ -235,6 +266,14 @@ pub(crate) struct Saved {
     pub checksum: Option<Checksum>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub existing: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wrapper: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub found: Option<Found>,
 }
 
 fn lenient_status<'de, D: Deserializer<'de>>(d: D) -> Result<Status, D::Error> {
