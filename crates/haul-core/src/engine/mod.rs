@@ -275,6 +275,10 @@ pub struct HostView {
     pub exits: usize,
     /// What it allows at full speed per address today, when it says.
     pub quota: Option<QuotaView>,
+    /// What a free user gets from it, where Haul knows.
+    pub free: Option<hosts::Free>,
+    /// The user set the account it takes, which may lift that.
+    pub account: bool,
     /// The most downloads it takes at once, learned when it refused one more
     /// than it was serving; `None` until it does.
     pub cap: Option<usize>,
@@ -304,7 +308,7 @@ struct Lane {
     cooldown: Option<Instant>,
     /// What the host says this address may still fetch at full speed today
     /// (pixeldrain publishes it).
-    quota: Option<hosts::pixeldrain::Quota>,
+    quota: Option<hosts::Allowance>,
 }
 
 impl Lane {
@@ -484,7 +488,11 @@ impl State {
         cfg: &Config,
         now: Instant,
     ) -> Option<Exit> {
-        let limit = self.host(host, cfg).limit;
+        // What a free user gets, where it is known, holds from the start.
+        let limit = match hosts::known(host).and_then(|k| k.at_once(cfg)) {
+            Some(at_once) => self.host(host, cfg).limit.min(at_once),
+            None => self.host(host, cfg).limit,
+        };
         // An address the host has slowed for the day comes last.
         let mut best: Option<(Exit, (bool, usize))> = None;
         for &exit in exits {
@@ -520,7 +528,7 @@ impl Drop for Comparing {
     }
 }
 
-fn quota_view(quotas: impl Iterator<Item = hosts::pixeldrain::Quota>) -> Option<QuotaView> {
+fn quota_view(quotas: impl Iterator<Item = hosts::Allowance>) -> Option<QuotaView> {
     let quotas: Vec<_> = quotas.collect();
     let first = quotas.first()?;
     Some(QuotaView {
@@ -1318,25 +1326,37 @@ impl Engine {
 
     // ---- scheduler
 
-    /// Asks pixeldrain, through each exit, how much it still allows that
-    /// address at full speed today, while the queue holds pixeldrain links;
-    /// once a minute, as downloads use it up.
+    /// Asks the hosts that tell ([`hosts::Known::tells_allowance`]),
+    /// through each exit, how much they still allow that address at full
+    /// speed today, while the queue holds their links: at once when one is
+    /// added, then once a minute, as downloads use it up.
     async fn watch_quotas(self) {
-        const HOST: &str = "pixeldrain.com";
         let mut changes = self.watch();
-        let mut checked: Option<Instant> = None;
+        let mut checked: HashMap<String, Instant> = HashMap::new();
         loop {
-            let due = checked.is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
-            let wanted = due && {
+            let wanted: Vec<String> = {
                 let st = self.lock();
-                st.items.values().any(|i| {
-                    i.status != Status::Done && i.mirrors.iter().any(|m| hosts::host_of(m) == HOST)
-                })
+                let mut hosts: Vec<String> = st
+                    .items
+                    .values()
+                    .filter(|i| i.status != Status::Done)
+                    .flat_map(|i| i.mirrors.iter().map(|m| hosts::host_of(m)))
+                    .filter(|h| hosts::known(h).is_some_and(|k| k.tells_allowance))
+                    .collect();
+                hosts.sort();
+                hosts.dedup();
+                hosts
             };
-            if wanted && !self.cfg().is_disabled(HOST) {
-                checked = Some(Instant::now());
-                let exits = self.exits_for(HOST, &self.lock());
-                let cfg = self.cfg();
+            let cfg = self.cfg();
+            for host in wanted {
+                let due = checked
+                    .get(&host)
+                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
+                if !due || cfg.is_disabled(&host) {
+                    continue;
+                }
+                checked.insert(host.clone(), Instant::now());
+                let exits = self.exits_for(&host, &self.lock());
                 for exit in exits {
                     let http = self.clients().on(exit);
                     let cx = Cx {
@@ -1345,28 +1365,28 @@ impl Engine {
                         tokens: &self.0.tokens,
                         key_service: &http,
                     };
-                    let quota = hosts::pixeldrain::quota(&cx).await;
+                    let quota = hosts::allowance(&cx, &host).await;
                     let mut st = self.lock();
-                    let lane = st.lane(HOST, exit);
+                    let lane = st.lane(&host, exit);
                     // Less used than before: another address (a router that
                     // got a new one, say) or a new day. What held for the
                     // old one does not.
                     if let (Some(old), Some(new)) = (lane.quota, quota)
                         && new.used < old.used
                     {
-                        tracing::info!(exit = %exit_name(exit), "pixeldrain sees a fresh address: its limits start over");
+                        tracing::info!(exit = %exit_name(exit), "{host} sees a fresh address: its limits start over");
                         lane.fresh_start();
                     }
                     if quota.is_some() && lane.quota != quota {
                         if let Some(q) = quota {
-                            tracing::debug!(exit = %exit_name(exit), used = q.used, limit = q.limit, "pixeldrain quota");
+                            tracing::debug!(exit = %exit_name(exit), used = q.used, limit = q.limit, "{host} allowance");
                         }
                         lane.quota = quota;
                         self.touch(&mut st);
                     }
                 }
             }
-            // A pixeldrain link just added is asked about at once.
+            // A link just added is asked about at once.
             tokio::select! {
                 _ = self.0.shutdown.cancelled() => return,
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {}
@@ -2852,6 +2872,10 @@ impl Engine {
                     disabled: cfg.is_disabled(name),
                     cap: st.lanes_of(name).filter_map(|l| l.cap).min(),
                     quota: quota_view(exits.iter().filter_map(|e| lane(e).and_then(|l| l.quota))),
+                    free: hosts::known(name)
+                        .map(|k| k.free)
+                        .filter(|f| *f != hosts::Free::default()),
+                    account: hosts::known(name).is_some_and(|k| k.has_account(&cfg)),
                     exits: exits.len(),
                 }
             })
@@ -2892,6 +2916,10 @@ impl Engine {
                 disabled: cfg.is_disabled(&name),
                 cap: None,
                 exits: self.exits_for(&name, &st).len(),
+                free: hosts::known(&name)
+                    .map(|k| k.free)
+                    .filter(|f| *f != hosts::Free::default()),
+                account: hosts::known(&name).is_some_and(|k| k.has_account(&cfg)),
                 quota: quota_view(
                     self.exits_for(&name, &st)
                         .iter()

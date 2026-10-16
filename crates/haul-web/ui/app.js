@@ -1653,8 +1653,16 @@ function renderHosts(s) {
     }
     const stats = [h.speed ? `${bytes(h.speed)}/s per file` : "Speed not measured yet", `${h.ok} done`, `${h.fails} failed`, `${bytes(h.bytes)} total`];
     if (h.cooldown) stats.push(`cooling down ${duration(h.cooldown)}`);
+    // What a free user gets there, where Haul knows.
+    if (h.account) stats.push("account set");
+    else if (h.free) {
+      const free = [];
+      if (h.free.at_once) free.push(`${h.free.at_once} at a time`);
+      if (h.free.daily_bytes) free.push(`${bytes(h.free.daily_bytes)} a day at full speed${h.free.slowed_to ? `, then ${bytes(h.free.slowed_to)}/s` : ""}`);
+      if (free.length) stats.push(`free: ${free.join(", ")}`);
+    }
     // Its own word on what an address may fetch at full speed today.
-    if (h.quota) stats.push(`${bytes(h.quota.used)} of ${bytes(h.quota.limit)} a day at full speed used`);
+    if (h.quota) stats.push(`${bytes(h.quota.used)} used today`);
     setText(c.stats, stats.join(" · "));
     const slots = slotsOf(h);
     setText(c.slots, `${h.active} / ${slots} ${slots === 1 ? "slot" : "slots"}${h.exits > 1 ? ` × ${h.exits}` : ""}`);

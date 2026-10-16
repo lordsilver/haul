@@ -138,28 +138,9 @@ pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
     })
 }
 
-/// What pixeldrain allows the address a request comes from today: bytes at
-/// full speed, how many are used, and the speed past them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub struct Quota {
-    #[serde(rename = "transfer_limit")]
-    pub limit: u64,
-    #[serde(rename = "transfer_limit_used")]
-    pub used: u64,
-    /// Bytes per second once `used` passes `limit`.
-    #[serde(rename = "speed_limit")]
-    pub slowed_to: u64,
-}
-
-impl Quota {
-    /// Past the day's full-speed bytes.
-    pub fn slowed(&self) -> bool {
-        self.limit > 0 && self.used >= self.limit
-    }
-}
-
-/// The quota of the address `cx` reaches pixeldrain from.
-pub async fn quota(cx: &Cx<'_>) -> Option<Quota> {
+/// The allowance of the address `cx` reaches pixeldrain from: 6 GB a day at
+/// full speed, then 1 MiB/s, per its `/api/misc/rate_limits`.
+pub(super) async fn allowance(cx: &Cx<'_>) -> Option<super::Allowance> {
     let base = &cx.cfg.endpoints.pixeldrain;
     let r = request(cx, format!("{base}/api/misc/rate_limits"), &auth(cx))
         .timeout(std::time::Duration::from_secs(15))

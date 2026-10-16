@@ -17,7 +17,7 @@ mod gofile;
 mod mega;
 mod nitroflare;
 mod onefichier;
-pub mod pixeldrain;
+mod pixeldrain;
 mod rapidgator;
 
 use std::{
@@ -311,25 +311,227 @@ impl From<reqwest::Error> for ResolveError {
     }
 }
 
-/// Hosts with a resolver of their own.
-const KNOWN_HOSTS: [&str; 11] = [
-    "pixeldrain.com",
-    "gofile.io",
-    "buzzheavier.com",
-    "1fichier.com",
-    "rapidgator.net",
-    "nitroflare.com",
-    "mega.nz",
-    "mega.co.nz",
-    "fileditchfiles.st",
-    "fileguard.cc",
-    "filecrypt.cc",
+/// Which code serves a host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Pixeldrain,
+    Gofile,
+    Buzzheavier,
+    OneFichier,
+    Rapidgator,
+    Nitroflare,
+    Mega,
+    /// Its links are the files.
+    Direct,
+    Fileguard,
+    Filecrypt,
+}
+
+/// What a free user gets from a host, where it is known; an account the
+/// user sets may lift it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Free {
+    /// Downloads at once from one address.
+    pub at_once: Option<usize>,
+    /// Bytes a day one address gets at full speed.
+    pub daily_bytes: Option<u64>,
+    /// Bytes per second past them.
+    pub slowed_to: Option<u64>,
+}
+
+/// A host Haul knows: the names it goes by, the code that serves it, the
+/// account settings that unlock more, what a free user gets, and whether it
+/// says how much an address has left today ([`allowance`]).
+#[derive(Debug)]
+pub struct Known {
+    pub names: &'static [&'static str],
+    kind: Kind,
+    pub accounts: &'static [&'static str],
+    pub free: Free,
+    pub tells_allowance: bool,
+}
+
+impl Known {
+    /// A wrapper's site, which stands for further links rather than files.
+    pub fn wraps(&self) -> bool {
+        matches!(self.kind, Kind::Fileguard | Kind::Filecrypt)
+    }
+
+    /// Whether the user set every account setting this host takes.
+    pub fn has_account(&self, cfg: &Config) -> bool {
+        !self.accounts.is_empty()
+            && self.accounts.iter().all(|key| {
+                cfg.account(key)
+                    .is_some_and(|v| crate::config::secret(v).is_some())
+            })
+    }
+
+    /// The downloads at once it allows one address, unless an account
+    /// lifts it.
+    pub fn at_once(&self, cfg: &Config) -> Option<usize> {
+        self.free.at_once.filter(|_| !self.has_account(cfg))
+    }
+}
+
+/// Every host with code of its own. Free limits are what was measured:
+/// pixeldrain's from its own refusal ("maximum number of open download
+/// connections for free/anonymous accounts", past 5) and its
+/// `/api/misc/rate_limits`.
+static KNOWN: &[Known] = &[
+    Known {
+        names: &["pixeldrain.com"],
+        kind: Kind::Pixeldrain,
+        accounts: &["pixeldrain_key"],
+        free: Free {
+            at_once: Some(5),
+            daily_bytes: Some(6_000_000_000),
+            slowed_to: Some(1_048_576),
+        },
+        tells_allowance: true,
+    },
+    Known {
+        names: &["gofile.io"],
+        kind: Kind::Gofile,
+        accounts: &["gofile_token"],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+    },
+    Known {
+        names: &["buzzheavier.com"],
+        kind: Kind::Buzzheavier,
+        accounts: &[],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+    },
+    Known {
+        names: &["1fichier.com"],
+        kind: Kind::OneFichier,
+        accounts: &["1fichier_key"],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+    },
+    Known {
+        names: &["rapidgator.net"],
+        kind: Kind::Rapidgator,
+        accounts: &["rapidgator_user", "rapidgator_pass"],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+    },
+    Known {
+        names: &["nitroflare.com"],
+        kind: Kind::Nitroflare,
+        accounts: &["nitroflare_user", "nitroflare_key"],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+    },
+    Known {
+        names: &["mega.nz", "mega.co.nz"],
+        kind: Kind::Mega,
+        accounts: &[],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+    },
+    Known {
+        names: &["fileditchfiles.st"],
+        kind: Kind::Direct,
+        accounts: &[],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+    },
+    Known {
+        names: &["fileguard.cc"],
+        kind: Kind::Fileguard,
+        accounts: &[],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+    },
+    Known {
+        names: &["filecrypt.cc"],
+        kind: Kind::Filecrypt,
+        accounts: &[],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+    },
 ];
+
+/// The known host a host name (as [`host_of`] gives it) belongs to.
+pub fn known(host: &str) -> Option<&'static Known> {
+    KNOWN.iter().find(|k| k.names.contains(&host))
+}
+
+fn kind_of(url: &str) -> Option<Kind> {
+    known(&host_of(url)).map(|k| k.kind)
+}
+
+/// What an address may still fetch at full speed today, as a host that
+/// tells says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct Allowance {
+    #[serde(rename = "transfer_limit")]
+    pub limit: u64,
+    #[serde(rename = "transfer_limit_used")]
+    pub used: u64,
+    /// Bytes per second once `used` passes `limit`.
+    #[serde(rename = "speed_limit")]
+    pub slowed_to: u64,
+}
+
+impl Allowance {
+    /// Past the day's full-speed bytes.
+    pub fn slowed(&self) -> bool {
+        self.limit > 0 && self.used >= self.limit
+    }
+}
+
+/// The allowance of the address `cx` reaches `host` from, for a host that
+/// tells ([`Known::tells_allowance`]).
+pub async fn allowance(cx: &Cx<'_>, host: &str) -> Option<Allowance> {
+    match known(host)?.kind {
+        Kind::Pixeldrain => pixeldrain::allowance(cx).await,
+        _ => None,
+    }
+}
 
 /// Whether a link is worth adding when it shows up on the clipboard: a host
 /// Haul knows, or a link to a file rather than to a web page.
 pub fn is_download_link(url: &str) -> bool {
-    if KNOWN_HOSTS.contains(&host_of(url).as_str()) {
+    if kind_of(url).is_some() {
         return true;
     }
     // A page that names a file (`name.rar.html`) is still a page.
@@ -481,7 +683,7 @@ pub fn guess_name(url: &str) -> Option<String> {
 /// stands for further links, never for one file, whether it is added or a
 /// person hands it back.
 pub fn wraps(url: &str) -> bool {
-    matches!(host_of(url).as_str(), "fileguard.cc" | "filecrypt.cc")
+    known(&host_of(url)).is_some_and(Known::wraps)
 }
 
 /// The files in a wrapper's list of links. A wrapper lists each host's links
@@ -569,9 +771,9 @@ impl Drop for StopOnDrop {
 /// What a wrapper link points at, so two links to it count as one: every
 /// fileguard.cc link of a vault (`/<vault>/<host>`) shows the same page.
 pub fn wrapper_key(url: &str) -> String {
-    let key = match host_of(url).as_str() {
-        "fileguard.cc" => fileguard::key(url),
-        "filecrypt.cc" => filecrypt::key(url),
+    let key = match kind_of(url) {
+        Some(Kind::Fileguard) => fileguard::key(url),
+        Some(Kind::Filecrypt) => filecrypt::key(url),
         _ => None,
     };
     key.unwrap_or_else(|| url.to_string())
@@ -579,31 +781,31 @@ pub fn wrapper_key(url: &str) -> String {
 
 /// The files behind a wrapper link, once its gate is passed.
 pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
-    match host_of(url).as_str() {
-        "fileguard.cc" => fileguard::unwrap(cx, url).await,
-        "filecrypt.cc" => filecrypt::unwrap(cx, url).await,
+    match kind_of(url) {
+        Some(Kind::Fileguard) => fileguard::unwrap(cx, url).await,
+        Some(Kind::Filecrypt) => filecrypt::unwrap(cx, url).await,
         _ => Err(ResolveError::failed("not a wrapper link")),
     }
 }
 
 /// Direct links for `url`. Folders and lists expand to several entries.
 pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
-    match host_of(url).as_str() {
-        "pixeldrain.com" => pixeldrain::resolve(cx, url).await,
-        "gofile.io" => gofile::resolve(cx, url).await,
-        "buzzheavier.com" => buzzheavier::resolve(cx, url).await,
-        "1fichier.com" => onefichier::resolve(cx, url).await,
-        "rapidgator.net" => rapidgator::resolve(cx, url).await,
-        "nitroflare.com" => nitroflare::resolve(cx, url).await,
-        "mega.nz" | "mega.co.nz" => mega::resolve(cx, url),
-        "fileditchfiles.st" => Ok(vec![Entry {
+    match kind_of(url) {
+        Some(Kind::Pixeldrain) => pixeldrain::resolve(cx, url).await,
+        Some(Kind::Gofile) => gofile::resolve(cx, url).await,
+        Some(Kind::Buzzheavier) => buzzheavier::resolve(cx, url).await,
+        Some(Kind::OneFichier) => onefichier::resolve(cx, url).await,
+        Some(Kind::Rapidgator) => rapidgator::resolve(cx, url).await,
+        Some(Kind::Nitroflare) => nitroflare::resolve(cx, url).await,
+        Some(Kind::Mega) => mega::resolve(cx, url),
+        Some(Kind::Direct) => Ok(vec![Entry {
             url: url.into(),
             name: guess_name(url),
             ..Entry::default()
         }]),
-        "fileguard.cc" => fileguard::unwrap(cx, url).await.map(|u| u.files),
-        "filecrypt.cc" => filecrypt::unwrap(cx, url).await.map(|u| u.files),
-        _ => generic::resolve(cx, url).await,
+        Some(Kind::Fileguard) => fileguard::unwrap(cx, url).await.map(|u| u.files),
+        Some(Kind::Filecrypt) => filecrypt::unwrap(cx, url).await.map(|u| u.files),
+        None => generic::resolve(cx, url).await,
     }
 }
 
@@ -612,13 +814,13 @@ pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError>
 /// already downloaded recognised, before anything is fetched. `None` when the
 /// host will not say.
 pub async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    match host_of(url).as_str() {
-        "pixeldrain.com" => pixeldrain::probe(cx, url).await,
+    match kind_of(url) {
+        Some(Kind::Pixeldrain) => pixeldrain::probe(cx, url).await,
         // No free metadata route; resolve at download time.
-        "mega.nz" | "mega.co.nz" | "gofile.io" | "1fichier.com" => None,
+        Some(Kind::Mega | Kind::Gofile | Kind::OneFichier) => None,
         // A wrapper says nothing useful before its solve; that is the
         // resolver's work, once, at download time.
-        "fileguard.cc" | "filecrypt.cc" => None,
+        Some(Kind::Fileguard | Kind::Filecrypt) => None,
         _ => generic::probe(cx, url).await,
     }
 }
@@ -719,6 +921,30 @@ mod tests {
         );
         assert_eq!(guess_name("https://h.example/getfile.html"), None);
         assert_eq!(guess_name("https://h.example/download.php?id=7"), None);
+    }
+
+    #[test]
+    fn every_host_is_known_once() {
+        let mut names: Vec<&str> = KNOWN.iter().flat_map(|k| k.names.iter().copied()).collect();
+        let all = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), all, "a name in two entries");
+        assert!(wraps("https://fileguard.cc/abc") && wraps("https://filecrypt.cc/Container/X.html"));
+        assert!(!wraps("https://pixeldrain.com/u/abc"));
+        assert_eq!(known("mega.co.nz").map(|k| k.kind), Some(Kind::Mega));
+        // pixeldrain's free limit holds until its account is set.
+        let pixeldrain = known("pixeldrain.com").unwrap();
+        let mut cfg = Config::default();
+        assert_eq!(pixeldrain.at_once(&cfg), Some(5));
+        cfg.pixeldrain_key = Some("key".into());
+        assert_eq!(pixeldrain.at_once(&cfg), None);
+        assert!(pixeldrain.has_account(&cfg));
+        // Both halves of a login, or it is none.
+        let rapidgator = known("rapidgator.net").unwrap();
+        cfg.rapidgator_user = Some("me".into());
+        assert!(!rapidgator.has_account(&cfg));
+        assert!(!known("mega.nz").unwrap().has_account(&cfg), "no account to set");
     }
 
     #[test]
