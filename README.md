@@ -43,6 +43,7 @@ Headless: `haul --port 8765 --dir D:\Downloads`, then open <http://127.0.0.1:876
 - [Using Haul](docs/usage.md): adding links, **Needs you**, hosts, selecting and removing.
 - [Configuration](docs/configuration.md): `config.toml`, environment variables and the data folder.
 - [How downloads behave](docs/downloading.md): mirrors, files already there, retries, cooldowns, the proxy.
+- [Containers and wrappers](docs/containers.md): `.dlc` and text files, and the pages that wrap one file's links on many hosts.
 - [Hosts](docs/hosts.md): how each host is resolved and what has been checked against the real host.
 - [HTTP API](docs/api.md): the local API the UI, the bookmarklet and scripts use.
 - [Decisions](docs/decisions.md): design decisions and why they were made.
