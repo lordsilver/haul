@@ -41,6 +41,7 @@ fn config(base: &str) -> Config {
             dlc_service: format!("{base}/dlc"),
             fileguard: base.into(),
             filecrypt: base.into(),
+            router: format!("{base}/igddesc.xml"),
         },
         ..Config::default()
     }

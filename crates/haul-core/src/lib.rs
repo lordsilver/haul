@@ -14,6 +14,7 @@ mod item;
 mod limiter;
 pub mod logging;
 pub mod paths;
+pub mod router;
 pub mod stay;
 mod store;
 

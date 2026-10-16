@@ -97,6 +97,16 @@ pub struct Config {
     pub nitroflare_user: Option<String>,
     pub nitroflare_key: Option<String>,
     pub gofile_token: Option<String>,
+    /// The router's login, for one that redials only for it (a FRITZ!Box
+    /// over TR-064).
+    pub router_user: Option<String>,
+    pub router_password: Option<String>,
+    /// Gets a new public address on its own when the one this machine has
+    /// is what holds downloads back.
+    pub reconnect: bool,
+    /// Gets a new address instead of asking the router: any command, run in
+    /// the system's shell.
+    pub reconnect_command: Option<String>,
     /// `megatools` executable for mega.nz; looked up on `PATH` when unset.
     pub megatools: Option<PathBuf>,
     #[serde(skip)]
@@ -141,6 +151,10 @@ impl Default for Config {
             nitroflare_user: None,
             nitroflare_key: None,
             gofile_token: None,
+            router_user: None,
+            router_password: None,
+            reconnect: false,
+            reconnect_command: None,
             megatools: None,
             endpoints: Endpoints::default(),
             from_env: BTreeMap::new(),
@@ -149,7 +163,7 @@ impl Default for Config {
 }
 
 /// Account keys, by their name in the file and their environment variable.
-pub const ACCOUNTS: [(&str, &str); 7] = [
+pub const ACCOUNTS: [(&str, &str); 9] = [
     ("1fichier_key", "HAUL_1FICHIER_KEY"),
     ("pixeldrain_key", "HAUL_PIXELDRAIN_KEY"),
     ("rapidgator_user", "HAUL_RAPIDGATOR_USER"),
@@ -157,6 +171,8 @@ pub const ACCOUNTS: [(&str, &str); 7] = [
     ("nitroflare_user", "HAUL_NITROFLARE_USER"),
     ("nitroflare_key", "HAUL_NITROFLARE_KEY"),
     ("gofile_token", "HAUL_GOFILE_TOKEN"),
+    ("router_user", "HAUL_ROUTER_USER"),
+    ("router_password", "HAUL_ROUTER_PASSWORD"),
 ];
 
 impl Config {
@@ -204,6 +220,8 @@ impl Config {
             "nitroflare_user" => &self.nitroflare_user,
             "nitroflare_key" => &self.nitroflare_key,
             "gofile_token" => &self.gofile_token,
+            "router_user" => &self.router_user,
+            "router_password" => &self.router_password,
             _ => return None,
         })
     }
@@ -217,6 +235,8 @@ impl Config {
             "nitroflare_user" => &mut self.nitroflare_user,
             "nitroflare_key" => &mut self.nitroflare_key,
             "gofile_token" => &mut self.gofile_token,
+            "router_user" => &mut self.router_user,
+            "router_password" => &mut self.router_password,
             _ => return None,
         })
     }
@@ -540,6 +560,17 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # nitroflare_key = ""
 # gofile_token = ""
 
+# A new public address from the router when the one this machine has is what
+# holds downloads back (a host's daily allowance used up, a long wait asked of
+# it). Haul finds the router itself and asks it to redial over UPnP; a router
+# that wants its login for that (a FRITZ!Box over TR-064) takes it here. Or a
+# command of your own gets the new address. Every redial cuts the line for a
+# few seconds, so it is off unless you switch it on.
+# reconnect = false
+# router_user = ""
+# router_password = ""
+# reconnect_command = "my-router-cli reconnect"
+
 # megatools for mega.nz links (default: found on PATH).
 # megatools = "C:/Tools/megatools/megatools.exe"
 
@@ -586,6 +617,8 @@ pub struct Endpoints {
     pub dlc_service: String,
     pub fileguard: String,
     pub filecrypt: String,
+    /// The router's description; empty to look for it on the network.
+    pub router: String,
 }
 
 impl Default for Endpoints {
@@ -600,6 +633,7 @@ impl Default for Endpoints {
             dlc_service: "http://service.jdownloader.org/dlcrypt/service.php".into(),
             fileguard: "https://fileguard.cc".into(),
             filecrypt: "https://filecrypt.cc".into(),
+            router: String::new(),
         }
     }
 }

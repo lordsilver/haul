@@ -37,6 +37,8 @@ pub struct SettingsView {
     pub skip_add_dialog: bool,
     pub verify_existing: bool,
     pub detailed_log: bool,
+    pub reconnect: bool,
+    pub reconnect_command: String,
     pub resume_attempts: u32,
     pub min_speed_kbps: u32,
     pub min_speed_seconds: u64,
@@ -100,6 +102,8 @@ impl Engine {
             skip_add_dialog: cfg.skip_add_dialog,
             verify_existing: cfg.verify_existing,
             detailed_log: cfg.detailed_log,
+            reconnect: cfg.reconnect,
+            reconnect_command: cfg.reconnect_command.clone().unwrap_or_default(),
             resume_attempts: cfg.resume_attempts,
             min_speed_kbps: cfg.min_speed_kbps,
             min_speed_seconds: cfg.min_speed_seconds,
@@ -221,6 +225,19 @@ impl Engine {
                     let on = value.as_bool().ok_or("verify_existing is true or false")?;
                     cfg.verify_existing = on;
                     writes.push(top(key, Some(on.into())));
+                }
+                "reconnect" => {
+                    let on = value.as_bool().ok_or("reconnect is true or false")?;
+                    cfg.reconnect = on;
+                    writes.push(top(key, Some(on.into())));
+                }
+                "reconnect_command" => {
+                    let command = text(value, key)?;
+                    writes.push(top(
+                        key,
+                        (!command.is_empty()).then(|| command.as_str().into()),
+                    ));
+                    cfg.reconnect_command = (!command.is_empty()).then_some(command);
                 }
                 "detailed_log" => {
                     let on = value.as_bool().ok_or("detailed_log is true or false")?;

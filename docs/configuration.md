@@ -17,6 +17,10 @@ recycle_on_remove = false       # removing a finished download also moves its fi
 skip_add_dialog = false         # dropped and opened links are added without the Add dialog
 verify_existing = false         # compare files already there with the host's checksum
 detailed_log = false            # write every request, retry and mirror choice to haul.log
+reconnect = false               # a new address from the router when yours holds downloads back
+reconnect_command = ""           # a command that gets the new address instead of the router
+router_user = ""                 # the router's login, for one that redials only with it
+router_password = ""
 resume_attempts = 5             # retries per mirror after network trouble
 min_speed_kbps = 0              # give up a mirror slower than this (KiB/s) ...
 min_speed_seconds = 60          # ... over this long; 0 = off

@@ -143,6 +143,8 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/preferred-hosts", post(preferred_hosts))
         .route("/api/host/{name}/route/{mode}", post(host_route))
         .route("/api/global/{action}", post(global))
+        .route("/api/router", post(find_router))
+        .route("/api/reconnect", post(reconnect))
         .route("/api/settings", get(settings).post(update_settings))
         .route("/api/settings/download-dir/pick", post(pick_download_dir))
         .route("/api/diagnostics", get(diagnostics))
@@ -467,6 +469,21 @@ async fn host_preferred(
     match app.engine.set_preferred(&name, body.preferred) {
         Ok(()) => ok(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+/// Looks for the router on this network again.
+async fn find_router(State(app): State<App>) -> Response {
+    let router = app.engine.find_router().await;
+    Json(serde_json::json!({ "router": router.map(|r| r.model) })).into_response()
+}
+
+/// Gets this machine's line a new public address now. Answers once the line
+/// is back, with the new address, or with why there is none.
+async fn reconnect(State(app): State<App>) -> Response {
+    match app.engine.reconnect("asked in Haul").await {
+        Ok(address) => Json(serde_json::json!({ "address": address })).into_response(),
+        Err(e) => error(StatusCode::BAD_GATEWAY, e),
     }
 }
 

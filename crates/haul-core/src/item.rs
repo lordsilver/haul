@@ -104,6 +104,8 @@ pub(crate) struct Item {
     pub existing: bool,
     /// Cancels the running attempt; present exactly while one runs.
     pub task: Option<CancellationToken>,
+    /// The exit the running attempt goes out from.
+    pub exit: Option<usize>,
     /// A wrapper's row: a link to further links, never a file. Unwrapping it
     /// adds its files, not started, and leaves it done with what it found.
     pub wrapper: bool,
@@ -145,6 +147,7 @@ impl Item {
             checksum: None,
             existing: false,
             task: None,
+            exit: None,
             wrapper: false,
             source: None,
             title: None,

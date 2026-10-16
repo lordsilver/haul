@@ -1826,6 +1826,54 @@ function textField(key, value, { label, placeholder = "", secret = false, wide =
   return secret ? withReveal(input) : input;
 }
 
+// Getting this line a new public address from the router: what was found,
+// the button that does it now, the switch that lets Haul do it on its own,
+// and the router's login or a command for any other router.
+let routerAsked = false;
+
+function reconnectCards(s, d) {
+  if (!routerAsked) {
+    routerAsked = true;
+    api("/api/router").catch(() => {});
+  }
+  const r = s.reconnect;
+  const found = r.router ? `${r.router} found on your network.` : "No router answered on this network yet; a command of your own works with any.";
+  const now = r.busy
+    ? button("Getting a new IP…", { icon: "arrow-clockwise", disabled: true })
+    : confirmButton("Get a new IP", "Cut the line for a moment?", async () => {
+        try {
+          const out = await api("/api/reconnect");
+          toast(`New address: ${out.address}`, "success");
+        } catch (error) {
+          report(error);
+        }
+      }, { icon: "arrow-clockwise" });
+  return el(
+    "div",
+    { class: "cards" },
+    settingCard("globe", "Router", r.note ? `${found} ${r.note}.` : `${found} Hosts limit what one address may fetch; a redial usually brings another.`, now),
+    settingCard(
+      "arrow-clockwise",
+      "Get a new IP on its own",
+      "When a host has slowed your address for the day, or asked it to wait a long while, and no proxy can take over. At most every ten minutes; each redial cuts the line for a few seconds.",
+      toggleSwitch("reconnect", d.reconnect, "Get a new IP on its own"),
+    ),
+    settingCard(
+      "key",
+      "Router login",
+      envNote("router_user", "router_password") ?? "Only for a router that redials just for it, such as a FRITZ!Box with UPnP changes turned off. The user may stay empty.",
+      accountField("router_user", "User", false),
+      accountField("router_password", "Password"),
+    ),
+    settingCard(
+      "wrench",
+      "Reconnect command",
+      "Gets the new address instead of the router, for any other router or a VPN's own app. Runs in the system's shell.",
+      textField("reconnect_command", d.reconnect_command, { label: "Reconnect command", placeholder: "my-router-cli reconnect", wide: true }),
+    ),
+  );
+}
+
 // The extra proxies, one per line; saved when the box loses focus.
 function proxyList(d) {
   const box = el("textarea", {
@@ -1929,7 +1977,7 @@ function renderSettings(s) {
   }
   const d = settingsData;
   if (!d) return;
-  const key = JSON.stringify([d, s.desktop, theme, s.config_error, s.version]);
+  const key = JSON.stringify([d, s.desktop, theme, s.config_error, s.version, s.reconnect]);
   // Leave the page alone while a field is being edited.
   const active = document.activeElement;
   if (key === settingsKey || ($("settings").contains(active) && active.matches("input"))) return;
@@ -2035,6 +2083,8 @@ function renderSettings(s) {
           toggleSwitch("proxy_fresh_connections", d.proxy_fresh_connections, "New connection for every download"),
         )
       : null,
+    el("h2", {}, "New address"),
+    reconnectCards(s, d),
     el("h2", {}, "Accounts"),
     settingCard("key", "1fichier", envNote("1fichier_key") ?? "API key: no free-mode wait or captcha.", accountField("1fichier_key", "API key")),
     settingCard("key", "pixeldrain", envNote("pixeldrain_key") ?? "API key.", accountField("pixeldrain_key", "API key")),

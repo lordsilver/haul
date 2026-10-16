@@ -118,6 +118,8 @@ struct Server {
     limited: Arc<AtomicUsize>,
     /// Files /busy is sending right now.
     busy: Arc<AtomicUsize>,
+    /// Times the stand-in router was asked to redial; its address follows.
+    redials: Arc<AtomicUsize>,
 }
 
 /// Counts a /busy transfer out when its body is done or dropped.
@@ -504,6 +506,37 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/igddesc.xml",
+            // A stand-in router: an Internet Gateway Device with a WAN service.
+            get(|| async {
+                r#"<root><device><modelName>Test Box 1</modelName><device><device>
+                <service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+                <controlURL>/igdupnp/control/WANIPConn1</controlURL></service></device></device></device></root>"#
+            }),
+        )
+        .route(
+            "/igdupnp/control/WANIPConn1",
+            post(|State(s): State<Server>, headers: HeaderMap| async move {
+                let action = headers
+                    .get("soapaction")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.rsplit('#').next())
+                    .unwrap_or_default()
+                    .to_string();
+                let redials = s.redials.load(Ordering::SeqCst);
+                let answer = match action.as_str() {
+                    "ForceTermination" => {
+                        s.redials.fetch_add(1, Ordering::SeqCst);
+                        String::new()
+                    }
+                    "GetExternalIPAddress" => format!("<NewExternalIPAddress>10.0.0.{}</NewExternalIPAddress>", redials + 1),
+                    "GetStatusInfo" => "<NewConnectionStatus>Connected</NewConnectionStatus>".into(),
+                    _ => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                };
+                format!("<s:Envelope><s:Body>{answer}</s:Body></s:Envelope>").into_response()
+            }),
+        )
+        .route(
             "/api/misc/rate_limits",
             // This address is past its day's full-speed bytes.
             get(|| async {
@@ -583,6 +616,7 @@ impl Setup {
                 fileguard: self.ip.clone(),
                 filecrypt: self.ip.clone(),
                 dlc_service: format!("{}/dlc", self.ip),
+                router: format!("{}/igddesc.xml", self.ip),
                 ..Endpoints::default()
             },
             ..Config::default()
@@ -2213,4 +2247,26 @@ async fn pixeldrains_quota_shows_with_the_host() {
         (q.limit, q.used, q.slowed, q.slowed_to, q.known),
         (6_000_000_000, 9_494_305_080, 1, 1_048_576, 1)
     );
+}
+
+/// The router redials for a new address; the address this machine had
+/// starts over, and the setting shows the router found.
+#[tokio::test]
+async fn the_router_gets_a_new_address() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    assert_eq!(
+        engine.find_router().await.map(|r| r.model).as_deref(),
+        Some("Test Box 1")
+    );
+    assert_eq!(
+        engine.snapshot().reconnect.router.as_deref(),
+        Some("Test Box 1")
+    );
+    let address = engine.reconnect("a test").await.unwrap();
+    assert_eq!(address, "10.0.0.2");
+    assert_eq!(t.server.redials.load(Ordering::SeqCst), 1);
+    let s = engine.snapshot();
+    assert!(!s.reconnect.busy);
+    assert!(s.reconnect.note.unwrap().contains("Got a new address"));
 }

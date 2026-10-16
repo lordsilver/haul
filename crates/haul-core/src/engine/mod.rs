@@ -37,7 +37,10 @@ use crate::{
 };
 
 mod diagnostics;
+mod reconnect;
 mod settings;
+
+pub use reconnect::ReconnectView;
 
 pub use settings::SettingsView;
 
@@ -179,6 +182,8 @@ pub struct Snapshot {
     pub data_dir: String,
     /// The settings file, when the engine was started from one.
     pub config_file: Option<String>,
+    /// Getting a new address from the router.
+    pub reconnect: ReconnectView,
 }
 
 #[derive(Debug, Serialize)]
@@ -456,6 +461,8 @@ struct State {
     paused: bool,
     /// The download folder is changing: start nothing new.
     moving: bool,
+    /// The router is redialing: start nothing new.
+    reconnecting: bool,
     max_total: usize,
     dirty: bool,
 }
@@ -703,6 +710,7 @@ struct Inner {
     save_lock: Mutex<()>,
     rename_lock: Mutex<()>,
     shutdown: CancellationToken,
+    reconnects: Mutex<reconnect::Reconnects>,
     _lock: File,
 }
 
@@ -775,6 +783,7 @@ impl Engine {
                 routes,
                 paused,
                 moving: false,
+                reconnecting: false,
                 max_total: cfg.max_total.max(1),
                 dirty: false,
             }),
@@ -799,6 +808,7 @@ impl Engine {
             save_lock: Mutex::new(()),
             rename_lock: Mutex::new(()),
             shutdown: CancellationToken::new(),
+            reconnects: Mutex::new(reconnect::Reconnects::default()),
             _lock: lock,
         }));
         {
@@ -817,6 +827,7 @@ impl Engine {
         }
         tokio::spawn(engine.clone().scheduler());
         tokio::spawn(engine.clone().watch_quotas());
+        tokio::spawn(engine.clone().watch_reconnects());
         tokio::spawn(engine.clone().saver());
         tokio::spawn(engine.clone().watch_config());
         Ok(engine)
@@ -1410,7 +1421,7 @@ impl Engine {
         let mut events = Vec::new();
         {
             let mut st = self.lock();
-            if st.paused || st.moving {
+            if st.paused || st.moving || st.reconnecting {
                 return;
             }
             let now = Instant::now();
@@ -1457,6 +1468,7 @@ impl Engine {
                         it.host = host.clone();
                         it.status = Status::Resolving;
                         it.task = Some(cancel.clone());
+                        it.exit = Some(exit);
                         running += 1;
                         busy += size;
                         changed = true;
@@ -1951,6 +1963,7 @@ impl Engine {
                 Some(it) => {
                     it.speed = 0.0;
                     it.task = None;
+                    it.exit = None;
                 }
                 // Removed or merged away while it ran.
                 None => removed.push(id.to_string()),
@@ -2760,6 +2773,8 @@ impl Engine {
     }
 
     pub fn snapshot(&self) -> Snapshot {
+        // Before the state's lock: the two are always taken in this order.
+        let reconnect = self.reconnect_view();
         let st = self.lock();
         let now = Instant::now();
         let has_proxy = self.clients().exits.len() > 1;
@@ -2962,6 +2977,7 @@ impl Engine {
             download_dir: self.download_dir().display().to_string(),
             data_dir: self.0.data_dir.display().to_string(),
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
+            reconnect,
         }
     }
 
@@ -3157,6 +3173,7 @@ mod exit_tests {
             routes: BTreeMap::new(),
             paused: false,
             moving: false,
+            reconnecting: false,
             max_total: 8,
             dirty: false,
         }
