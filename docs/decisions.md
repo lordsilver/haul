@@ -22,7 +22,7 @@ The page is vanilla JavaScript modules with no build step, so `cargo build` prod
 
 The UI follows Fluent design as Windows 11 apps do: navigation pane, command bar, cards in the style of the Settings app, InfoBars, WinUI 3's light and dark theme colors, Fluent System Icons (MIT), Segoe UI Variable. The theme follows Windows unless the user picks one; the choice is saved in `config.toml`, so the window frame can match it from the first paint.
 
-Each thing that needs attention is shown once. A download that needs you is flagged by its own row, and its count rides on **Needs you** in the navigation pane (the desktop app also sends a notification); the InfoBars above the list are kept for state that affects every list: paused downloads, a settings file with an error, a lost connection. An InfoBar inside a row leaves its icon out, as WinUI's `IsIconVisible` allows, because the row's icon already says it.
+Each thing that needs attention is shown once. A download that needs you is flagged by its own row, and its count rides on **Needs you** in the navigation pane (the desktop app also sends a notification); the InfoBars above the list are kept for state that affects every list: paused downloads (only while the pause holds a download back; with nothing waiting, the status bar alone says Paused), a settings file with an error, a lost connection. An InfoBar inside a row leaves its icon out, as WinUI's `IsIconVisible` allows, because the row's icon already says it.
 
 ## Local API
 

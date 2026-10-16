@@ -604,7 +604,10 @@ let bannerKey = null;
 
 // App-wide state only. A download that needs you has its own row and the Needs you badge.
 function renderBanner(s) {
-  const key = `${offline}|${updated}|${s.paused}|${s.config_error}`;
+  // Paused matters only while it holds something back: a download that would
+  // start, wait or retry. With nothing to hold, the status bar says it.
+  const held = s.paused && s.items.some((i) => ACTIVE.includes(i.status));
+  const key = `${offline}|${updated}|${held}|${s.config_error}`;
   if (key === bannerKey) return;
   bannerKey = key;
   const bars = [];
@@ -625,7 +628,7 @@ function renderBanner(s) {
       ]),
     );
   }
-  if (s.paused) {
+  if (held) {
     bars.push(
       infobar("info", "pause-circle", "Downloads are paused.", "Nothing new starts until you resume.", [
         button("Resume all", { icon: "play", onclick: () => api("/api/global/resume").catch(report) }),
