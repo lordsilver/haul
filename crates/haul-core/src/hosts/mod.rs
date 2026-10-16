@@ -930,7 +930,9 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), all, "a name in two entries");
-        assert!(wraps("https://fileguard.cc/abc") && wraps("https://filecrypt.cc/Container/X.html"));
+        assert!(
+            wraps("https://fileguard.cc/abc") && wraps("https://filecrypt.cc/Container/X.html")
+        );
         assert!(!wraps("https://pixeldrain.com/u/abc"));
         assert_eq!(known("mega.co.nz").map(|k| k.kind), Some(Kind::Mega));
         // pixeldrain's free limit holds until its account is set.
@@ -944,7 +946,10 @@ mod tests {
         let rapidgator = known("rapidgator.net").unwrap();
         cfg.rapidgator_user = Some("me".into());
         assert!(!rapidgator.has_account(&cfg));
-        assert!(!known("mega.nz").unwrap().has_account(&cfg), "no account to set");
+        assert!(
+            !known("mega.nz").unwrap().has_account(&cfg),
+            "no account to set"
+        );
     }
 
     #[test]
