@@ -405,7 +405,8 @@ impl Drop for Serving<'_> {
 /// How an attempt ended without an error.
 enum Outcome {
     Done,
-    /// The row is gone: merged into another, or expanded into a folder's files.
+    /// The row is gone: merged into another, or expanded into a folder's or
+    /// a wrapper's files.
     Gone,
     /// The file was in the download folder already, at this path.
     Existing(PathBuf),
@@ -1190,6 +1191,14 @@ impl Engine {
                     tokens: &self.0.tokens,
                 };
                 let mut entries = or_cancel(cancel, hosts::resolve(&cx, url)).await??;
+                // A wrapper answers with links to resolve each in its own
+                // turn: one row per entry, the same shape a pasted link has.
+                if entries.iter().any(|e| e.deferred) {
+                    for id in self.expand(id, url, entries) {
+                        tokio::spawn(self.clone().probe(id));
+                    }
+                    return Ok(Outcome::Gone);
+                }
                 match (entries.len(), name) {
                     (0, _) => {
                         return Err(Fail::Error("nothing to download (empty folder?)".into()));
@@ -1257,20 +1266,46 @@ impl Engine {
         Ok(Outcome::Done)
     }
 
-    /// Replaces a folder row with one row per file, in the same place.
-    fn expand(&self, id: &str, url: &str, entries: Vec<Entry>) {
+    /// Replaces a folder or wrapper row with one row per file, in the same
+    /// place. A deferred entry becomes a row of its own link: it resolves
+    /// like a pasted link when its turn comes, and mirrors of the same name
+    /// merge into that row. Returns the new rows to probe.
+    fn expand(&self, id: &str, url: &str, entries: Vec<Entry>) -> Vec<String> {
         let mut st = self.lock();
+        let mut probe = Vec::new();
         let Some(mut at) = st.items.get_index_of(id) else {
-            return;
+            return probe;
         };
-        let package = st.items[at].package.clone();
+        let row_package = st.items[at].package.clone();
         st.items.shift_remove_index(at);
         for e in entries {
-            let mut it = Item::new(vec![url.to_string()], e.name.clone(), package.clone());
+            if e.deferred && e.url == url {
+                // A page that lists itself would resolve forever.
+                continue;
+            }
+            let package = if row_package.is_empty() {
+                e.package.clone().unwrap_or_default()
+            } else {
+                row_package.clone()
+            };
+            let deferred = e.deferred;
+            let mut it = if deferred {
+                Item::new(vec![e.url.clone()], e.name.clone(), package)
+            } else {
+                Item::new(vec![url.to_string()], e.name.clone(), package)
+            };
             it.size = e.size.unwrap_or(0);
-            it.probed = true;
-            it.pre = Some(e);
-            it.pre_for = Some(url.to_string());
+            if deferred {
+                // A named row needs no probe: a probe only finds the name.
+                it.probed = it.name.is_some();
+                if !it.probed {
+                    probe.push(it.id.clone());
+                }
+            } else {
+                it.probed = true;
+                it.pre = Some(e);
+                it.pre_for = Some(url.to_string());
+            }
             let new_id = it.id.clone();
             let at_most = at.min(st.items.len());
             st.items.shift_insert(at_most, new_id.clone(), it);
@@ -1281,6 +1316,7 @@ impl Engine {
             }
         }
         self.touch(&mut st);
+        probe
     }
 
     fn finish(&self, id: &str, url: &str, host: &str, result: Result<Outcome, Fail>) {
@@ -1980,15 +2016,27 @@ impl Engine {
                 .filter(|n| !n.is_empty())
                 .or_else(|| hosts::guess_name(url));
         }
-        it.pre = Some(Entry {
-            url: url.into(),
-            name: it.name.clone(),
-            size: None,
-            headers,
-            exec: None,
-            checksum: None,
-        });
-        it.pre_for = None;
+        if hosts::unwraps(url) {
+            // A wrapper link is further links, not the file: it becomes the
+            // row's only link and unpacks on the row's next turn, the same
+            // path a wrapper link added in the dialog takes. A wrapper link
+            // that later dies is asked for again like any hand-back.
+            it.mirrors = vec![url.into()];
+            it.pre = None;
+            it.pre_for = None;
+        } else {
+            it.pre = Some(Entry {
+                url: url.into(),
+                name: it.name.clone(),
+                size: None,
+                headers,
+                exec: None,
+                checksum: None,
+                package: None,
+                deferred: false,
+            });
+            it.pre_for = None;
+        }
         it.manual = true;
         it.probed = true;
         if !it.running() {

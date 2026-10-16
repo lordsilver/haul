@@ -2,7 +2,7 @@
 //! host names (`127.0.0.1` and `localhost`), so mirror logic sees two hosts.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     convert::Infallible,
     path::PathBuf,
     sync::{
@@ -15,7 +15,7 @@ use std::{
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{Path as UrlPath, State},
+    extract::{Form, Path as UrlPath, Query, State},
     http::{HeaderMap, Method, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -44,6 +44,42 @@ fn sha256_hex(data: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// The `.dlc` the test server hands out and the key service's answer for it,
+/// the way JDownloader builds one: two of the server's own files.
+fn dlc_fixture(host: &str) -> (Vec<u8>, String) {
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let (key, iv) = (b"cb99b5cbc24db398", b"9bc24cb995cb8db3");
+    let encrypt = |key: &[u8], iv: &[u8], plain: &[u8]| {
+        let mut buf = plain.to_vec();
+        buf.resize(plain.len().div_ceil(16) * 16, 0);
+        let len = buf.len();
+        cbc::Encryptor::<aes::Aes128>::new_from_slices(key, iv)
+            .unwrap()
+            .encrypt_padded::<NoPadding>(&mut buf, len)
+            .unwrap()
+            .to_vec()
+    };
+    let e = |s: &str| STANDARD.encode(s);
+    let xml = format!(
+        r#"<dlc><header/><content><package name="{}"><file><url>{}</url><filename>{}</filename></file><file><url>{}</url></file></package></content></dlc>"#,
+        e("My Package"),
+        e(&format!("http://{host}/files/one.bin")),
+        e("one.bin"),
+        e(&format!("http://{host}/files/two.bin")),
+    );
+    let file_key = *b"0123456789abcdef";
+    let body = STANDARD.encode(encrypt(
+        &file_key,
+        &file_key,
+        STANDARD.encode(xml).as_bytes(),
+    ));
+    let dlc = format!("{body}{}", "K".repeat(88)).into_bytes();
+    let rc = STANDARD.encode(encrypt(key, iv, &file_key));
+    (dlc, rc)
 }
 
 #[derive(Clone, Default)]
@@ -305,6 +341,80 @@ async fn start_server() -> (Server, u16) {
             get(|| async { ([(header::CONTENT_TYPE, "text/html")], "<html><title>Please solve the captcha</title></html>") }),
         )
         .route(
+            "/vault/{id}",
+            // A wrapper page: a no-person proof of work, then the links.
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/html")],
+                    r#"<form method="post" action="/vault/abc">
+                         <input type="hidden" name="csrf_token" value="tok-1">
+                         <altcha-widget challengeurl="/altcha_challenge.php"></altcha-widget>
+                       </form>"#,
+                )
+            })
+            .post(
+                |headers: HeaderMap, Form(form): Form<HashMap<String, String>>| async move {
+                    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+                    assert_eq!(form.get("csrf_token").map(String::as_str), Some("tok-1"));
+                    let raw = STANDARD.decode(form.get("altcha").unwrap()).unwrap();
+                    let solved: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                    assert_eq!(solved["number"].as_u64(), Some(7));
+                    let host = headers
+                        .get(header::HOST)
+                        .and_then(|h| h.to_str().ok())
+                        .unwrap_or_default();
+                    let port = host.rsplit(':').next().unwrap_or_default();
+                    (
+                        [(header::CONTENT_TYPE, "text/html")],
+                        format!(
+                            r#"<div class="link-group" data-host="pixeldrain.com">
+                                 <a class="target-link" href="https://pixeldrain.com/u/kept">pixeldrain</a>
+                               </div>
+                               <div class="link-group" data-host="example.com">
+                                 <a class="target-link" href="http://{host}/files/kept.bin">local</a>
+                               </div>
+                               <div class="link-group" data-host="example.com">
+                                 <a class="target-link" href="http://localhost:{port}/page/kept">page</a>
+                               </div>"#
+                        ),
+                    )
+                },
+            ),
+        )
+        .route(
+            "/altcha_challenge.php",
+            get(|| async {
+                Json(json!({
+                    "algorithm": "SHA-256",
+                    "challenge": sha256_hex(b"haul-test7"),
+                    "maxNumber": 1000,
+                    "salt": "haul-test",
+                    "signature": "sig",
+                }))
+            }),
+        )
+        .route(
+            "/DLC/{file}",
+            get(|headers: HeaderMap, UrlPath(file): UrlPath<String>| async move {
+                assert_eq!(file, "abc123.dlc");
+                let host = headers
+                    .get(header::HOST)
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or_default();
+                dlc_fixture(host).0
+            }),
+        )
+        .route(
+            "/dlc",
+            // The key service that turns a `.dlc` into its links.
+            get(|Query(q): Query<HashMap<String, String>>| async move {
+                assert_eq!(q.get("srcType").map(String::as_str), Some("dlc"));
+                assert_eq!(q.get("data").map(String::len), Some(88));
+                format!("<rc>{}</rc>", dlc_fixture("unused").1)
+            }),
+        )
+        .route(
             "/api/list/{id}",
             get(|UrlPath(id): UrlPath<String>| async move {
                 Json(match id.as_str() {
@@ -373,6 +483,9 @@ impl Setup {
             download_dir: Some(self.root.join("dl")),
             endpoints: Endpoints {
                 pixeldrain: self.ip.clone(),
+                fileguard: self.ip.clone(),
+                filecrypt: self.ip.clone(),
+                dlc_service: format!("{}/dlc", self.ip),
                 ..Endpoints::default()
             },
             ..Config::default()
@@ -948,6 +1061,76 @@ async fn a_folder_row_fails_over_without_reusing_the_folder_link() {
         1,
         "the dead folder link is tried once: {dead:?}"
     );
+}
+
+#[tokio::test]
+async fn a_wrapper_link_expands_into_mirrors_that_merge() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let mut events = engine.subscribe();
+    engine.add_text("https://fileguard.cc/vault/abc", "");
+    let s = wait_for(&engine, "the wrapper's links", |s| {
+        s.items.len() == 1 && all_done(s)
+    })
+    .await;
+    let it = &s.items[0];
+    assert_eq!(it.name, "kept.bin");
+    let mut hosts = it.mirrors.clone();
+    hosts.sort();
+    assert_eq!(hosts, ["127.0.0.1", "localhost", "pixeldrain.com"]);
+    // The default preference is pixeldrain: the file came from there, and
+    // the mirrors that would need a step of their own were never asked.
+    assert_eq!(t.downloaded("kept.bin"), content("kept", SIZE));
+    assert!(t.server.requests("/files/kept.bin").is_empty());
+    assert!(t.server.requests("/page/kept").is_empty());
+    // One file's mirrors are one row, not one row per person-needing host.
+    while let Ok(e) = events.try_recv() {
+        assert!(!matches!(e, Event::NeedsUser { .. }), "{e:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_filecrypt_gate_hands_back_its_dlc_that_unpacks() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let page = "https://filecrypt.cc/Container/abc.html".to_string();
+    engine.add_text(&page, "");
+    let s = wait_for(&engine, "the gate", |s| s.items[0].status == "captcha").await;
+    assert_eq!(s.items[0].open_urls, std::slice::from_ref(&page));
+    let id = s.items[0].id.clone();
+    // What the in-app browser or a paste hands back: the container's link.
+    engine
+        .set_direct(
+            &id,
+            "https://filecrypt.cc/DLC/abc123.dlc",
+            BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+    let s = wait_for(&engine, "the container's files", |s| {
+        s.items.len() == 2 && all_done(s)
+    })
+    .await;
+    assert_eq!(t.downloaded("My Package/one.bin"), content("one.bin", SIZE));
+    assert_eq!(t.downloaded("My Package/two.bin"), content("two.bin", SIZE));
+    assert_eq!(files_in(&t.root.join("dl")), ["My Package"]);
+    assert_eq!(s.items.len(), 2, "the container row itself is gone");
+}
+
+#[tokio::test]
+async fn a_dlc_link_from_a_wrapper_imports_its_container() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    // Named for its file at add time; what the row turns into is the
+    // container's links.
+    engine.add_text("https://filecrypt.cc/DLC/abc123.dlc", "");
+    let s = wait_for(&engine, "the container's links", |s| {
+        s.items.len() == 2 && all_done(s)
+    })
+    .await;
+    assert_eq!(t.downloaded("My Package/one.bin"), content("one.bin", SIZE));
+    assert_eq!(t.downloaded("My Package/two.bin"), content("two.bin", SIZE));
+    assert_eq!(s.items.len(), 2, "the container row itself is gone");
 }
 
 #[tokio::test]

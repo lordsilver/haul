@@ -514,7 +514,7 @@ pub fn secret(v: &Option<String>) -> Option<&str> {
     v.as_deref().filter(|s| !s.is_empty())
 }
 
-/// Where each host's API lives. Only tests point these elsewhere.
+/// Where each host's API or page lives. Only tests point these elsewhere.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Endpoints {
     pub pixeldrain: String,
@@ -524,6 +524,8 @@ pub struct Endpoints {
     pub rapidgator: String,
     pub nitroflare: String,
     pub dlc_service: String,
+    pub fileguard: String,
+    pub filecrypt: String,
 }
 
 impl Default for Endpoints {
@@ -536,6 +538,8 @@ impl Default for Endpoints {
             rapidgator: "https://rapidgator.net".into(),
             nitroflare: "https://nitroflare.com".into(),
             dlc_service: "http://service.jdownloader.org/dlcrypt/service.php".into(),
+            fileguard: "https://fileguard.cc".into(),
+            filecrypt: "https://filecrypt.cc".into(),
         }
     }
 }

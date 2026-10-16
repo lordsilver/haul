@@ -18,6 +18,7 @@ Early. Working today:
 - Clipboard watching, per-host subfolders, and an optional move to the Recycle Bin when you remove a finished download.
 - Hosts: pixeldrain, gofile, buzzheavier, 1fichier, rapidgator and nitroflare (premium accounts), mega.nz through `megatools`, and any direct link.
 - Import of JDownloader `.dlc` containers (through JDownloader's key service) and of any text file with links in it.
+- Wrapper pages: a fileguard.cc link solves its gate on its own and turns into one row with each host as a mirror; a filecrypt.cc page waits under **Needs you**, and the `.dlc` it offers is unpacked when handed back.
 - Desktop app: light and dark themes that follow Windows, tray icon (closing the window keeps downloading), notifications, single instance, `.dlc` file association, and the in-app browser for hosts that need a person.
 
 ## Install

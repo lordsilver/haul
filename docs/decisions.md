@@ -64,7 +64,7 @@ The data folder is `%LOCALAPPDATA%\io.github.garysassano.haul`, not `%LOCALAPPDA
 
 ## Browser hand-off and proxy routing
 
-Haul uses public APIs, guest tokens and the user's own accounts. The browser hand-off lets the desktop app catch a download the user starts in its own browser window when a host page requires interaction. That window goes through the same proxy as the downloads (by way of a local, credential-free SOCKS5 bridge, because browser engines cannot pass proxy credentials), so opening a page does not reveal the real address that the proxy hides.
+Haul uses public APIs, guest tokens, the user's own accounts, and the pages themselves once their gates are passed. The browser hand-off lets the desktop app catch a download the user starts in its own browser window when a host page requires interaction. That window goes through the same proxy as the downloads (by way of a local, credential-free SOCKS5 bridge, because browser engines cannot pass proxy credentials), so opening a page does not reveal the real address that the proxy hides.
 
 ## Reaching the user when a host waits
 
@@ -73,3 +73,7 @@ Interactive host steps should be short and waiting downloads visible, so a downl
 ## A default preference for pixeldrain
 
 Mirrors are not equal: pixeldrain hands a file to its API without an account or a browser step, while other hosts need an account, a browser step or a paid tier for a free download. `preferred_hosts` therefore starts as `["pixeldrain.com"]`, so a file with a pixeldrain mirror starts there and waits for it when it is only busy, exactly as for a host the user stars; the measured-speed order still decides among the rest. Taking the last preferred host out writes `preferred_hosts = []` rather than leaving the key out, because a missing key reads as the default and the preference would come back.
+
+## Wrapper pages resolve on their own
+
+A filecrypt.cc or fileguard.cc link wraps one release's links on many hosts. Both used to wait under **Needs you** as pages. fileguard.cc's gate is a proof of work rather than a captcha, so Haul solves it itself; a page that lists one file gives that file one row with each host as a mirror, the preferred host downloads it and the rest are failovers. filecrypt.cc's gate is a proof of work plus browser-behaviour checks, so the page still waits under **Needs you**; what it offers once solved is a `.dlc`, and that link — handed back by the in-app browser or added later — is fetched and read through the JDownloader key service like any dropped container. A wrapper link is added to the queue as one deferred row and resolved when the queue reaches it, so a wrapper that fails or expires fails its own row and nothing else.

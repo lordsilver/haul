@@ -12,4 +12,8 @@ A `.dlc` holds an encrypted list of links, and decrypting it needs JDownloader's
 
 ## Wrapper pages
 
-A wrapper page holds one file's links on many hosts behind a gate; filecrypt.cc and fileguard.cc are the common ones. A wrapper link is a page to Haul: it waits under **Needs you**, and the desktop app can open it in its in-app browser, which goes through the proxy like the downloads. After the gate the solved page lists the host links; copy them out, or save the `.dlc` such a page offers and drop that on Haul like any other container.
+A wrapper page holds one release's links on many hosts behind a gate; filecrypt.cc and fileguard.cc are the common ones.
+
+A fileguard.cc link needs no person: its gate is a proof of work, and Haul solves it. When the page lists one file — one link per host — the hosts become mirrors of one row, so the host you prefer downloads it and the others are failovers; a page that lists several files gives each link a row of its own.
+
+A filecrypt.cc page needs a real browser. Solve its gate in the app's browser (it goes through the proxy like the downloads) and the page offers the container as a `.dlc` download: hand the link back, or add it later, and Haul fetches and unpacks it like any dropped container. Until then the page waits under **Needs you**.

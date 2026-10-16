@@ -39,6 +39,8 @@ fn config(base: &str) -> Config {
             rapidgator: base.into(),
             nitroflare: base.into(),
             dlc_service: format!("{base}/dlc"),
+            fileguard: base.into(),
+            filecrypt: base.into(),
         },
         ..Config::default()
     }
@@ -537,4 +539,233 @@ async fn generic_links_and_probes() {
         })
     );
     assert_eq!(generic::probe(&cx, &format!("{base}/missing")).await, None);
+}
+
+#[tokio::test]
+async fn fileguard_solves_the_proof_of_work_and_lists_links() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use sha2::Digest;
+
+    let salt = "cc348abfe0f7d4fded4b8dba?expires=1792121341";
+    let number = 13_186u64;
+    let challenge = {
+        let mut hash = sha2::Sha256::new();
+        hash.update(salt.as_bytes());
+        hash.update(number.to_string().as_bytes());
+        to_hex(&hash.finalize())
+    };
+    let solved_html = r#"
+        <div class="folder-title"><h1>Sledders New Horizons-RUNE</h1></div>
+        <div class="link-group" data-host="1fichier.com">
+          <a class="target-link" href="https://1fichier.com/?cu5oghhjkskhuzap8w43&amp;af=2701919">1fichier</a>
+        </div>
+        <div class="link-group" data-host="pixeldrain.com">
+          <a class="target-link" href="https://pixeldrain.com/u/VF18oYXa">pixeldrain</a>
+        </div>"#;
+    let challenge_route = challenge.clone();
+    let challenge_post = challenge.clone();
+    let app = Router::new()
+        .route(
+            "/vault/abc/1fichier",
+            get(|| async {
+                (
+                    [("content-type", "text/html")],
+                    r#"<form method="post" action="/vault/abc/1fichier">
+                         <input type="hidden" name="csrf_token" value="tok-1">
+                         <altcha-widget challengeurl="/altcha_challenge.php"></altcha-widget>
+                       </form>"#,
+                )
+            })
+            .post(move |Form(form): Form<HashMap<String, String>>| {
+                let challenge = challenge_post.clone();
+                async move {
+                    assert_eq!(form.get("csrf_token").map(String::as_str), Some("tok-1"));
+                    let raw = STANDARD.decode(form.get("altcha").unwrap()).unwrap();
+                    let solved: Value = serde_json::from_slice(&raw).unwrap();
+                    assert_eq!(solved["number"].as_u64(), Some(13_186));
+                    assert_eq!(solved["challenge"].as_str(), Some(challenge.as_str()));
+                    ([("content-type", "text/html")], solved_html)
+                }
+            }),
+        )
+        .route(
+            "/altcha_challenge.php",
+            get(move || {
+                let challenge = challenge_route.clone();
+                async move {
+                    Json(json!({
+                        "algorithm": "SHA-256",
+                        "challenge": challenge,
+                        "maxNumber": 180_000u64,
+                        "salt": "cc348abfe0f7d4fded4b8dba?expires=1792121341",
+                        "signature": "sig",
+                    }))
+                }
+            }),
+        );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+    };
+
+    let entries = fileguard::resolve(&cx, &format!("{base}/vault/abc/1fichier"))
+        .await
+        .unwrap();
+    assert!(entries.iter().all(|e| e.deferred));
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| (e.url.as_str(), e.name.as_deref()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "https://1fichier.com/?cu5oghhjkskhuzap8w43&af=2701919",
+                None
+            ),
+            ("https://pixeldrain.com/u/VF18oYXa", None),
+        ]
+    );
+
+    let err = fileguard::resolve(&cx, &format!("{base}/vault/gone"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ResolveError::Failed(m) if m.contains("404")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn filecrypt_dlc_links_become_entries() {
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
+    use base64::engine::general_purpose::STANDARD;
+
+    let (key, iv) = (b"cb99b5cbc24db398", b"9bc24cb995cb8db3");
+    let encrypt = |key: &[u8], iv: &[u8], plain: &[u8]| {
+        let mut buf = plain.to_vec();
+        buf.resize(plain.len().div_ceil(16) * 16, 0);
+        let len = buf.len();
+        cbc::Encryptor::<aes::Aes128>::new_from_slices(key, iv)
+            .unwrap()
+            .encrypt_padded::<NoPadding>(&mut buf, len)
+            .unwrap()
+            .to_vec()
+    };
+    let e = |s: &str| STANDARD.encode(s);
+    let xml = format!(
+        r#"<dlc><header/><content><package name="{}"><file><url>{}</url><filename>{}</filename></file><file><url>{}</url></file><file><url>{}</url><filename>{}</filename></file></package></content></dlc>"#,
+        e("My Package"),
+        e("https://host.example/f/abc"),
+        e("abc.part1.rar"),
+        e("https://other.example/x.zip"),
+        e("https://third.example/d/abc"),
+        e("n.A."),
+    );
+    let empty_xml = format!(
+        r#"<dlc><header/><content><package name="{}"/></content></dlc>"#,
+        e("My Package"),
+    );
+    let file_key = *b"0123456789abcdef";
+    let wrap = |xml: String| {
+        let body = STANDARD.encode(encrypt(
+            &file_key,
+            &file_key,
+            STANDARD.encode(xml).as_bytes(),
+        ));
+        format!("{body}{}", "K".repeat(88)).into_bytes()
+    };
+    let dlc: Vec<u8> = wrap(xml);
+    let empty: Vec<u8> = wrap(empty_xml);
+    let rc = STANDARD.encode(encrypt(key, iv, &file_key));
+
+    let app = Router::new()
+        .route(
+            "/DLC/abc123.dlc",
+            get(move || {
+                let dlc = dlc.clone();
+                async move { dlc }
+            }),
+        )
+        .route(
+            "/DLC/empty.dlc",
+            get(move || {
+                let empty = empty.clone();
+                async move { empty }
+            }),
+        )
+        .route(
+            "/DLC/gate.dlc",
+            // A wrong id: the host answers its page rather than a container.
+            get(|| async {
+                (
+                    [("content-type", "text/html")],
+                    "<html><title>Please solve the captcha</title></html>",
+                )
+            }),
+        )
+        .route(
+            "/dlc",
+            get(move |Query(q): Query<HashMap<String, String>>| {
+                let rc = rc.clone();
+                async move {
+                    assert_eq!(q.get("srcType").map(String::as_str), Some("dlc"));
+                    assert_eq!(q.get("data").map(String::len), Some(88));
+                    format!("<rc>{rc}</rc>")
+                }
+            }),
+        );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+    };
+
+    let entries = filecrypt::resolve(&cx, &format!("{base}/DLC/abc123.dlc"))
+        .await
+        .unwrap();
+    assert!(entries.iter().all(|e| e.deferred));
+    assert_eq!(entries[0].package.as_deref(), Some("My Package"));
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| (e.url.as_str(), e.name.as_deref()))
+            .collect::<Vec<_>>(),
+        [
+            ("https://host.example/f/abc", Some("abc.part1.rar")),
+            ("https://other.example/x.zip", Some("x.zip")),
+            // "n.A." is the container's way of saying the name is unknown.
+            ("https://third.example/d/abc", None),
+        ]
+    );
+
+    let err = filecrypt::resolve(&cx, &format!("{base}/DLC/empty.dlc"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ResolveError::Failed(m) if m.contains("no links")),
+        "{err:?}"
+    );
+
+    let err = filecrypt::resolve(&cx, &format!("{base}/DLC/gate.dlc"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ResolveError::NeedsUser(m) if m.contains("web page")),
+        "{err:?}"
+    );
+
+    let err = filecrypt::resolve(&cx, &format!("{base}/Container/abc.html"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ResolveError::NeedsUser(m) if m.contains(".dlc")),
+        "{err:?}"
+    );
 }

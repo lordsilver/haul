@@ -1,12 +1,16 @@
 //! Per-host resolvers: a page link in, direct links out, with the headers,
 //! name and size the host reports.
 //!
-//! Only legitimate routes are used: public APIs, guest tokens, and the user's
-//! own premium or API-key accounts. There is no captcha solving and no
-//! wait-timer bypassing; a host that needs a person raises
-//! [`ResolveError::NeedsUser`] and the item waits for one.
+//! Only legitimate routes are used: public APIs, guest tokens, the user's own
+//! premium or API-key accounts, and a wrapper page's own form once its gate is
+//! passed. A gate that asks for no person, such as fileguard's ALTCHA proof of
+//! work, is solved here; a host that needs a person (a captcha, a browser
+//! check, a click) raises [`ResolveError::NeedsUser`] and the item waits for
+//! one, and a host's wait timer is waited out.
 
 mod buzzheavier;
+mod filecrypt;
+mod fileguard;
 mod generic;
 mod gofile;
 mod mega;
@@ -33,12 +37,16 @@ use sha2::Digest;
 
 use crate::config::Config;
 
-/// What a resolver hands back: one downloadable file.
+/// What a resolver hands back: one downloadable file, or — with `deferred`
+/// — a link to resolve in its own turn.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub url: String,
     #[serde(default)]
     pub name: Option<String>,
+    /// The package the host's own listing puts the file in, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
     #[serde(default)]
     pub size: Option<u64>,
     #[serde(default)]
@@ -49,6 +57,11 @@ pub struct Entry {
     /// The file's checksum, when the host publishes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<Checksum>,
+    /// The URL is a page to resolve at download time, not a download: a
+    /// wrapper's list is links like any pasted one, each resolved by its own
+    /// host when its turn comes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deferred: bool,
 }
 
 /// What a probe learns about a file without downloading it.
@@ -281,7 +294,7 @@ impl From<reqwest::Error> for ResolveError {
 }
 
 /// Hosts with a resolver of their own.
-const KNOWN_HOSTS: [&str; 9] = [
+const KNOWN_HOSTS: [&str; 11] = [
     "pixeldrain.com",
     "gofile.io",
     "buzzheavier.com",
@@ -291,6 +304,8 @@ const KNOWN_HOSTS: [&str; 9] = [
     "mega.nz",
     "mega.co.nz",
     "fileditchfiles.st",
+    "fileguard.cc",
+    "filecrypt.cc",
 ];
 
 /// Whether a link is worth adding when it shows up on the clipboard: a host
@@ -409,6 +424,17 @@ pub fn guess_name(url: &str) -> Option<String> {
     FILE_NAME.is_match(name).then(|| name.to_string())
 }
 
+/// Whether this link holds further links to resolve (a wrapper page) rather
+/// than a file to download: a link a person hands back takes the same path
+/// as one added in the dialog.
+pub fn unwraps(url: &str) -> bool {
+    match host_of(url).as_str() {
+        "fileguard.cc" => true,
+        "filecrypt.cc" => filecrypt::is_dlc(url),
+        _ => false,
+    }
+}
+
 /// Direct links for `url`. Folders and lists expand to several entries.
 pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     match host_of(url).as_str() {
@@ -424,6 +450,8 @@ pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError>
             name: guess_name(url),
             ..Entry::default()
         }]),
+        "fileguard.cc" => fileguard::resolve(cx, url).await,
+        "filecrypt.cc" => filecrypt::resolve(cx, url).await,
         _ => generic::resolve(cx, url).await,
     }
 }
@@ -437,6 +465,9 @@ pub async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
         "pixeldrain.com" => pixeldrain::probe(cx, url).await,
         // No free metadata route; resolve at download time.
         "mega.nz" | "mega.co.nz" | "gofile.io" | "1fichier.com" => None,
+        // A wrapper says nothing useful before its solve; that is the
+        // resolver's work, once, at download time.
+        "fileguard.cc" | "filecrypt.cc" => None,
         _ => generic::probe(cx, url).await,
     }
 }
@@ -550,6 +581,20 @@ mod tests {
         assert!(!is_download_link("https://example.com/index.php"));
         assert!(!is_download_link("https://files.example/a1/video.mkv.html"));
         assert!(!is_download_link("https://github.com/garysassano/haul"));
+        assert!(is_download_link("https://fileguard.cc/93d9847d92/1fichier"));
+        assert!(is_download_link("https://filecrypt.cc/DLC/0007530C13.dlc"));
+        assert!(is_download_link(
+            "https://filecrypt.cc/Container/0007530C13.html"
+        ));
+    }
+
+    #[test]
+    fn only_wrapper_pages_unwrap() {
+        assert!(unwraps("https://fileguard.cc/93d9847d92/1fichier"));
+        assert!(unwraps("https://fileguard.cc/93d9847d92"));
+        assert!(unwraps("https://filecrypt.cc/DLC/0007530C13.dlc"));
+        assert!(!unwraps("https://filecrypt.cc/Container/0007530C13.html"));
+        assert!(!unwraps("https://pixeldrain.com/u/VF18oYXa"));
     }
 
     #[test]
