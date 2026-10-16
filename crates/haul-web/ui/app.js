@@ -164,7 +164,8 @@ const act = (id, action) => api(`/api/item/${encodeURIComponent(id)}/${action}`)
 const openHere = (id) => api(`/api/item/${encodeURIComponent(id)}/browse`, { user_agent: navigator.userAgent }).catch(report);
 
 function addedMessage(r) {
-  const parts = [`${r.added} added`];
+  const parts = r.wrappers && !r.added ? [] : [`${r.added} added`];
+  if (r.wrappers) parts.push(`${r.wrappers} ${r.wrappers === 1 ? "wrapper" : "wrappers"} to unwrap`);
   if (r.merged) parts.push(`${r.merged} merged as mirrors`);
   if (r.duplicates) parts.push(`${r.duplicates} already in the list`);
   if (r.invalid) parts.push(`${r.invalid} not http(s)`);
@@ -2421,8 +2422,8 @@ async function addText(text, pkg = "") {
   if (!text.trim()) return false;
   try {
     const r = await api("/api/add", { text, package: pkg });
-    toast(addedMessage(r), r.added + r.merged ? "success" : "info");
-    return r.added + r.merged + r.duplicates > 0;
+    toast(addedMessage(r), r.added + r.merged + r.wrappers ? "success" : "info");
+    return r.added + r.merged + r.duplicates + r.wrappers > 0;
   } catch (error) {
     report(error);
     return false;
