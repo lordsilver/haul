@@ -1837,7 +1837,9 @@ function reconnectCards(s, d) {
     api("/api/router").catch(() => {});
   }
   const r = s.reconnect;
-  const found = r.router ? `${r.router} found on your network.` : "No router answered on this network yet; a command of your own works with any.";
+  let found = r.router ? `${r.router} found on your network.` : "No router answered on this network yet; a command of your own works with any.";
+  // A FRITZ!Box redials only for its login (TR-064), whatever UPnP allows.
+  if (r.router?.includes("FRITZ!Box") && !d.accounts.router_password) found += " It redials only with its login: set it under Router login.";
   const now = r.busy
     ? button("Getting a new IP…", { icon: "arrow-clockwise", disabled: true })
     : confirmButton("Get a new IP", "Cut the line for a moment?", async () => {
