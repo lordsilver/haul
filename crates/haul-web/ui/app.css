@@ -1538,3 +1538,21 @@ input.wide {
   width: min(560px, 55vw);
   resize: vertical;
 }
+
+/* Choices to tick, such as a VPN service's countries. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--stroke, rgba(128, 128, 128, 0.35));
+  border-radius: 14px;
+  font-size: 13px;
+  cursor: pointer;
+}

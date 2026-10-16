@@ -145,6 +145,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/global/{action}", post(global))
         .route("/api/router", post(find_router))
         .route("/api/reconnect", post(reconnect))
+        .route("/api/nordvpn/servers", post(nordvpn_servers))
         .route("/api/settings", get(settings).post(update_settings))
         .route("/api/settings/download-dir/pick", post(pick_download_dir))
         .route("/api/diagnostics", get(diagnostics))
@@ -476,6 +477,14 @@ async fn host_preferred(
 async fn find_router(State(app): State<App>) -> Response {
     let router = app.engine.find_router().await;
     Json(serde_json::json!({ "router": router.map(|r| r.model) })).into_response()
+}
+
+/// Fetches NordVPN's list of SOCKS5 servers, so its countries can be picked.
+async fn nordvpn_servers(State(app): State<App>) -> Response {
+    match app.engine.nordvpn_list().await {
+        Ok(n) => Json(serde_json::json!({ "servers": n })).into_response(),
+        Err(e) => error(StatusCode::BAD_GATEWAY, e),
+    }
 }
 
 /// Gets this machine's line a new public address now. Answers once the line

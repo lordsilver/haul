@@ -101,6 +101,15 @@ pub struct Config {
     /// over TR-064).
     pub router_user: Option<String>,
     pub router_password: Option<String>,
+    /// NordVPN's service credentials (not the account's login), for its
+    /// SOCKS5 servers.
+    pub nordvpn_user: Option<String>,
+    pub nordvpn_password: Option<String>,
+    /// How many of NordVPN's SOCKS5 servers join the proxies, least loaded
+    /// first; 0 for none.
+    pub nordvpn_servers: usize,
+    /// The countries they come from; every one when empty.
+    pub nordvpn_countries: Vec<String>,
     /// Gets a new public address on its own when the one this machine has
     /// is what holds downloads back.
     pub reconnect: bool,
@@ -153,6 +162,10 @@ impl Default for Config {
             gofile_token: None,
             router_user: None,
             router_password: None,
+            nordvpn_user: None,
+            nordvpn_password: None,
+            nordvpn_servers: 0,
+            nordvpn_countries: Vec::new(),
             reconnect: false,
             reconnect_command: None,
             megatools: None,
@@ -163,7 +176,7 @@ impl Default for Config {
 }
 
 /// Account keys, by their name in the file and their environment variable.
-pub const ACCOUNTS: [(&str, &str); 9] = [
+pub const ACCOUNTS: [(&str, &str); 11] = [
     ("1fichier_key", "HAUL_1FICHIER_KEY"),
     ("pixeldrain_key", "HAUL_PIXELDRAIN_KEY"),
     ("rapidgator_user", "HAUL_RAPIDGATOR_USER"),
@@ -173,6 +186,8 @@ pub const ACCOUNTS: [(&str, &str); 9] = [
     ("gofile_token", "HAUL_GOFILE_TOKEN"),
     ("router_user", "HAUL_ROUTER_USER"),
     ("router_password", "HAUL_ROUTER_PASSWORD"),
+    ("nordvpn_user", "HAUL_NORDVPN_USER"),
+    ("nordvpn_password", "HAUL_NORDVPN_PASSWORD"),
 ];
 
 impl Config {
@@ -222,6 +237,8 @@ impl Config {
             "gofile_token" => &self.gofile_token,
             "router_user" => &self.router_user,
             "router_password" => &self.router_password,
+            "nordvpn_user" => &self.nordvpn_user,
+            "nordvpn_password" => &self.nordvpn_password,
             _ => return None,
         })
     }
@@ -237,6 +254,8 @@ impl Config {
             "gofile_token" => &mut self.gofile_token,
             "router_user" => &mut self.router_user,
             "router_password" => &mut self.router_password,
+            "nordvpn_user" => &mut self.nordvpn_user,
+            "nordvpn_password" => &mut self.nordvpn_password,
             _ => return None,
         })
     }
@@ -560,6 +579,14 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # nitroflare_key = ""
 # gofile_token = ""
 
+# NordVPN's SOCKS5 servers as more proxies: its service credentials (Nord
+# Account › NordVPN › manual setup, not the account's login), how many servers
+# (least loaded first) and from which countries (every one when empty).
+# nordvpn_user = ""
+# nordvpn_password = ""
+# nordvpn_servers = 3
+# nordvpn_countries = ["Sweden", "Netherlands"]
+
 # A new public address from the router when the one this machine has is what
 # holds downloads back (a host's daily allowance used up, a long wait asked of
 # it). Haul finds the router itself and asks it to redial over UPnP; a router
@@ -619,6 +646,7 @@ pub struct Endpoints {
     pub filecrypt: String,
     /// The router's description; empty to look for it on the network.
     pub router: String,
+    pub nordvpn: String,
 }
 
 impl Default for Endpoints {
@@ -634,6 +662,7 @@ impl Default for Endpoints {
             fileguard: "https://fileguard.cc".into(),
             filecrypt: "https://filecrypt.cc".into(),
             router: String::new(),
+            nordvpn: "https://api.nordvpn.com".into(),
         }
     }
 }

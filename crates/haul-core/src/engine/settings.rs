@@ -39,6 +39,8 @@ pub struct SettingsView {
     pub detailed_log: bool,
     pub reconnect: bool,
     pub reconnect_command: String,
+    pub nordvpn_servers: usize,
+    pub nordvpn_countries: Vec<String>,
     pub resume_attempts: u32,
     pub min_speed_kbps: u32,
     pub min_speed_seconds: u64,
@@ -104,6 +106,8 @@ impl Engine {
             detailed_log: cfg.detailed_log,
             reconnect: cfg.reconnect,
             reconnect_command: cfg.reconnect_command.clone().unwrap_or_default(),
+            nordvpn_servers: cfg.nordvpn_servers,
+            nordvpn_countries: cfg.nordvpn_countries.clone(),
             resume_attempts: cfg.resume_attempts,
             min_speed_kbps: cfg.min_speed_kbps,
             min_speed_seconds: cfg.min_speed_seconds,
@@ -230,6 +234,30 @@ impl Engine {
                     let on = value.as_bool().ok_or("reconnect is true or false")?;
                     cfg.reconnect = on;
                     writes.push(top(key, Some(on.into())));
+                }
+                "nordvpn_servers" => {
+                    let n = value
+                        .as_u64()
+                        .filter(|n| *n <= 100)
+                        .ok_or("nordvpn_servers is a number from 0 to 100")?;
+                    cfg.nordvpn_servers = n as usize;
+                    writes.push(top(key, Some((n as i64).into())));
+                }
+                "nordvpn_countries" => {
+                    let list: Vec<String> = value
+                        .as_array()
+                        .ok_or("nordvpn_countries is a list")?
+                        .iter()
+                        .map(|v| v.as_str().map(|s| s.trim().to_string()))
+                        .collect::<Option<_>>()
+                        .ok_or("countries are text")?;
+                    writes.push(top(
+                        key,
+                        Some(toml_edit::Value::Array(
+                            list.iter().map(String::as_str).collect(),
+                        )),
+                    ));
+                    cfg.nordvpn_countries = list;
                 }
                 "reconnect_command" => {
                     let command = text(value, key)?;
@@ -567,7 +595,7 @@ impl Engine {
             || new.proxy_fresh_connections != old.proxy_fresh_connections
             || new.user_agent != old.user_agent
         {
-            match Clients::new(&new) {
+            match Clients::new(&new, &self.service_proxies()) {
                 Ok(clients) => {
                     *self.0.clients.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(clients);
                 }

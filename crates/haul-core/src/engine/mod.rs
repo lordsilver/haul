@@ -38,9 +38,11 @@ use crate::{
 
 mod diagnostics;
 mod reconnect;
+mod services;
 mod settings;
 
 pub use reconnect::ReconnectView;
+pub use services::ServicesView;
 
 pub use settings::SettingsView;
 
@@ -184,6 +186,8 @@ pub struct Snapshot {
     pub config_file: Option<String>,
     /// Getting a new address from the router.
     pub reconnect: ReconnectView,
+    /// VPN services whose servers join the proxies.
+    pub services: ServicesView,
 }
 
 #[derive(Debug, Serialize)]
@@ -662,9 +666,15 @@ struct Clients {
 }
 
 impl Clients {
-    fn new(cfg: &Config) -> Result<Self, String> {
+    /// Exits for the proxies of the settings, then for `services`' (a VPN's
+    /// servers), unless proxies are switched off.
+    fn new(cfg: &Config, services: &[String]) -> Result<Self, String> {
         let mut exits = vec![Http::new(None, &cfg.user_agent)?];
-        for proxy in cfg.proxy_pool() {
+        let services = services
+            .iter()
+            .map(String::as_str)
+            .filter(|_| cfg.use_proxy);
+        for proxy in cfg.proxy_pool().into_iter().chain(services) {
             exits.push(Http::with(
                 Some(proxy),
                 &cfg.user_agent,
@@ -711,6 +721,7 @@ struct Inner {
     rename_lock: Mutex<()>,
     shutdown: CancellationToken,
     reconnects: Mutex<reconnect::Reconnects>,
+    services: Mutex<services::Services>,
     _lock: File,
 }
 
@@ -743,7 +754,7 @@ impl Engine {
             .download_dir
             .or_else(|| cfg.download_dir.clone())
             .unwrap_or_else(paths::download_dir);
-        let clients = Clients::new(&cfg).map_err(StartError::Proxy)?;
+        let clients = Clients::new(&cfg, &[]).map_err(StartError::Proxy)?;
 
         let mut saved = store::load_queue(&data_dir)?;
         // A row with no link to fetch it from (a hand-edited queue, say) could
@@ -809,6 +820,7 @@ impl Engine {
             rename_lock: Mutex::new(()),
             shutdown: CancellationToken::new(),
             reconnects: Mutex::new(reconnect::Reconnects::default()),
+            services: Mutex::new(services::Services::default()),
             _lock: lock,
         }));
         {
@@ -828,6 +840,7 @@ impl Engine {
         tokio::spawn(engine.clone().scheduler());
         tokio::spawn(engine.clone().watch_quotas());
         tokio::spawn(engine.clone().watch_reconnects());
+        tokio::spawn(engine.clone().watch_services());
         tokio::spawn(engine.clone().saver());
         tokio::spawn(engine.clone().watch_config());
         Ok(engine)
@@ -862,7 +875,7 @@ impl Engine {
     /// direct.
     fn exits_for(&self, host: &str, st: &State) -> Vec<Exit> {
         let cfg = self.cfg();
-        let proxies = cfg.proxy_pool().len();
+        let proxies = self.clients().exits.len() - 1;
         if proxies == 0 || st.routes.get(host) == Some(&Route::Direct) {
             return vec![0];
         }
@@ -898,7 +911,13 @@ impl Engine {
 
     /// The configured proxy.
     pub fn proxy(&self) -> Option<String> {
-        self.cfg().proxy().map(str::to_string)
+        let cfg = self.cfg();
+        cfg.proxy().map(str::to_string).or_else(|| {
+            self.service_proxies()
+                .into_iter()
+                .next()
+                .filter(|_| cfg.use_proxy)
+        })
     }
 
     /// The proxy a page of `host` opens through in the in-app browser: the
@@ -2685,10 +2704,17 @@ impl Engine {
 
     /// Clears finished downloads off the list; unwrapped wrappers stay in
     /// their section.
+    /// Clears finished downloads off the list, and an unwrapped wrapper with
+    /// none of its files left: a wrapper still waiting for a person, failed,
+    /// or with files to go stays in its section.
     pub fn clear_done(&self) {
         let mut st = self.lock();
         st.items
             .retain(|_, i| i.status != Status::Done || i.wrapper);
+        let sources: std::collections::HashSet<String> =
+            st.items.values().filter_map(|i| i.source.clone()).collect();
+        st.items
+            .retain(|id, i| !(i.wrapper && i.status == Status::Done && !sources.contains(id)));
         self.touch(&mut st);
     }
 
@@ -2775,6 +2801,7 @@ impl Engine {
     pub fn snapshot(&self) -> Snapshot {
         // Before the state's lock: the two are always taken in this order.
         let reconnect = self.reconnect_view();
+        let services = self.services_view();
         let st = self.lock();
         let now = Instant::now();
         let has_proxy = self.clients().exits.len() > 1;
@@ -2978,6 +3005,7 @@ impl Engine {
             data_dir: self.0.data_dir.display().to_string(),
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
             reconnect,
+            services,
         }
     }
 

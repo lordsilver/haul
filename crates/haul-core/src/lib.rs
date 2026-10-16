@@ -17,6 +17,7 @@ pub mod paths;
 pub mod router;
 pub mod stay;
 mod store;
+pub mod vpn;
 
 pub use config::{Config, Route, Theme};
 pub use engine::{

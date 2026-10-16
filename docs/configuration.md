@@ -21,6 +21,10 @@ reconnect = false               # a new address from the router when yours holds
 reconnect_command = ""           # a command that gets the new address instead of the router
 router_user = ""                 # the router's login, for one that redials only with it
 router_password = ""
+nordvpn_user = ""                # NordVPN service credentials, for its SOCKS5 servers
+nordvpn_password = ""
+nordvpn_servers = 0              # how many of them join the proxies, least loaded first
+nordvpn_countries = []           # the countries they come from; every one when empty
 resume_attempts = 5             # retries per mirror after network trouble
 min_speed_kbps = 0              # give up a mirror slower than this (KiB/s) ...
 min_speed_seconds = 60          # ... over this long; 0 = off

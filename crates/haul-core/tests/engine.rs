@@ -506,6 +506,17 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/v1/servers",
+            // A stand-in for NordVPN's list of SOCKS5 servers.
+            get(|| async {
+                Json(json!([
+                    {"hostname": "socks-se17.nordvpn.com", "load": 9, "locations": [{"country": {"name": "Sweden", "city": {"name": "Stockholm"}}}]},
+                    {"hostname": "socks-us34.nordvpn.com", "load": 4, "locations": [{"country": {"name": "United States", "city": {"name": "Chicago"}}}]},
+                    {"hostname": "socks-nl4.nordvpn.com", "load": 34, "locations": [{"country": {"name": "Netherlands", "city": {"name": "Amsterdam"}}}]}
+                ]))
+            }),
+        )
+        .route(
             "/igddesc.xml",
             // A stand-in router: an Internet Gateway Device with a WAN service.
             get(|| async {
@@ -617,6 +628,7 @@ impl Setup {
                 filecrypt: self.ip.clone(),
                 dlc_service: format!("{}/dlc", self.ip),
                 router: format!("{}/igddesc.xml", self.ip),
+                nordvpn: self.ip.clone(),
                 ..Endpoints::default()
             },
             ..Config::default()
@@ -1235,6 +1247,9 @@ async fn a_wrapper_unwraps_into_files_that_wait_to_be_started() {
         t.server.requests("/api/file/kept").is_empty(),
         "not started"
     );
+    // With a file still to go, Clear completed leaves the wrapper alone.
+    engine.clear_done();
+    assert_eq!(engine.snapshot().wrappers.len(), 1);
 
     assert_eq!(engine.start_wrapper(&w.id), Some(1));
     wait_for(&engine, "the file", all_done).await;
@@ -1246,10 +1261,10 @@ async fn a_wrapper_unwraps_into_files_that_wait_to_be_started() {
     while let Ok(e) = events.try_recv() {
         assert!(!matches!(e, Event::NeedsUser { .. }), "{e:?}");
     }
-    // The wrapper stays in its section when finished downloads are cleared.
+    // Its files cleared, the finished wrapper goes too.
     engine.clear_done();
     let s = engine.snapshot();
-    assert_eq!((s.items.len(), s.wrappers.len()), (0, 1));
+    assert_eq!((s.items.len(), s.wrappers.len()), (0, 0));
 }
 
 /// A release in parts lists part 1, part 2… on every host: one row per part,
@@ -2269,4 +2284,46 @@ async fn the_router_gets_a_new_address() {
     let s = engine.snapshot();
     assert!(!s.reconnect.busy);
     assert!(s.reconnect.note.unwrap().contains("Got a new address"));
+}
+
+/// NordVPN's least loaded SOCKS5 servers in the countries chosen join the
+/// proxies, one exit each, once its service credentials are set.
+#[tokio::test]
+async fn nordvpn_servers_join_the_proxies() {
+    let t = Setup::new().await;
+    let mut cfg = t.config();
+    cfg.nordvpn_user = Some("svc".into());
+    cfg.nordvpn_password = Some("pw".into());
+    cfg.nordvpn_servers = 2;
+    cfg.nordvpn_countries = vec!["Sweden".into(), "Netherlands".into()];
+    let engine = Engine::start(Options {
+        config: Some(cfg),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.set_paused(true);
+    engine.add_text("https://pixeldrain.com/u/abc", "");
+    let s = wait_for(&engine, "the servers", |s| s.services.nordvpn.len() == 2).await;
+    let hosts: Vec<&str> = s.services.nordvpn.iter().map(|v| v.host.as_str()).collect();
+    assert_eq!(
+        hosts,
+        ["socks-se17.nordvpn.com", "socks-nl4.nordvpn.com"],
+        "least loaded, chosen countries"
+    );
+    assert_eq!(
+        s.services.nordvpn_countries,
+        [
+            ("Netherlands".to_string(), 1),
+            ("Sweden".to_string(), 1),
+            ("United States".to_string(), 1)
+        ]
+    );
+    let s = wait_for(&engine, "two exits", |s| {
+        s.hosts
+            .iter()
+            .any(|h| h.name == "pixeldrain.com" && h.exits == 2)
+    })
+    .await;
+    assert!(s.proxy, "the status bar says proxies are on");
 }

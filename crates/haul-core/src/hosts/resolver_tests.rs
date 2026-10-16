@@ -42,6 +42,7 @@ fn config(base: &str) -> Config {
             fileguard: base.into(),
             filecrypt: base.into(),
             router: format!("{base}/igddesc.xml"),
+            nordvpn: base.into(),
         },
         ..Config::default()
     }

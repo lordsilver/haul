@@ -194,6 +194,7 @@ const SECTIONS = {
 
 const PAGES = {
   hosts: { label: "Hosts", icon: "server" },
+  connections: { label: "Connections", icon: "globe" },
   settings: { label: "Settings", icon: "settings" },
 };
 
@@ -346,6 +347,7 @@ function render(s) {
   $("view-downloads").hidden = !isList;
   $("view-wrappers").hidden = view !== "wrappers";
   $("view-hosts").hidden = view !== "hosts";
+  $("view-connections").hidden = view !== "connections";
   $("view-settings").hidden = view !== "settings";
   if (isList) {
     renderBanner(s);
@@ -354,6 +356,8 @@ function render(s) {
     renderWrappers(s);
   } else if (view === "hosts") {
     renderHosts(s);
+  } else if (view === "connections") {
+    renderConnections(s);
   } else {
     renderSettings(s);
   }
@@ -396,7 +400,8 @@ function renderNav(s) {
     else item.node.removeAttribute("aria-current");
     if (item.filled !== selected) {
       item.filled = selected;
-      item.node.firstChild.replaceWith(icon(selected ? `${item.spec.icon}-filled` : item.spec.icon));
+      const filledIcon = `${item.spec.icon}-filled`;
+      item.node.firstChild.replaceWith(icon(selected && ICONS[filledIcon] ? filledIcon : item.spec.icon));
     }
     if (key === "wrappers") {
       // Counted like a list; it calls for attention while one waits or failed.
@@ -529,8 +534,9 @@ function pick(id, options) {
   pickMany([id], options);
 }
 
-// Picks rows: alone (a plain click), added or dropped together (Ctrl), or a
-// range from the last pick through them (Shift).
+// Picks rows: alone (a plain click with nothing picked), added or dropped
+// together (Ctrl, or any click once something is picked), or a range from
+// the last pick through them (Shift).
 function pickMany(ids, { toggle = false, range = false } = {}) {
   const order = visibleIds();
   if (range && anchor && order.includes(anchor)) {
@@ -835,7 +841,9 @@ function makeRow() {
   r.node.addEventListener("click", (e) => {
     if (e.target.closest("button, a, input, textarea, form")) return;
     const viaCheck = Boolean(e.target.closest(".check"));
-    pick(r.node.dataset.id, { toggle: viaCheck || e.ctrlKey || e.metaKey, range: e.shiftKey });
+    // With something picked already, a click anywhere adds or drops, as in
+    // Outlook or Gmail; Esc or Clear selection ends it.
+    pick(r.node.dataset.id, { toggle: viaCheck || e.ctrlKey || e.metaKey || selected.size > 0, range: e.shiftKey });
   });
   return r;
 }
@@ -1095,7 +1103,7 @@ function makeGroupRow(key) {
   g.node.addEventListener("click", (e) => {
     if (e.target.closest("button, a, input")) return;
     const viaCheck = Boolean(e.target.closest(".check"));
-    pickMany(g.members, { toggle: viaCheck || e.ctrlKey || e.metaKey, range: e.shiftKey });
+    pickMany(g.members, { toggle: viaCheck || e.ctrlKey || e.metaKey || selected.size > 0, range: e.shiftKey });
   });
   return g;
 }
@@ -1746,6 +1754,106 @@ function renderHosts(s) {
   }
 }
 
+// ---- connections: what downloads go out through
+
+let connectionsKey = null;
+
+// The integrations, grouped by what the user already has: the line's router,
+// proxies of any kind, and VPN services whose servers become proxies.
+function renderConnections(s) {
+  if (s.config_version !== settingsVersion) {
+    settingsVersion = s.config_version;
+    loadSettings();
+  }
+  const d = settingsData;
+  if (!d) return;
+  const key = JSON.stringify([d, s.reconnect, s.services, s.desktop]);
+  const active = document.activeElement;
+  if (key === connectionsKey || ($("connections").contains(active) && active.matches("input, textarea"))) return;
+  connectionsKey = key;
+  fill(
+    $("connections"),
+    el("h2", {}, "Your line"),
+    reconnectCards(s, d),
+    el("h2", {}, "Proxies"),
+    settingCard(
+      "shield",
+      "Proxy",
+      envNote("proxy") ?? "Every host goes through it unless you allow it direct under Hosts. Leave empty to connect directly.",
+      textField("proxy", d.proxy, { label: "Proxy", placeholder: "socks5://user:pass@host:1080", secret: true, wide: true }),
+      d.proxy ? toggleSwitch("use_proxy", d.use_proxy, "Use the proxy") : null,
+    ),
+    settingCard(
+      "shield",
+      "More proxies",
+      "One per line. Each download takes the proxy with the fewest downloads from its host, so a host's limits per address (downloads at once, daily quotas, waits) apply to each one. A VPN's SOCKS5 servers, local WireGuard-to-SOCKS5 ports or a bought list all fit.",
+      proxyList(d),
+    ),
+    d.proxy || d.proxies.length
+      ? settingCard("desktop", "My own connection too", "Adds this computer's connection to the proxies, as one more address. Hosts then see your real IP address.", toggleSwitch("proxy_with_direct", d.proxy_with_direct, "My own connection too"))
+      : null,
+    d.proxy || d.proxies.length
+      ? settingCard(
+          "arrow-clockwise",
+          "New connection for every download",
+          "For a proxy that gives each connection another address (a rotating endpoint), so each download gets its own.",
+          toggleSwitch("proxy_fresh_connections", d.proxy_fresh_connections, "New connection for every download"),
+        )
+      : null,
+    el("h2", {}, "VPN services"),
+    nordvpnCards(s, d),
+  );
+}
+
+// NordVPN: its SOCKS5 servers, least loaded first, from the countries picked.
+let nordvpnAsked = false;
+
+function nordvpnCards(s, d) {
+  const v = s.services;
+  if (!nordvpnAsked && !v.nordvpn_countries.length) {
+    nordvpnAsked = true;
+    api("/api/nordvpn/servers").catch(() => {});
+  }
+  const chosen = new Set(d.nordvpn_countries);
+  const countries = el(
+    "div",
+    { class: "chips" },
+    v.nordvpn_countries.map(([name, n]) =>
+      el(
+        "label",
+        { class: "chip" },
+        el("input", {
+          type: "checkbox",
+          checked: chosen.has(name),
+          onchange: (e) => {
+            const next = new Set(d.nordvpn_countries);
+            if (e.target.checked) next.add(name);
+            else next.delete(name);
+            save({ nordvpn_countries: [...next] }, null);
+          },
+        }),
+        `${name} (${n})`,
+      ),
+    ),
+  );
+  const using = v.nordvpn.length
+    ? `In use: ${v.nordvpn.map((x) => `${x.city || x.country} ${x.host.split(".")[0].replace("socks-", "")} (${x.load}% busy)`).join(", ")}.`
+    : "Set the service credentials and a number of servers to use them.";
+  return el(
+    "div",
+    { class: "cards" },
+    settingCard(
+      "key",
+      "NordVPN",
+      envNote("nordvpn_user", "nordvpn_password") ?? "Its SOCKS5 servers join the proxies, each its own address. Use the service credentials (Nord Account › NordVPN › manual setup), not the account's login.",
+      accountField("nordvpn_user", "Service user", false),
+      accountField("nordvpn_password", "Service password"),
+    ),
+    settingCard("shield", "Servers", `${using}${v.error ? ` ${v.error}.` : ""}`, numberField("nordvpn_servers", d.nordvpn_servers, { min: 0, max: 100, label: "Servers", unit: "servers" })),
+    v.nordvpn_countries.length ? settingCard("globe", "Countries", "None ticked means every country; the least loaded servers come first.", countries) : null,
+  );
+}
+
 // ---- settings
 
 let settingsKey = null;
@@ -1762,7 +1870,7 @@ async function loadSettings() {
     report(error);
   }
   settingsKey = null;
-  if (state && view === "settings") render(state);
+  if (state && (view === "settings" || view === "connections")) render(state);
 }
 
 async function save(changes, saved = "Saved") {
@@ -1863,7 +1971,7 @@ function reconnectCards(s, d) {
     settingCard(
       "key",
       "Router login",
-      envNote("router_user", "router_password") ?? "Only for a router that redials just for it, such as a FRITZ!Box with UPnP changes turned off. The user may stay empty.",
+      envNote("router_user", "router_password") ?? "Only for a router that redials just for it, such as a FRITZ!Box (its user is under System › FRITZ!Box Users).",
       accountField("router_user", "User", false),
       accountField("router_password", "Password"),
     ),
@@ -1979,7 +2087,7 @@ function renderSettings(s) {
   }
   const d = settingsData;
   if (!d) return;
-  const key = JSON.stringify([d, s.desktop, theme, s.config_error, s.version, s.reconnect]);
+  const key = JSON.stringify([d, s.desktop, theme, s.config_error, s.version]);
   // Leave the page alone while a field is being edited.
   const active = document.activeElement;
   if (key === settingsKey || ($("settings").contains(active) && active.matches("input"))) return;
@@ -2060,33 +2168,6 @@ function renderSettings(s) {
       "Tries a failed download again after this many minutes, up to three times. 0 turns it off.",
       numberField("retry_failed_minutes", d.retry_failed_minutes, { min: 0, max: 1440, label: "Minutes", unit: "min" }),
     ),
-    el("h2", {}, "Network"),
-    settingCard(
-      "shield",
-      "Proxy",
-      envNote("proxy") ?? "Every host goes through it unless you allow it direct under Hosts. Leave empty to connect directly.",
-      textField("proxy", d.proxy, { label: "Proxy", placeholder: "socks5://user:pass@host:1080", secret: true, wide: true }),
-      d.proxy ? toggleSwitch("use_proxy", d.use_proxy, "Use the proxy") : null,
-    ),
-    settingCard(
-      "shield",
-      "More proxies",
-      "One per line. Each download takes the proxy with the fewest downloads from its host, so a host's limits per address (downloads at once, daily quotas, waits) apply to each one. A VPN's SOCKS5 servers, local WireGuard-to-SOCKS5 ports or a bought list all fit.",
-      proxyList(d),
-    ),
-    d.proxy || d.proxies.length
-      ? settingCard("desktop", "My own connection too", "Adds this computer's connection to the proxies, as one more address. Hosts then see your real IP address.", toggleSwitch("proxy_with_direct", d.proxy_with_direct, "My own connection too"))
-      : null,
-    d.proxy || d.proxies.length
-      ? settingCard(
-          "arrow-clockwise",
-          "New connection for every download",
-          "For a proxy that gives each connection another address (a rotating endpoint), so each download gets its own.",
-          toggleSwitch("proxy_fresh_connections", d.proxy_fresh_connections, "New connection for every download"),
-        )
-      : null,
-    el("h2", {}, "New address"),
-    reconnectCards(s, d),
     el("h2", {}, "Accounts"),
     settingCard("key", "1fichier", envNote("1fichier_key") ?? "API key: no free-mode wait or captcha.", accountField("1fichier_key", "API key")),
     settingCard("key", "pixeldrain", envNote("pixeldrain_key") ?? "API key.", accountField("pixeldrain_key", "API key")),
