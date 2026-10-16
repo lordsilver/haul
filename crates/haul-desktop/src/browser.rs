@@ -5,14 +5,29 @@
 //!
 //! With a proxy configured, the window goes through it too, by way of the
 //! local bridge, because browser engines cannot pass proxy credentials.
+//!
+//! A host's page stays on the host's site ([`Stay`]): an ad that sends it
+//! elsewhere on a click is sent back, and a window it opens on its own site
+//! loads in place, since the window has no tabs to open it in.
 
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Mutex};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant},
+};
 
-use haul_core::{Engine, bridge::Bridge, hosts};
+use haul_core::{
+    Engine,
+    bridge::Bridge,
+    hosts,
+    stay::{self, SendBack, Stay},
+};
 use haul_web::Desktop;
 use tauri::{
-    AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder, Wry,
-    webview::{DownloadEvent, NewWindowResponse},
+    AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
+    webview::{DownloadEvent, NewWindowResponse, PageLoadEvent},
 };
 
 use crate::notify;
@@ -70,14 +85,18 @@ impl Desktop for Browser {
                 .data_dir()
                 .join("webview")
                 .join(if proxied { "proxy" } else { "direct" });
+        // A wrapper's page leads to other hosts: its window is not sent back.
+        let stay = Arc::new(Mutex::new(Stay::new(url, !hosts::wraps(url))));
         let capture = Capture {
             app: self.app.clone(),
             engine: self.engine.clone(),
             id: id.to_string(),
             label: label.clone(),
             user_agent,
+            stay: stay.clone(),
         };
         let on_download = capture.clone();
+        let on_navigation = stay.clone();
         let mut builder = WebviewWindowBuilder::new(&self.app, &label, WebviewUrl::External(page))
             .title(format!(
                 "{host}: solve the page, then click its download button"
@@ -85,7 +104,19 @@ impl Desktop for Browser {
             .inner_size(1100.0, 800.0)
             .data_directory(profile)
             .on_download(move |_, event| on_download.on_download(event))
-            .on_new_window(move |url, _| capture.on_popup(url));
+            .on_new_window(move |url, _| capture.on_popup(url))
+            .on_navigation(move |url| {
+                lock(&on_navigation).navigating(url.as_str());
+                true
+            })
+            .on_page_load(move |window, load| {
+                // A page, not a download, is taking the window's place.
+                if load.event() == PageLoadEvent::Started
+                    && let Some(back) = lock(&stay).landed(load.url().as_str(), Instant::now())
+                {
+                    send_back(window, back, stay.clone());
+                }
+            });
         if let Some(addr) = bridge {
             builder = builder.proxy_url(format!("socks5://{addr}").parse().expect("valid URL"));
             // WebRTC could otherwise reveal the real address to the page.
@@ -139,6 +170,33 @@ impl Desktop for Browser {
     }
 }
 
+fn lock(stay: &Mutex<Stay>) -> MutexGuard<'_, Stay> {
+    stay.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Sends the window back to the host's page: back in its history first,
+/// which keeps the page as it was, then to the page itself if that left it
+/// away still. Off the handler's thread, since navigating from inside the
+/// webview's own event would re-enter it.
+fn send_back(window: WebviewWindow, back: SendBack, stay: Arc<Mutex<Stay>>) {
+    std::thread::spawn(move || {
+        let Ok(page) = back.page.parse::<Url>() else {
+            return;
+        };
+        if back.history {
+            let _ = window.eval("history.back()");
+            std::thread::sleep(Duration::from_millis(1500));
+            let away = window
+                .url()
+                .is_ok_and(|now| !lock(&stay).is_home(now.as_str()));
+            if !away {
+                return;
+            }
+        }
+        let _ = window.navigate(page);
+    });
+}
+
 #[derive(Clone)]
 struct Capture {
     app: AppHandle,
@@ -146,6 +204,7 @@ struct Capture {
     id: String,
     label: String,
     user_agent: Option<String>,
+    stay: Arc<Mutex<Stay>>,
 }
 
 impl Capture {
@@ -160,10 +219,25 @@ impl Capture {
         false
     }
 
-    /// Popups are mostly ads; one that opens a file is the download itself.
+    /// Popups are mostly ads; one that opens a file is the download itself,
+    /// and one on the host's own site loads in place, unless the page goes
+    /// on by itself first.
     fn on_popup(&self, url: Url) -> NewWindowResponse<Wry> {
         if matches!(url.scheme(), "http" | "https") && hosts::guess_name(url.as_str()).is_some() {
             self.take(url, None);
+            return NewWindowResponse::Deny;
+        }
+        let at = Instant::now();
+        if lock(&self.stay).opened(url.as_str(), at) {
+            let this = self.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(stay::GRACE);
+                let page = lock(&this.stay).open_now(at).and_then(|p| p.parse().ok());
+                if let (Some(page), Some(window)) = (page, this.app.get_webview_window(&this.label))
+                {
+                    let _ = window.navigate(page);
+                }
+            });
         }
         NewWindowResponse::Deny
     }

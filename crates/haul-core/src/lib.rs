@@ -13,6 +13,7 @@ pub mod hosts;
 mod item;
 mod limiter;
 pub mod paths;
+pub mod stay;
 mod store;
 
 pub use config::{Config, Route, Theme};

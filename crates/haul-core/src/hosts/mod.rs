@@ -426,6 +426,26 @@ pub fn host_of(url: &str) -> String {
     }
 }
 
+/// The site a link's host belongs to, as far as who runs it goes: the host
+/// name's last two labels, or three under a country's second level
+/// (`example.co.uk`); an address stays as it is.
+pub fn site_of(url: &str) -> String {
+    let host = host_of(url);
+    if host.parse::<std::net::IpAddr>().is_ok() || host.starts_with('[') {
+        return host;
+    }
+    let labels: Vec<&str> = host.trim_end_matches('.').split('.').collect();
+    let n = labels.len();
+    let country_second_level = n >= 3
+        && labels[n - 1].len() == 2
+        && matches!(
+            labels[n - 2],
+            "co" | "com" | "net" | "org" | "gov" | "edu" | "ac" | "or" | "ne" | "go" | "gob"
+        );
+    let keep = if country_second_level { 3 } else { 2 };
+    labels[n.saturating_sub(keep)..].join(".")
+}
+
 static FILE_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.\w{2,5}$").unwrap());
 
 /// The last part of a link's path, decoded.
@@ -690,6 +710,17 @@ mod tests {
         );
         assert_eq!(guess_name("https://h.example/getfile.html"), None);
         assert_eq!(guess_name("https://h.example/download.php?id=7"), None);
+    }
+
+    #[test]
+    fn sites() {
+        assert_eq!(site_of("https://www.1fichier.com/?abc"), "1fichier.com");
+        assert_eq!(site_of("https://a-7.1fichier.com/c123"), "1fichier.com");
+        assert_eq!(site_of("https://dl.files.example.co.uk/x"), "example.co.uk");
+        assert_eq!(site_of("https://cdn.host.example.de/x"), "example.de");
+        assert_eq!(site_of("http://127.0.0.1:8080/x"), "127.0.0.1");
+        assert_eq!(site_of("https://localhost/x"), "localhost");
+        assert_eq!(site_of("not a url"), "");
     }
 
     #[test]
