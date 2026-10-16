@@ -4,7 +4,7 @@ What Haul does with a link once it is added, for every host. How each host's lin
 
 ## Names first
 
-A link whose path names a file joins any row with the same file name as another mirror. A host's page for a file counts as naming it (rapidgator's `name.rar.html` names `name.rar`); a page of its own (`index.php`) names none. A link that hides the name is looked up first (pixeldrain's API, or the first 64 KiB of the page: `Content-Disposition`, `Content-Range`, the page title), and rows for the same name and size merge before anything downloads.
+A link whose path names a file joins any row with the same file name as another mirror. A host's page for a file counts as naming it (rapidgator's `name.rar.html` names `name.rar`); a page of its own (`index.php`) names none. A link that hides the name is looked up first (pixeldrain's API, or the first 64 KiB of the page: `Content-Disposition`, `Content-Range`, the page title), and rows for the same name and size merge before anything downloads. A host that names the file only as its download starts (1fichier) gets the same check at that moment, before the file's bytes come: a file done or downloading in another row, or already in the download folder, is not fetched twice.
 
 ## Choosing a mirror
 

@@ -18,7 +18,7 @@ use axum::{
     extract::{Form, Path as UrlPath, Query, State},
     http::{HeaderMap, Method, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use haul_core::{
     Config, Engine, Event, ItemAction, Options, Route, Snapshot, StartError, Verifying,
@@ -334,6 +334,16 @@ async fn start_server() -> (Server, u16) {
                 let mut resp = file_response(content("same.bin", SIZE), &headers);
                 resp.headers_mut().insert(header::CONTENT_DISPOSITION, "attachment; filename=\"same.bin\"".parse().unwrap());
                 resp
+            }),
+        )
+        .route(
+            "/v1/download/get_token.cgi",
+            // 1fichier's API: its download link names nothing, as the real
+            // one's does; the name comes with the download (/hidden).
+            post(|headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                let id = body["url"].as_str().unwrap_or_default().rsplit('?').next().unwrap_or_default().to_string();
+                let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default().to_string();
+                Json(json!({"status": "OK", "url": format!("http://{host}/hidden/{id}")}))
             }),
         )
         .route(
@@ -1453,6 +1463,51 @@ fn files_in(dir: &std::path::Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// A host that names the file only as its download starts (1fichier): that
+/// name is checked before the body comes, so a file done in another row, or
+/// already in the download folder, is not downloaded again.
+#[tokio::test]
+async fn a_name_that_comes_with_the_download_is_checked_first() {
+    let t = Setup::new().await;
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            onefichier_key: Some("key".into()),
+            endpoints: Endpoints {
+                onefichier: t.ip.clone(),
+                ..t.config().endpoints
+            },
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.add_text(&format!("{}/files/same.bin", t.ip), "");
+    let s = wait_for(&engine, "the named file", all_done).await;
+    let done = s.items[0].id.clone();
+
+    // The same file again, from a link that names nothing until it downloads.
+    engine.add_text("https://1fichier.com/?again", "");
+    let s = wait_for(&engine, "the second row to fold away", |s| {
+        s.items.len() == 1 && t.server.requests("/hidden/again").len() == 1
+    })
+    .await;
+    assert_eq!(s.items[0].id, done);
+    assert_eq!(files_in(&t.root.join("dl")), ["same.bin"]);
+
+    // Off the list the file stays on disk, where the next such link finds it.
+    assert!(engine.item_action(&done, ItemAction::Remove));
+    engine.add_text("https://1fichier.com/?third", "");
+    let s = wait_for(&engine, "the file on disk", |s| {
+        s.items.len() == 1 && all_done(s)
+    })
+    .await;
+    assert!(s.items[0].existing, "found, not downloaded");
+    assert_eq!(s.items[0].name, "same.bin");
+    assert_eq!(files_in(&t.root.join("dl")), ["same.bin"]);
+    assert_eq!(t.downloaded("same.bin"), content("same.bin", SIZE));
 }
 
 #[tokio::test]

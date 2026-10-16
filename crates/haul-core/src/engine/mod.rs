@@ -1268,7 +1268,7 @@ impl Engine {
         }
         match &entry.exec {
             Some(exec) => self.run_exec(id, &entry, host, exec, cancel).await?,
-            None => self.fetch(id, &entry, host, &http, cancel).await?,
+            None => return self.fetch(id, &entry, host, &http, cancel).await,
         }
         Ok(Outcome::Done)
     }
@@ -1603,7 +1603,7 @@ impl Engine {
         host: &str,
         http: &Http,
         cancel: &CancellationToken,
-    ) -> Result<(), Fail> {
+    ) -> Result<Outcome, Fail> {
         let part = self.part_path(id);
         tokio::fs::create_dir_all(part.parent().expect("part has a parent")).await?;
         let mut have = tokio::fs::metadata(&part)
@@ -1693,18 +1693,38 @@ impl Engine {
                 (206, Some((_, Some(total)))) => Some(total),
                 _ => hosts::content_length(resp.headers()).map(|len| have + len),
             };
-            {
+            let named_now = {
                 let mut st = self.lock();
                 let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
-                if it.name.is_none() {
+                let unnamed = it.name.is_none();
+                if unnamed {
                     it.name = hosts::disposition_name(resp.headers());
                 }
+                let named_now = unnamed && it.name.is_some();
                 if let Some(total) = total {
                     it.size = total;
                 }
                 it.done = have;
                 it.attempt_from = have;
                 self.touch(&mut st);
+                named_now
+            };
+            // Some hosts (1fichier among them) name the file only as it
+            // starts: before the body comes, the same checks a name found by
+            // a probe or a resolver gets. The file may be done or downloading
+            // in another row, or be in the download folder already.
+            if named_now {
+                {
+                    let mut st = self.lock();
+                    if self.dedupe(&mut st, id) {
+                        st.items.shift_remove(id);
+                        self.touch(&mut st);
+                        return Ok(Outcome::Gone);
+                    }
+                }
+                if let Some(path) = or_cancel(cancel, self.existing_file(id)).await? {
+                    return Ok(Outcome::Existing(path));
+                }
             }
             let file = tokio::fs::OpenOptions::new()
                 .create(true)
@@ -1799,7 +1819,8 @@ impl Engine {
             .ok_or(Fail::Cancelled)?;
         let out_dir = self.out_dir(host, &package);
         tokio::fs::create_dir_all(&out_dir).await?;
-        self.place(id, &part, &out_dir)
+        self.place(id, &part, &out_dir)?;
+        Ok(Outcome::Done)
     }
 
     /// Where a finished file goes: the download folder, then the host's
