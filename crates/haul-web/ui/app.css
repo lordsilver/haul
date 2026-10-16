@@ -1130,6 +1130,60 @@ input[type="number"] {
   align-items: center;
 }
 
+/* The hosts list lays its cards out by its own width, not the window's. */
+#hosts {
+  container: hosts / inline-size;
+}
+
+/* A host's buttons, kept together. */
+.host-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* Where badges and buttons would squeeze a host's name and stats, the badges
+   go under them; on the narrowest lists the buttons follow. */
+@container hosts (max-width: 990px) {
+  .card.host {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px 16px;
+  }
+
+  .card.host > .card-icon,
+  .card.host > .text {
+    grid-row: 1;
+  }
+
+  .card.host > .host-actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .card.host > .controls {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    justify-content: flex-start;
+  }
+
+  .card.host > .controls:empty {
+    display: none;
+  }
+
+  .card.host > .infobar,
+  .card.host > .inline-form {
+    grid-column: 1 / -1;
+  }
+}
+
+@container hosts (max-width: 740px) {
+  .card.host > .host-actions {
+    grid-column: 2 / -1;
+    grid-row: auto;
+  }
+}
+
 .stepper output {
   min-width: 96px;
   text-align: center;

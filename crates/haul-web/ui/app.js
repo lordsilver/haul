@@ -1334,14 +1334,18 @@ function makeHostCard(name) {
   c.more = button("More slots", { icon: "add", kind: "subtle small", iconOnly: true, onclick: () => setLimit(name, 1) });
   c.node = el(
     "div",
-    { class: "card with-bar", "data-host": name },
+    { class: "card with-bar host", "data-host": name },
     c.mark,
     el("div", { class: "text" }, el("div", {}, name), c.stats),
     c.pills,
-    el("span", { class: "stepper", title: "Files downloaded from this host at the same time" }, c.fewer, c.slots, c.more),
-    c.order,
-    c.star,
-    button("Folder for this host's files", { icon: "folder", kind: "subtle small", iconOnly: true, onclick: () => editFolder(c, name) }),
+    el(
+      "span",
+      { class: "host-actions" },
+      el("span", { class: "stepper", title: "Files downloaded from this host at the same time" }, c.fewer, c.slots, c.more),
+      c.order,
+      c.star,
+      button("Folder for this host's files", { icon: "folder", kind: "subtle small", iconOnly: true, onclick: () => editFolder(c, name) }),
+    ),
   );
   // Draggable only from the grip, so text in the card stays selectable; a
   // selection dragged out of the card is not the card.
