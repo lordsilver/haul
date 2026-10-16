@@ -4,7 +4,7 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use reqwest::header::RANGE;
+use reqwest::header::{ACCEPT_ENCODING, RANGE};
 
 use super::{
     Cx, Entry, Probed, ResolveError, content_length, content_range, content_type, disposition_name,
@@ -15,7 +15,14 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     // HEAD first, for the headers it is cheaper for. A 405/501, or a host
     // that never answers it (transfer.it stalls HEAD), gets one byte through
     // a ranged GET instead.
-    let head = cx.http.client.head(url).send().await;
+    // Sizes as stored: a compressed answer would report another length.
+    let head = cx
+        .http
+        .client
+        .head(url)
+        .header(ACCEPT_ENCODING, "identity")
+        .send()
+        .await;
     let r = match head {
         Ok(r) if !matches!(r.status().as_u16(), 405 | 501) => r,
         _ => {
@@ -23,6 +30,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
                 .client
                 .get(url)
                 .header(RANGE, "bytes=0-0")
+                .header(ACCEPT_ENCODING, "identity")
                 .send()
                 .await?
         }
@@ -83,6 +91,7 @@ pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
         .client
         .get(url)
         .header(RANGE, format!("bytes=0-{}", PEEK - 1))
+        .header(ACCEPT_ENCODING, "identity")
         .send()
         .await
         .ok()?;

@@ -8,7 +8,8 @@
 //!
 //! A host's page stays on the host's site ([`Stay`]): an ad that sends it
 //! elsewhere on a click is sent back, and a window it opens on its own site
-//! loads in place, since the window has no tabs to open it in.
+//! loads in place, since the window has no tabs to open it in. A layer an
+//! ad lays over the page to catch the first click is taken off it.
 
 use std::{
     collections::BTreeMap,
@@ -103,6 +104,7 @@ impl Desktop for Browser {
             ))
             .inner_size(1100.0, 800.0)
             .data_directory(profile)
+            .initialization_script(OVERLAYS)
             .on_download(move |_, event| on_download.on_download(event))
             .on_new_window(move |url, _| capture.on_popup(url))
             .on_navigation(move |url| {
@@ -169,6 +171,9 @@ impl Desktop for Browser {
         Ok(Some(path))
     }
 }
+
+/// Takes the layers ads lay over a page off it (see the script).
+const OVERLAYS: &str = include_str!("overlays.js");
 
 fn lock(stay: &Mutex<Stay>) -> MutexGuard<'_, Stay> {
     stay.lock().unwrap_or_else(|e| e.into_inner())

@@ -1050,3 +1050,35 @@ async fn filecrypt_answers_its_checkbox() {
         .unwrap_err();
     assert_eq!(err, ResolveError::Failed("HTTP 404".into()));
 }
+
+/// Pages may come compressed; a file's size and bytes are asked for as
+/// stored, since resuming counts them.
+#[tokio::test]
+async fn files_are_asked_for_uncompressed() {
+    let app = Router::new().route(
+        "/f/data.bin",
+        get(|headers: HeaderMap| async move {
+            let encoding = headers.get("accept-encoding").and_then(|v| v.to_str().ok());
+            assert_eq!(encoding, Some("identity"));
+            ([("content-length", "4")], "data")
+        }),
+    );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
+    let e = generic::resolve(&cx, &format!("{base}/f/data.bin"))
+        .await
+        .unwrap();
+    assert_eq!(e[0].size, Some(4));
+    assert!(
+        generic::probe(&cx, &format!("{base}/f/data.bin"))
+            .await
+            .is_some()
+    );
+}

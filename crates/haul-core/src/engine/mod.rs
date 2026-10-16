@@ -18,7 +18,7 @@ use std::{
 };
 
 use indexmap::IndexMap;
-use reqwest::header::RANGE;
+use reqwest::header::{ACCEPT_ENCODING, RANGE};
 use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
@@ -1818,7 +1818,9 @@ impl Engine {
         let mut req = entry
             .headers
             .iter()
-            .fold(http.client.get(&entry.url), |r, (k, v)| r.header(k, v));
+            .fold(http.client.get(&entry.url), |r, (k, v)| r.header(k, v))
+            // The file as stored: its length and offsets are what resuming counts.
+            .header(ACCEPT_ENCODING, "identity");
         if have > 0 {
             req = req.header(RANGE, format!("bytes={have}-"));
         }
