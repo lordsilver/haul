@@ -351,6 +351,67 @@ async fn settings_round_trip_and_secrets_stay_out_of_the_stream() {
 }
 
 #[tokio::test]
+async fn reorders_the_preferred_hosts() {
+    let s = start().await;
+    // The preferred hosts in their order, as the state lists them.
+    let preferred = |state: Value| -> Vec<String> {
+        state["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|h| !h["preferred"].is_null())
+            .map(|h| h["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let star = s
+        .post(
+            "/api/host/rapidgator.net/preferred",
+            json!({"preferred": true}),
+        )
+        .await;
+    assert_eq!(star.status(), StatusCode::OK);
+    assert_eq!(
+        preferred(s.state().await),
+        ["pixeldrain.com", "rapidgator.net"]
+    );
+
+    let r = s
+        .post(
+            "/api/preferred-hosts",
+            json!({"hosts": ["rapidgator.net", "pixeldrain.com"]}),
+        )
+        .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(
+        preferred(s.state().await),
+        ["rapidgator.net", "pixeldrain.com"]
+    );
+
+    for bad in [
+        json!({"hosts": ["a.example", "A.example"]}),
+        json!({"hosts": ["a.example", " "]}),
+    ] {
+        let r = s.post("/api/preferred-hosts", bad.clone()).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{bad}");
+        let body: Value = r.json().await.unwrap();
+        assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
+    }
+    for bad in [
+        json!({}),
+        json!({"hosts": [1]}),
+        json!({"hosts": "a.example"}),
+    ] {
+        let r = s.post("/api/preferred-hosts", bad.clone()).await;
+        assert!(r.status().is_client_error(), "{bad}: {}", r.status());
+    }
+    assert_eq!(
+        preferred(s.state().await),
+        ["rapidgator.net", "pixeldrain.com"],
+        "refused lists change nothing"
+    );
+}
+
+#[tokio::test]
 async fn every_error_is_json() {
     let s = start().await;
     let url = |path: &str| format!("{}{path}", s.base);

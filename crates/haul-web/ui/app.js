@@ -1157,6 +1157,85 @@ function setPreferred(name, preferred) {
   api(`/api/host/${encodeURIComponent(name)}/preferred`, { preferred }).catch(report);
 }
 
+// The preferred hosts in the order downloads try them.
+function preferredOrder(s) {
+  return s.hosts
+    .filter((h) => h.preferred !== null)
+    .sort((a, b) => a.preferred - b.preferred)
+    .map((h) => h.name);
+}
+
+function setPreferredOrder(hosts) {
+  api("/api/preferred-hosts", { hosts }).catch(report);
+}
+
+// One place earlier (-1) or later (1) among the preferred hosts.
+function movePreferred(name, delta) {
+  if (!state) return;
+  const order = preferredOrder(state);
+  const from = order.indexOf(name);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= order.length) return;
+  order.splice(to, 0, ...order.splice(from, 1));
+  setPreferredOrder(order);
+}
+
+// Dragging a preferred host by its grip puts it elsewhere in the order. The
+// drag carries a type of its own, so the window's drop zone for links and
+// files leaves it alone, and the view keeps still until it ends.
+const HOST_DRAG = "application/x-haul-host";
+let dragged = null;
+let dropAt = null;
+
+function markDrop(target) {
+  if (dropAt?.c === target?.c && dropAt?.after === target?.after) return;
+  dropAt?.c.node.classList.remove("drop-before", "drop-after");
+  dropAt = target;
+  target?.c.node.classList.add(target.after ? "drop-after" : "drop-before");
+}
+
+function startHostDrag(e, c) {
+  dragged = c;
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData(HOST_DRAG, c.name);
+  c.node.classList.add("dragging");
+}
+
+function endHostDrag(c) {
+  c.node.draggable = false;
+  c.node.classList.remove("dragging");
+  markDrop(null);
+  dragged = null;
+  // Catch up with what came in during the drag.
+  if (state) render(state);
+}
+
+$("hosts").addEventListener("dragover", (e) => {
+  if (!dragged || !e.dataTransfer.types.includes(HOST_DRAG)) return;
+  const node = e.target.closest?.(".card");
+  const c = node ? hostCards.get(node.dataset.host) : null;
+  if (!c?.movable || c === dragged) {
+    markDrop(null);
+    return;
+  }
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  const box = c.node.getBoundingClientRect();
+  markDrop({ c, after: e.clientY > box.top + box.height / 2 });
+});
+$("hosts").addEventListener("dragleave", (e) => {
+  if (!$("hosts").contains(e.relatedTarget)) markDrop(null);
+});
+$("hosts").addEventListener("drop", (e) => {
+  if (!dragged || !dropAt || !state) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const order = preferredOrder(state).filter((name) => name !== dragged.name);
+  order.splice(order.indexOf(dropAt.c.name) + (dropAt.after ? 1 : 0), 0, dragged.name);
+  markDrop(null);
+  setPreferredOrder(order);
+});
+
 // Downloads a host runs at once: your limit, or fewer when the host showed it
 // takes fewer.
 function slotsOf(host) {
@@ -1238,8 +1317,16 @@ function editFolder(c, name) {
 const MAX_SLOTS = 32;
 
 function makeHostCard(name) {
-  const c = { key: null, preferred: false };
+  const c = { name, key: null, preferred: false, movable: false };
   c.star = button("Prefer this host", { icon: "star", kind: "subtle small", iconOnly: true, onclick: () => setPreferred(name, !c.preferred) });
+  c.up = button("Move up in the preferred order", { icon: "arrow-up", kind: "subtle small move", iconOnly: true, onclick: () => movePreferred(name, -1) });
+  c.down = button("Move down in the preferred order", { icon: "arrow-down", kind: "subtle small move", iconOnly: true, onclick: () => movePreferred(name, 1) });
+  c.order = el("span", { class: "order" }, c.up, c.down);
+  // The host's icon, or the grip that drags it when it can move.
+  c.mark = el("span", { class: "card-icon" }, icon("server"));
+  c.mark.addEventListener("pointerdown", () => {
+    if (c.movable) c.node.draggable = true;
+  });
   c.stats = el("div", { class: "sub" });
   c.pills = el("span", { class: "controls" });
   c.slots = el("output");
@@ -1247,14 +1334,24 @@ function makeHostCard(name) {
   c.more = button("More slots", { icon: "add", kind: "subtle small", iconOnly: true, onclick: () => setLimit(name, 1) });
   c.node = el(
     "div",
-    { class: "card with-bar" },
-    icon("server"),
+    { class: "card with-bar", "data-host": name },
+    c.mark,
     el("div", { class: "text" }, el("div", {}, name), c.stats),
     c.pills,
     el("span", { class: "stepper", title: "Files downloaded from this host at the same time" }, c.fewer, c.slots, c.more),
+    c.order,
     c.star,
     button("Folder for this host's files", { icon: "folder", kind: "subtle small", iconOnly: true, onclick: () => editFolder(c, name) }),
   );
+  // Draggable only from the grip, so text in the card stays selectable; a
+  // selection dragged out of the card is not the card.
+  c.node.addEventListener("pointerup", () => (c.node.draggable = false));
+  c.node.addEventListener("dragstart", (e) => {
+    if (e.target === c.node) startHostDrag(e, c);
+  });
+  c.node.addEventListener("dragend", (e) => {
+    if (e.target === c.node) endHostDrag(c);
+  });
   return c;
 }
 
@@ -1277,11 +1374,16 @@ function routeBars(h, s) {
 }
 
 function renderHosts(s) {
+  // A card being dragged stays put; the drag's end renders again.
+  if (dragged) return;
   const box = $("hosts");
+  // Moving a card takes the focus off its buttons; it goes back below.
+  const focused = box.contains(document.activeElement) ? document.activeElement : null;
   let previous = null;
   const seen = new Set();
   const fastest = s.hosts.reduce((a, h) => (h.speed > (a?.speed ?? 0) ? h : a), null)?.name;
-  const preferredCount = s.hosts.filter((h) => h.preferred !== null).length;
+  const order = preferredOrder(s);
+  const preferredCount = order.length;
   s.hosts.forEach((h, index) => {
     seen.add(h.name);
     let c = hostCards.get(h.name);
@@ -1297,10 +1399,20 @@ function renderHosts(s) {
     c.fewer.disabled = slots <= 1;
     c.more.disabled = slots >= MAX_SLOTS;
     const best = h.name === fastest;
-    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}`;
+    const place = order.indexOf(h.name);
+    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}|${place}`;
     if (c.key !== key) {
       c.key = key;
       c.node.classList.toggle("best", best);
+      // Two preferred hosts or more can trade places.
+      c.movable = place >= 0 && preferredCount > 1;
+      c.order.hidden = !c.movable;
+      c.up.disabled = place === 0;
+      c.down.disabled = place === preferredCount - 1;
+      c.mark.classList.toggle("grip", c.movable);
+      c.mark.replaceChildren(icon(c.movable ? "re-order-dots-vertical" : "server"));
+      if (c.movable) c.mark.title = "Drag to change the order";
+      else c.mark.removeAttribute("title");
       const pills = [];
       c.preferred = h.preferred !== null;
       const starTitle = c.preferred ? "Preferred: click to stop preferring it" : "Prefer this host";
@@ -1329,6 +1441,12 @@ function renderHosts(s) {
       c.node.remove();
       hostCards.delete(name);
     }
+  }
+  // Back on the arrow it was on, or on the other one once that one ran out
+  // (a disabled button loses the focus a moment later, so do not wait).
+  if (focused?.isConnected && (focused.disabled || document.activeElement !== focused)) {
+    const target = focused.disabled ? focused.parentElement.querySelector(".move:not(:disabled)") : focused;
+    target?.focus({ preventScroll: true });
   }
   const empty = $("no-hosts");
   empty.hidden = s.hosts.length > 0;
@@ -1941,11 +2059,15 @@ addEventListener("dragleave", () => {
   dragDepth = Math.max(0, dragDepth - 1);
   if (!dragDepth) endDrag();
 });
-addEventListener("dragover", (e) => e.preventDefault());
+// Only links and files drop here; a host being reordered drops on its list.
+addEventListener("dragover", (e) => {
+  if (carriesData(e)) e.preventDefault();
+});
 // Dropped links and files fill the Add dialog, like pasted ones, unless the
 // settings say to add them at once.
 addEventListener("drop", (e) => {
   endDrag();
+  if (!carriesData(e)) return;
   const data = e.dataTransfer;
   const now = Boolean(state?.skip_add_dialog);
   if (data.files.length) {

@@ -1027,10 +1027,41 @@ input[type="number"] {
   background: var(--card);
 }
 
-.card > .icon {
+.card > .icon,
+.card > .card-icon .icon {
   width: 20px;
   height: 20px;
   color: var(--text);
+}
+
+.card > .card-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+/* A preferred host's grip: drag it to change the order. */
+.card > .card-icon.grip {
+  margin: -6px;
+  padding: 6px;
+  border-radius: 4px;
+  cursor: grab;
+}
+
+.card > .card-icon.grip:hover {
+  background: var(--subtle-hover);
+}
+
+.card.dragging {
+  opacity: 0.5;
+}
+
+/* Where a dragged host would go: a line in the gap above or below. */
+.card.drop-before {
+  box-shadow: 0 -3px 0 var(--accent);
+}
+
+.card.drop-after {
+  box-shadow: 0 3px 0 var(--accent);
 }
 
 .card .text {
@@ -1091,6 +1122,12 @@ input[type="number"] {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+/* A preferred host's arrows, a pair like the stepper's buttons. */
+.order {
+  display: inline-flex;
+  align-items: center;
 }
 
 .stepper output {

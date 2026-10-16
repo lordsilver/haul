@@ -134,6 +134,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/host/{name}/limit/{n}", post(host_limit))
         .route("/api/host/{name}/folder", post(host_folder))
         .route("/api/host/{name}/preferred", post(host_preferred))
+        .route("/api/preferred-hosts", post(preferred_hosts))
         .route("/api/host/{name}/route/{mode}", post(host_route))
         .route("/api/global/{action}", post(global))
         .route("/api/settings", get(settings).post(update_settings))
@@ -443,6 +444,19 @@ async fn host_preferred(
     match app.engine.set_preferred(&name, body.preferred) {
         Ok(()) => ok(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct PreferredHosts {
+    hosts: Vec<String>,
+}
+
+/// The preferred hosts, all of them, in a new order.
+async fn preferred_hosts(State(app): State<App>, Json(body): Json<PreferredHosts>) -> Response {
+    match app.engine.set_preferred_hosts(&body.hosts) {
+        Ok(()) => ok(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
     }
 }
 

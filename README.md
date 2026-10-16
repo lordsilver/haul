@@ -8,7 +8,7 @@ It comes as a Windows desktop app (a Tauri 2 shell around the engine) and as `ha
 
 Early. Working today:
 
-- Mirrors: the same file on several hosts becomes one row, downloaded from the hosts you star (pixeldrain.com from the start) or else the fastest, with failover to the next mirror.
+- Mirrors: the same file on several hosts becomes one row, downloaded from the hosts you star, in the order you set (pixeldrain.com from the start), or else the fastest, with failover to the next mirror.
 - Resume through HTTP ranges; partial files survive restarts and pauses.
 - Files already in the download folder are recognised and not fetched again, optionally after comparing the host's checksum.
 - Automatic retries of network trouble, of rate-limited hosts and of failed downloads.

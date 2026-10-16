@@ -356,8 +356,36 @@ impl Engine {
             cfg.preferred_hosts
                 .retain(|h| !h.eq_ignore_ascii_case(host));
         }
-        // Written even when the last host leaves: a key left out would bring
-        // the default (pixeldrain.com) back on the next load.
+        self.write_preferred(cfg)
+    }
+
+    /// The preferred hosts, all of them, in this order: how the list is
+    /// reordered. A blank name, or a host named twice (in any case), leaves
+    /// the settings as they were.
+    pub fn set_preferred_hosts(&self, hosts: &[String]) -> Result<(), String> {
+        let mut list: Vec<String> = Vec::with_capacity(hosts.len());
+        for host in hosts {
+            let host = host.trim();
+            if host.is_empty() {
+                return Err("a preferred host needs a name".into());
+            }
+            if list.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+                return Err(format!("{host} is in the list twice"));
+            }
+            list.push(host.to_string());
+        }
+        let mut cfg = (*self.cfg()).clone();
+        if cfg.preferred_hosts == list {
+            return Ok(());
+        }
+        cfg.preferred_hosts = list;
+        self.write_preferred(cfg)
+    }
+
+    /// Puts `cfg` in effect with its preferred hosts written whole. Written
+    /// even when empty: a key left out would bring the default
+    /// (pixeldrain.com) back on the next load.
+    fn write_preferred(&self, cfg: Config) -> Result<(), String> {
         let list =
             toml_edit::Value::Array(cfg.preferred_hosts.iter().map(String::as_str).collect());
         self.write_and_apply(cfg, vec![top("preferred_hosts", Some(list))])

@@ -42,6 +42,8 @@ Errors are sorted by what retrying can achieve. A dead link or a refusal fails i
 
 A preferred host that is only busy is waited for, since a user who stars a host (often one they hold an account with) wants the file from it; one that is cooling down or has failed for the file is passed over, so a preference never stalls a download for good.
 
+Preferred hosts are tried in the order the user gives them, and the **Hosts** view changes that order two ways: dragging a preferred host's card by its grip, which suits a mouse, and its up and down arrows, which work from the keyboard and on a touch screen. Both send the whole list at once (`POST /api/preferred-hosts`), so the order on screen is the order saved; the star still adds a host at the end or takes it out.
+
 Speeds come from real downloads. Haul does not test mirrors by downloading a piece of each: file hosts count every download start toward free-mode limits and wait timers, so a test can cost the real download. Nor does it switch mirrors in the middle of a file: without a checksum there is no telling whether two mirrors hold the same bytes, and resuming one from the other's offset would corrupt the file silently.
 
 ## Files already downloaded

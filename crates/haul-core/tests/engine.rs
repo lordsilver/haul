@@ -1349,6 +1349,73 @@ async fn clearing_the_default_preference_sticks() {
     );
 }
 
+/// The whole list in a new order: how the Hosts view reorders it.
+#[tokio::test]
+async fn preferred_hosts_reorder_and_keep_their_order() {
+    let t = Setup::new().await;
+    let engine = start_from_file(&t).await;
+    let path = engine.config_path().unwrap().to_path_buf();
+    let order = |engine: &Engine| -> Vec<(String, Option<usize>)> {
+        let s = engine.snapshot();
+        s.hosts.into_iter().map(|h| (h.name, h.preferred)).collect()
+    };
+    let list = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+    engine.set_preferred("rapidgator.net", true).unwrap();
+    engine.set_preferred("1fichier.com", true).unwrap();
+    let starred = std::fs::read_to_string(&path).unwrap();
+
+    let new = list(&["1fichier.com", "pixeldrain.com", "rapidgator.net"]);
+    engine.set_preferred_hosts(&new).unwrap();
+    assert_eq!(
+        order(&engine),
+        [
+            ("1fichier.com".into(), Some(0)),
+            ("pixeldrain.com".into(), Some(1)),
+            ("rapidgator.net".into(), Some(2)),
+        ]
+    );
+    // Only the list's own line changes in the file.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let changed: Vec<_> = starred
+        .lines()
+        .zip(text.lines())
+        .filter(|(was, is)| was != is)
+        .collect();
+    assert_eq!(starred.lines().count(), text.lines().count());
+    assert_eq!(changed.len(), 1, "{changed:?}");
+    assert_eq!(Config::parse(&text).unwrap().preferred_hosts, new);
+
+    // A blank name, or one host twice, changes nothing.
+    for bad in [
+        list(&["1fichier.com", " "]),
+        list(&["1fichier.com", "pixeldrain.com", "1FICHIER.com"]),
+    ] {
+        assert!(engine.set_preferred_hosts(&bad).is_err(), "{bad:?}");
+    }
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    assert_eq!(engine.cfg().preferred_hosts, new);
+
+    // Starring still appends; the order outlives a restart.
+    engine.set_preferred("gofile.io", true).unwrap();
+    engine.shutdown().await;
+    drop(engine);
+    let engine = start_from_file(&t).await;
+    assert_eq!(
+        engine.cfg().preferred_hosts,
+        list(&[
+            "1fichier.com",
+            "pixeldrain.com",
+            "rapidgator.net",
+            "gofile.io"
+        ])
+    );
+    // An empty list is a choice too: no preference, not the default.
+    engine.set_preferred_hosts(&[]).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(Config::parse(&text).unwrap().preferred_hosts.is_empty());
+    assert!(order(&engine).is_empty());
+}
+
 #[tokio::test]
 async fn host_speeds_survive_a_restart() {
     let t = Setup::new().await;
