@@ -513,6 +513,7 @@ async fn generic_links_and_probes() {
         no_redirect: client.clone(),
         client,
         via_proxy: false,
+        user_agent: String::new(),
     };
     let stall_cx = Cx {
         http: &quick,
@@ -877,11 +878,175 @@ async fn filecrypt_dlc_links_become_entries() {
         "{err:?}"
     );
 
-    let err = filecrypt::unwrap(&cx, &format!("{base}/Container/abc.html"))
+    let err = filecrypt::unwrap(&cx, &format!("{base}/Link/abc.html"))
         .await
         .unwrap_err();
     assert!(
         matches!(&err, ResolveError::NeedsUser(m) if m.contains(".dlc")),
         "{err:?}"
     );
+}
+
+/// filecrypt.cc's checkbox, as its page and widget ask for it: a probe id,
+/// a challenge for what the widget's checks found, a SHA-1 proof of work and
+/// the report of a person's click; the solved page's Click'n'Load data holds
+/// the links.
+#[tokio::test]
+async fn filecrypt_answers_its_checkbox() {
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
+    use base64::engine::general_purpose::STANDARD;
+    use sha1::{Digest, Sha1};
+
+    let key = *b"6229761275967424";
+    let jk: String = key.iter().map(|b| format!("{b:02x}")).collect();
+    let plain = b"https://host.example/f/abc.part1.rar\r\nhttps://other.example/d/xyz\r\n";
+    let mut buf = plain.to_vec();
+    buf.resize(plain.len().div_ceil(16) * 16, 0);
+    let len = buf.len();
+    let crypted = STANDARD.encode(
+        cbc::Encryptor::<aes::Aes128>::new_from_slices(&key, &key)
+            .unwrap()
+            .encrypt_padded::<NoPadding>(&mut buf, len)
+            .unwrap(),
+    );
+    let solved = format!(
+        r#"<h2>My &amp; Release</h2><form onsubmit="try {{ CNLPOP('5E55537ED1', '{jk}', '{crypted}', 'My Release - filecrypt.cc'); }} catch(e){{}}">"#
+    );
+    let gate = |base: &str| {
+        format!(
+            r#"<h2>Security Check</h2><form id="cform"><div class="pow-captcha" id="pow-captcha" data-state="idle"
+                 data-session="/captchasession/S1.json" data-worker="/js/w.js"
+                 data-px="{base}/px-down,{base}/px">
+               <input type="hidden" name="pow_id" value=""></div>
+               <!-- <input type="password" name="password" id="p4assw0rt"> --></form>"#
+        )
+    };
+    let sessions = Arc::new(AtomicUsize::new(0));
+    let app = {
+        let (solved, sessions) = (solved.clone(), sessions.clone());
+        Router::new()
+            .route(
+                "/Container/{page}",
+                get({
+                    let solved = solved.clone();
+                    move |Path(page): Path<String>, headers: HeaderMap| {
+                        let solved = solved.clone();
+                        async move {
+                            let host = headers["host"].to_str().unwrap().to_string();
+                            match page.as_str() {
+                                "open.html" | "refuse.html" | "dlc.html" => gate(&format!("http://{host}")),
+                                // A session that passed the gate before.
+                                "seen.html" => solved,
+                                "locked.html" => r#"<input type="password" name="password">"#.into(),
+                                "plain.html" => "<p>Maintenance</p>".into(),
+                                _ => return StatusCode::NOT_FOUND.into_response(),
+                            }
+                            .into_response()
+                        }
+                    }
+                })
+                .post({
+                    let solved = solved.clone();
+                    move |Path(page): Path<String>, Form(f): Form<HashMap<String, String>>| {
+                        let solved = solved.clone();
+                        async move {
+                            assert_eq!(f["pow_id"], "C1");
+                            assert_eq!(f["pow_x"], "2.0.63.W10=");
+                            assert_eq!(f["pow_pauses"], "0");
+                            assert!(f["pow_elapsed"].parse::<u64>().unwrap() >= 1);
+                            let digest = Sha1::digest(format!("c0ffee:{}", f["pow_nonce"]));
+                            assert!(digest[0] == 0 && digest[1] >> 4 == 0, "12 zero bits");
+                            let report = filecrypt::decode_report(&f["pow_data"]);
+                            assert!(report["moves"].as_u64().unwrap() > 0);
+                            assert_eq!(report["ui"], true);
+                            assert_eq!(report["workerData"]["userAgent"], "test-agent");
+                            match page.as_str() {
+                                "open.html" => solved,
+                                "dlc.html" => r#"<h2>Dlc Only</h2><button onclick="DownloadDLC(this.getAttribute('data-Oft'));" data-Oft="unlisted">"#.into(),
+                                _ => format!("<h2>Security Check</h2>{}", r#"<div id="pow-captcha" data-session="/captchasession/S1.json">"#),
+                            }
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/captchasession/S1.json",
+                post(move |headers: HeaderMap, Form(f): Form<HashMap<String, String>>| {
+                    let sessions = sessions.clone();
+                    async move {
+                        sessions.fetch_add(1, Ordering::SeqCst);
+                        assert!(headers["referer"].to_str().unwrap().contains("/Container/"));
+                        assert_eq!(f["pow_x"], "2.0.63.W10=");
+                        assert_eq!(f["pow_y"], "probe-id", "the probe that answered");
+                        assert!(!f["pow_yn"].is_empty() && !f["tz"].is_empty());
+                        assert_eq!(f["wt"], "0");
+                        Json(json!({"success": true, "autosolve": false,
+                            "challenge": {"id": "C1", "challenge": "c0ffee", "difficulty": 12}}))
+                    }
+                }),
+            )
+            .route(
+                "/px",
+                get(|Query(q): Query<HashMap<String, String>>| async move {
+                    assert!(!q["t"].is_empty());
+                    Json(json!({"ok": 1, "cid": "probe-id"}))
+                }),
+            )
+            .route("/px-down", get(|| async { StatusCode::BAD_GATEWAY }))
+            .route("/DLC/unlisted.dlc", get(|| async { "" }))
+    };
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
+
+    let found = filecrypt::unwrap(&cx, "https://filecrypt.cc/Container/open.html")
+        .await
+        .unwrap();
+    assert_eq!(found.title.as_deref(), Some("My & Release"));
+    assert_eq!(found.files.len(), 1, "one file, on two hosts");
+    assert_eq!(found.files[0].url, "https://host.example/f/abc.part1.rar");
+    assert_eq!(found.files[0].mirrors, ["https://other.example/d/xyz"]);
+    assert_eq!(found.files[0].name.as_deref(), Some("abc.part1.rar"));
+    assert!(found.files[0].deferred);
+    assert_eq!(sessions.load(Ordering::SeqCst), 1);
+
+    // A page that shows the links already needs no solve.
+    let found = filecrypt::unwrap(&cx, "https://www.filecrypt.cc/Container/seen.html")
+        .await
+        .unwrap();
+    assert_eq!(found.files.len(), 1);
+    assert_eq!(sessions.load(Ordering::SeqCst), 1);
+
+    // A solved page without Click'n'Load data: its .dlc.
+    let err = filecrypt::unwrap(&cx, "https://filecrypt.cc/Container/dlc.html")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ResolveError::Failed(m) if m.contains("empty .dlc")),
+        "{err:?}"
+    );
+
+    for (page, says) in [
+        ("refuse.html", "turned Haul's answer"),
+        ("locked.html", "password"),
+        ("plain.html", "without its checkbox"),
+    ] {
+        let err = filecrypt::unwrap(&cx, &format!("https://filecrypt.cc/Container/{page}"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ResolveError::NeedsUser(m) if m.contains(says)),
+            "{page}: {err:?}"
+        );
+    }
+    let err = filecrypt::unwrap(&cx, "https://filecrypt.cc/Container/gone.html")
+        .await
+        .unwrap_err();
+    assert_eq!(err, ResolveError::Failed("HTTP 404".into()));
 }

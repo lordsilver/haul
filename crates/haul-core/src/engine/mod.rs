@@ -2256,7 +2256,7 @@ impl Engine {
         // the file: the row unpacks it on its next turn and becomes its
         // files. The row's own links stay, so one that fails asks for the page
         // again like any link handed back, and it names nothing.
-        let deferred = hosts::unwraps(url);
+        let deferred = hosts::wraps(url);
         if it.wrapper && !deferred {
             // A file's own link, found on a wrapper's page: one more of the
             // wrapper's files, not started, with what the browser sent.

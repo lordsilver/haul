@@ -24,7 +24,7 @@ The **Hosts** view lists each host Haul has reached and each preferred one, with
 
 ## Wrappers
 
-A wrapper link (fileguard.cc, filecrypt.cc, a `.dlc` link) is unwrapped as soon as it is added, and **Wrappers** shows each one: unwrapping, how many files it found from how many links, waiting for you (filecrypt.cc's gate: **Open here** in the desktop app, or open the page and paste the `.dlc` link it offers), or failed and why. Its files appear in the list **Not started**; start one with its ▶, an archive's parts with the group's ▶, or all of them with **Start all**. **Remove** on a wrapper takes the files that never started with it, after a second click. More in [Containers and wrappers](containers.md#wrapper-pages).
+A wrapper link (fileguard.cc, filecrypt.cc, a `.dlc` link) is unwrapped as soon as it is added, and **Wrappers** shows each one: unwrapping, how many files it found from how many links, waiting for you (a filecrypt.cc container behind a password, or one that turned Haul's answer away: **Open here** in the desktop app, or open the page and paste the `.dlc` link it offers), or failed and why. Its files appear in the list **Not started**; start one with its ▶, an archive's parts with the group's ▶, or all of them with **Start all**. **Remove** on a wrapper takes the files that never started with it, after a second click. More in [Containers and wrappers](containers.md#wrapper-pages).
 
 ## Selecting and removing
 

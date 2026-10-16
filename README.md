@@ -19,7 +19,7 @@ Early. Working today:
 - A diagnostics report to save and send when something goes wrong, with account keys and passwords left out.
 - Hosts: pixeldrain, gofile, buzzheavier, 1fichier, rapidgator and nitroflare (premium accounts), mega.nz through `megatools`, and any direct link.
 - Import of JDownloader `.dlc` containers (through JDownloader's key service) and of any text file with links in it.
-- Wrapper pages: a fileguard.cc vault solves its gate on its own and each file (each part of a release) becomes one row with every host as a mirror, not started until you start it; a filecrypt.cc page waits for you in **Wrappers**, and the `.dlc` it offers is unpacked when handed back.
+- Wrapper pages: a fileguard.cc vault solves its gate on its own and each file (each part of a release) becomes one row with every host as a mirror, not started until you start it; a filecrypt.cc container answers its checkbox and decrypts its Click'n'Load links itself, waiting for you in **Wrappers** only behind a password or when filecrypt.cc turns the answer away.
 - Desktop app: light and dark themes that follow Windows, tray icon (closing the window keeps downloading), notifications, single instance, `.dlc` file association, and the in-app browser for hosts that need a person.
 
 ## Install

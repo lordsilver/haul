@@ -17,11 +17,15 @@ struct Server {
 }
 
 async fn start() -> Server {
+    start_with(Config::default()).await
+}
+
+async fn start_with(config: Config) -> Server {
     let tmp = tempfile::tempdir().unwrap();
     let engine = Engine::start(Options {
         data_dir: tmp.path().join("data"),
         download_dir: Some(tmp.path().join("dl")),
-        config: Some(Config::default()),
+        config: Some(config),
         recycle_bin: Some(tmp.path().join("bin")),
     })
     .await
@@ -413,8 +417,17 @@ async fn reorders_the_preferred_hosts() {
 
 #[tokio::test]
 async fn wrappers_have_their_own_list_and_actions() {
-    let s = start().await;
-    // A gate for a person needs no network to say so.
+    // A container that asks for its password waits for a person.
+    let app = axum::Router::new().route(
+        "/Container/abc.html",
+        axum::routing::get(|| async { r#"<input type="password" name="password">"# }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let filecrypt = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let mut config = Config::default();
+    config.endpoints.filecrypt = filecrypt;
+    let s = start_with(config).await;
     let page = "https://filecrypt.cc/Container/abc.html";
     let r: Value = s
         .post("/api/add", json!({ "text": page }))

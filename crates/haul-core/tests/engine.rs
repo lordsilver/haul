@@ -46,6 +46,34 @@ fn sha256_hex(data: &[u8]) -> String {
         .collect()
 }
 
+/// filecrypt.cc's checkbox, as the test server's container pages show it.
+const FC_GATE: &str = r#"<h2>Security Check</h2><form id="cform">
+  <div class="pow-captcha" id="pow-captcha" data-session="/captchasession/T1.json" data-px="">
+    <input type="hidden" name="pow_id" value=""></div></form>"#;
+
+/// A solved container page: its links as Click'n'Load data, two of the test
+/// server's own files.
+fn fc_solved(host: &str) -> String {
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+    let key = *b"6229761275967424";
+    let plain = format!("http://{host}/files/one.bin\r\nhttp://{host}/files/two.bin");
+    let mut buf = plain.into_bytes();
+    let len = buf.len().div_ceil(16) * 16;
+    buf.resize(len, 0);
+    let crypted = STANDARD.encode(
+        cbc::Encryptor::<aes::Aes128>::new_from_slices(&key, &key)
+            .unwrap()
+            .encrypt_padded::<NoPadding>(&mut buf, len)
+            .unwrap(),
+    );
+    let jk: String = key.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "<h2>Open Release</h2><form onsubmit=\"CNLPOP('X1', '{jk}', '{crypted}', 'Open Release - filecrypt.cc'); return false;\">"
+    )
+}
+
 /// The `.dlc` the test server hands out and the key service's answer for it,
 /// the way JDownloader builds one: two of the server's own files.
 fn dlc_fixture(host: &str) -> (Vec<u8>, String) {
@@ -422,6 +450,35 @@ async fn start_server() -> (Server, u16) {
                     "salt": "haul-test",
                     "signature": "sig",
                 }))
+            }),
+        )
+        .route(
+            "/Container/{page}",
+            // filecrypt.cc's containers: "abc" turns every answer to its
+            // checkbox away, so it waits for a person; "open" takes it.
+            get(|UrlPath(page): UrlPath<String>| async move {
+                match page.as_str() {
+                    "abc.html" | "open.html" => FC_GATE.into_response(),
+                    _ => StatusCode::NOT_FOUND.into_response(),
+                }
+            })
+            .post(|headers: HeaderMap, UrlPath(page): UrlPath<String>| async move {
+                let host = headers
+                    .get(header::HOST)
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or_default();
+                if page == "open.html" {
+                    fc_solved(host)
+                } else {
+                    FC_GATE.to_string()
+                }
+            }),
+        )
+        .route(
+            "/captchasession/T1.json",
+            post(|| async {
+                Json(json!({"success": true, "autosolve": false,
+                    "challenge": {"id": "C1", "challenge": "c0ffee", "difficulty": 4}}))
             }),
         )
         .route(
@@ -1358,6 +1415,30 @@ async fn a_dlc_link_is_a_wrapper_that_unpacks_its_container() {
     assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 2 }));
     let s = wait_for(&engine, "the container's files", |s| s.items.len() == 2).await;
     assert!(s.items.iter().all(|i| i.status == "paused"));
+}
+
+/// A container whose checkbox Haul answers itself unpacks as soon as it is
+/// added: no person, no `.dlc`, no key service.
+#[tokio::test]
+async fn a_filecrypt_container_answers_its_checkbox_and_unpacks() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let mut events = engine.subscribe();
+    engine.add_text("https://filecrypt.cc/Container/open.html", "");
+    let s = wrapper_settled(&engine, "done").await;
+    assert_eq!(s.wrappers[0].title.as_deref(), Some("Open Release"));
+    assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 2 }));
+    let s = wait_for(&engine, "the container's files", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.status == "paused")
+    })
+    .await;
+    assert_eq!(engine.start_wrapper(&s.wrappers[0].id), Some(2));
+    wait_for(&engine, "the downloads", all_done).await;
+    assert_eq!(t.downloaded("one.bin"), content("one.bin", SIZE));
+    assert_eq!(t.downloaded("two.bin"), content("two.bin", SIZE));
+    while let Ok(e) = events.try_recv() {
+        assert!(!matches!(e, Event::NeedsUser { .. }), "{e:?}");
+    }
 }
 
 #[tokio::test]

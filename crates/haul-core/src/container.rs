@@ -1,9 +1,10 @@
-//! Link containers: plain text (any file with links in it) and JDownloader
-//! `.dlc` files.
+//! Link containers: plain text (any file with links in it), JDownloader
+//! `.dlc` files and Click'n'Load data.
 //!
 //! DLC uses the same scheme as pyLoad: the file's last 88 characters go to
 //! JDownloader's key service, whose answer decrypts the file key, which in
 //! turn decrypts the link list. Import therefore needs that service online.
+//! Click'n'Load data carries its key, so it needs nothing online.
 
 use std::sync::LazyLock;
 
@@ -86,6 +87,27 @@ fn decrypt(key: &[u8], iv: &[u8], data: &mut [u8]) -> Result<usize, String> {
         .decrypt_padded::<NoPadding>(data)
         .map_err(|_| "DLC data is not a whole number of blocks".to_string())?;
     Ok(plain.len())
+}
+
+/// The links in Click'n'Load data: `crypted` is base64 of the list, one
+/// link per line, encrypted with AES-128-CBC under `jk`, a key in hexadecimal
+/// that is its IV as well. The protocol sends `jk` as a JavaScript function
+/// returning that hexadecimal; a page that gives the hexadecimal itself, as
+/// filecrypt.cc's does, leaves nothing to run.
+pub fn parse_cnl(jk: &str, crypted: &str) -> Result<Vec<String>, String> {
+    let jk = jk.trim();
+    let key = (0..jk.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(jk.get(i..i + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()
+        .filter(|key| key.len() == 16)
+        .ok_or("the Click'n'Load key is not 16 bytes in hexadecimal")?;
+    let mut data = b64(crypted).map_err(|_| "bad base64 in the Click'n'Load data".to_string())?;
+    let n = decrypt(&key, &key, &mut data)
+        .map_err(|_| "the Click'n'Load data is not a whole number of blocks".to_string())?;
+    Ok(extract_urls(
+        String::from_utf8_lossy(&data[..n]).trim_end_matches('\0'),
+    ))
 }
 
 static RC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<rc>(.+?)</rc>").unwrap());
@@ -199,6 +221,29 @@ mod tests {
             .encrypt_padded::<NoPadding>(&mut buf, len)
             .unwrap()
             .to_vec()
+    }
+
+    #[test]
+    fn click_n_load_data_decrypts_with_its_key() {
+        let key = b"6229761275967424";
+        let jk: String = key.iter().map(|b| format!("{b:02x}")).collect();
+        let plain = "https://a.example/one.part1.rar\r\nhttps://b.example/d/xyz\r\n";
+        let crypted = STANDARD.encode(encrypt(key, key, plain.as_bytes()));
+        assert_eq!(
+            parse_cnl(&jk, &crypted).unwrap(),
+            ["https://a.example/one.part1.rar", "https://b.example/d/xyz"]
+        );
+        // As a page may break it: across lines.
+        let (head, tail) = crypted.split_at(20);
+        assert_eq!(
+            parse_cnl(&jk.to_uppercase(), &format!("{head}\n{tail}"))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(parse_cnl("0a0", &crypted).is_err(), "odd hexadecimal");
+        assert!(parse_cnl("0a0b", &crypted).is_err(), "a short key");
+        assert!(parse_cnl(&jk, "c2hvcnQ=").is_err(), "not whole blocks");
     }
 
     /// Builds a DLC the way JDownloader does, around a fixed file key.

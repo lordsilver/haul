@@ -3,10 +3,11 @@
 //!
 //! Only legitimate routes are used: public APIs, guest tokens, the user's own
 //! premium or API-key accounts, and a wrapper page's own form once its gate is
-//! passed. A gate that asks for no person, such as fileguard's ALTCHA proof of
-//! work, is solved here; a host that needs a person (a captcha, a browser
-//! check, a click) raises [`ResolveError::NeedsUser`] and the item waits for
-//! one, and a host's wait timer is waited out.
+//! passed. A gate Haul can answer without a browser is answered here: the
+//! proof of work behind fileguard's ALTCHA and filecrypt's checkbox. A host
+//! that needs a person (a captcha, a browser check) raises
+//! [`ResolveError::NeedsUser`] and the item waits for one, and a host's wait
+//! timer is waited out.
 
 mod buzzheavier;
 mod filecrypt;
@@ -20,14 +21,18 @@ mod pixeldrain;
 mod rapidgator;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     io::Read,
     path::Path,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use indexmap::IndexMap;
 use regex::Regex;
 use reqwest::header::{
     CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, HeaderMap, RETRY_AFTER,
@@ -353,6 +358,8 @@ pub struct Http {
     pub client: reqwest::Client,
     pub no_redirect: reqwest::Client,
     pub via_proxy: bool,
+    /// The User-Agent both clients send, for a page that also reports it.
+    pub user_agent: String,
 }
 
 impl Http {
@@ -377,6 +384,7 @@ impl Http {
             client: build(true)?,
             no_redirect: build(false)?,
             via_proxy: proxy.is_some(),
+            user_agent: user_agent.to_string(),
         })
     }
 }
@@ -440,21 +448,93 @@ pub fn guess_name(url: &str) -> Option<String> {
     FILE_NAME.is_match(name).then(|| name.to_string())
 }
 
-/// Whether this link holds further links to resolve (a wrapper page) rather
-/// than a file to download: a link a person hands back takes the same path
-/// as one added in the dialog.
-pub fn unwraps(url: &str) -> bool {
-    match host_of(url).as_str() {
-        "fileguard.cc" => true,
-        "filecrypt.cc" => filecrypt::is_dlc(url),
-        _ => false,
-    }
-}
-
 /// Whether the link is a wrapper's, gated page or container alike: it
-/// stands for further links, never for one file.
+/// stands for further links, never for one file, whether it is added or a
+/// person hands it back.
 pub fn wraps(url: &str) -> bool {
     matches!(host_of(url).as_str(), "fileguard.cc" | "filecrypt.cc")
+}
+
+/// The files in a wrapper's list of links. A wrapper lists each host's links
+/// in the same order (one link per host for a single file; part 1, part 2…
+/// on every host for a release in parts), so when every host has as many
+/// links as the others, the n-th link of each host is the same file: one
+/// entry per file with every host's link as a mirror, named after the links
+/// that name it. When hosts differ in count, or a file's links disagree on
+/// its name, each link is an entry of its own, named after its own path. A
+/// link to another wrapper stands for more links, not a file, so it is an
+/// entry of its own.
+fn group_mirrors(urls: Vec<String>) -> Vec<Entry> {
+    let (nested, links): (Vec<String>, Vec<String>) = urls.into_iter().partition(|u| wraps(u));
+    let mut hosts: IndexMap<String, Vec<String>> = IndexMap::new();
+    for url in links {
+        hosts.entry(host_of(&url)).or_default().push(url);
+    }
+    let count = hosts.values().next().map_or(0, Vec::len);
+    let aligned = hosts.values().all(|links| links.len() == count);
+    let mut grouped = Vec::with_capacity(count);
+    if aligned {
+        for n in 0..count {
+            let links: Vec<String> = hosts.values().map(|links| links[n].clone()).collect();
+            let names: HashSet<String> = links.iter().filter_map(|url| guess_name(url)).collect();
+            if names.len() > 1 {
+                grouped.clear();
+                break;
+            }
+            grouped.push((links, names.into_iter().next()));
+        }
+    }
+    let mut out: Vec<Entry> = if grouped.len() == count && aligned {
+        grouped
+            .into_iter()
+            .map(|(mut links, name)| Entry {
+                url: links.remove(0),
+                mirrors: links,
+                name,
+                deferred: true,
+                ..Entry::default()
+            })
+            .collect()
+    } else {
+        hosts
+            .into_values()
+            .flatten()
+            .map(|url| Entry {
+                name: guess_name(&url),
+                url,
+                deferred: true,
+                ..Entry::default()
+            })
+            .collect()
+    };
+    out.extend(nested.into_iter().map(|url| Entry {
+        url,
+        deferred: true,
+        ..Entry::default()
+    }));
+    out
+}
+
+/// A page's text for a heading: entities decoded, `None` when empty.
+fn page_text(raw: &str) -> Option<String> {
+    let text = raw
+        .trim()
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    (!text.is_empty()).then_some(text)
+}
+
+/// Tells a search on another thread to stop once the resolve that started it
+/// is dropped, as a paused or removed download's is.
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 /// What a wrapper link points at, so two links to it count as one: every
@@ -631,12 +711,97 @@ mod tests {
     }
 
     #[test]
-    fn only_wrapper_pages_unwrap() {
-        assert!(unwraps("https://fileguard.cc/93d9847d92/1fichier"));
-        assert!(unwraps("https://fileguard.cc/93d9847d92"));
-        assert!(unwraps("https://filecrypt.cc/DLC/0007530C13.dlc"));
-        assert!(!unwraps("https://filecrypt.cc/Container/0007530C13.html"));
-        assert!(!unwraps("https://pixeldrain.com/u/VF18oYXa"));
+    fn only_wrapper_links_wrap() {
+        assert!(wraps("https://fileguard.cc/93d9847d92/1fichier"));
+        assert!(wraps("https://fileguard.cc/93d9847d92"));
+        assert!(wraps("https://filecrypt.cc/DLC/0007530C13.dlc"));
+        assert!(wraps("https://www.filecrypt.cc/Container/0007530C13.html"));
+        assert!(!wraps("https://pixeldrain.com/u/VF18oYXa"));
+    }
+
+    fn names(entries: &[Entry]) -> Vec<Option<&str>> {
+        entries.iter().map(|e| e.name.as_deref()).collect()
+    }
+
+    #[test]
+    fn links_group_into_files() {
+        // One link per host: one file, named after the link that names it,
+        // every host a mirror.
+        let one = group_mirrors(vec![
+            "https://1fichier.com/?cu5oghhjkskhuzap8w43".into(),
+            "https://pixeldrain.com/u/VF18oYXa".into(),
+            "https://rapidgator.net/file/xyz/Sledders.RUNE.rar".into(),
+        ]);
+        assert_eq!(names(&one), [Some("Sledders.RUNE.rar")]);
+        assert_eq!(one[0].url, "https://1fichier.com/?cu5oghhjkskhuzap8w43");
+        assert_eq!(
+            one[0].mirrors,
+            [
+                "https://pixeldrain.com/u/VF18oYXa",
+                "https://rapidgator.net/file/xyz/Sledders.RUNE.rar"
+            ]
+        );
+
+        // A release in parts: every host lists part 1, then part 2.
+        let parts = group_mirrors(vec![
+            "https://mega.nz/file/a#k1".into(),
+            "https://mega.nz/file/b#k2".into(),
+            "https://rapidgator.net/file/1/R.part1.rar".into(),
+            "https://rapidgator.net/file/2/R.part2.rar".into(),
+            "https://pixeldrain.com/u/p1".into(),
+            "https://pixeldrain.com/u/p2".into(),
+        ]);
+        assert_eq!(names(&parts), [Some("R.part1.rar"), Some("R.part2.rar")]);
+        assert_eq!(parts[1].url, "https://mega.nz/file/b#k2");
+        assert_eq!(
+            parts[1].mirrors,
+            [
+                "https://rapidgator.net/file/2/R.part2.rar",
+                "https://pixeldrain.com/u/p2"
+            ]
+        );
+
+        // Hosts that list different counts: each link on its own.
+        let uneven = group_mirrors(vec![
+            "https://host.example/a/one.rar".into(),
+            "https://host.example/b/two.rar".into(),
+            "https://other.example/x".into(),
+        ]);
+        assert_eq!(names(&uneven), [Some("one.rar"), Some("two.rar"), None]);
+        assert!(uneven.iter().all(|e| e.mirrors.is_empty()));
+
+        // One link per host whose names disagree: two files, not one.
+        let disagree = group_mirrors(vec![
+            "https://host.example/a/one.rar".into(),
+            "https://other.example/b/two.rar".into(),
+        ]);
+        assert_eq!(names(&disagree), [Some("one.rar"), Some("two.rar")]);
+
+        // Another wrapper's links are more links: entries of their own,
+        // neither a mirror nor a name for the file.
+        let nested = group_mirrors(vec![
+            "https://rapidgator.net/file/xyz/Sledders.RUNE.rar".into(),
+            "https://fileguard.cc/0123456789/pixeldrain".into(),
+            "https://pixeldrain.com/u/VF18oYXa".into(),
+            "https://filecrypt.cc/DLC/ABCDEF.dlc".into(),
+        ]);
+        assert_eq!(
+            nested
+                .iter()
+                .map(|e| (e.url.as_str(), e.name.as_deref(), e.mirrors.len()))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "https://rapidgator.net/file/xyz/Sledders.RUNE.rar",
+                    Some("Sledders.RUNE.rar"),
+                    1
+                ),
+                ("https://fileguard.cc/0123456789/pixeldrain", None, 0),
+                ("https://filecrypt.cc/DLC/ABCDEF.dlc", None, 0),
+            ]
+        );
+        assert_eq!(page_text(" A &amp; B ").as_deref(), Some("A & B"));
+        assert_eq!(page_text("  "), None);
     }
 
     #[test]

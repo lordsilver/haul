@@ -12,13 +12,12 @@ use std::{
 };
 
 use base64::Engine as _;
-use indexmap::IndexMap;
 use regex::Regex;
 use reqwest::header::REFERER;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
-use super::{Cx, Entry, ResolveError, Unwrapped, guess_name, host_of, retry_after, wraps};
+use super::{Cx, ResolveError, StopOnDrop, Unwrapped, group_mirrors, page_text, retry_after};
 
 /// One vault at a time: a burst of solves from one address is refused, and
 /// a session that has passed a vault's gate is shown its links straight away.
@@ -100,16 +99,6 @@ fn unhex(hex: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Tells a search on another thread to stop once the resolve that started it
-/// is dropped, as a paused or removed download's is.
-struct StopOnDrop(Arc<AtomicBool>);
-
-impl Drop for StopOnDrop {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-}
-
 /// The links on the solved page: every anchor marked as a target.
 fn target_links(html: &str) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -132,73 +121,7 @@ pub(super) fn key(url: &str) -> Option<String> {
 
 /// The vault's name, as its page shows it.
 fn title(html: &str) -> Option<String> {
-    let raw = TITLE.captures(html)?[1].trim().to_string();
-    let text = raw
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
-    (!text.is_empty()).then_some(text)
-}
-
-/// The files on a solved page. A page lists each host's links in the same
-/// order (one link per host for a single file; part 1, part 2… on every host
-/// for a release in parts), so when every host has as many links as the
-/// others, the n-th link of each host is the same file: one entry per file
-/// with every host's link as a mirror, named after the links that name it.
-/// When hosts differ in count, or a file's links disagree on its name, each
-/// link is an entry of its own, named after its own path. A link to another
-/// wrapper stands for more links, not a file, so it is an entry of its own.
-fn files(urls: Vec<String>) -> Vec<Entry> {
-    let (nested, links): (Vec<String>, Vec<String>) = urls.into_iter().partition(|u| wraps(u));
-    let mut hosts: IndexMap<String, Vec<String>> = IndexMap::new();
-    for url in links {
-        hosts.entry(host_of(&url)).or_default().push(url);
-    }
-    let count = hosts.values().next().map_or(0, Vec::len);
-    let aligned = hosts.values().all(|links| links.len() == count);
-    let mut grouped = Vec::with_capacity(count);
-    if aligned {
-        for n in 0..count {
-            let links: Vec<String> = hosts.values().map(|links| links[n].clone()).collect();
-            let names: HashSet<String> = links.iter().filter_map(|url| guess_name(url)).collect();
-            if names.len() > 1 {
-                grouped.clear();
-                break;
-            }
-            grouped.push((links, names.into_iter().next()));
-        }
-    }
-    let mut out: Vec<Entry> = if grouped.len() == count && aligned {
-        grouped
-            .into_iter()
-            .map(|(mut links, name)| Entry {
-                url: links.remove(0),
-                mirrors: links,
-                name,
-                deferred: true,
-                ..Entry::default()
-            })
-            .collect()
-    } else {
-        hosts
-            .into_values()
-            .flatten()
-            .map(|url| Entry {
-                name: guess_name(&url),
-                url,
-                deferred: true,
-                ..Entry::default()
-            })
-            .collect()
-    };
-    out.extend(nested.into_iter().map(|url| Entry {
-        url,
-        deferred: true,
-        ..Entry::default()
-    }));
-    out
+    page_text(&TITLE.captures(html)?[1])
 }
 
 pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
@@ -233,7 +156,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     if !shown.is_empty() {
         return Ok(Unwrapped {
             title: title(&html),
-            files: files(shown),
+            files: group_mirrors(shown),
         });
     }
     let Some(csrf) = CSRF.captures(&html).map(|c| c[1].to_string()) else {
@@ -351,7 +274,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     }
     Ok(Unwrapped {
         title: title(&solved),
-        files: files(urls),
+        files: group_mirrors(urls),
     })
 }
 
@@ -391,89 +314,6 @@ mod tests {
         assert_eq!(unhex("0aFf"), Some(vec![0x0a, 0xff]));
         assert_eq!(unhex("0a0"), None);
         assert_eq!(unhex("zz"), None);
-    }
-
-    fn names(entries: &[Entry]) -> Vec<Option<&str>> {
-        entries.iter().map(|e| e.name.as_deref()).collect()
-    }
-
-    #[test]
-    fn links_group_into_files() {
-        // One link per host: one file, named after the link that names it,
-        // every host a mirror.
-        let one = files(vec![
-            "https://1fichier.com/?cu5oghhjkskhuzap8w43".into(),
-            "https://pixeldrain.com/u/VF18oYXa".into(),
-            "https://rapidgator.net/file/xyz/Sledders.RUNE.rar".into(),
-        ]);
-        assert_eq!(names(&one), [Some("Sledders.RUNE.rar")]);
-        assert_eq!(one[0].url, "https://1fichier.com/?cu5oghhjkskhuzap8w43");
-        assert_eq!(
-            one[0].mirrors,
-            [
-                "https://pixeldrain.com/u/VF18oYXa",
-                "https://rapidgator.net/file/xyz/Sledders.RUNE.rar"
-            ]
-        );
-
-        // A release in parts: every host lists part 1, then part 2.
-        let parts = files(vec![
-            "https://mega.nz/file/a#k1".into(),
-            "https://mega.nz/file/b#k2".into(),
-            "https://rapidgator.net/file/1/R.part1.rar".into(),
-            "https://rapidgator.net/file/2/R.part2.rar".into(),
-            "https://pixeldrain.com/u/p1".into(),
-            "https://pixeldrain.com/u/p2".into(),
-        ]);
-        assert_eq!(names(&parts), [Some("R.part1.rar"), Some("R.part2.rar")]);
-        assert_eq!(parts[1].url, "https://mega.nz/file/b#k2");
-        assert_eq!(
-            parts[1].mirrors,
-            [
-                "https://rapidgator.net/file/2/R.part2.rar",
-                "https://pixeldrain.com/u/p2"
-            ]
-        );
-
-        // Hosts that list different counts: each link on its own.
-        let uneven = files(vec![
-            "https://host.example/a/one.rar".into(),
-            "https://host.example/b/two.rar".into(),
-            "https://other.example/x".into(),
-        ]);
-        assert_eq!(names(&uneven), [Some("one.rar"), Some("two.rar"), None]);
-        assert!(uneven.iter().all(|e| e.mirrors.is_empty()));
-
-        // One link per host whose names disagree: two files, not one.
-        let disagree = files(vec![
-            "https://host.example/a/one.rar".into(),
-            "https://other.example/b/two.rar".into(),
-        ]);
-        assert_eq!(names(&disagree), [Some("one.rar"), Some("two.rar")]);
-
-        // Another wrapper's links are more links: entries of their own,
-        // neither a mirror nor a name for the file.
-        let nested = files(vec![
-            "https://rapidgator.net/file/xyz/Sledders.RUNE.rar".into(),
-            "https://fileguard.cc/0123456789/pixeldrain".into(),
-            "https://pixeldrain.com/u/VF18oYXa".into(),
-            "https://filecrypt.cc/DLC/ABCDEF.dlc".into(),
-        ]);
-        assert_eq!(
-            nested
-                .iter()
-                .map(|e| (e.url.as_str(), e.name.as_deref(), e.mirrors.len()))
-                .collect::<Vec<_>>(),
-            [
-                (
-                    "https://rapidgator.net/file/xyz/Sledders.RUNE.rar",
-                    Some("Sledders.RUNE.rar"),
-                    1
-                ),
-                ("https://fileguard.cc/0123456789/pixeldrain", None, 0),
-                ("https://filecrypt.cc/DLC/ABCDEF.dlc", None, 0),
-            ]
-        );
     }
 
     #[test]
