@@ -22,7 +22,7 @@ min_speed_seconds = 60          # ... over this long; 0 = off
 retry_failed_minutes = 15       # retry failed downloads (up to 3 times), 0 = never
 proxy = "socks5://user:pass@host:1080" # every host goes through it unless allowed direct
 use_proxy = true                # false keeps the proxy above but connects directly
-preferred_hosts = ["rapidgator.net"]   # downloaded from first, in this order
+preferred_hosts = ["rapidgator.net"]   # downloaded from first, in this order (default: ["pixeldrain.com"])
 megatools = "C:/Tools/megatools/megatools.exe" # default: found on PATH
 user_agent = "..."              # default: Haul's own
 

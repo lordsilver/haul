@@ -356,10 +356,11 @@ impl Engine {
             cfg.preferred_hosts
                 .retain(|h| !h.eq_ignore_ascii_case(host));
         }
-        let list = (!cfg.preferred_hosts.is_empty()).then(|| {
-            toml_edit::Value::Array(cfg.preferred_hosts.iter().map(String::as_str).collect())
-        });
-        self.write_and_apply(cfg, vec![top("preferred_hosts", list)])
+        // Written even when the last host leaves: a key left out would bring
+        // the default (pixeldrain.com) back on the next load.
+        let list =
+            toml_edit::Value::Array(cfg.preferred_hosts.iter().map(String::as_str).collect());
+        self.write_and_apply(cfg, vec![top("preferred_hosts", Some(list))])
     }
 
     /// The user's choice of route for one host. `Direct` leaves the proxy and

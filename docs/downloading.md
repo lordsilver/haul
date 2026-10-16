@@ -8,7 +8,7 @@ A link whose path names a file joins any row with the same file name as another 
 
 ## Choosing a mirror
 
-A file with mirrors downloads from the hosts you star (`preferred_hosts`), in that order. A preferred host that is only busy is waited for; one that is cooling down or has failed for the file is passed over. Otherwise, among the mirrors whose host has a free slot and no cooldown, the host with the best measured speed per file wins; recent failures count against a host, and a host never tried scores high, so each gets a turn. Speeds come from earlier downloads and are remembered in `hosts.json` for a week.
+A file with mirrors downloads from the hosts you star (`preferred_hosts`, with pixeldrain.com preferred from the start), in that order. A preferred host that is only busy is waited for; one that is cooling down or has failed for the file is passed over. Otherwise, among the mirrors whose host has a free slot and no cooldown, the host with the best measured speed per file wins; recent failures count against a host, and a host never tried scores high, so each gets a turn. Speeds come from earlier downloads and are remembered in `hosts.json` for a week.
 
 ## Files already there
 

@@ -1010,7 +1010,16 @@ async fn host_folders_and_the_recycle_bin() {
 #[tokio::test]
 async fn preferred_hosts_go_first_and_are_waited_for() {
     let t = Setup::new().await;
-    let engine = t.engine().await;
+    // The mechanism itself, without the shipped default preference.
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            preferred_hosts: Vec::new(),
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
     engine.set_preferred("localhost", true).unwrap();
     engine.set_host_limit("localhost", 1).unwrap();
     let both = |name: &str| format!("{}/slow/{name} {}/slow/{name}", t.ip, t.name);
@@ -1038,6 +1047,30 @@ async fn preferred_hosts_go_first_and_are_waited_for() {
             .iter()
             .all(|h| h.preferred.is_none())
     );
+}
+
+/// The default preference is pixeldrain.com; taking it out writes an empty
+/// list, because a key left out would bring the default back.
+#[tokio::test]
+async fn clearing_the_default_preference_sticks() {
+    let t = Setup::new().await;
+    // No config of its own: the engine starts from the settings file, whose
+    // missing keys take the defaults.
+    let engine = Engine::start(Options {
+        config: None,
+        download_dir: Some(t.root.join("dl")),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    let path = engine
+        .config_path()
+        .expect("started from a settings file")
+        .to_path_buf();
+    engine.set_preferred("pixeldrain.com", false).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("preferred_hosts = []"), "{text}");
+    assert!(Config::parse(&text).unwrap().preferred_hosts.is_empty());
 }
 
 #[tokio::test]

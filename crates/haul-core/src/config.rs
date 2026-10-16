@@ -73,7 +73,8 @@ pub struct Config {
     pub routes: BTreeMap<String, Route>,
     /// Subfolder of the download folder for the files from a host.
     pub folders: BTreeMap<String, String>,
-    /// Hosts a file with mirrors downloads from first, in this order.
+    /// Hosts a file with mirrors downloads from first, in this order
+    /// (pixeldrain.com until the list is changed).
     pub preferred_hosts: Vec<String>,
     #[serde(rename = "1fichier_key")]
     pub onefichier_key: Option<String>,
@@ -114,7 +115,7 @@ impl Default for Config {
             limits: BTreeMap::new(),
             routes: BTreeMap::new(),
             folders: BTreeMap::new(),
-            preferred_hosts: Vec::new(),
+            preferred_hosts: vec!["pixeldrain.com".into()],
             onefichier_key: None,
             pixeldrain_key: None,
             rapidgator_user: None,
@@ -486,10 +487,10 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # megatools for mega.nz links (default: found on PATH).
 # megatools = "C:/Tools/megatools/megatools.exe"
 
-# Hosts a file with mirrors downloads from first, in this order; the rest
-# follow by measured speed. A file waits for a free slot on a preferred host
-# rather than starting on another one, unless the preferred host is cooling
-# down or has failed for that file.
+# Hosts a file with mirrors downloads from first, in this order (default:
+# pixeldrain.com); the rest follow by measured speed. A file waits for a free
+# slot on a preferred host rather than starting on another one, unless the
+# preferred host is cooling down or has failed for that file.
 # preferred_hosts = ["rapidgator.net", "pixeldrain.com"]
 
 # Sent to hosts with every request.
@@ -587,6 +588,18 @@ mod tests {
         let typo = Config::parse("max_totl = 3").unwrap_err();
         assert!(typo.contains("max_totl"), "{typo}");
         assert_eq!(Config::parse(TEMPLATE).unwrap(), Config::default());
+    }
+
+    #[test]
+    fn pixeldrain_is_preferred_until_told_otherwise() {
+        assert_eq!(Config::default().preferred_hosts, ["pixeldrain.com"]);
+        // An explicit empty list means no preference, not the default.
+        assert!(
+            Config::parse("preferred_hosts = []")
+                .unwrap()
+                .preferred_hosts
+                .is_empty()
+        );
     }
 
     #[test]

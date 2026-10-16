@@ -69,3 +69,7 @@ Haul uses public APIs, guest tokens and the user's own accounts. The browser han
 ## Reaching the user when a host waits
 
 Interactive host steps should be short and waiting downloads visible, so a download entering **Needs you** raises a toast whose button is the step itself, and a click on the notification lands on the waiting list. When exactly one download waits, its page opens right away, since that is what the notification asked for, and a single link pasted then is taken as that page's final link rather than a new row. A burst of waits shares one toast, and the first state after Haul opens raises none, so a queue full of old waits does not shout on every start.
+
+## A default preference for pixeldrain
+
+Mirrors are not equal: pixeldrain hands a file to its API without an account or a browser step, while other hosts need an account, a browser step or a paid tier for a free download. `preferred_hosts` therefore starts as `["pixeldrain.com"]`, so a file with a pixeldrain mirror starts there and waits for it when it is only busy, exactly as for a host the user stars; the measured-speed order still decides among the rest. Taking the last preferred host out writes `preferred_hosts = []` rather than leaving the key out, because a missing key reads as the default and the preference would come back.
