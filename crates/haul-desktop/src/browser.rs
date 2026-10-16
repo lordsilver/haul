@@ -65,14 +65,42 @@ impl Browser {
     }
 }
 
-impl Desktop for Browser {
-    fn browse(&self, id: &str, url: &str, user_agent: Option<String>) -> Result<(), String> {
+impl Browser {
+    /// Opens `url`'s page for item `id` out of sight, for a host whose
+    /// check passes by itself ([`hosts::page_passes`]): the link is taken as
+    /// usual, and the window comes forward only if the page is still there
+    /// after [`SHOW_AFTER`], its check wanting a person.
+    pub fn pass(&self, id: &str, url: &str) -> Result<(), String> {
         let label = format!("browse-{id}");
-        if let Some(window) = self.app.get_webview_window(&label) {
-            let _ = window.show();
-            let _ = window.set_focus();
+        if self.app.get_webview_window(&label).is_some() {
             return Ok(());
         }
+        self.open(id, url, None, true)?;
+        let app = self.app.clone();
+        let host = hosts::host_of(url);
+        std::thread::spawn(move || {
+            std::thread::sleep(SHOW_AFTER);
+            if let Some(window) = app.get_webview_window(&label) {
+                tracing::info!("{host} wants a person for its check");
+                bring_forward(&window);
+                crate::notify_waiting(
+                    &app,
+                    &format!("{host} wants you"),
+                    "Its check did not pass by itself: tick the box on its page and the download starts.",
+                );
+            }
+        });
+        Ok(())
+    }
+
+    fn open(
+        &self,
+        id: &str,
+        url: &str,
+        user_agent: Option<String>,
+        quiet: bool,
+    ) -> Result<(), String> {
+        let label = format!("browse-{id}");
         let page: Url = url.parse().map_err(|e| format!("{url}: {e}"))?;
         let host = hosts::host_of(url);
         // Pages for a proxied host go through the same proxy as its downloads.
@@ -110,8 +138,8 @@ impl Desktop for Browser {
             .on_download(move |_, event| on_download.on_download(event))
             .on_new_window(move |url, _| capture.on_popup(url))
             .on_navigation(move |url| match handed_off(url) {
-                Some((link, name)) => {
-                    on_handoff.take(link, name);
+                Some(Handoff { link, name, agent }) => {
+                    on_handoff.take_as(link, name, agent);
                     false
                 }
                 None => lock(&on_navigation).navigating(url.as_str()),
@@ -124,22 +152,47 @@ impl Desktop for Browser {
                     send_back(window, back, stay.clone());
                 }
             });
+        if quiet {
+            // Drawn and running as any window, so the page's check sees a
+            // visible page, but off every screen and out of the taskbar.
+            builder = builder
+                .position(-20000.0, -20000.0)
+                .skip_taskbar(true)
+                .focused(false);
+        }
         if let Some(addr) = bridge {
             builder = builder.proxy_url(format!("socks5://{addr}").parse().expect("valid URL"));
-            // WebRTC could otherwise reveal the real address to the page.
-            #[cfg(windows)]
-            {
-                builder = builder.additional_browser_args(
-                    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
-                     --force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                );
-            }
+        }
+        // Tauri's own arguments, and: a window out of sight still counts as
+        // shown (Chromium would otherwise slow an off-screen page's timers);
+        // through the proxy, WebRTC cannot reveal the real address. The same
+        // for every window of a profile, as WebView2 requires.
+        #[cfg(windows)]
+        {
+            let features = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,\
+                            CalculateNativeWinOcclusion";
+            builder = builder.additional_browser_args(&if proxied {
+                format!("{features} --force-webrtc-ip-handling-policy=disable_non_proxied_udp")
+            } else {
+                features.to_string()
+            });
         }
         builder
             .theme(crate::window_theme(self.engine.theme()))
             .build()
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+}
+
+impl Desktop for Browser {
+    fn browse(&self, id: &str, url: &str, user_agent: Option<String>) -> Result<(), String> {
+        if let Some(window) = self.app.get_webview_window(&format!("browse-{id}")) {
+            bring_forward(&window);
+            let _ = window.set_focus();
+            return Ok(());
+        }
+        self.open(id, url, user_agent, false)
     }
 
     fn pick_folder(&self, start: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -183,8 +236,32 @@ const OVERLAYS: &str = include_str!("overlays.js");
 /// Hands Haul the link a host's page receives (see the script).
 const HANDOFF: &str = include_str!("handoff.js");
 
-/// The link and file name the hand-off script sends, when `url` is its.
-fn handed_off(url: &Url) -> Option<(Url, Option<String>)> {
+/// How long a page opened out of sight gets to pass its check by itself.
+const SHOW_AFTER: Duration = Duration::from_secs(15);
+
+/// Brings a window opened out of sight onto the screen; one already there
+/// stays where it is.
+fn bring_forward(window: &WebviewWindow) {
+    let off_screen = window.outer_position().is_ok_and(|p| p.x < -10_000);
+    if off_screen {
+        let _ = window.center();
+        let _ = window.set_skip_taskbar(false);
+    }
+    let _ = window.show();
+    let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+}
+
+/// What the hand-off script sends: the link, the file's name and the
+/// window's user agent, which the download then uses too.
+#[derive(Debug, PartialEq)]
+struct Handoff {
+    link: Url,
+    name: Option<String>,
+    agent: Option<String>,
+}
+
+/// The hand-off script's message, when `url` is one.
+fn handed_off(url: &Url) -> Option<Handoff> {
     if url.host_str() != Some("haul.invalid") || url.path() != "/take" {
         return None;
     }
@@ -197,7 +274,11 @@ fn handed_off(url: &Url) -> Option<(Url, Option<String>)> {
     if !matches!(link.scheme(), "http" | "https") {
         return None;
     }
-    Some((link, pair("name").filter(|n| !n.is_empty())))
+    Some(Handoff {
+        link,
+        name: pair("name").filter(|n| !n.is_empty()),
+        agent: pair("agent").filter(|a| !a.is_empty()),
+    })
 }
 
 fn lock(stay: &Mutex<Stay>) -> MutexGuard<'_, Stay> {
@@ -275,7 +356,16 @@ impl Capture {
     /// Hands the download to the engine with the page's cookies, then closes
     /// the window.
     fn take(&self, url: Url, name: Option<String>) {
-        let this = self.clone();
+        self.take_as(url, name, None);
+    }
+
+    /// [`Capture::take`], with the user agent the page itself reports when
+    /// the window was opened without one.
+    fn take_as(&self, url: Url, name: Option<String>, agent: Option<String>) {
+        let mut this = self.clone();
+        if this.user_agent.is_none() {
+            this.user_agent = agent;
+        }
         // Reading cookies needs the main thread, which is running this handler.
         std::thread::spawn(move || {
             let window = this.app.get_webview_window(&this.label);
@@ -324,9 +414,10 @@ mod tests {
             "https://haul.invalid/take?url=https%3A%2F%2Fcdn.example%2Fa%20b.rar&name=a+b.rar"
                 .parse()
                 .unwrap();
-        let (link, name) = handed_off(&sent).unwrap();
-        assert_eq!(link.as_str(), "https://cdn.example/a%20b.rar");
-        assert_eq!(name.as_deref(), Some("a b.rar"));
+        let got = handed_off(&sent).unwrap();
+        assert_eq!(got.link.as_str(), "https://cdn.example/a%20b.rar");
+        assert_eq!(got.name.as_deref(), Some("a b.rar"));
+        assert_eq!(got.agent, None);
         for other in [
             "https://vik1ngfile.site/f/x",
             "https://haul.invalid/take?url=javascript%3Aalert(1)",

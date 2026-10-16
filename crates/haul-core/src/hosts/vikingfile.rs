@@ -1,9 +1,10 @@
 //! vikingfile: a file's page asks for a Cloudflare Turnstile check and, once
 //! it passes, posts its token back to the page for the file's link. The
 //! token is only minted on the host's own page, so a person's browser has
-//! to show it: from most addresses the check passes by itself, from VPN
-//! and data-centre ones it shows a box to tick. The in-app browser then
-//! takes the link the page receives without the download button.
+//! to show it: from most addresses the check passes by itself, from some
+//! (VPNs, some mobile networks) it shows a box to tick. The desktop app
+//! opens the page on its own, out of sight, takes the link the page
+//! receives, and brings the window forward only when the box shows.
 //!
 //! `/api/check-file` says without a check whether a file is there, and its
 //! name and size, so a gone file is not sent to a person and mirrors merge
@@ -60,7 +61,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         return Err(ResolveError::failed("vikingfile: the file is gone"));
     }
     Err(ResolveError::NeedsUser(
-        "vikingfile wants its Cloudflare check passed: open the page, and the download starts once it passes".into(),
+        "vikingfile wants its Cloudflare check passed in a browser: the desktop app does it on its own and shows the page only if it wants a box ticked".into(),
     ))
 }
 

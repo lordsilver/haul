@@ -13,7 +13,7 @@
     if (handed || !link) return;
     handed = true;
     const name = document.getElementById("filename")?.textContent.trim() ?? "";
-    location.href = "https://haul.invalid/take?" + new URLSearchParams({ url: new URL(link, location.href).href, name });
+    location.href = "https://haul.invalid/take?" + new URLSearchParams({ url: new URL(link, location.href).href, name, agent: navigator.userAgent });
   };
   new MutationObserver(hand).observe(document, { subtree: true, attributes: true, attributeFilter: ["href"] });
 })();

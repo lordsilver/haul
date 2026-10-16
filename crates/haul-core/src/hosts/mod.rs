@@ -351,6 +351,10 @@ pub struct Known {
     pub accounts: &'static [&'static str],
     pub free: Free,
     pub tells_allowance: bool,
+    /// Its page's check passes by itself in a browser from most addresses,
+    /// so the desktop app opens the page on its own, out of sight, and
+    /// shows it only when the check wants a person after all.
+    pub page_passes: bool,
 }
 
 impl Known {
@@ -390,6 +394,7 @@ static KNOWN: &[Known] = &[
             slowed_to: Some(1_048_576),
         },
         tells_allowance: true,
+        page_passes: false,
     },
     Known {
         names: &["gofile.io"],
@@ -401,6 +406,7 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
+        page_passes: false,
     },
     Known {
         names: &["buzzheavier.com"],
@@ -412,6 +418,7 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
+        page_passes: false,
     },
     Known {
         names: &["1fichier.com"],
@@ -423,6 +430,7 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
+        page_passes: false,
     },
     Known {
         names: &["rapidgator.net"],
@@ -434,6 +442,7 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
+        page_passes: false,
     },
     Known {
         names: &["nitroflare.com"],
@@ -445,6 +454,7 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
+        page_passes: false,
     },
     Known {
         names: &["mega.nz", "mega.co.nz"],
@@ -456,6 +466,7 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
+        page_passes: false,
     },
     Known {
         names: &["vikingfile.com", "vik1ngfile.site"],
@@ -467,6 +478,7 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
+        page_passes: true,
     },
     Known {
         names: &["fileditchfiles.st"],
@@ -478,6 +490,7 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
+        page_passes: false,
     },
     Known {
         names: &["fileguard.cc"],
@@ -489,6 +502,7 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
+        page_passes: false,
     },
     Known {
         names: &["filecrypt.cc"],
@@ -500,12 +514,19 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
+        page_passes: false,
     },
 ];
 
 /// The known host a host name (as [`host_of`] gives it) belongs to.
 pub fn known(host: &str) -> Option<&'static Known> {
     KNOWN.iter().find(|k| k.names.contains(&host))
+}
+
+/// Whether `url`'s page passes its check by itself (see
+/// [`Known::page_passes`]).
+pub fn page_passes(url: &str) -> bool {
+    known(&host_of(url)).is_some_and(|k| k.page_passes)
 }
 
 fn kind_of(url: &str) -> Option<Kind> {

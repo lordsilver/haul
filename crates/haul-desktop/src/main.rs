@@ -10,6 +10,7 @@
 
 mod browser;
 mod clipboard;
+mod passing;
 mod tray;
 
 use std::{
@@ -19,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-use haul_core::{Engine, Event, Options, Theme, paths};
+use haul_core::{Engine, Event, Options, Theme, hosts, paths};
 use haul_web::Desktop;
 use tauri::{
     AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
@@ -112,7 +113,12 @@ async fn start(app: &AppHandle, data_dir: PathBuf) -> Result<(), String> {
 
     let browser = Arc::new(browser::Browser::new(app.clone(), engine.clone()));
     app.manage(browser.clone());
-    tauri::async_runtime::spawn(haul_web::serve(listener, engine.clone(), Some(browser)));
+    tauri::async_runtime::spawn(haul_web::serve(
+        listener,
+        engine.clone(),
+        Some(browser.clone()),
+    ));
+    passing::spawn(app.clone(), engine.clone(), browser);
     app.manage(engine.clone());
     main_window(app, port, engine.theme()).map_err(|e| e.to_string())?;
     tray::create(app, &engine).map_err(|e| e.to_string())?;
@@ -184,7 +190,7 @@ pub fn notify(app: &AppHandle, title: &str, body: &str) {
 
 /// The "Needs you" notification. Its id tells a click on it that a host is
 /// waiting, so the click can go straight to the download.
-fn notify_waiting(app: &AppHandle, title: &str, body: &str) {
+pub fn notify_waiting(app: &AppHandle, title: &str, body: &str) {
     show_notification(app, title, body, true);
 }
 
@@ -303,6 +309,7 @@ fn spawn_theme_sync(app: AppHandle, engine: &Engine) {
 /// over two seconds and skipped while the window has focus.
 fn spawn_notifications(app: AppHandle, engine: &Engine) {
     let mut events = engine.subscribe();
+    let engine = engine.clone();
     tauri::async_runtime::spawn(async move {
         loop {
             let first = match events.recv().await {
@@ -323,6 +330,12 @@ fn spawn_notifications(app: AppHandle, engine: &Engine) {
                     },
                 }
             }
+            // A page Haul passes by itself asks for nobody, unless its window
+            // comes forward (which tells the user then).
+            batch.retain(|e| {
+                !matches!(e, Event::NeedsUser { id, .. }
+                    if engine.page_for(id).is_some_and(|u| hosts::page_passes(&u)))
+            });
             let focused = app
                 .get_webview_window(MAIN)
                 .is_some_and(|w| w.is_focused().unwrap_or(false));
