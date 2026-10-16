@@ -1782,13 +1782,23 @@ function renderConnections(s) {
     $("connections"),
     el("h2", {}, "Your line"),
     reconnectCards(s, d),
+    d.proxy || d.proxies.length || s.services.nordvpn.length
+      ? settingCard(
+          "desktop",
+          "Your line in the pool",
+          "Your own connection as one more address beside the proxies and VPN servers. Hosts then see your real IP address for the downloads it takes.",
+          toggleSwitch("proxy_with_direct", d.proxy_with_direct, "Your line in the pool"),
+        )
+      : null,
     el("h2", {}, "Proxies"),
+    d.proxy || d.proxies.length
+      ? settingCard("shield", "Use the proxies", "Off keeps them listed but leaves them out; VPN servers go on.", toggleSwitch("proxies_on", d.proxies_on, "Use the proxies"))
+      : null,
     settingCard(
       "shield",
       "Proxy",
-      envNote("proxy") ?? "Every host goes through it unless you allow it direct under Hosts. Leave empty to connect directly.",
+      envNote("proxy") ?? "Every host goes through the proxies unless you allow it direct under Hosts. Leave empty to connect directly.",
       textField("proxy", d.proxy, { label: "Proxy", placeholder: "socks5://user:pass@host:1080", secret: true, wide: true }),
-      d.proxy ? toggleSwitch("use_proxy", d.use_proxy, "Use the proxy") : null,
     ),
     settingCard(
       "shield",
@@ -1796,9 +1806,6 @@ function renderConnections(s) {
       "One per line. Each download takes the proxy with the fewest downloads from its host, so a host's limits per address (downloads at once, daily quotas, waits) apply to each one. A VPN's SOCKS5 servers, local WireGuard-to-SOCKS5 ports or a bought list all fit.",
       proxyList(d),
     ),
-    d.proxy || d.proxies.length
-      ? settingCard("desktop", "My own connection too", "Adds this computer's connection to the proxies, as one more address. Hosts then see your real IP address.", toggleSwitch("proxy_with_direct", d.proxy_with_direct, "My own connection too"))
-      : null,
     d.proxy || d.proxies.length
       ? settingCard(
           "arrow-clockwise",
@@ -1872,6 +1879,7 @@ function nordvpnCards(s, d) {
       envNote("nordvpn_user", "nordvpn_password") ?? "Its SOCKS5 servers join the proxies, each its own address. Use the service credentials (Nord Account › NordVPN › manual setup), not the account's login.",
       accountField("nordvpn_user", "Service user", false),
       accountField("nordvpn_password", "Service password"),
+      d.accounts.nordvpn_password || envNote("nordvpn_user", "nordvpn_password") ? toggleSwitch("nordvpn_on", d.nordvpn_on, "Use NordVPN") : null,
     ),
     settingCard(
       "shield",
@@ -2010,15 +2018,16 @@ function reconnectCards(s, d) {
     ),
     settingCard(
       "key",
-      "Router login",
-      envNote("router_user", "router_password") ?? "Only for a router that redials just for it, such as a FRITZ!Box (its user is under System › FRITZ!Box Users).",
+      "Router login (TR-064)",
+      envNote("router_user", "router_password") ??
+        "For a router that redials only over TR-064 with a login, such as a FRITZ!Box (its user is under System › FRITZ!Box Users). A router that redials over UPnP needs none. Not used while a reconnect command is set.",
       accountField("router_user", "User", false),
       accountField("router_password", "Password"),
     ),
     settingCard(
       "wrench",
       "Reconnect command",
-      "Gets the new address instead of the router, for any other router or a VPN's own app. Runs in the system's shell.",
+      "Instead of the router: for one that offers neither UPnP nor TR-064, or a VPN app's own command. When set, Haul runs it in the system's shell and leaves the router alone.",
       textField("reconnect_command", d.reconnect_command, { label: "Reconnect command", placeholder: "my-router-cli reconnect", wide: true }),
     ),
   );
@@ -2292,14 +2301,14 @@ function renderStatus(s) {
   const downloading = s.items.filter((i) => i.status === "downloading").length;
   const queued = s.items.filter((i) => ["queued", "waiting", "checking", "resolving"].includes(i.status)).length;
   const clipboard = s.desktop && s.watch_clipboard;
-  const key = JSON.stringify([bytes(s.speed), downloading, queued, s.rate, s.proxy, theme, s.paused, clipboard]);
+  const key = JSON.stringify([bytes(s.speed), downloading, queued, s.rate, s.pool, theme, s.paused, clipboard]);
   if (key === statusKey) return;
   statusKey = key;
   const themeSpec = THEMES.find(([value]) => value === theme) ?? THEMES[0];
   const next = THEMES[(THEMES.indexOf(themeSpec) + 1) % THEMES.length][0];
   // Items that change a setting open a flyout with it.
   const flyoutItem = (key, title, open, ...content) =>
-    el("button", { type: "button", class: `status-item${(key === "proxy" && s.proxy) || key === "clipboard" ? " on" : ""}`, title, "aria-haspopup": "dialog", onclick: (e) => open(e.currentTarget) }, ...content);
+    el("button", { type: "button", class: `status-item${(key === "proxy" && s.pool.proxies + s.pool.vpn) || key === "clipboard" ? " on" : ""}`, title, "aria-haspopup": "dialog", onclick: (e) => open(e.currentTarget) }, ...content);
   fill(
     $("status"),
     el("span", { class: `status-item${s.speed ? " on" : ""}` }, icon("arrow-download"), `${bytes(s.speed)}/s`),
@@ -2307,7 +2316,7 @@ function renderStatus(s) {
     el("span", { class: "grow" }),
     clipboard ? flyoutItem("clipboard", "Links you copy are added", clipboardFlyout, icon("clipboard-link"), "Watching the clipboard") : null,
     flyoutItem("speed", "Speed limit", speedFlyout, icon("top-speed"), s.rate ? `${(s.rate / 1e6).toFixed(1)} MB/s cap` : "No speed limit"),
-    flyoutItem("proxy", "Proxy", proxyFlyout, icon("shield"), s.proxy ? "Proxy on" : "Proxy off"),
+    flyoutItem("proxy", "What downloads go out through", proxyFlyout, icon("shield"), poolLabel(s.pool)),
     el(
       "button",
       { type: "button", class: "status-item", title: `Theme: ${themeSpec[1]} (click for ${next})`, onclick: () => setTheme(next) },
@@ -2397,31 +2406,29 @@ function speedFlyout(anchor) {
   });
 }
 
+// The pool in a few words: "Line + 2 proxies + 5 NordVPN", or "Line only".
+function poolLabel(p) {
+  const parts = [p.line ? "Line" : null, p.proxies ? `${p.proxies} ${p.proxies === 1 ? "proxy" : "proxies"}` : null, p.vpn ? `${p.vpn} NordVPN` : null].filter(Boolean);
+  return parts.length === 1 && p.line ? "Line only" : parts.join(" + ");
+}
+
+// The pool's switch: proxies and VPN servers on or off together, each
+// source's own settings and switch kept; the rest is on Connections.
 function proxyFlyout(anchor) {
-  openFlyout("proxy", anchor, "Proxy", (d) => {
-    const fixed = fromEnv(d, "proxy");
-    let use = flyoutSwitch("Use the proxy", Boolean(d.proxy) && d.use_proxy, (on) => save({ use_proxy: on }, null), !d.proxy);
-    const address = el("input", {
-      type: "password",
-      value: d.proxy ?? "",
-      placeholder: "socks5://user:pass@host:1080",
-      "aria-label": "Proxy address",
-      autocomplete: "off",
-      spellcheck: "false",
-      disabled: Boolean(fixed),
-    });
-    // A new address is meant to be used.
-    address.addEventListener("change", async () => {
-      const value = address.value.trim();
-      if (!(await save(value ? { proxy: value, use_proxy: true } : { proxy: "" }, null))) return;
-      const next = flyoutSwitch("Use the proxy", Boolean(value), (on) => save({ use_proxy: on }, null), !value);
-      use.replaceWith(next);
-      use = next;
-    });
-    address.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") address.blur();
-    });
-    return [use, withReveal(address), el("p", { class: "hint" }, fixed ?? "Every host goes through it unless you allow it direct under Hosts.")];
+  openFlyout("proxy", anchor, "Connections", (d) => {
+    const configured = Boolean(d.proxy) || d.proxies.length > 0 || Boolean(d.accounts.nordvpn_password || fromEnv(d, "nordvpn_password"));
+    return [
+      el("p", { class: "hint" }, `Now: ${poolLabel(state.pool)}.`),
+      flyoutSwitch("Use proxies and VPN", configured && d.use_proxy, (on) => save({ use_proxy: on }, null), !configured),
+      el("p", { class: "hint" }, configured ? "Off, every download uses your line; each source keeps its settings." : "No proxies or VPN set up yet."),
+      button("Open Connections", {
+        kind: "subtle",
+        onclick: () => {
+          closeFlyout();
+          location.hash = "#/connections";
+        },
+      }),
+    ];
   });
 }
 

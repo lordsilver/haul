@@ -25,12 +25,14 @@ nordvpn_user = ""                # NordVPN service credentials, for its SOCKS5 s
 nordvpn_password = ""
 nordvpn_servers = 0              # how many of them join the proxies, least loaded first
 nordvpn_countries = []           # the countries they come from; every one when empty
+nordvpn_on = true                # false keeps the above but leaves NordVPN's servers out
 resume_attempts = 5             # retries per mirror after network trouble
 min_speed_kbps = 0              # give up a mirror slower than this (KiB/s) ...
 min_speed_seconds = 60          # ... over this long; 0 = off
 retry_failed_minutes = 15       # retry failed downloads (up to 3 times), 0 = never
 proxy = "socks5://user:pass@host:1080" # every host goes through it unless allowed direct
-use_proxy = true                # false keeps the proxy above but connects directly
+use_proxy = true                # false keeps proxies and VPN servers but connects directly
+proxies_on = true               # false leaves the proxies of proxy and proxies out
 preferred_hosts = ["rapidgator.net"]   # downloaded from first, in this order (default: ["pixeldrain.com"])
 disabled_hosts = ["gofile.io"]         # never downloaded from: their links are left alone
 proxies = ["socks5://u:p@nl.example:1080"]  # more proxies; downloads spread over them

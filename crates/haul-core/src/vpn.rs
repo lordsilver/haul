@@ -116,7 +116,7 @@ pub fn nordvpn_pick(cfg: &Config, servers: &[Server]) -> Vec<Server> {
 /// Every server in the countries chosen, least loaded first; none until
 /// the service credentials and a number of servers are set.
 pub fn nordvpn_candidates(cfg: &Config, servers: &[Server]) -> Vec<Server> {
-    if secret(&cfg.nordvpn_password).is_none() || cfg.nordvpn_servers == 0 {
+    if !cfg.nordvpn_on || secret(&cfg.nordvpn_password).is_none() || cfg.nordvpn_servers == 0 {
         return Vec::new();
     }
     servers

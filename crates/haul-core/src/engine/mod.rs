@@ -149,6 +149,19 @@ pub enum Event {
     ThemeChanged(Theme),
 }
 
+/// The addresses in use: this machine's line, proxies of the settings and
+/// a VPN's servers. One pool; the status bar switches the proxies and the
+/// VPN off together, each source also has a switch of its own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct PoolView {
+    /// Downloads may leave through this machine's own line.
+    pub line: bool,
+    pub proxies: usize,
+    pub vpn: usize,
+    /// The status bar's switch (`use_proxy`).
+    pub on: bool,
+}
+
 /// What adding links did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Added {
@@ -176,6 +189,8 @@ pub struct Snapshot {
     /// Global cap in bytes per second; 0 means none.
     pub rate: f64,
     pub proxy: bool,
+    /// The addresses downloads go out through, for the status bar.
+    pub pool: PoolView,
     pub theme: Theme,
     pub watch_clipboard: bool,
     /// Removing a finished download moves its file to the [`BIN`].
@@ -2810,6 +2825,21 @@ impl Engine {
         // Before the state's lock: the two are always taken in this order.
         let reconnect = self.reconnect_view();
         let services = self.services_view();
+        let pool = {
+            let cfg = self.cfg();
+            let proxies = cfg.proxy_pool().len();
+            let vpn = if cfg.use_proxy {
+                self.service_proxies().len()
+            } else {
+                0
+            };
+            PoolView {
+                line: proxies + vpn == 0 || cfg.proxy_with_direct,
+                proxies,
+                vpn,
+                on: cfg.use_proxy,
+            }
+        };
         let st = self.lock();
         let now = Instant::now();
         let has_proxy = self.clients().exits.len() > 1;
@@ -2997,6 +3027,7 @@ impl Engine {
             max_total: st.max_total,
             rate: self.0.limiter.rate(),
             proxy: has_proxy,
+            pool,
             theme: cfg.theme,
             watch_clipboard: cfg.watch_clipboard,
             recycle_on_remove: cfg.recycle_on_remove,

@@ -75,8 +75,14 @@ pub struct Config {
     /// A new connection for every download through a proxy, for a proxy
     /// that gives each connection another address (a rotating endpoint).
     pub proxy_fresh_connections: bool,
-    /// Off: the proxies stay configured, but every host connects directly.
+    /// Off: the proxies and VPN servers stay configured, but every host
+    /// connects directly. The status bar's switch.
     pub use_proxy: bool,
+    /// Off: the proxies of `proxy` and `proxies` stay listed but unused,
+    /// while VPN servers go on.
+    pub proxies_on: bool,
+    /// Off: NordVPN's settings stay, but its servers are not used.
+    pub nordvpn_on: bool,
     pub user_agent: String,
     /// Parallel downloads per host; unlisted hosts get [`FALLBACK_LIMIT`].
     pub limits: BTreeMap<String, usize>,
@@ -147,6 +153,8 @@ impl Default for Config {
             proxy_with_direct: false,
             proxy_fresh_connections: false,
             use_proxy: true,
+            proxies_on: true,
+            nordvpn_on: true,
             user_agent: DEFAULT_USER_AGENT.into(),
             limits: BTreeMap::new(),
             routes: BTreeMap::new(),
@@ -276,7 +284,7 @@ impl Config {
 
     /// Every proxy in use, `proxy` first, each once; none when switched off.
     pub fn proxy_pool(&self) -> Vec<&str> {
-        if !self.use_proxy {
+        if !self.use_proxy || !self.proxies_on {
             return Vec::new();
         }
         let mut pool: Vec<&str> = Vec::new();
@@ -566,7 +574,9 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # A new connection for every download, for a proxy that gives each connection
 # another address (a rotating endpoint).
 # proxy_fresh_connections = false
-# false keeps the proxies above but connects every host directly.
+# false keeps the proxies above listed but leaves them out (VPN servers stay).
+# proxies_on = true
+# false keeps the proxies and VPN servers but connects every host directly.
 # use_proxy = true
 
 # Accounts. HAUL_<KEY> environment variables (HAUL_1FICHIER_KEY, ...) fill
@@ -586,6 +596,8 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # nordvpn_password = ""
 # nordvpn_servers = 3
 # nordvpn_countries = ["Sweden", "Netherlands"]
+# false keeps all of the above but leaves NordVPN's servers out.
+# nordvpn_on = true
 
 # A new public address from the router when the one this machine has is what
 # holds downloads back (a host's daily allowance used up, a long wait asked of

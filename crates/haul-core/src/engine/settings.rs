@@ -50,6 +50,8 @@ pub struct SettingsView {
     pub proxy_with_direct: bool,
     pub proxy_fresh_connections: bool,
     pub use_proxy: bool,
+    pub proxies_on: bool,
+    pub nordvpn_on: bool,
     pub user_agent: String,
     pub default_user_agent: &'static str,
     /// Account keys by their name in the file; empty when unset.
@@ -117,6 +119,8 @@ impl Engine {
             proxy_with_direct: cfg.proxy_with_direct,
             proxy_fresh_connections: cfg.proxy_fresh_connections,
             use_proxy: cfg.use_proxy,
+            proxies_on: cfg.proxies_on,
+            nordvpn_on: cfg.nordvpn_on,
             user_agent: cfg.user_agent.clone(),
             default_user_agent: config::DEFAULT_USER_AGENT,
             accounts: ACCOUNTS
@@ -329,6 +333,16 @@ impl Engine {
                         )),
                     ));
                     cfg.proxies = list;
+                }
+                "proxies_on" => {
+                    let on = value.as_bool().ok_or("proxies_on is true or false")?;
+                    cfg.proxies_on = on;
+                    writes.push(top(key, Some(on.into())));
+                }
+                "nordvpn_on" => {
+                    let on = value.as_bool().ok_or("nordvpn_on is true or false")?;
+                    cfg.nordvpn_on = on;
+                    writes.push(top(key, Some(on.into())));
                 }
                 "proxy_with_direct" => {
                     let on = value
@@ -591,7 +605,10 @@ impl Engine {
         if new.detailed_log != old.detailed_log {
             crate::logging::set_detailed(new.detailed_log);
         }
+        // The switch also takes the VPN servers in or out, which the pool of
+        // the settings does not show.
         if new.proxy_pool() != old.proxy_pool()
+            || new.use_proxy != old.use_proxy
             || new.proxy_fresh_connections != old.proxy_fresh_connections
             || new.user_agent != old.user_agent
         {

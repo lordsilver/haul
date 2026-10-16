@@ -97,14 +97,16 @@ impl Engine {
     /// changed.
     async fn refresh_services(&self) {
         let cfg = self.cfg();
-        let wanted = secret(&cfg.nordvpn_password).is_some() && cfg.nordvpn_servers > 0;
+        let wanted =
+            cfg.nordvpn_on && secret(&cfg.nordvpn_password).is_some() && cfg.nordvpn_servers > 0;
         let asked = format!(
-            "{:?}|{:?}|{}|{:?}|{}",
+            "{:?}|{:?}|{}|{:?}|{}|{}",
             secret(&cfg.nordvpn_user),
             secret(&cfg.nordvpn_password),
             cfg.nordvpn_servers,
             cfg.nordvpn_countries,
-            cfg.use_proxy
+            cfg.use_proxy,
+            cfg.nordvpn_on
         );
         let stale = {
             let s = self.services();
@@ -243,6 +245,7 @@ impl Engine {
         loop {
             let cfg = self.cfg();
             let now_asked = (
+                cfg.nordvpn_on,
                 secret(&cfg.nordvpn_password).is_some(),
                 cfg.nordvpn_servers,
                 cfg.nordvpn_countries.clone(),
