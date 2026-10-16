@@ -16,6 +16,7 @@ watch_clipboard = false         # desktop app
 recycle_on_remove = false       # removing a finished download also moves its file to the Recycle Bin
 skip_add_dialog = false         # dropped and opened links are added without the Add dialog
 verify_existing = false         # compare files already there with the host's checksum
+detailed_log = false            # write every request, retry and mirror choice to haul.log
 resume_attempts = 5             # retries per mirror after network trouble
 min_speed_kbps = 0              # give up a mirror slower than this (KiB/s) ...
 min_speed_seconds = 60          # ... over this long; 0 = off

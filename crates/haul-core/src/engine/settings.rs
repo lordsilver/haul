@@ -36,6 +36,7 @@ pub struct SettingsView {
     pub recycle_on_remove: bool,
     pub skip_add_dialog: bool,
     pub verify_existing: bool,
+    pub detailed_log: bool,
     pub resume_attempts: u32,
     pub min_speed_kbps: u32,
     pub min_speed_seconds: u64,
@@ -95,6 +96,7 @@ impl Engine {
             recycle_on_remove: cfg.recycle_on_remove,
             skip_add_dialog: cfg.skip_add_dialog,
             verify_existing: cfg.verify_existing,
+            detailed_log: cfg.detailed_log,
             resume_attempts: cfg.resume_attempts,
             min_speed_kbps: cfg.min_speed_kbps,
             min_speed_seconds: cfg.min_speed_seconds,
@@ -212,6 +214,11 @@ impl Engine {
                 "verify_existing" => {
                     let on = value.as_bool().ok_or("verify_existing is true or false")?;
                     cfg.verify_existing = on;
+                    writes.push(top(key, Some(on.into())));
+                }
+                "detailed_log" => {
+                    let on = value.as_bool().ok_or("detailed_log is true or false")?;
+                    cfg.detailed_log = on;
                     writes.push(top(key, Some(on.into())));
                 }
                 "skip_add_dialog" => {
@@ -495,6 +502,9 @@ impl Engine {
         if *old == new {
             return;
         }
+        if new.detailed_log != old.detailed_log {
+            crate::logging::set_detailed(new.detailed_log);
+        }
         if new.proxy() != old.proxy() || new.user_agent != old.user_agent {
             match Clients::new(&new) {
                 Ok(clients) => {
@@ -634,6 +644,7 @@ impl Engine {
             if it.status == Status::Error && it.retry_at.is_some_and(|t| now >= t) {
                 it.retry_at = None;
                 it.auto_retries += 1;
+                tracing::info!(item = %it.id, "trying again on its own ({} of {AUTO_RETRIES}) after: {}", it.auto_retries, it.error);
                 it.status = Status::Queued;
                 it.failed.clear();
                 it.retries = 0;

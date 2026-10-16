@@ -2030,8 +2030,14 @@ function renderSettings(s) {
     settingCard(
       "wrench",
       "Diagnostics",
-      "A report of what Haul is doing, to send along when something goes wrong: every download and wrapper with its links, state and error, the hosts, the settings and the recent log. Account keys and proxy passwords are left out.",
+      "A report of what Haul is doing, to send along when something goes wrong: every download and wrapper with its links, state, error and last events, the hosts, the settings and the recent log. Account keys, proxy passwords and mega.nz keys are left out.",
       button("Save diagnostics…", { onclick: saveDiagnostics }),
+    ),
+    settingCard(
+      "document",
+      "Detailed log",
+      "Writes every request, retry and mirror choice to the log, for reproducing a problem before you save the report. Off, the log keeps notable events. Each download keeps its last events either way.",
+      toggleSwitch("detailed_log", d.detailed_log, "Detailed log"),
     ),
   );
 }

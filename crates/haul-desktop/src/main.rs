@@ -50,7 +50,7 @@ fn main() {
         .setup(move |app| {
             // Only the instance that runs gets here, so a second launch
             // leaves this one's log and data alone.
-            init_logging(&data_dir);
+            haul_core::logging::init(&data_dir, false);
             paths::adopt_old_data(&data_dir);
             let handle = app.handle().clone();
             if let Err(message) = tauri::async_runtime::block_on(start(&handle, data_dir)) {
@@ -83,25 +83,6 @@ fn main() {
             tauri::async_runtime::block_on(engine.shutdown());
         }
     });
-}
-
-/// Logs to `haul.log` in the data directory, since a windowed app has no
-/// console. `RUST_LOG` picks the level. The last run's log stays as
-/// `haul.old.log`, so a report saved after a restart still has it.
-fn init_logging(data_dir: &Path) {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let log = data_dir.join("haul.log");
-    let _ = std::fs::rename(&log, data_dir.join("haul.old.log"));
-    let file = std::fs::create_dir_all(data_dir).and_then(|()| std::fs::File::create(&log));
-    match file {
-        Ok(file) => tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_ansi(false)
-            .with_writer(file)
-            .init(),
-        Err(_) => tracing_subscriber::fmt().with_env_filter(filter).init(),
-    }
 }
 
 async fn start(app: &AppHandle, data_dir: PathBuf) -> Result<(), String> {

@@ -6,7 +6,6 @@ use std::{net::Ipv4Addr, path::PathBuf, process::ExitCode};
 use clap::Parser;
 use haul_core::{Engine, Options, paths};
 use tokio::net::TcpListener;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
@@ -31,14 +30,11 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
     let cli = Cli::parse();
     let data_dir = cli.data_dir.unwrap_or_else(paths::data_dir);
     paths::adopt_old_data(&data_dir);
+    // haul.log in the data folder, for a report; the terminal reads along.
+    haul_core::logging::init(&data_dir, true);
     let options = Options {
         data_dir,
         download_dir: cli.dir,

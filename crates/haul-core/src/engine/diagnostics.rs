@@ -19,7 +19,8 @@ impl Engine {
     /// The report: Haul's version and system, the settings with every secret
     /// left out (an account key says only whether it is set, a proxy loses
     /// its credentials), each download and wrapper with its links, state and
-    /// error, the hosts, and the end of this run's log and the last one's.
+    /// error and its last events, the hosts, and the end of the log and of
+    /// the one before it, each line an object.
     /// Links lose their `#…` part, which holds mega.nz's keys, and a link
     /// handed back from a browser its query, which can hold a token.
     pub fn diagnostics(&self) -> Value {
@@ -55,8 +56,11 @@ impl Engine {
             "folders": cfg.folders,
             "queue": queue,
             "hosts": snapshot.hosts,
-            "log": tail(&self.0.data_dir.join("haul.log")),
-            "previous_log": tail(&self.0.data_dir.join("haul.old.log")),
+            "detailed_log": cfg.detailed_log,
+            "log": tail(&crate::logging::path(&self.0.data_dir)),
+            "previous_log": crate::logging::older(&self.0.data_dir)
+                .first()
+                .map_or(Value::Null, |p| tail(p)),
         })
     }
 }
@@ -90,7 +94,22 @@ fn item_report(it: &Item) -> Value {
         "busy": it.busy,
         "existing": it.existing,
         "path": it.path,
+        "history": crate::logging::history(&it.id)
+            .into_iter()
+            .map(|m| json!({"at": m.at, "level": m.level, "message": without_fragment_in(&m.message)}))
+            .collect::<Vec<_>>(),
     })
+}
+
+/// `text` with the `#…` part of every link in it left out.
+fn without_fragment_in(text: &str) -> String {
+    text.split(' ')
+        .map(|word| match word.find("://") {
+            Some(_) => without_fragment(word),
+            None => word.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn without_fragment(link: &str) -> String {
@@ -141,7 +160,30 @@ fn tail(path: &Path) -> Value {
         (true, Some(cut)) => &text[cut + 1..],
         _ => &text,
     };
-    json!(text)
+    // One object per line, as haul.log writes them; a line that is not one
+    // (a log from before 0.8.1) stays text.
+    Value::Array(
+        text.lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line)
+                    .map(redact_fragments)
+                    .unwrap_or_else(|_| json!(without_fragment_in(line)))
+            })
+            .collect(),
+    )
+}
+
+/// A log line with the `#…` part of its links left out: mega.nz keeps its
+/// keys there.
+fn redact_fragments(mut line: Value) -> Value {
+    if let Some(fields) = line.as_object_mut() {
+        for value in fields.values_mut() {
+            if let Some(text) = value.as_str() {
+                *value = json!(without_fragment_in(text));
+            }
+        }
+    }
+    line
 }
 
 /// `secs` since 1970 as an ISO 8601 UTC time, such as `2026-10-16T12:30:00Z`.
@@ -196,6 +238,11 @@ mod tests {
         assert_eq!(tail(&log), Value::Null);
         let long = format!("{}\nlast line\n", "x".repeat(LOG_TAIL as usize + 10));
         std::fs::write(&log, long).unwrap();
-        assert_eq!(tail(&log), json!("last line\n"), "from a line's start");
+        assert_eq!(tail(&log), json!(["last line"]), "from a line's start");
+        std::fs::write(&log, "{\"message\":\"got https://mega.nz/file/a#key\",\"item\":\"x\"}\nplain https://mega.nz/file/b#k2\n").unwrap();
+        assert_eq!(
+            tail(&log),
+            json!([{"message": "got https://mega.nz/file/a", "item": "x"}, "plain https://mega.nz/file/b"])
+        );
     }
 }

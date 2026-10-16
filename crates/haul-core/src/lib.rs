@@ -12,6 +12,7 @@ pub mod engine;
 pub mod hosts;
 mod item;
 mod limiter;
+pub mod logging;
 pub mod paths;
 pub mod stay;
 mod store;

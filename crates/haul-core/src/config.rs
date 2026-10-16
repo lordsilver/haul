@@ -49,6 +49,9 @@ pub struct Config {
     /// also read in full and compared with the checksum its host publishes,
     /// before its download is skipped. Off: name and size decide.
     pub verify_existing: bool,
+    /// Haul's debug events in the log too: every request, retry and mirror
+    /// choice, for reproducing a problem.
+    pub detailed_log: bool,
     /// Automatic retries of a mirror after a dropped connection or a
     /// network error, before it counts as failed.
     pub resume_attempts: u32,
@@ -107,6 +110,7 @@ impl Default for Config {
             recycle_on_remove: false,
             skip_add_dialog: false,
             verify_existing: false,
+            detailed_log: false,
             resume_attempts: 5,
             min_speed_kbps: 0,
             min_speed_seconds: 60,
@@ -463,6 +467,10 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # checksum its host publishes (pixeldrain, gofile and some servers), one file at
 # a time: thorough, but slow on big files and spinning disks.
 # verify_existing = false
+
+# Writes Haul's debug events to haul.log too (every request, retry and mirror
+# choice), for reproducing a problem; off, the log keeps notable events.
+# detailed_log = false
 
 # Retries of a mirror after a dropped connection or a network error. An attempt
 # that gets data in before it stops starts the count over.

@@ -581,6 +581,9 @@ impl Engine {
                 (cfg, Some(path))
             }
         };
+        if cfg.detailed_log {
+            crate::logging::set_detailed(true);
+        }
         let download_dir_fixed = opts.download_dir.is_some();
         let download_dir = opts
             .download_dir
@@ -811,6 +814,7 @@ impl Engine {
                     it.wrapper = true;
                     // Unwrapped right away, as a name is looked up.
                     probe.push(it.id.clone());
+                    tracing::debug!(item = %it.id, url = %it.mirrors[0], "added as a wrapper");
                     st.items.insert(it.id.clone(), it);
                     added.wrappers += 1;
                     continue;
@@ -826,6 +830,7 @@ impl Engine {
                         .values_mut()
                         .find(|it| it.status != Status::Done && it.same_file(name, 0))
                 {
+                    tracing::debug!(item = %it.id, url = %link.url, "another host for {name}");
                     it.mirrors.push(link.url);
                     added.merged += 1;
                     continue;
@@ -834,6 +839,7 @@ impl Engine {
                 if !it.probed {
                     probe.push(it.id.clone());
                 }
+                tracing::debug!(item = %it.id, url = %it.mirrors[0], "added");
                 st.items.insert(it.id.clone(), it);
                 added.added += 1;
             }
@@ -1211,6 +1217,7 @@ impl Engine {
                 match self.pick(&mut st, &id, now) {
                     Some(url) => {
                         let host = hosts::host_of(&url);
+                        tracing::debug!(item = %id, url = %url, "starting from {host}");
                         st.host(&host, &self.cfg()).active += 1;
                         let cancel = CancellationToken::new();
                         let it = st.items.get_mut(&id).expect("item checked above");
@@ -1281,6 +1288,7 @@ impl Engine {
                 names.dedup();
                 it.status = Status::Error;
                 it.error = format!("only on hosts you turned off: {}", names.join(", "));
+                tracing::info!(item = %it.id, "{}", it.error);
             } else {
                 it.status = Status::Error;
                 if it.error.is_empty() {
@@ -2193,6 +2201,7 @@ impl Engine {
         if it.status == Status::Done && action != ItemAction::Remove {
             return true;
         }
+        tracing::debug!(item = %it.id, "{action:?} by the user");
         match action {
             ItemAction::Pause => {
                 it.status = Status::Paused;
