@@ -1800,12 +1800,28 @@ function renderConnections(s) {
   }
   const d = settingsData;
   if (!d) return;
-  const key = JSON.stringify([d, s.reconnect, s.services, s.desktop]);
+  const key = JSON.stringify([d, s.reconnect, s.services, s.desktop, s.pool]);
   const active = document.activeElement;
   if (key === connectionsKey || ($("connections").contains(active) && active.matches("input, textarea"))) return;
   connectionsKey = key;
+  const pool = poolSources(d, s);
+  const why = poolWhy(d, s, pool.sources);
   fill(
     $("connections"),
+    settingCard(
+      "shield",
+      `In use: ${poolLabel(s.pool)}`,
+      el(
+        "div",
+        {},
+        why
+          ? el("div", { class: "warn-text" }, why)
+          : pool.configured
+            ? pool.sources.map((x) => `${x.name}: ${x.status}`).join(" · ")
+            : "No proxies or VPN set up yet: every download uses your line. Add them below.",
+      ),
+      pool.configured ? toggleSwitch("use_proxy", d.use_proxy, "Use proxies and VPN") : null,
+    ),
     el("h2", {}, "Your line"),
     reconnectCards(s, d),
     d.proxy || d.proxies.length || s.services.nordvpn.length
@@ -2343,6 +2359,7 @@ async function saveDiagnostics() {
 let statusKey = null;
 
 function renderStatus(s) {
+  refreshPoolFlyout(s);
   const downloading = s.items.filter((i) => i.status === "downloading").length;
   const queued = s.items.filter((i) => ["queued", "waiting", "checking", "resolving"].includes(i.status)).length;
   const clipboard = s.desktop && s.watch_clipboard;
@@ -2457,24 +2474,99 @@ function poolLabel(p) {
   return parts.length === 1 && p.line ? "Line only" : parts.join(" + ");
 }
 
-// The pool's switch: proxies and VPN servers on or off together, each
-// source's own settings and switch kept; the rest is on Connections.
+// Each source of addresses and where it stands: what it adds to the pool,
+// or why it adds nothing, with the setting that switches it.
+function poolSources(d, s) {
+  const proxies = (d.proxy ? 1 : 0) + d.proxies.length;
+  const nord = Boolean(d.accounts.nordvpn_password || fromEnv(d, "nordvpn_password"));
+  const paused = !d.use_proxy;
+  const sources = [];
+  if (proxies) {
+    const status = !d.proxies_on ? "Off" : paused ? "Paused by the switch above" : `${s.pool.proxies} in use`;
+    sources.push({ name: "Proxies", status, key: "proxies_on", on: d.proxies_on });
+  }
+  if (nord) {
+    const servers = s.services.nordvpn.length;
+    const where = d.nordvpn_countries.length ? d.nordvpn_countries.join(", ") : "any country";
+    const status = !d.nordvpn_on
+      ? "Off"
+      : !d.nordvpn_servers
+        ? "No servers chosen"
+        : s.services.error && !servers
+          ? s.services.error
+          : paused
+            ? "Paused by the switch above"
+            : servers
+              ? `${servers} ${servers === 1 ? "server" : "servers"} · ${where}`
+              : "Looking for servers…";
+    sources.push({ name: "NordVPN", status, key: "nordvpn_on", on: d.nordvpn_on, problem: d.nordvpn_on && (!d.nordvpn_servers || (Boolean(s.services.error) && !servers)) });
+  }
+  if (sources.length) {
+    // Its switch adds it beside proxies and VPN; with nothing beside it, it
+    // carries every download whatever the switch says.
+    const alone = paused || !(s.pool.proxies + s.pool.vpn);
+    const status = alone ? "Every download" : d.proxy_with_direct ? "One more address beside them" : "Not used while they are on";
+    sources.unshift({ name: "Your line", status, key: alone ? null : "proxy_with_direct", on: d.proxy_with_direct, label: "Your line in the pool" });
+  }
+  return { sources, configured: sources.length > 0 };
+}
+
+// Why the pool is only the line although proxies or VPN are switched on.
+function poolWhy(d, s, sources) {
+  if (!d.use_proxy || s.pool.proxies + s.pool.vpn) return null;
+  const problem = sources.find((x) => x.problem);
+  if (problem?.name === "NordVPN" && !d.nordvpn_servers) return "Nothing added yet: NordVPN has no servers chosen. Set how many under VPN services › Servers.";
+  if (problem) return `Nothing added yet: ${problem.name}: ${problem.status}.`;
+  return "Nothing added yet: every proxy and VPN source is off.";
+}
+
+// One source as a row: its name and state, and its own switch.
+function sourceRow(x) {
+  const sw = x.key ? flyoutSwitch(x.label ?? x.name, x.on, (on) => save({ [x.key]: on }, null)).querySelector(".toggle") : null;
+  return el("div", { class: `pool-source${x.problem ? " problem" : ""}` }, el("div", { class: "grow" }, el("div", {}, x.name), el("div", { class: "sub" }, x.status)), sw);
+}
+
+// The status bar's flyout: what downloads go out through, the switch for
+// proxies and VPN together, each source with its own, and the way to the
+// page that sets them up.
 function proxyFlyout(anchor) {
-  openFlyout("proxy", anchor, "Connections", (d) => {
-    const configured = Boolean(d.proxy) || d.proxies.length > 0 || Boolean(d.accounts.nordvpn_password || fromEnv(d, "nordvpn_password"));
-    return [
-      el("p", { class: "hint" }, `Now: ${poolLabel(state.pool)}.`),
-      flyoutSwitch("Use proxies and VPN", configured && d.use_proxy, (on) => save({ use_proxy: on }, null), !configured),
-      el("p", { class: "hint" }, configured ? "Off, every download uses your line; each source keeps its settings." : "No proxies or VPN set up yet."),
-      button("Open Connections", {
-        kind: "subtle",
-        onclick: () => {
-          closeFlyout();
-          location.hash = "#/connections";
-        },
-      }),
-    ];
-  });
+  openFlyout("proxy", anchor, "Connections", (d) => poolFlyoutContent(d, state));
+}
+
+function poolFlyoutContent(d, s) {
+  const { sources, configured } = poolSources(d, s);
+  const why = poolWhy(d, s, sources);
+  return [
+    el("div", { class: "pool-now" }, el("span", { class: "sub" }, "In use"), el("strong", {}, poolLabel(s.pool))),
+    flyoutSwitch("Use proxies and VPN", configured && d.use_proxy, (on) => save({ use_proxy: on }, null), !configured),
+    why ? el("p", { class: "hint warn" }, why) : null,
+    configured ? el("div", { class: "pool-sources" }, sources.map(sourceRow)) : el("p", { class: "hint" }, "No proxies or VPN set up yet: downloads use your line."),
+    button("Open Connections", {
+      icon: "globe",
+      onclick: () => {
+        closeFlyout();
+        location.hash = "#/connections";
+      },
+    }),
+  ];
+}
+
+// The flyout follows the pool while open: a switch flipped there, or a VPN
+// server found, shows at once.
+let poolFlyoutKey = null;
+async function refreshPoolFlyout(s) {
+  if (flyoutFor !== "proxy" || !flyout.matches(":popover-open")) return;
+  const key = JSON.stringify([s.pool, s.services, s.config_version]);
+  if (key === poolFlyoutKey) return;
+  poolFlyoutKey = key;
+  try {
+    const res = await fetch("/api/settings");
+    if (!res.ok) return;
+    const d = await res.json();
+    const focused = flyout.contains(document.activeElement) ? document.activeElement.getAttribute("aria-label") : null;
+    fill(flyout, el("div", { class: "flyout-title" }, "Connections"), poolFlyoutContent(d, s));
+    if (focused) flyout.querySelector(`[aria-label="${CSS.escape(focused)}"]`)?.focus();
+  } catch {}
 }
 
 function clipboardFlyout(anchor) {

@@ -408,8 +408,48 @@ button.status-item:hover {
   min-width: 0;
 }
 
-.flyout > .button.subtle {
+.flyout > .button {
   align-self: flex-start;
+}
+
+/* The pool in the connections flyout: what is in use, then its sources. */
+.pool-now {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pool-now strong {
+  font-size: 16px;
+}
+
+.pool-sources {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+}
+
+.pool-source {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+}
+
+.pool-source + .pool-source {
+  border-top: 1px solid var(--stroke);
+}
+
+.pool-source .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.pool-source.problem .sub,
+.flyout .hint.warn,
+.warn-text {
+  color: var(--caution, var(--critical));
 }
 
 /* ---- controls */
