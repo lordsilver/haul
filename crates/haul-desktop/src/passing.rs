@@ -6,11 +6,10 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use haul_core::{Engine, hosts};
-use tauri::{AppHandle, Manager};
 
 use crate::browser::Browser;
 
-pub fn spawn(app: AppHandle, engine: Engine, browser: Arc<Browser>) {
+pub fn spawn(engine: Engine, browser: Arc<Browser>) {
     let mut changes = engine.watch();
     tauri::async_runtime::spawn(async move {
         // Downloads whose page was opened during their current wait.
@@ -27,7 +26,7 @@ pub fn spawn(app: AppHandle, engine: Engine, browser: Arc<Browser>) {
                 })
                 .collect();
             tried.retain(|id| waiting.iter().any(|(w, _)| w == id));
-            let open = |id: &str| app.get_webview_window(&format!("browse-{id}")).is_some();
+            let open = |id: &str| browser.is_passing(id);
             let busy = tried.iter().any(|id| open(id));
             if !busy && let Some((id, page)) = waiting.iter().find(|(id, _)| !tried.contains(id)) {
                 tried.insert(id.clone());

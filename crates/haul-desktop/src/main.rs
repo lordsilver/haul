@@ -9,6 +9,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browser;
+mod chromium;
 mod clipboard;
 mod passing;
 mod tray;
@@ -120,7 +121,7 @@ async fn start(app: &AppHandle, data_dir: PathBuf) -> Result<(), String> {
         engine.clone(),
         Some(browser.clone()),
     ));
-    passing::spawn(app.clone(), engine.clone(), browser);
+    passing::spawn(engine.clone(), browser);
     app.manage(engine.clone());
     main_window(app, port, engine.theme()).map_err(|e| e.to_string())?;
     tray::create(app, &engine).map_err(|e| e.to_string())?;

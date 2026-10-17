@@ -2,7 +2,9 @@
 // most passes the page's check and never looks for a download button. The
 // page navigates to an address the window never loads; the app reads the
 // files (link, name, size) and the window's user agent from it, or that the
-// page says its file is gone.
+// page says its file is gone. In a browser Haul drives over DevTools (Edge
+// on Windows, chromium.rs), which sets __haulDevTools first, the message
+// waits in __haulHandoff instead, for it to read.
 //
 // One recipe per host whose page passes this way (hosts::Known::page_passes
 // in haul-core says which): where on the page the links turn up.
@@ -10,18 +12,22 @@
   // The page itself, never its frames (see overlays.js).
   if (window !== window.top) return;
   let handed = false;
+  const send = (message, address) => {
+    window.__haulHandoff = message;
+    if (!window.__haulDevTools) location.href = address;
+  };
   const hand = (files) => {
     if (handed || !files.length) return;
     handed = true;
     const absolute = files.map((f) => ({ ...f, url: new URL(f.url, location.href).href }));
-    location.href = "https://haul.invalid/take?" + new URLSearchParams({ files: JSON.stringify(absolute), agent: navigator.userAgent });
+    send({ files: absolute, agent: navigator.userAgent }, "https://haul.invalid/take?" + new URLSearchParams({ files: JSON.stringify(absolute), agent: navigator.userAgent }));
   };
 
   // The page says the file is gone: the mirror failed, nobody is asked.
   const gone = (reason) => {
     if (handed) return;
     handed = true;
-    location.href = "https://haul.invalid/gone?" + new URLSearchParams({ reason });
+    send({ gone: reason }, "https://haul.invalid/gone?" + new URLSearchParams({ reason }));
   };
 
   const recipes = [

@@ -13,9 +13,13 @@
 //! elsewhere on a click is sent back, and a window it opens on its own site
 //! loads in place, since the window has no tabs to open it in. A layer an
 //! ad lays over the page to catch the first click is taken off it.
+//!
+//! Pages passed out of sight go to a full browser where there is one to
+//! drive (Edge on Windows, [`chromium`]): Cloudflare Turnstile asks for its
+//! box in an embedded WebView2 every time, and passes by itself in Edge.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex, MutexGuard},
@@ -34,13 +38,15 @@ use tauri::{
     webview::{DownloadEvent, NewWindowResponse, PageLoadEvent},
 };
 
-use crate::notify;
+use crate::{chromium, notify};
 
 pub struct Browser {
     app: AppHandle,
     engine: Engine,
     /// The local bridge to the proxy, started the first time a page needs it.
     bridge: Mutex<Option<Bridge>>,
+    /// Pages being passed in a full browser, by item.
+    passes: Arc<Mutex<HashMap<String, chromium::Handle>>>,
 }
 
 impl Browser {
@@ -49,7 +55,16 @@ impl Browser {
             app,
             engine,
             bridge: Mutex::new(None),
+            passes: Arc::default(),
         }
+    }
+
+    /// Whether item `id`'s page is open, in a window or a full browser.
+    pub fn is_passing(&self, id: &str) -> bool {
+        self.app
+            .get_webview_window(&format!("browse-{id}"))
+            .is_some()
+            || passes(&self.passes).contains_key(id)
     }
 
     /// The bridge's address, pointed at the proxy currently configured.
@@ -73,8 +88,11 @@ impl Browser {
     /// after [`SHOW_AFTER`], its check wanting a person.
     pub fn pass(&self, id: &str, url: &str) -> Result<(), String> {
         let label = format!("browse-{id}");
-        if self.app.get_webview_window(&label).is_some() {
+        if self.is_passing(id) {
             return Ok(());
+        }
+        if let Some(exe) = chromium::find() {
+            return self.pass_in(exe, id, url);
         }
         self.open(id, url, None, true)?;
         let app = self.app.clone();
@@ -89,6 +107,77 @@ impl Browser {
                     &format!("{host} wants you"),
                     "Its check did not pass by itself: tick the box on its page and the download starts.",
                 );
+            }
+        });
+        Ok(())
+    }
+
+    /// [`Browser::pass`] in a full browser driven over DevTools.
+    fn pass_in(&self, exe: PathBuf, id: &str, url: &str) -> Result<(), String> {
+        let host = hosts::host_of(url);
+        let proxy = match self.engine.proxy_for(&host) {
+            Some(proxy) => Some(self.bridge_to(&proxy)?),
+            None => None,
+        };
+        let handle = chromium::Handle::default();
+        passes(&self.passes).insert(id.to_string(), handle.clone());
+        let (app, engine, all) = (self.app.clone(), self.engine.clone(), self.passes.clone());
+        let (id, url) = (id.to_string(), url.to_string());
+        let profile = engine.data_dir().join("webview").join("chromium").join(&id);
+        std::thread::spawn(move || {
+            let shown = {
+                let (app, host) = (app.clone(), host.clone());
+                move || {
+                    tracing::info!("{host} wants a person for its check");
+                    crate::notify_waiting(
+                        &app,
+                        &format!("{host} wants you"),
+                        "Its check did not pass by itself: tick the box on its page and the download starts.",
+                    );
+                }
+            };
+            let pass = chromium::Pass {
+                exe: &exe,
+                url: &url,
+                profile,
+                proxy,
+                scripts: &[OVERLAYS, HANDOFF],
+                show_after: SHOW_AFTER,
+                handle,
+            };
+            let outcome = chromium::pass(pass, shown);
+            passes(&all).remove(&id);
+            match outcome {
+                Ok(chromium::Outcome::Files { files, agent }) => {
+                    let entries = files
+                        .into_iter()
+                        .map(|f| {
+                            let mut headers =
+                                BTreeMap::from([("Referer".to_string(), url.clone())]);
+                            if let Some(cookie) = f.cookie {
+                                headers.insert("Cookie".to_string(), cookie);
+                            }
+                            if let Some(agent) = &agent {
+                                headers.insert("User-Agent".to_string(), agent.clone());
+                            }
+                            hosts::Entry {
+                                url: f.url,
+                                name: f.name,
+                                size: f.size,
+                                headers,
+                                ..hosts::Entry::default()
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let count = entries.len();
+                    match engine.set_files(&id, entries) {
+                        Ok(()) => tracing::info!("took over {count} file(s) for item {id}"),
+                        Err(e) => notify(&app, "Could not use that download", &e),
+                    }
+                }
+                Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
+                Ok(chromium::Outcome::Closed) => {}
+                Err(e) => tracing::warn!(item = %id, "passing {url}: {e}"),
             }
         });
         Ok(())
@@ -192,6 +281,13 @@ impl Browser {
 
 impl Desktop for Browser {
     fn browse(&self, id: &str, url: &str, user_agent: Option<String>) -> Result<(), String> {
+        // Being passed in a full browser: that window comes on screen.
+        if let Some(handle) = passes(&self.passes).get(id) {
+            handle
+                .show
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            return Ok(());
+        }
         if let Some(window) = self.app.get_webview_window(&format!("browse-{id}")) {
             bring_forward(&window);
             let _ = window.set_focus();
@@ -315,6 +411,12 @@ fn gone(url: &Url) -> Option<String> {
     } else {
         reason
     })
+}
+
+fn passes(
+    all: &Mutex<HashMap<String, chromium::Handle>>,
+) -> MutexGuard<'_, HashMap<String, chromium::Handle>> {
+    all.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn lock(stay: &Mutex<Stay>) -> MutexGuard<'_, Stay> {
