@@ -381,9 +381,18 @@ function navItem(key, spec) {
   return { node, badge, spec, filled: false };
 }
 
+const navSeparator = () => el("hr", { class: "nav-separator" });
+
 function renderNav(s) {
   if (!navItems.size) {
-    for (const [key, spec] of Object.entries({ ...LISTS, ...SECTIONS })) {
+    for (const [key, spec] of Object.entries(LISTS)) {
+      const item = navItem(key, spec);
+      navItems.set(key, item);
+      $("nav").append(item.node);
+    }
+    // Where downloads came from, apart from the states they are in.
+    $("nav").append(navSeparator());
+    for (const [key, spec] of Object.entries(SECTIONS)) {
       const item = navItem(key, spec);
       navItems.set(key, item);
       $("nav").append(item.node);
@@ -435,7 +444,8 @@ function renderFolderNav(s) {
       icon("folder-open"),
       el("span", { class: "label" }, "Download folder"),
     );
-    $("nav-footer").prepend(folderNav);
+    // The folder opens outside Haul; the app's own pages follow apart.
+    $("nav-footer").prepend(folderNav, navSeparator());
   }
   const title = `Open ${s.download_dir}`;
   if (folderNav.title !== title) folderNav.title = title;
