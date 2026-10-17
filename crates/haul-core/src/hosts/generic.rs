@@ -1,7 +1,8 @@
 //! Any host without its own resolver: a link that answers with a file is used
 //! as is; one that answers with a web page needs a person, unless the page
-//! links files on hosts Haul knows (a release's page on a blog or forum,
-//! say): then it is a wrapper of those links ([`page_links`]).
+//! links files on hosts Haul knows or wrappers (a release's post on a blog
+//! or forum, say): then those links are added as if pasted
+//! ([`page_links`]).
 
 use std::sync::LazyLock;
 
@@ -9,9 +10,8 @@ use regex::Regex;
 use reqwest::header::{ACCEPT_ENCODING, RANGE};
 
 use super::{
-    Cx, Entry, Probed, ResolveError, Unwrapped, content_length, content_range, content_type,
-    disposition_name, group_mirrors, guess_name, header_checksum, host_of, known, page_text,
-    retry_after, wraps,
+    Cx, Entry, Probed, ResolveError, content_length, content_range, content_type, disposition_name,
+    guess_name, header_checksum, host_of, known, retry_after, wraps,
 };
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
@@ -146,10 +146,9 @@ static BARE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>()\[\]{}]+"#).unwrap());
 
 /// The links of a web page to files on hosts Haul knows and to wrappers,
-/// each once, in the page's order; mirrors of one file grouped as a
-/// wrapper's are. Links elsewhere (the site's own pages, ads) are left out,
-/// and a page with none is not one: it waits for a person as before.
-pub(super) async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
+/// each once, in the page's order. Links elsewhere (the site's own pages,
+/// ads) are left out; a page with none waits for a person as before.
+pub(super) async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Vec<String>, ResolveError> {
     let mut r = cx.http.client.get(url).send().await?;
     let status = r.status().as_u16();
     if matches!(status, 429 | 503) {
@@ -181,13 +180,7 @@ pub(super) async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, Reso
             host_of(url)
         )));
     }
-    let title = [&OG_TITLE, &TITLE]
-        .into_iter()
-        .find_map(|pattern| page_text(&pattern.captures(&page)?[1]));
-    Ok(Unwrapped {
-        title,
-        files: group_mirrors(urls),
-    })
+    Ok(urls)
 }
 
 /// The links in `page` to known hosts and wrappers, absolute, each once.

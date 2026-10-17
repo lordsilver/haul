@@ -1130,26 +1130,30 @@ impl Engine {
             None => None,
         };
         // A web page on a host Haul has no code for may list a release's
-        // links (a blog's or forum's post): it is a wrapper of them then.
+        // links (a blog's or forum's post): they stand in for it, as if the
+        // page's text had been pasted.
         let listed = match (&found, &url) {
             (None, Some(url)) if hosts::may_list_links(url) => {
-                tokio::time::timeout(Duration::from_secs(30), hosts::unwrap(&cx, url))
+                tokio::time::timeout(Duration::from_secs(30), hosts::page_links(&cx, url))
                     .await
                     .ok()
                     .and_then(Result::ok)
-                    .filter(|page| !page.files.is_empty())
+                    .filter(|links| !links.is_empty())
             }
             _ => None,
         };
         // The slot is for asking hosts; comparing with a file on disk waits
         // for its own turn below, so other links keep being looked up.
         drop(permit);
-        if let (Some(page), Some(url)) = (listed, &url) {
-            tracing::info!(item = %id, "{url} links {} files", page.files.len());
-            for new in self.unwrapped(&id, url, page) {
-                self.spawn_probe(new);
-            }
-            self.0.wake.notify_one();
+        if let (Some(links), Some(url)) = (listed, &url) {
+            tracing::info!(item = %id, "{url} links {} files and wrappers", links.len());
+            let package = {
+                let mut st = self.lock();
+                let package = st.items.shift_remove(&id).map(|it| it.package);
+                self.touch(&mut st);
+                package.unwrap_or_default()
+            };
+            self.add_text(&links.join("\n"), &package);
             return;
         }
         let learned = found.is_some();

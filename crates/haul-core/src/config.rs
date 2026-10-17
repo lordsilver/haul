@@ -657,6 +657,7 @@ pub struct Endpoints {
     pub fileguard: String,
     pub filecrypt: String,
     pub vikingfile: String,
+    pub mirrored: String,
     /// The router's description; empty to look for it on the network.
     pub router: String,
     pub nordvpn: String,
@@ -675,6 +676,7 @@ impl Default for Endpoints {
             fileguard: "https://fileguard.cc".into(),
             filecrypt: "https://filecrypt.cc".into(),
             vikingfile: "https://vikingfile.com".into(),
+            mirrored: "https://www.mirrored.to".into(),
             router: String::new(),
             nordvpn: "https://api.nordvpn.com".into(),
         }

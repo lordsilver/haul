@@ -1288,36 +1288,32 @@ async fn removing_a_wrappers_last_file_takes_the_wrapper() {
 }
 
 /// A web page on a site Haul has no code for, linking files on hosts it
-/// knows, is a wrapper of those links; one linking none waits for a person.
+/// knows, stands for those links, as if its text were pasted: no wrapper,
+/// no row of its own. One linking none waits for a person.
 #[tokio::test]
-async fn a_page_of_links_is_a_wrapper() {
+async fn a_page_of_links_adds_its_links() {
     let t = Setup::new().await;
     let engine = t.engine().await;
-    engine.add_text(&format!("{}/blog/release", t.ip), "");
-    let s = wrapper_settled(&engine, "done").await;
-    assert_eq!(s.wrappers[0].title.as_deref(), Some("Release R"));
-    assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 2 }));
-    let s = wait_for(&engine, "the files, named", |s| {
+    engine.add_text(&format!("{}/blog/release", t.ip), "Pkg");
+    let s = wait_for(&engine, "the page's files, named", |s| {
         s.items.len() == 2 && s.items.iter().all(|i| i.name.ends_with(".bin"))
     })
     .await;
-    let mut names: Vec<(&str, &str)> = s
+    assert!(s.wrappers.is_empty(), "the page is not a wrapper");
+    let mut rows: Vec<(&str, &str)> = s
         .items
         .iter()
-        .map(|i| (i.name.as_str(), i.status))
+        .map(|i| (i.name.as_str(), i.package.as_str()))
         .collect();
-    names.sort();
-    assert_eq!(
-        names,
-        [("postone.bin", "paused"), ("posttwo.bin", "paused")]
-    );
+    rows.sort();
+    assert_eq!(rows, [("postone.bin", "Pkg"), ("posttwo.bin", "Pkg")]);
+    wait_for(&engine, "both downloaded", all_done).await;
 
     engine.add_text(&format!("{}/blog/empty", t.ip), "");
-    let s = wait_for(&engine, "the page without links", |s| {
+    wait_for(&engine, "the page without links", |s| {
         s.items.iter().any(|i| i.status == "captcha")
     })
     .await;
-    assert_eq!(s.wrappers.len(), 1, "not a wrapper");
 }
 
 /// A release in parts lists part 1, part 2… on every host: one row per part,

@@ -42,6 +42,7 @@ fn config(base: &str) -> Config {
             fileguard: base.into(),
             filecrypt: base.into(),
             vikingfile: base.into(),
+            mirrored: base.into(),
             router: format!("{base}/igddesc.xml"),
             nordvpn: base.into(),
         },
@@ -1136,4 +1137,69 @@ async fn vikingfile_checks_the_file_then_wants_a_person() {
         resolve(&cx, "https://vikingfile.com/f/gone").await,
         Err(ResolveError::Failed(m)) if m.contains("gone")
     ));
+}
+
+#[tokio::test]
+async fn mirrored_lists_one_file_on_every_host_that_took_it() {
+    let app = Router::new()
+        .route(
+            "/files/{id}/",
+            get(|Path(id): Path<String>, Query(q): Query<HashMap<String, String>>| async move {
+                assert_eq!(id, "9EC6E16F");
+                if q.contains_key("hash") {
+                    // The links page: its script asks for the hosts' table.
+                    return r#"<script>ajaxRequest.open("GET", "/mirstats.php?uid=9EC6E16F&amp;tmpID=t", true);</script>"#.to_string();
+                }
+                r#"<h1>You have requested the file <span>R.part1.rar</span></h1>
+                   <a href="https://www.mirrored.to/files/9EC6E16F/?hash=b8bd&amp;dl=0">Click to view the download links</a>"#
+                    .to_string()
+            }),
+        )
+        .route(
+            "/mirstats.php",
+            get(|Query(q): Query<HashMap<String, String>>| async move {
+                assert_eq!(q.get("tmpID").map(String::as_str), Some("t"));
+                r#"<table><tr><td><img alt="GoFileIo"></td><td><a href="/getlink/9EC6E16F/1/?hid=a&amp;tid=b">Download</a></td></tr>
+                   <tr><td><img alt="OneFichier"></td><td><a href="/getlink/9EC6E16F/2/?hid=c&amp;tid=b">Download</a></td></tr>
+                   <tr><td><img alt="TurboBit"></td><td>Not Available</td></tr></table>"#
+            }),
+        )
+        .route(
+            "/getlink/{id}/{n}/",
+            get(|Path((_, n)): Path<(String, u32)>| async move {
+                let link = match n {
+                    1 => "https://gofile.io/d/6b52TMUH",
+                    _ => "https://1fichier.com/?abc123",
+                };
+                format!(r#"<code>{link}</code><button data-clipboard-text="{link}">Copy</button>"#)
+            }),
+        );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
+    let url = "https://www.mirrored.to/files/9EC6E16F/";
+    assert!(wraps(url));
+    assert_eq!(wrapper_key(url), "mirrored.to/9EC6E16F");
+    let found = unwrap(&cx, url).await.unwrap();
+    assert_eq!(found.title.as_deref(), Some("R.part1.rar"));
+    assert_eq!(found.files.len(), 1);
+    let file = &found.files[0];
+    assert_eq!(
+        (
+            file.name.as_deref(),
+            file.url.as_str(),
+            file.mirrors.as_slice()
+        ),
+        (
+            Some("R.part1.rar"),
+            "https://gofile.io/d/6b52TMUH",
+            ["https://1fichier.com/?abc123".to_string()].as_slice()
+        )
+    );
 }

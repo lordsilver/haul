@@ -15,6 +15,7 @@ mod fileguard;
 mod generic;
 mod gofile;
 mod mega;
+mod mirrored;
 mod nitroflare;
 mod onefichier;
 mod pixeldrain;
@@ -327,6 +328,7 @@ enum Kind {
     Direct,
     Fileguard,
     Filecrypt,
+    Mirrored,
 }
 
 /// What a free user gets from a host, where it is known; an account the
@@ -360,7 +362,10 @@ pub struct Known {
 impl Known {
     /// A wrapper's site, which stands for further links rather than files.
     pub fn wraps(&self) -> bool {
-        matches!(self.kind, Kind::Fileguard | Kind::Filecrypt)
+        matches!(
+            self.kind,
+            Kind::Fileguard | Kind::Filecrypt | Kind::Mirrored
+        )
     }
 
     /// Whether the user set every account setting this host takes.
@@ -507,6 +512,18 @@ static KNOWN: &[Known] = &[
     Known {
         names: &["filecrypt.cc"],
         kind: Kind::Filecrypt,
+        accounts: &[],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+        page_passes: false,
+    },
+    Known {
+        names: &["mirrored.to"],
+        kind: Kind::Mirrored,
         accounts: &[],
         free: Free {
             at_once: None,
@@ -819,18 +836,18 @@ pub fn wrapper_key(url: &str) -> String {
     let key = match kind_of(url) {
         Some(Kind::Fileguard) => fileguard::key(url),
         Some(Kind::Filecrypt) => filecrypt::key(url),
+        Some(Kind::Mirrored) => mirrored::key(url),
         _ => None,
     };
     key.unwrap_or_else(|| url.to_string())
 }
 
-/// The files behind a wrapper link, once its gate is passed; for a web page
-/// on a host Haul has no code for, the links it holds to hosts it does.
+/// The files behind a wrapper link, once its gate is passed.
 pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
     match kind_of(url) {
         Some(Kind::Fileguard) => fileguard::unwrap(cx, url).await,
         Some(Kind::Filecrypt) => filecrypt::unwrap(cx, url).await,
-        None => generic::page_links(cx, url).await,
+        Some(Kind::Mirrored) => mirrored::unwrap(cx, url).await,
         _ => Err(ResolveError::failed("not a wrapper link")),
     }
 }
@@ -839,6 +856,12 @@ pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
 /// code for.
 pub fn may_list_links(url: &str) -> bool {
     kind_of(url).is_none()
+}
+
+/// The links a web page holds to hosts Haul knows and to wrappers, as if
+/// the page's text were pasted (see [`generic::page_links`]).
+pub async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Vec<String>, ResolveError> {
+    generic::page_links(cx, url).await
 }
 
 /// Direct links for `url`. Folders and lists expand to several entries.
@@ -859,6 +882,7 @@ pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError>
         }]),
         Some(Kind::Fileguard) => fileguard::unwrap(cx, url).await.map(|u| u.files),
         Some(Kind::Filecrypt) => filecrypt::unwrap(cx, url).await.map(|u| u.files),
+        Some(Kind::Mirrored) => mirrored::unwrap(cx, url).await.map(|u| u.files),
         None => generic::resolve(cx, url).await,
     }
 }
@@ -875,7 +899,7 @@ pub async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
         Some(Kind::Mega | Kind::Gofile | Kind::OneFichier) => None,
         // A wrapper says nothing useful before its solve; that is the
         // resolver's work, once, at download time.
-        Some(Kind::Fileguard | Kind::Filecrypt) => None,
+        Some(Kind::Fileguard | Kind::Filecrypt | Kind::Mirrored) => None,
         _ => generic::probe(cx, url).await,
     }
 }
