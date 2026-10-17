@@ -167,8 +167,8 @@ jobs:
             echo
             echo "| File | What it is |"
             echo "| --- | --- |"
-            echo "| \`haul-desktop-$TAG-x86_64-pc-windows-msvc-setup.exe\` | Windows desktop app; installs for you alone or for everyone |"
-            echo "| \`haul-desktop-$TAG-x86_64-pc-windows-msvc.msi\` | Windows desktop app; always installs for everyone |"
+            echo "| \`haul-desktop-$TAG-x86_64-pc-windows-msvc-setup.exe\` | Windows desktop app, setup program |"
+            echo "| \`haul-desktop-$TAG-x86_64-pc-windows-msvc.msi\` | Windows desktop app, MSI package |"
             echo "| \`haul-$TAG-x86_64-pc-windows-msvc.zip\` | Headless server \`haul\` for Windows |"
             echo "| \`haul-$TAG-x86_64-unknown-linux-gnu.tar.gz\` | Headless server \`haul\` for Linux |"
             echo "| \`SHA256SUMS\` | SHA-256 checksums of the files above |"
