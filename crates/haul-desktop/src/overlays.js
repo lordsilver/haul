@@ -4,6 +4,10 @@
 // everything that covers much of the window is taken off, unless it holds a
 // captcha, which also floats above the page.
 (() => {
+  // The page itself, never its frames: WebView2 runs this in every frame,
+  // and a script at work inside a captcha's frame (Cloudflare Turnstile's)
+  // makes it ask a person.
+  if (window !== window.top) return;
   if (!/^https?:$/.test(location.protocol)) return;
   const CAPTCHA = /captcha|challenges\.cloudflare\.com|turnstile/i;
   const isAd = (el) => {

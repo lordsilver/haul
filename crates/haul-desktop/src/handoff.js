@@ -7,6 +7,8 @@
 // One recipe per host whose page passes this way (hosts::Known::page_passes
 // in haul-core says which): where on the page the links turn up.
 (() => {
+  // The page itself, never its frames (see overlays.js).
+  if (window !== window.top) return;
   let handed = false;
   const hand = (files) => {
     if (handed || !files.length) return;
