@@ -1,4 +1,9 @@
-//! gofile: content API with the user's account token, or a guest token.
+//! gofile: the content API, with the user's account token. gofile serves
+//! that API only to premium accounts and to its own website, which signs
+//! each request with a token derived from a secret it rotates; a request
+//! signed with a retired secret gets the address banned. Haul does not
+//! sign: without an account token it leaves the link to a person, without
+//! asking gofile anything.
 
 use std::collections::BTreeMap;
 
@@ -7,51 +12,22 @@ use serde_json::Value;
 use super::{Algo, Checksum, Cx, Entry, ResolveError};
 use crate::config::secret;
 
-/// The `wt` parameter the content API expects.
-const WEBSITE_TOKEN: &str = "4fd6sg89d7s6";
-
-async fn token(cx: &Cx<'_>) -> Result<String, ResolveError> {
-    if let Some(t) = secret(&cx.cfg.gofile_token) {
-        return Ok(t.to_string());
-    }
-    if let Some(t) = cx
-        .tokens
-        .gofile
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-    {
-        return Ok(t);
-    }
-    let base = &cx.cfg.endpoints.gofile;
-    let j: Value = cx
-        .http
-        .client
-        .post(format!("{base}/accounts"))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let t = j["data"]["token"]
-        .as_str()
-        .ok_or_else(|| ResolveError::failed("gofile: no guest token"))?
-        .to_string();
-    *cx.tokens.gofile.lock().unwrap_or_else(|e| e.into_inner()) = Some(t.clone());
-    Ok(t)
-}
-
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
+    let Some(token) = secret(&cx.cfg.gofile_token).map(str::to_string) else {
+        return Err(ResolveError::NeedsUser(
+            "gofile lets only premium accounts and its own website fetch links: open the page, or set a premium gofile_token".into(),
+        ));
+    };
     let id = url
         .trim_end_matches('/')
         .rsplit('/')
         .next()
         .unwrap_or_default();
-    let token = token(cx).await?;
     let base = &cx.cfg.endpoints.gofile;
     let j: Value = cx
         .http
         .client
-        .get(format!("{base}/contents/{id}?wt={WEBSITE_TOKEN}"))
+        .get(format!("{base}/contents/{id}"))
         .bearer_auth(&token)
         .send()
         .await?
@@ -59,8 +35,8 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         .await?;
     match j["status"].as_str().unwrap_or_default() {
         "ok" => {}
-        // Guests cannot use the API for every file, and passwords are typed in
-        // the browser; either way a person has to open the page.
+        // A free account is turned away as a guest is, and passwords are
+        // typed in the browser; either way a person has to open the page.
         status @ ("error-notPremium" | "error-passwordRequired") => {
             return Err(ResolveError::NeedsUser(format!("gofile: {status}")));
         }

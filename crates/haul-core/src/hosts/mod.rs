@@ -662,7 +662,6 @@ fn remote_dns(proxy: &str) -> String {
 /// Session tokens resolvers reuse between calls.
 #[derive(Debug, Default)]
 pub struct Tokens {
-    pub(crate) gofile: Mutex<Option<String>>,
     pub(crate) rapidgator: Mutex<Option<String>>,
 }
 

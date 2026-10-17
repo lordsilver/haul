@@ -142,24 +142,18 @@ async fn pixeldrain_file_list_and_captcha() {
 }
 
 #[tokio::test]
-async fn gofile_guest_token_and_folders() {
-    let accounts = Arc::new(AtomicUsize::new(0));
-    let counter = accounts.clone();
-    let app = Router::new()
-        .route(
-            "/accounts",
-            post(move || {
-                counter.fetch_add(1, Ordering::SeqCst);
-                async { Json(json!({"status": "ok", "data": {"token": "guest"}})) }
-            }),
-        )
-        .route(
-            "/contents/{id}",
-            get(|Path(id): Path<String>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap| async move {
-                assert_eq!(q.get("wt").map(String::as_str), Some("4fd6sg89d7s6"));
-                assert_eq!(headers.get("authorization").unwrap(), "Bearer guest");
+async fn gofile_asks_nothing_without_an_account_and_lists_folders_with_one() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let app = Router::new().route(
+        "/contents/{id}",
+        get(move |Path(id): Path<String>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async move {
+                assert!(!q.contains_key("wt"), "no website token");
+                assert_eq!(headers.get("authorization").unwrap(), "Bearer premium");
                 if id == "locked" {
-                    return Json(json!({"status": "error-notPremium"}));
+                    return Json(json!({"status": "error-passwordRequired"}));
                 }
                 Json(json!({"status": "ok", "data": {"children": {
                     "1": {"type": "file", "name": "x.7z", "size": 5, "link": "https://store.example/x.7z", "md5": "0123456789abcdef0123456789abcdef"},
@@ -167,18 +161,32 @@ async fn gofile_guest_token_and_folders() {
                         "3": {"type": "file", "name": "y.7z", "size": 6, "link": "https://store.example/y.7z"}
                     }}
                 }}}))
-            }),
-        );
+            }
+        }),
+    );
     let base = serve(app).await;
-    let cfg = config(&base);
+    let mut cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
+
     let cx = Cx {
         http: &http,
         cfg: &cfg,
         tokens: &tokens,
         key_service: &http,
     };
+    assert!(matches!(
+        gofile::resolve(&cx, "https://gofile.io/d/abc").await,
+        Err(ResolveError::NeedsUser(_))
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "gofile was not asked");
 
+    cfg.gofile_token = Some("premium".into());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
     let entries = gofile::resolve(&cx, "https://gofile.io/d/abc")
         .await
         .unwrap();
@@ -191,17 +199,12 @@ async fn gofile_guest_token_and_folders() {
     assert_eq!(entries[1].checksum, None);
     assert_eq!(
         entries[0].headers.get("Cookie").map(String::as_str),
-        Some("accountToken=guest")
+        Some("accountToken=premium")
     );
     assert!(matches!(
         gofile::resolve(&cx, "https://gofile.io/d/locked").await,
         Err(ResolveError::NeedsUser(_))
     ));
-    assert_eq!(
-        accounts.load(Ordering::SeqCst),
-        1,
-        "the guest token is reused"
-    );
 }
 
 #[tokio::test]
