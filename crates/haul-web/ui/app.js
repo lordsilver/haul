@@ -174,7 +174,7 @@ function addedMessage(r) {
 
 // ---- views
 
-const ACTIVE = ["downloading", "resolving", "waiting", "queued", "checking"];
+const ACTIVE = ["downloading", "resolving", "waiting", "queued", "checking", "passing"];
 
 // Paused before any byte came: what a wrapper's files are until started.
 const notStarted = (i) => i.status === "paused" && !i.done;
@@ -330,7 +330,7 @@ function needsToast(items) {
 }
 
 function unwrappedToast(w, s) {
-  const waiting = s.items.filter((i) => i.source === w.id && i.status === "paused").length;
+  const waiting = s.items.filter((i) => ofWrapper(i, w.id) && i.status === "paused").length;
   const action = waiting ? { label: "Start all", icon: "play", onclick: () => startWrapper(w) } : { label: "Show", icon: "link", onclick: () => go("wrappers") };
   toast(waiting ? `${wrapperName(w)}: ${plural(waiting, "file")} ready to start` : `${wrapperName(w)} is unwrapped`, "info", action);
 }
@@ -695,6 +695,7 @@ const GLYPHS = {
   waiting: "clock",
   paused: "pause-circle",
   captcha: "warning",
+  passing: "clock",
   done: "checkmark-circle-filled",
   error: "error-circle",
 };
@@ -724,6 +725,8 @@ function caption(it) {
       return of ? `Paused · ${of}` : "Paused";
     case "captcha":
       return "Needs you";
+    case "passing":
+      return "Haul opens its page by itself, in turn";
     case "done":
       return `${it.existing ? "Already downloaded" : "Completed"}${it.size ? ` · ${bytes(it.size)}` : ""}`;
     case "error":
@@ -797,6 +800,19 @@ function openEditor(r, it) {
   input.focus();
 }
 
+// A link's host, without "www.", for a button that names it.
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "page";
+  }
+}
+
+// Whether wrapper `id` lists file `i`: its source, or another wrapper
+// whose links for the same file merged into it.
+const ofWrapper = (i, id) => i.source === id || (i.also_from ?? []).includes(id);
+
 function helpBar(r, it, s) {
   const actions = [];
   if (s.desktop) {
@@ -814,7 +830,7 @@ function helpBar(r, it, s) {
         "a",
         { class: `button${s.desktop ? "" : " accent"}`, href: url, target: "_blank", rel: "noopener noreferrer", title: url },
         icon("open"),
-        s.desktop ? "Open in browser" : "Open page",
+        `Open ${hostOf(url)}`,
       ),
     );
   }
@@ -1085,7 +1101,7 @@ function toggleGroup(key) {
 const groupRows = new Map();
 
 // The glyph shows what needs attention first among the parts.
-const URGENCY = ["error", "captcha", "downloading", "resolving", "waiting", "checking", "queued", "paused", "done"];
+const URGENCY = ["error", "captcha", "downloading", "resolving", "passing", "waiting", "checking", "queued", "paused", "done"];
 
 function makeGroupRow(key) {
   const g = { actionsKey: null, glyphKey: null, members: [] };
@@ -1332,7 +1348,7 @@ function renderWrappers(s) {
       c = makeWrapperCard(w.id);
       wrapperCards.set(w.id, c);
     }
-    const files = s.items.filter((i) => i.source === w.id);
+    const files = s.items.filter((i) => ofWrapper(i, w.id));
     const waiting = files.filter((i) => i.status === "paused");
     const unstarted = files.filter(notStarted);
     setText(c.name, wrapperName(w));

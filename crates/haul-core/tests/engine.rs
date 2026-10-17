@@ -381,6 +381,35 @@ async fn start_server() -> (Server, u16) {
             get(|| async { ([(header::CONTENT_TYPE, "text/html")], "<html><title>Please solve the captcha</title></html>") }),
         )
         .route(
+            "/twin/{id}",
+            // Another vault listing kept.bin under another link; its proof
+            // of work is answered as the main vault's is.
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/html")],
+                    r#"<form method="post" action="/twin/copy">
+                         <input type="hidden" name="csrf_token" value="tok-1">
+                         <altcha-widget challengeurl="/altcha_challenge.php"></altcha-widget>
+                       </form>"#,
+                )
+            })
+            .post(|headers: HeaderMap| async move {
+                let host = headers
+                    .get(header::HOST)
+                    .and_then(|h| h.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                (
+                    [(header::CONTENT_TYPE, "text/html")],
+                    format!(
+                        r#"<div class="link-group" data-host="example.com">
+                             <a class="target-link" href="http://{host}/files/kept.bin?copy=2">local</a>
+                           </div>"#
+                    ),
+                )
+            }),
+        )
+        .route(
             "/vault/{id}",
             // A wrapper page: a no-person proof of work, then the links.
             get(|| async {
@@ -1365,12 +1394,19 @@ async fn a_page_the_desktop_passes_stands_in_for_an_account() {
     let engine = t.engine().await;
     engine.set_pages_pass(true);
     engine.add_text("https://gofile.io/d/folder", "");
-    let s = wait_for(&engine, "the page to wait", |s| {
-        s.items.iter().any(|i| i.status == "captcha")
+    // Waiting for the desktop app to pass its page: nothing for the person.
+    let s = wait_for(&engine, "the page to wait its turn", |s| {
+        s.items.iter().any(|i| i.status == "passing")
     })
     .await;
     assert!(!s.hosts.iter().any(|h| h.needs_account));
     let id = s.items[0].id.clone();
+    // Its window came forward: now it needs the person.
+    engine.page_wants_person(&id);
+    wait_for(&engine, "the page to want a person", |s| {
+        s.items.iter().any(|i| i.status == "captcha")
+    })
+    .await;
     let file = |name: &str| haul_core::hosts::Entry {
         url: format!("{}/files/{name}", t.ip),
         name: Some(name.to_string()),
@@ -1398,6 +1434,50 @@ async fn a_page_the_desktop_passes_stands_in_for_an_account() {
             .iter()
             .any(|h| h.name == "gofile.io" && h.needs_account)
     );
+}
+
+/// Two wrappers listing the same file share its row: each counts it, either
+/// starts it, and removing one leaves it to the other.
+#[tokio::test]
+async fn wrappers_listing_the_same_file_share_it() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://fileguard.cc/vault/abc", "");
+    wrapper_settled(&engine, "done").await;
+    engine.add_text("https://fileguard.cc/twin/copy", "");
+    wait_for(&engine, "both wrappers", |s| {
+        s.wrappers.len() == 2 && s.wrappers.iter().all(|w| w.status == "done")
+    })
+    .await;
+    let s = wait_for(&engine, "one file, its mirrors joined", |s| {
+        s.items.len() == 1 && s.items[0].mirrors.len() == 4
+    })
+    .await;
+    let file = &s.items[0];
+    let twin = s
+        .wrappers
+        .iter()
+        .find(|w| w.url.ends_with("copy"))
+        .unwrap()
+        .id
+        .clone();
+    let first = s
+        .wrappers
+        .iter()
+        .find(|w| w.url.ends_with("abc"))
+        .unwrap()
+        .id
+        .clone();
+    assert_eq!(file.source.as_deref(), Some(first.as_str()));
+    assert_eq!(file.also_from, [twin.clone()]);
+
+    // Removing one wrapper leaves the file to the other.
+    assert!(engine.remove_wrapper(&first));
+    let s = engine.snapshot();
+    assert_eq!(s.items.len(), 1, "still listed by the twin");
+    assert_eq!(s.items[0].source.as_deref(), Some(twin.as_str()));
+    // And that one starts it.
+    assert_eq!(engine.start_wrapper(&twin), Some(1));
 }
 
 /// A release in parts lists part 1, part 2… on every host: one row per part,

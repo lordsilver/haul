@@ -97,10 +97,12 @@ impl Browser {
         self.open(id, url, None, true)?;
         let app = self.app.clone();
         let host = hosts::host_of(url);
+        let (engine, id) = (self.engine.clone(), id.to_string());
         std::thread::spawn(move || {
             std::thread::sleep(SHOW_AFTER);
             if let Some(window) = app.get_webview_window(&label) {
                 tracing::info!("{host} wants a person for its check");
+                engine.page_wants_person(&id);
                 bring_forward(&window);
                 crate::notify_waiting(
                     &app,
@@ -126,9 +128,11 @@ impl Browser {
         let profile = engine.data_dir().join("webview").join("chromium").join(&id);
         std::thread::spawn(move || {
             let shown = {
-                let (app, host) = (app.clone(), host.clone());
+                let (app, host, engine, id) =
+                    (app.clone(), host.clone(), engine.clone(), id.clone());
                 move || {
                     tracing::info!("{host} wants a person for its check");
+                    engine.page_wants_person(&id);
                     crate::notify_waiting(
                         &app,
                         &format!("{host} wants you"),
@@ -176,8 +180,11 @@ impl Browser {
                     }
                 }
                 Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
-                Ok(chromium::Outcome::Closed) => {}
-                Err(e) => tracing::warn!(item = %id, "passing {url}: {e}"),
+                Ok(chromium::Outcome::Closed) => engine.page_wants_person(&id),
+                Err(e) => {
+                    tracing::warn!(item = %id, "passing {url}: {e}");
+                    engine.page_wants_person(&id);
+                }
             }
         });
         Ok(())

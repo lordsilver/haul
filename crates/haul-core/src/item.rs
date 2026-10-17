@@ -66,6 +66,9 @@ pub(crate) struct Item {
     pub failed: HashSet<String>,
     /// Mirrors that need a person before they can be used.
     pub manual_urls: HashSet<String>,
+    /// The desktop app tried this item's page out of sight and it wants a
+    /// person after all (its window came forward, or was closed).
+    pub page_wants_person: bool,
     /// `pre` came from the user (a pasted or captured link).
     pub manual: bool,
     pub name: Option<String>,
@@ -111,12 +114,31 @@ pub(crate) struct Item {
     pub wrapper: bool,
     /// The wrapper row a file came from.
     pub source: Option<String>,
+    /// Other wrappers that list the same file (its links merged here as
+    /// mirrors): it counts, starts and stays as theirs too.
+    pub also_from: Vec<String>,
     /// A wrapper page's own name for what it holds.
     pub title: Option<String>,
     pub found: Option<Found>,
 }
 
 impl Item {
+    /// Whether wrapper `id` lists this file, as its source or as another
+    /// wrapper whose links merged here.
+    pub fn listed_by(&self, id: &str) -> bool {
+        self.source.as_deref() == Some(id) || self.also_from.iter().any(|w| w == id)
+    }
+
+    /// Takes in the wrappers a merged row came from, beside this file's
+    /// own. A row the user added keeps no source: it stays theirs.
+    pub fn merge_wrappers(&mut self, source: Option<&String>, also: &[String]) {
+        for w in source.into_iter().chain(also) {
+            if self.source.as_ref() != Some(w) && !self.also_from.contains(w) {
+                self.also_from.push(w.clone());
+            }
+        }
+    }
+
     pub fn new(urls: Vec<String>, name: Option<String>, package: String) -> Self {
         Self {
             id: uuid::Uuid::new_v4().simple().to_string()[..10].to_string(),
@@ -150,6 +172,8 @@ impl Item {
             exit: None,
             wrapper: false,
             source: None,
+            also_from: Vec::new(),
+            page_wants_person: false,
             title: None,
             found: None,
         }
@@ -191,6 +215,7 @@ impl Item {
             existing: self.existing,
             wrapper: self.wrapper,
             source: self.source.clone(),
+            also_from: self.also_from.clone(),
             title: self.title.clone(),
             found: self.found,
         }
@@ -232,6 +257,7 @@ impl Item {
         it.existing = s.existing;
         it.wrapper = s.wrapper;
         it.source = s.source;
+        it.also_from = s.also_from;
         it.title = s.title;
         it.found = s.found;
         it.status = match s.status {
@@ -273,6 +299,8 @@ pub(crate) struct Saved {
     pub wrapper: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_from: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

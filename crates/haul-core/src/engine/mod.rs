@@ -125,7 +125,10 @@ impl FromStr for ItemAction {
 /// any more: they stood for those files, and starting or removing them
 /// would do nothing.
 fn drop_spent_wrappers(items: &mut IndexMap<String, Item>) {
-    let sources: HashSet<String> = items.values().filter_map(|i| i.source.clone()).collect();
+    let sources: HashSet<String> = items
+        .values()
+        .flat_map(|i| i.source.iter().chain(&i.also_from).cloned())
+        .collect();
     items.retain(|id, i| !(i.wrapper && i.status == Status::Done && !sources.contains(id)));
 }
 
@@ -246,6 +249,8 @@ pub struct ItemView {
     pub verifying: Verifying,
     /// The wrapper it came from.
     pub source: Option<String>,
+    /// Other wrappers that list it too.
+    pub also_from: Vec<String>,
 }
 
 /// A wrapper link: a page or container of further links, which unwrapping
@@ -2136,11 +2141,10 @@ impl Engine {
                     .filter(|m| !st.items[&other].mirrors.contains(m))
                     .cloned()
                     .collect();
-                st.items
-                    .get_mut(&other)
-                    .expect("listed above")
-                    .mirrors
-                    .extend(extra);
+                let (source, also) = (st.items[id].source.clone(), st.items[id].also_from.clone());
+                let o = st.items.get_mut(&other).expect("listed above");
+                o.mirrors.extend(extra);
+                o.merge_wrappers(source.as_ref(), &also);
                 return true;
             }
             let o = st.items.shift_remove(&other).expect("listed above");
@@ -2151,6 +2155,7 @@ impl Engine {
                 }
             }
             it.manual_urls.extend(o.manual_urls);
+            it.merge_wrappers(o.source.as_ref(), &o.also_from);
             if it.checksum.is_none() {
                 it.checksum = o.checksum;
             }
@@ -2571,6 +2576,7 @@ impl Engine {
                     it.status = Status::Queued;
                 }
                 it.manual_urls.clear();
+                it.page_wants_person = false;
             }
             ItemAction::Remove => {
                 let running = it.running();
@@ -2661,6 +2667,16 @@ impl Engine {
     /// A host's page, passed out of sight, said its file is gone: that
     /// mirror failed like any other, and the item goes on to the next one
     /// (or fails with `reason` when none is left), asking nobody.
+    /// The desktop app's page for item `id` wants a person after all: the
+    /// item shows as needing one from now on, until it is tried again.
+    pub fn page_wants_person(&self, id: &str) {
+        let mut st = self.lock();
+        if let Some(it) = st.items.get_mut(id) {
+            it.page_wants_person = true;
+        }
+        self.touch(&mut st);
+    }
+
     pub fn page_gone(&self, id: &str, reason: &str) {
         let Some(page) = self.page_for(id) else {
             return;
@@ -2850,7 +2866,7 @@ impl Engine {
         }
         let mut started = 0;
         for it in st.items.values_mut() {
-            if it.source.as_deref() == Some(id) && it.status == Status::Paused && !it.wrapper {
+            if it.listed_by(id) && it.status == Status::Paused && !it.wrapper {
                 it.status = Status::Queued;
                 started += 1;
             }
@@ -2872,6 +2888,17 @@ impl Engine {
             };
             if let Some(t) = &w.task {
                 t.cancel();
+            }
+            // A file another wrapper lists too stays, as that one's.
+            for it in st
+                .items
+                .values_mut()
+                .filter(|i| i.listed_by(id) && !i.wrapper)
+            {
+                it.also_from.retain(|w| w != id);
+                if it.source.as_deref() == Some(id) && !it.also_from.is_empty() {
+                    it.source = Some(it.also_from.remove(0));
+                }
             }
             let gone: Vec<String> = st
                 .items
@@ -2925,6 +2952,7 @@ impl Engine {
         // Before the state's lock: the two are always taken in this order.
         let reconnect = self.reconnect_view();
         let services = self.services_view();
+        let pages = self.pages_pass();
         let pool = {
             let cfg = self.cfg();
             let proxies = cfg.proxy_pool().len();
@@ -2994,6 +3022,14 @@ impl Engine {
                 package: it.package.clone(),
                 status: if it.status == Status::Queued && !it.probed {
                     "checking"
+                } else if it.status == Status::Captcha
+                    && pages
+                    && !it.page_wants_person
+                    && it.manual_urls.iter().any(|u| hosts::page_passes(u))
+                {
+                    // The desktop app passes one of its pages by itself, in
+                    // turn: nothing for the person yet.
+                    "passing"
                 } else {
                     it.status.as_str()
                 },
@@ -3011,6 +3047,7 @@ impl Engine {
                 existing: it.existing,
                 verifying: it.verifying,
                 source: it.source.clone(),
+                also_from: it.also_from.clone(),
             })
             .collect();
         let route = |name: &str| {
