@@ -2,8 +2,9 @@
 //! host's page in a window of its own, and when the page starts the download,
 //! the app stops it and hands the link (with the page's cookies) to the
 //! engine, which downloads it with resume and the usual limits. On a page
-//! whose link Haul knows where to find (vikingfile's), the window takes it as
-//! soon as the page has it, without the download button.
+//! whose links Haul knows where to find (`handoff.js` has a recipe per host:
+//! vikingfile's button, gofile's folder listing), the window takes them as
+//! soon as the page has them, without the download button.
 //!
 //! With a proxy configured, the window goes through it too, by way of the
 //! local bridge, because browser engines cannot pass proxy credentials.
@@ -138,8 +139,12 @@ impl Browser {
             .on_download(move |_, event| on_download.on_download(event))
             .on_new_window(move |url, _| capture.on_popup(url))
             .on_navigation(move |url| match handed_off(url) {
-                Some(Handoff { link, name, agent }) => {
-                    on_handoff.take_as(link, name, agent);
+                Some(Handoff { files, agent }) => {
+                    on_handoff.take_files(files, agent);
+                    false
+                }
+                None if let Some(reason) = gone(url) => {
+                    on_handoff.gone(&reason);
                     false
                 }
                 None => lock(&on_navigation).navigating(url.as_str()),
@@ -251,16 +256,26 @@ fn bring_forward(window: &WebviewWindow) {
     let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
 }
 
-/// What the hand-off script sends: the link, the file's name and the
-/// window's user agent, which the download then uses too.
+/// One file the hand-off script sends.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+struct Handed {
+    url: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+/// What the hand-off script sends: a host's files (one, or a folder's) and
+/// the window's user agent, which the downloads then use too.
 #[derive(Debug, PartialEq)]
 struct Handoff {
-    link: Url,
-    name: Option<String>,
+    files: Vec<(Url, Handed)>,
     agent: Option<String>,
 }
 
-/// The hand-off script's message, when `url` is one.
+/// The hand-off script's message, when `url` is one. Only http(s) links
+/// count; a message with none is not one.
 fn handed_off(url: &Url) -> Option<Handoff> {
     if url.host_str() != Some("haul.invalid") || url.path() != "/take" {
         return None;
@@ -270,14 +285,35 @@ fn handed_off(url: &Url) -> Option<Handoff> {
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.into_owned())
     };
-    let link: Url = pair("url")?.parse().ok()?;
-    if !matches!(link.scheme(), "http" | "https") {
+    let sent: Vec<Handed> = serde_json::from_str(&pair("files")?).ok()?;
+    let files: Vec<(Url, Handed)> = sent
+        .into_iter()
+        .filter_map(|f| {
+            let link: Url = f.url.parse().ok()?;
+            matches!(link.scheme(), "http" | "https").then_some((link, f))
+        })
+        .collect();
+    (!files.is_empty()).then(|| Handoff {
+        files,
+        agent: pair("agent").filter(|a| !a.is_empty()),
+    })
+}
+
+/// The reason the hand-off script gives when the page says its file is
+/// gone, when `url` is that message.
+fn gone(url: &Url) -> Option<String> {
+    if url.host_str() != Some("haul.invalid") || url.path() != "/gone" {
         return None;
     }
-    Some(Handoff {
-        link,
-        name: pair("name").filter(|n| !n.is_empty()),
-        agent: pair("agent").filter(|a| !a.is_empty()),
+    let reason = url
+        .query_pairs()
+        .find(|(k, _)| k == "reason")
+        .map(|(_, v)| v.into_owned())
+        .unwrap_or_default();
+    Some(if reason.is_empty() {
+        "the page says the file is gone".into()
+    } else {
+        reason
     })
 }
 
@@ -356,12 +392,32 @@ impl Capture {
     /// Hands the download to the engine with the page's cookies, then closes
     /// the window.
     fn take(&self, url: Url, name: Option<String>) {
-        self.take_as(url, name, None);
+        let file = Handed {
+            url: url.to_string(),
+            name,
+            size: None,
+        };
+        self.take_files(vec![(url, file)], None);
     }
 
-    /// [`Capture::take`], with the user agent the page itself reports when
-    /// the window was opened without one.
-    fn take_as(&self, url: Url, name: Option<String>, agent: Option<String>) {
+    /// The page says its file is gone: the mirror failed, and the window
+    /// closes without asking anyone.
+    fn gone(&self, reason: &str) {
+        self.engine.page_gone(&self.id, reason);
+        if let Some(window) = self.app.get_webview_window(&self.label) {
+            let window = window.clone();
+            // Not from inside the webview's own event.
+            std::thread::spawn(move || {
+                let _ = window.close();
+            });
+        }
+    }
+
+    /// Hands what the page gave (a file, or a folder's files) to the engine,
+    /// each link with the page's cookies for it, then closes the window. The
+    /// user agent the page reports stands in when the window was opened
+    /// without one.
+    fn take_files(&self, files: Vec<(Url, Handed)>, agent: Option<String>) {
         let mut this = self.clone();
         if this.user_agent.is_none() {
             this.user_agent = agent;
@@ -369,31 +425,41 @@ impl Capture {
         // Reading cookies needs the main thread, which is running this handler.
         std::thread::spawn(move || {
             let window = this.app.get_webview_window(&this.label);
-            let mut headers = BTreeMap::new();
-            if let Some(window) = &window {
-                if let Ok(cookies) = window.cookies_for_url(url.clone())
-                    && !cookies.is_empty()
-                {
-                    let cookie = cookies
-                        .iter()
-                        .map(|c| format!("{}={}", c.name(), c.value()))
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    headers.insert("Cookie".to_string(), cookie);
-                }
-                if let Ok(page) = window.url() {
-                    headers.insert("Referer".to_string(), page.to_string());
-                }
-            }
-            if let Some(agent) = &this.user_agent {
-                headers.insert("User-Agent".to_string(), agent.clone());
-            }
-            match this
-                .engine
-                .set_direct(&this.id, url.as_str(), headers, name)
-            {
+            let page = window.as_ref().and_then(|w| w.url().ok());
+            let entries: Vec<hosts::Entry> = files
+                .into_iter()
+                .map(|(link, file)| {
+                    let mut headers = BTreeMap::new();
+                    if let Some(window) = &window
+                        && let Ok(cookies) = window.cookies_for_url(link.clone())
+                        && !cookies.is_empty()
+                    {
+                        let cookie = cookies
+                            .iter()
+                            .map(|c| format!("{}={}", c.name(), c.value()))
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        headers.insert("Cookie".to_string(), cookie);
+                    }
+                    if let Some(page) = &page {
+                        headers.insert("Referer".to_string(), page.to_string());
+                    }
+                    if let Some(agent) = &this.user_agent {
+                        headers.insert("User-Agent".to_string(), agent.clone());
+                    }
+                    hosts::Entry {
+                        url: link.to_string(),
+                        name: file.name.filter(|n| !n.is_empty()),
+                        size: file.size,
+                        headers,
+                        ..hosts::Entry::default()
+                    }
+                })
+                .collect();
+            let count = entries.len();
+            match this.engine.set_files(&this.id, entries) {
                 Ok(()) => {
-                    tracing::info!("took over the download for item {}", this.id);
+                    tracing::info!("took over {count} file(s) for item {}", this.id);
                     if let Some(window) = window {
                         let _ = window.close();
                     }
@@ -409,18 +475,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_page_hands_off_its_link() {
-        let sent: Url =
-            "https://haul.invalid/take?url=https%3A%2F%2Fcdn.example%2Fa%20b.rar&name=a+b.rar"
-                .parse()
-                .unwrap();
+    fn a_page_hands_off_its_files() {
+        let files = r#"[{"url":"https://cdn.example/a b.rar","name":"a b.rar","size":5},{"url":"https://cdn.example/c.rar"},{"url":"javascript:alert(1)"}]"#;
+        let mut sent = Url::parse("https://haul.invalid/take").unwrap();
+        sent.query_pairs_mut()
+            .append_pair("files", files)
+            .append_pair("agent", "UA");
         let got = handed_off(&sent).unwrap();
-        assert_eq!(got.link.as_str(), "https://cdn.example/a%20b.rar");
-        assert_eq!(got.name.as_deref(), Some("a b.rar"));
-        assert_eq!(got.agent, None);
+        let links: Vec<&str> = got.files.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(
+            links,
+            ["https://cdn.example/a%20b.rar", "https://cdn.example/c.rar"],
+            "http(s) only"
+        );
+        assert_eq!(got.files[0].1.name.as_deref(), Some("a b.rar"));
+        assert_eq!(got.files[0].1.size, Some(5));
+        assert_eq!(got.agent.as_deref(), Some("UA"));
         for other in [
             "https://vik1ngfile.site/f/x",
-            "https://haul.invalid/take?url=javascript%3Aalert(1)",
+            "https://haul.invalid/take?files=%5B%7B%22url%22%3A%22javascript%3Ax%22%7D%5D",
             "https://haul.invalid/take",
         ] {
             assert_eq!(handed_off(&other.parse().unwrap()), None, "{other}");

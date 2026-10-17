@@ -314,9 +314,10 @@ impl Config {
     }
 
     /// Whether `host`'s links are left out: the user turned it off, or it
-    /// needs an account that is not set.
-    pub fn is_off(&self, host: &str) -> bool {
-        self.is_disabled(host) || crate::hosts::known(host).is_some_and(|k| k.lacks_account(self))
+    /// needs an account that is not set (see [`crate::hosts::Known::lacks_account`]).
+    pub fn is_off(&self, host: &str, pages: bool) -> bool {
+        self.is_disabled(host)
+            || crate::hosts::known(host).is_some_and(|k| k.lacks_account(self, pages))
     }
 
     /// The subfolder for files from `host`, relative to the download folder;

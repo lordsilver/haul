@@ -631,7 +631,10 @@ impl Engine {
         let theme_changed = new.theme != old.theme;
         // Hosts an account just set turns on: what waited on them goes again.
         let unlocked: Vec<&str> = hosts::all()
-            .filter(|k| k.lacks_account(&old) && !k.lacks_account(&new))
+            .filter(|k| {
+                k.lacks_account(&old, self.pages_pass())
+                    && !k.lacks_account(&new, self.pages_pass())
+            })
             .flat_map(|k| k.names.iter().copied())
             .collect();
         let retry_changed = new.retry_failed_minutes != old.retry_failed_minutes;

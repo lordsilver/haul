@@ -95,6 +95,8 @@ async fn start(app: &AppHandle, data_dir: PathBuf) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())?;
+    // This app passes hosts' pages out of sight (see passing.rs).
+    engine.set_pages_pass(true);
     let port = std::env::var("HAUL_PORT")
         .ok()
         .and_then(|p| p.parse().ok())

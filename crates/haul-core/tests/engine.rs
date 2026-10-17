@@ -1356,6 +1356,50 @@ async fn a_host_that_needs_an_account_is_off_without_one() {
     assert!(!s.hosts.iter().any(|h| h.needs_account));
 }
 
+/// Where the desktop app passes pages, a host whose page passes needs no
+/// account: its link waits for the page, and the folder the page hands
+/// back becomes one row per file.
+#[tokio::test]
+async fn a_page_the_desktop_passes_stands_in_for_an_account() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.add_text("https://gofile.io/d/folder", "");
+    let s = wait_for(&engine, "the page to wait", |s| {
+        s.items.iter().any(|i| i.status == "captcha")
+    })
+    .await;
+    assert!(!s.hosts.iter().any(|h| h.needs_account));
+    let id = s.items[0].id.clone();
+    let file = |name: &str| haul_core::hosts::Entry {
+        url: format!("{}/files/{name}", t.ip),
+        name: Some(name.to_string()),
+        ..Default::default()
+    };
+    engine
+        .set_files(&id, vec![file("one.bin"), file("two.bin")])
+        .unwrap();
+    let s = wait_for(&engine, "both files", all_done).await;
+    let mut names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, ["one.bin", "two.bin"]);
+
+    // Without the desktop app, the same host needs its account.
+    engine.set_pages_pass(false);
+    engine.add_text("https://gofile.io/d/other", "");
+    let s = wait_for(&engine, "the account asked for", |s| {
+        s.items
+            .iter()
+            .any(|i| i.error.contains("gofile.io (needs an account)"))
+    })
+    .await;
+    assert!(
+        s.hosts
+            .iter()
+            .any(|h| h.name == "gofile.io" && h.needs_account)
+    );
+}
+
 /// A release in parts lists part 1, part 2… on every host: one row per part,
 /// each with every host as a mirror, named after the links that name it.
 #[tokio::test]

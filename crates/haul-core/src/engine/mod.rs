@@ -747,6 +747,8 @@ struct Inner {
     verifier: Semaphore,
     /// `State::paused`, for comparisons running outside the lock.
     paused_now: Arc<AtomicBool>,
+    /// The desktop app passes hosts' pages out of sight ([`Engine::set_pages_pass`]).
+    pages_pass: AtomicBool,
     save_lock: Mutex<()>,
     rename_lock: Mutex<()>,
     shutdown: CancellationToken,
@@ -848,6 +850,7 @@ impl Engine {
             probes: Semaphore::new(4),
             verifier: Semaphore::new(1),
             paused_now: Arc::new(AtomicBool::new(paused)),
+            pages_pass: AtomicBool::new(false),
             save_lock: Mutex::new(()),
             rename_lock: Mutex::new(()),
             shutdown: CancellationToken::new(),
@@ -1117,7 +1120,7 @@ impl Engine {
             let url = it
                 .mirrors
                 .iter()
-                .find(|m| !cfg.is_off(&hosts::host_of(m)))
+                .find(|m| !cfg.is_off(&hosts::host_of(m), self.pages_pass()))
                 .cloned();
             let http = self.http_for(&hosts::host_of(url.as_deref().unwrap_or_default()), &st);
             (url, http, self.key_service(&st))
@@ -1438,7 +1441,7 @@ impl Engine {
                 let due = checked
                     .get(&host)
                     .is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
-                if !due || cfg.is_off(&host) {
+                if !due || cfg.is_off(&host, self.pages_pass()) {
                     continue;
                 }
                 checked.insert(host.clone(), Instant::now());
@@ -1583,7 +1586,8 @@ impl Engine {
     /// mirror is left.
     fn pick(&self, st: &mut State, id: &str, now: Instant) -> Option<(String, Exit)> {
         let cfg = self.cfg();
-        let off = |m: &String| cfg.is_off(&hosts::host_of(m));
+        let pages = self.pages_pass();
+        let off = |m: &String| cfg.is_off(&hosts::host_of(m), pages);
         let it = &st.items[id];
         let candidates: Vec<String> = it
             .mirrors
@@ -1607,7 +1611,7 @@ impl Engine {
                 let mut names: Vec<String> = only_off
                     .into_iter()
                     .map(|h| match hosts::known(&h) {
-                        Some(k) if k.lacks_account(&cfg) && !cfg.is_disabled(&h) => {
+                        Some(k) if k.lacks_account(&cfg, pages) && !cfg.is_disabled(&h) => {
                             format!("{h} (needs an account)")
                         }
                         _ => h,
@@ -2617,6 +2621,65 @@ impl Engine {
 
     /// Uses a direct link the user supplied (pasted, or caught from the
     /// in-app browser) for this item.
+    /// Says the desktop app passes the pages of hosts that allow it out of
+    /// sight ([`hosts::Known::page_passes`]), so such a host needs no
+    /// account here.
+    pub fn set_pages_pass(&self, on: bool) {
+        self.0.pages_pass.store(on, Ordering::Relaxed);
+        self.touch(&mut self.lock());
+        self.0.wake.notify_one();
+    }
+
+    pub(crate) fn pages_pass(&self) -> bool {
+        self.0.pages_pass.load(Ordering::Relaxed)
+    }
+
+    /// What a host's page handed back for item `id`: its file's link, or a
+    /// folder's files, each row with its own. One file keeps the row and its
+    /// other mirrors ([`Engine::set_direct`]); several take its place.
+    pub fn set_files(&self, id: &str, files: Vec<Entry>) -> Result<(), String> {
+        match files.len() {
+            0 => Err("the page handed back no file".into()),
+            1 => {
+                let file = files.into_iter().next().expect("one");
+                self.set_direct(id, &file.url, file.headers, file.name)
+            }
+            _ => {
+                let page = self.page_for(id).ok_or("no such item")?;
+                if files.iter().any(|f| {
+                    !url::Url::parse(&f.url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
+                }) {
+                    return Err("not an http(s) link".into());
+                }
+                self.expand(id, &page, files);
+                self.0.wake.notify_one();
+                Ok(())
+            }
+        }
+    }
+
+    /// A host's page, passed out of sight, said its file is gone: that
+    /// mirror failed like any other, and the item goes on to the next one
+    /// (or fails with `reason` when none is left), asking nobody.
+    pub fn page_gone(&self, id: &str, reason: &str) {
+        let Some(page) = self.page_for(id) else {
+            return;
+        };
+        let mut st = self.lock();
+        if let Some(it) = st.items.get_mut(id) {
+            tracing::info!(item = %id, "{page}: {reason}");
+            it.manual_urls.remove(&page);
+            it.failed.insert(page);
+            it.error = reason.to_string();
+            if it.status == Status::Captcha {
+                it.status = Status::Queued;
+            }
+        }
+        self.touch(&mut st);
+        drop(st);
+        self.0.wake.notify_one();
+    }
+
     pub fn set_direct(
         &self,
         id: &str,
@@ -2987,7 +3050,8 @@ impl Engine {
                     folder: cfg.folder_for(name).display().to_string(),
                     preferred: cfg.preference(name),
                     disabled: cfg.is_disabled(name),
-                    needs_account: hosts::known(name).is_some_and(|k| k.lacks_account(&cfg)),
+                    needs_account: hosts::known(name)
+                        .is_some_and(|k| k.lacks_account(&cfg, self.pages_pass())),
                     cap: st.lanes_of(name).filter_map(|l| l.cap).min(),
                     quota: quota_view(exits.iter().filter_map(|e| lane(e).and_then(|l| l.quota))),
                     free: hosts::known(name)
@@ -3032,7 +3096,8 @@ impl Engine {
                 folder: cfg.folder_for(&name).display().to_string(),
                 preferred: cfg.preference(&name),
                 disabled: cfg.is_disabled(&name),
-                needs_account: hosts::known(&name).is_some_and(|k| k.lacks_account(&cfg)),
+                needs_account: hosts::known(&name)
+                    .is_some_and(|k| k.lacks_account(&cfg, self.pages_pass())),
                 cap: None,
                 exits: self.exits_for(&name, &st).len(),
                 free: hosts::known(&name)

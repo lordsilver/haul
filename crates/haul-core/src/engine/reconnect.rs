@@ -219,7 +219,7 @@ impl Engine {
                 )
             })
             .flat_map(|i| i.mirrors.iter().map(|m| hosts::host_of(m)))
-            .filter(|h| !cfg.is_off(h))
+            .filter(|h| !cfg.is_off(h, self.pages_pass()))
             .collect();
         hosts.sort();
         hosts.dedup();

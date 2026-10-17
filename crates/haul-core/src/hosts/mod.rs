@@ -379,9 +379,11 @@ impl Known {
             })
     }
 
-    /// It needs an account the user has not set: its links are left out.
-    pub fn lacks_account(&self, cfg: &Config) -> bool {
-        self.needs_account && !self.has_account(cfg)
+    /// It needs an account the user has not set, and no page passed out of
+    /// sight stands in for one (`pages`: the desktop app passes pages):
+    /// its links are left out.
+    pub fn lacks_account(&self, cfg: &Config, pages: bool) -> bool {
+        self.needs_account && !self.has_account(cfg) && !(pages && self.page_passes)
     }
 
     /// The downloads at once it allows one address, unless an account
@@ -419,7 +421,7 @@ static KNOWN: &[Known] = &[
             slowed_to: None,
         },
         tells_allowance: false,
-        page_passes: false,
+        page_passes: true,
         needs_account: true,
     },
     Known {
