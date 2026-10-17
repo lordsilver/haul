@@ -120,6 +120,9 @@ struct Server {
     busy: Arc<AtomicUsize>,
     /// Times the stand-in router was asked to redial; its address follows.
     redials: Arc<AtomicUsize>,
+    /// The address the internet sees stays the same across redials, as
+    /// behind a carrier's shared address.
+    public_kept: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Counts a /busy transfer out when its body is done or dropped.
@@ -566,6 +569,19 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/ip",
+            // The address the internet sees: what the router last got, or
+            // the same one throughout when the line keeps it.
+            get(|State(s): State<Server>| async move {
+                let redials = s.redials.load(Ordering::SeqCst);
+                if s.public_kept.load(Ordering::SeqCst) {
+                    "203.0.113.9".to_string()
+                } else {
+                    format!("203.0.113.{}", redials + 1)
+                }
+            }),
+        )
+        .route(
             "/api/misc/rate_limits",
             // This address is past its day's full-speed bytes.
             get(|| async {
@@ -663,6 +679,7 @@ impl Setup {
                 filecrypt: self.ip.clone(),
                 dlc_service: format!("{}/dlc", self.ip),
                 router: format!("{}/igddesc.xml", self.ip),
+                ip_echo: format!("{}/ip", self.ip),
                 nordvpn: self.ip.clone(),
                 ..Endpoints::default()
             },
@@ -2492,11 +2509,43 @@ async fn the_router_gets_a_new_address() {
         Some("Test Box 1")
     );
     let address = engine.reconnect("a test").await.unwrap();
-    assert_eq!(address, "10.0.0.2");
+    assert_eq!(address, "203.0.113.2", "the address the internet sees");
     assert_eq!(t.server.redials.load(Ordering::SeqCst), 1);
     let s = engine.snapshot();
     assert!(!s.reconnect.busy);
     assert!(s.reconnect.note.unwrap().contains("Got a new address"));
+}
+
+/// A redial whose router reports a new address while the internet still
+/// sees the old one (a carrier's shared address) is no new address.
+#[tokio::test]
+async fn a_new_address_counts_only_when_the_internet_sees_it() {
+    let t = Setup::new().await;
+    t.server.public_kept.store(true, Ordering::SeqCst);
+    let engine = t.engine().await;
+    engine.find_router().await;
+    let err = engine.reconnect("a test").await.unwrap_err();
+    assert!(err.contains("still sees 203.0.113.9"), "{err}");
+    let s = engine.snapshot();
+    assert!(s.reconnect.failed);
+    assert!(s.reconnect.note.unwrap().contains("No new address"));
+}
+
+/// A switch for redialing on its own is refused, and nothing is stopped,
+/// while no redial can work: a FRITZ!Box without its login.
+#[tokio::test]
+async fn redialing_on_its_own_needs_a_way_to_redial() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.find_router().await;
+    let on = json!({"reconnect": true});
+    engine.update_settings(on.as_object().unwrap()).unwrap();
+    assert!(
+        engine.snapshot().reconnect.blocked.is_none(),
+        "this router needs no login"
+    );
+    let cmd = json!({"reconnect": false});
+    engine.update_settings(cmd.as_object().unwrap()).unwrap();
 }
 
 /// A stand-in SOCKS5 server: username and password auth with these

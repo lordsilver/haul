@@ -668,6 +668,8 @@ pub struct Endpoints {
     /// The router's description; empty to look for it on the network.
     pub router: String,
     pub nordvpn: String,
+    /// Answers the public address a request comes from, as plain text.
+    pub ip_echo: String,
 }
 
 impl Default for Endpoints {
@@ -686,6 +688,7 @@ impl Default for Endpoints {
             mirrored: "https://www.mirrored.to".into(),
             router: String::new(),
             nordvpn: "https://api.nordvpn.com".into(),
+            ip_echo: "https://api.ipify.org".into(),
         }
     }
 }

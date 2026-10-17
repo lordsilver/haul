@@ -155,6 +155,11 @@ pub enum Event {
     },
     /// The theme changed, in the app or in the settings file.
     ThemeChanged(Theme),
+    /// Something the person should hear about that is no download's.
+    Notice {
+        title: String,
+        body: String,
+    },
 }
 
 /// The addresses in use: this machine's line, proxies of the settings and

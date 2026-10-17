@@ -31,6 +31,9 @@ pub struct Router {
     /// TR-064's description, when the router has one (a FRITZ!Box does).
     #[serde(skip)]
     tr064: Option<String>,
+    /// It turned a redial over UPnP away before: it needs its login.
+    #[serde(skip)]
+    pub upnp_refused: bool,
 }
 
 static MODEL: LazyLock<Regex> =
@@ -130,6 +133,7 @@ async fn describe(http: &reqwest::Client, place: &str) -> Option<Router> {
         service,
         control: control?,
         tr064,
+        upnp_refused: false,
     })
 }
 
@@ -163,6 +167,12 @@ impl Router {
             return Err(why);
         }
         Ok(text)
+    }
+
+    /// Whether a redial needs the router's login (TR-064): a FRITZ!Box
+    /// refuses the one over UPnP, as any router that turned it away before.
+    pub fn needs_login(&self) -> bool {
+        self.upnp_refused || self.model.contains("FRITZ!Box")
     }
 
     /// The address the internet sees, as the router says.

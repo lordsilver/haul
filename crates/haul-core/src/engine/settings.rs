@@ -236,6 +236,8 @@ impl Engine {
                 }
                 "reconnect" => {
                     let on = value.as_bool().ok_or("reconnect is true or false")?;
+                    // Checked against the rest of this change below: a login
+                    // set in the same request counts.
                     cfg.reconnect = on;
                     writes.push(top(key, Some(on.into())));
                 }
@@ -406,6 +408,13 @@ impl Engine {
                 }
                 _ => return Err(format!("unknown setting {key}")),
             }
+        }
+        // Redialing on its own is switched on only when a redial can work.
+        if cfg.reconnect
+            && changes.contains_key("reconnect")
+            && let Some(why) = self.redial_blocker(&cfg)
+        {
+            return Err(format!("cannot get a new IP on its own: {why}"));
         }
         self.write_and_apply(cfg, writes)
     }

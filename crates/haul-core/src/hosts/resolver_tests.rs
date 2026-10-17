@@ -44,6 +44,7 @@ fn config(base: &str) -> Config {
             vikingfile: base.into(),
             mirrored: base.into(),
             router: format!("{base}/igddesc.xml"),
+            ip_echo: format!("{base}/ip"),
             nordvpn: base.into(),
         },
         ..Config::default()

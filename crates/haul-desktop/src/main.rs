@@ -415,12 +415,14 @@ fn summarize(events: &[Event]) -> Vec<(String, String, bool)> {
     let mut finished = Vec::new();
     let mut waiting = Vec::new();
     let mut failed = Vec::new();
+    let mut notices = Vec::new();
     for e in events {
         match e {
             Event::Finished { name, .. } => finished.push(name.as_str()),
             Event::NeedsUser { name, .. } => waiting.push(name.as_str()),
             Event::Failed { name, error, .. } => failed.push(format!("{name}: {error}")),
             Event::ThemeChanged(_) => {}
+            Event::Notice { title, body } => notices.push((title.clone(), body.clone())),
         }
     }
     let list = |names: &[&str]| {
@@ -446,6 +448,9 @@ fn summarize(events: &[Event]) -> Vec<(String, String, bool)> {
             ),
             true,
         ));
+    }
+    for (title, body) in notices {
+        out.push((title, body, false));
     }
     match failed.len() {
         0 => {}
