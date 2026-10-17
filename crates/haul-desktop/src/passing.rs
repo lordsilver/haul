@@ -19,7 +19,9 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
                 .snapshot()
                 .items
                 .into_iter()
-                .filter(|i| i.status == "captcha")
+                // Waiting their turn ("passing"), or shown to the person after
+                // their turn ("captcha"): kept, so the tried set stays theirs.
+                .filter(|i| i.status == "passing" || i.status == "captcha")
                 .filter_map(|i| {
                     let page = i.open_urls.iter().find(|u| hosts::page_passes(u))?;
                     Some((i.id, page.clone()))
