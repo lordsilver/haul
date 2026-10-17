@@ -24,16 +24,16 @@ Early. Working today:
 
 ## Install
 
-Windows: download the installer from the [releases](https://github.com/garysassano/haul/releases) (`Haul_<version>_x64-setup.exe`). It asks whether to install for you alone, in `%LOCALAPPDATA%\Haul` without administrator rights, or for everyone on the computer, in Program Files; on an administrator account Windows asks for permission as it starts. For a silent install, pass `/S` with `/CurrentUser` or `/AllUsers`. The `.msi` always installs for everyone. The installer is not code-signed yet, so SmartScreen asks once: **More info**, then **Run anyway**. Windows 10 and 11 ship the WebView2 runtime the app needs.
+Windows: download the installer from the [releases](https://github.com/lordsilver/haul/releases) (`haul-desktop-v<version>-x86_64-pc-windows-msvc-setup.exe`). It asks whether to install for you alone, in `%LOCALAPPDATA%\Haul` without administrator rights, or for everyone on the computer, in Program Files; on an administrator account Windows asks for permission as it starts. For a silent install, pass `/S` with `/CurrentUser` or `/AllUsers`. The `.msi` always installs for everyone. The installer is not code-signed yet, so SmartScreen asks once: **More info**, then **Run anyway**. Windows 10 and 11 ship the WebView2 runtime the app needs.
 
 From source, with Rust stable:
 
 ```sh
 # Headless server with the web UI
-cargo install --locked --git https://github.com/garysassano/haul haul-web
+cargo install --locked --git https://github.com/lordsilver/haul haul-web
 
 # Desktop app (on Linux it needs WebKitGTK 4.1, see .github/workflows/ci.yml)
-git clone https://github.com/garysassano/haul && cd haul
+git clone https://github.com/lordsilver/haul && cd haul
 cargo build --release -p haul-desktop        # target/release/haul-desktop(.exe)
 cd crates/haul-desktop && npx @tauri-apps/cli@2 build   # installers in target/release/bundle
 ```

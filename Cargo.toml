@@ -9,4 +9,4 @@ default-members = ["crates/haul-core", "crates/haul-web"]
 version = "0.14.0"
 edition = "2024"
 rust-version = "1.96"
-repository = "https://github.com/garysassano/haul"
+repository = "https://github.com/lordsilver/haul"
