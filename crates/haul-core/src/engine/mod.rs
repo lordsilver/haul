@@ -129,6 +129,11 @@ fn drop_spent_wrappers(items: &mut IndexMap<String, Item>) {
     items.retain(|id, i| !(i.wrapper && i.status == Status::Done && !sources.contains(id)));
 }
 
+/// How a download whose links are all on hosts that are off fails, before
+/// their names; turning one of them on (or setting its account) tries it
+/// again.
+const OFF_ONLY: &str = "only on hosts that are off: ";
+
 /// Things worth telling the user about outside the queue view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
@@ -302,6 +307,8 @@ pub struct HostView {
     pub preferred: Option<usize>,
     /// Turned off by the user: its links are never tried.
     pub disabled: bool,
+    /// It needs an account that is not set, so its links are left out too.
+    pub needs_account: bool,
     /// Addresses it may be reached from: its slots and its learned limit
     /// count for each.
     pub exits: usize,
@@ -1110,7 +1117,7 @@ impl Engine {
             let url = it
                 .mirrors
                 .iter()
-                .find(|m| !cfg.is_disabled(&hosts::host_of(m)))
+                .find(|m| !cfg.is_off(&hosts::host_of(m)))
                 .cloned();
             let http = self.http_for(&hosts::host_of(url.as_deref().unwrap_or_default()), &st);
             (url, http, self.key_service(&st))
@@ -1431,7 +1438,7 @@ impl Engine {
                 let due = checked
                     .get(&host)
                     .is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
-                if !due || cfg.is_disabled(&host) {
+                if !due || cfg.is_off(&host) {
                     continue;
                 }
                 checked.insert(host.clone(), Instant::now());
@@ -1576,7 +1583,7 @@ impl Engine {
     /// mirror is left.
     fn pick(&self, st: &mut State, id: &str, now: Instant) -> Option<(String, Exit)> {
         let cfg = self.cfg();
-        let off = |m: &String| cfg.is_disabled(&hosts::host_of(m));
+        let off = |m: &String| cfg.is_off(&hosts::host_of(m));
         let it = &st.items[id];
         let candidates: Vec<String> = it
             .mirrors
@@ -1597,10 +1604,18 @@ impl Engine {
                 it.status = Status::Captcha;
             } else if !only_off.is_empty() {
                 // Nothing to retry until the user turns a host back on.
-                let mut names = only_off;
+                let mut names: Vec<String> = only_off
+                    .into_iter()
+                    .map(|h| match hosts::known(&h) {
+                        Some(k) if k.lacks_account(&cfg) && !cfg.is_disabled(&h) => {
+                            format!("{h} (needs an account)")
+                        }
+                        _ => h,
+                    })
+                    .collect();
                 names.dedup();
                 it.status = Status::Error;
-                it.error = format!("only on hosts you turned off: {}", names.join(", "));
+                it.error = format!("{OFF_ONLY}{}", names.join(", "));
                 tracing::info!(item = %it.id, "{}", it.error);
             } else {
                 it.status = Status::Error;
@@ -2740,7 +2755,7 @@ impl Engine {
             .filter(|i| {
                 i.status == Status::Error
                     && !i.wrapper
-                    && i.error.starts_with("only on hosts you turned off")
+                    && i.error.starts_with(OFF_ONLY)
                     && i.mirrors
                         .iter()
                         .any(|m| hosts::host_of(m).eq_ignore_ascii_case(host))
@@ -2752,8 +2767,6 @@ impl Engine {
         }
     }
 
-    /// Clears finished downloads off the list; unwrapped wrappers stay in
-    /// their section.
     /// Clears finished downloads off the list, and an unwrapped wrapper with
     /// none of its files left: a wrapper still waiting for a person, failed,
     /// or with files to go stays in its section.
@@ -2974,6 +2987,7 @@ impl Engine {
                     folder: cfg.folder_for(name).display().to_string(),
                     preferred: cfg.preference(name),
                     disabled: cfg.is_disabled(name),
+                    needs_account: hosts::known(name).is_some_and(|k| k.lacks_account(&cfg)),
                     cap: st.lanes_of(name).filter_map(|l| l.cap).min(),
                     quota: quota_view(exits.iter().filter_map(|e| lane(e).and_then(|l| l.quota))),
                     free: hosts::known(name)
@@ -3018,6 +3032,7 @@ impl Engine {
                 folder: cfg.folder_for(&name).display().to_string(),
                 preferred: cfg.preference(&name),
                 disabled: cfg.is_disabled(&name),
+                needs_account: hosts::known(&name).is_some_and(|k| k.lacks_account(&cfg)),
                 cap: None,
                 exits: self.exits_for(&name, &st).len(),
                 free: hosts::known(&name)
@@ -3036,8 +3051,8 @@ impl Engine {
         // ones turned off last.
         hosts.sort_by(|a, b| {
             let rank = |h: &HostView| h.preferred.unwrap_or(usize::MAX);
-            a.disabled
-                .cmp(&b.disabled)
+            (a.disabled || a.needs_account)
+                .cmp(&(b.disabled || b.needs_account))
                 .then_with(|| rank(a).cmp(&rank(b)))
                 .then_with(|| b.speed.total_cmp(&a.speed))
                 .then_with(|| a.name.cmp(&b.name))

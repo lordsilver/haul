@@ -219,7 +219,7 @@ impl Engine {
                 )
             })
             .flat_map(|i| i.mirrors.iter().map(|m| hosts::host_of(m)))
-            .filter(|h| !cfg.is_disabled(h))
+            .filter(|h| !cfg.is_off(h))
             .collect();
         hosts.sort();
         hosts.dedup();

@@ -1554,6 +1554,15 @@ function editFolder(c, name) {
 // The most slots a host can have, as the engine allows (FALLBACK_LIMIT).
 const MAX_SLOTS = 32;
 
+// The account a host's card asked for, shown once Settings has rendered.
+let accountFor = null;
+
+function setAccount(host) {
+  accountFor = host;
+  settingsKey = null;
+  location.hash = "#/settings";
+}
+
 function makeHostCard(name) {
   const c = { name, key: null, preferred: false, movable: false, disabled: false, showSlots: false };
   c.power = el("button", { type: "button", role: "switch", class: "toggle", onclick: () => setDisabled(name, !c.disabled) }, el("span", { class: "toggle-text" }), el("span", { class: "track" }, el("span", { class: "knob" })));
@@ -1578,6 +1587,7 @@ function makeHostCard(name) {
   });
   c.stats = el("div", { class: "sub" });
   c.pills = el("span", { class: "controls" });
+  c.account = button("Set account", { icon: "key", kind: "accent small", onclick: () => setAccount(name) });
   c.slots = el("output");
   c.fewer = button("Fewer slots", { icon: "subtract", kind: "subtle small", iconOnly: true, onclick: () => setLimit(name, -1) });
   c.more = button("More slots", { icon: "add", kind: "subtle small", iconOnly: true, onclick: () => setLimit(name, 1) });
@@ -1591,6 +1601,7 @@ function makeHostCard(name) {
       "span",
       { class: "host-actions" },
       (c.stepper = el("span", { class: "stepper", title: "Files downloaded from this host at the same time" }, c.fewer, c.slots, c.more)),
+      c.account,
       c.limitButton,
       c.order,
       c.star,
@@ -1636,7 +1647,7 @@ function hostHeading(kind) {
     const [title, sub] = {
       preferred: ["Preferred, in order", "A file downloads from the first of these that has it."],
       other: ["Other hosts", "Used when no preferred host has the file, the fastest first."],
-      off: ["Off", "Never used: their links are left alone."],
+      off: ["Off", "Their links are left alone: switched off, or waiting for an account."],
     }[kind];
     heading = el("div", { class: "host-group" }, el("strong", {}, title), el("span", { class: "sub" }, sub));
     hostHeadings.set(kind, heading);
@@ -1663,7 +1674,8 @@ function renderHosts(s) {
   s.hosts.forEach((h, index) => {
     seen.add(h.name);
     // A heading where the next group starts: preferred, the rest, off.
-    const now = h.disabled ? "off" : h.preferred !== null ? "preferred" : "other";
+    const off = h.disabled || h.needs_account;
+    const now = off ? "off" : h.preferred !== null ? "preferred" : "other";
     if (now !== group) {
       group = now;
       const heading = hostHeading(now);
@@ -1695,16 +1707,19 @@ function renderHosts(s) {
     c.more.disabled = slots >= MAX_SLOTS;
     // The slot buttons show when a limit is set or learned, or asked for.
     const limited = h.limit < MAX_SLOTS || h.cap !== null;
-    c.stepper.hidden = !(limited || c.showSlots) || h.disabled;
-    c.limitButton.hidden = !c.stepper.hidden || h.disabled;
+    c.stepper.hidden = !(limited || c.showSlots) || off;
+    c.limitButton.hidden = !c.stepper.hidden || off;
     const best = h.name === fastest;
     const place = order.indexOf(h.name);
     const quota = h.quota ? `${h.quota.slowed}/${h.quota.known}` : "";
-    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}|${place}|${h.disabled}|${h.exits}|${quota}`;
+    const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}|${place}|${h.disabled}|${h.needs_account}|${h.exits}|${quota}`;
     if (c.key !== key) {
       c.key = key;
       c.disabled = h.disabled;
-      c.node.classList.toggle("off", h.disabled);
+      c.node.classList.toggle("off", off);
+      c.account.hidden = !h.needs_account || h.disabled;
+      // Waiting for an account, it is off whatever the switch says.
+      c.power.hidden = h.needs_account && !h.disabled;
       c.power.setAttribute("aria-checked", String(!h.disabled));
       c.power.setAttribute("aria-label", h.disabled ? `Use ${h.name}` : `Never use ${h.name}`);
       c.power.title = h.disabled ? "Off: its links are never tried. Click to use it again." : "On: click to never use this host";
@@ -1728,13 +1743,14 @@ function renderHosts(s) {
       c.star.setAttribute("aria-pressed", String(c.preferred));
       if (c.preferred) pills.push(el("span", { class: "pill preferred" }, icon("star-filled"), `${ordinal(h.preferred + 1)} choice`));
       if (h.disabled) pills.push(el("span", { class: "pill caution" }, "Never used"));
+      else if (h.needs_account) pills.push(el("span", { class: "pill caution", title: "It gives no file without an account, so its links are left out until you set one" }, icon("key"), "Needs an account"));
       if (h.exits > 1) pills.push(el("span", { class: "pill", title: "Downloads spread over these addresses; its limits count for each" }, icon("shield"), `${h.exits} addresses`));
       if (h.quota?.slowed) {
         const all = h.quota.slowed === h.quota.known;
         const title = "Past the bytes it allows an address at full speed today; it serves the rest slowly";
         pills.push(el("span", { class: `pill${all ? " caution" : ""}`, title }, icon("top-speed"), all ? `Slowed to ${bytes(h.quota.slowed_to)}/s` : `${h.quota.known - h.quota.slowed} of ${h.quota.known} addresses at full speed`));
       }
-      if (best && !h.disabled) pills.push(el("span", { class: "pill success" }, "Fastest"));
+      if (best && !off) pills.push(el("span", { class: "pill success" }, "Fastest"));
       if (h.folder) pills.push(el("span", { class: "pill", title: "Its files go to this subfolder" }, icon("folder"), h.folder));
       if (h.cap && h.cap < h.limit) {
         const title = "It refused one more download while these ran, so Haul runs no more than this, and tries one more after ten quiet minutes. The slot buttons set your own limit.";
@@ -1750,7 +1766,7 @@ function renderHosts(s) {
     previous = c;
   });
   for (const [kind, heading] of hostHeadings) {
-    if (!s.hosts.some((h) => (h.disabled ? "off" : h.preferred !== null ? "preferred" : "other") === kind)) heading.remove();
+    if (!s.hosts.some((h) => (h.disabled || h.needs_account ? "off" : h.preferred !== null ? "preferred" : "other") === kind)) heading.remove();
   }
   for (const [name, c] of hostCards) {
     if (!seen.has(name)) {
@@ -2230,20 +2246,26 @@ function renderSettings(s) {
     el("h2", {}, "Accounts"),
     settingCard("key", "1fichier", envNote("1fichier_key") ?? "API key: no free-mode wait or captcha.", accountField("1fichier_key", "API key")),
     settingCard("key", "pixeldrain", envNote("pixeldrain_key") ?? "API key.", accountField("pixeldrain_key", "API key")),
-    settingCard("key", "gofile", envNote("gofile_token") ?? "Account token: guests cannot use the API for every file.", accountField("gofile_token", "Account token")),
-    settingCard(
-      "key",
-      "rapidgator",
-      envNote("rapidgator_user", "rapidgator_pass") ?? "Premium account.",
-      accountField("rapidgator_user", "Username", false),
-      accountField("rapidgator_pass", "Password"),
+    accountCard("gofile.io", settingCard("key", "gofile", envNote("gofile_token") ?? "A premium account's token. Without one gofile gives no file to Haul, so its links are left out.", accountField("gofile_token", "Account token"))),
+    accountCard(
+      "rapidgator.net",
+      settingCard(
+        "key",
+        "rapidgator",
+        envNote("rapidgator_user", "rapidgator_pass") ?? "Premium account. Without it rapidgator gives no file to Haul, so its links are left out.",
+        accountField("rapidgator_user", "Username", false),
+        accountField("rapidgator_pass", "Password"),
+      ),
     ),
-    settingCard(
-      "key",
-      "nitroflare",
-      envNote("nitroflare_user", "nitroflare_key") ?? "Premium account.",
-      accountField("nitroflare_user", "User", false),
-      accountField("nitroflare_key", "Premium key"),
+    accountCard(
+      "nitroflare.com",
+      settingCard(
+        "key",
+        "nitroflare",
+        envNote("nitroflare_user", "nitroflare_key") ?? "Premium account. Without it nitroflare gives no file to Haul, so its links are left out.",
+        accountField("nitroflare_user", "User", false),
+        accountField("nitroflare_key", "Premium key"),
+      ),
     ),
     el("h2", {}, "Advanced"),
     settingCard(
@@ -2284,6 +2306,19 @@ function renderSettings(s) {
       toggleSwitch("detailed_log", d.detailed_log, "Detailed log"),
     ),
   );
+  // Asked for from a host's card: its account, in view and ready to type.
+  if (accountFor) {
+    const card = document.querySelector(`[data-account="${CSS.escape(accountFor)}"]`);
+    accountFor = null;
+    card?.scrollIntoView({ block: "center" });
+    card?.querySelector("input")?.focus({ preventScroll: true });
+  }
+}
+
+// An account's card, found by its host's name.
+function accountCard(host, card) {
+  card.dataset.account = host;
+  return card;
 }
 
 // The desktop app asks where to save the report; a browser downloads it.

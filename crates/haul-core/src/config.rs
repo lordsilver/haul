@@ -313,6 +313,12 @@ impl Config {
             .any(|h| h.eq_ignore_ascii_case(host))
     }
 
+    /// Whether `host`'s links are left out: the user turned it off, or it
+    /// needs an account that is not set.
+    pub fn is_off(&self, host: &str) -> bool {
+        self.is_disabled(host) || crate::hosts::known(host).is_some_and(|k| k.lacks_account(self))
+    }
+
     /// The subfolder for files from `host`, relative to the download folder;
     /// empty when the host has none.
     pub fn folder_for(&self, host: &str) -> PathBuf {

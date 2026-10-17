@@ -357,6 +357,8 @@ pub struct Known {
     /// so the desktop app opens the page on its own, out of sight, and
     /// shows it only when the check wants a person after all.
     pub page_passes: bool,
+    /// Without its account it never gives a file: off until one is set.
+    pub needs_account: bool,
 }
 
 impl Known {
@@ -375,6 +377,11 @@ impl Known {
                 cfg.account(key)
                     .is_some_and(|v| crate::config::secret(v).is_some())
             })
+    }
+
+    /// It needs an account the user has not set: its links are left out.
+    pub fn lacks_account(&self, cfg: &Config) -> bool {
+        self.needs_account && !self.has_account(cfg)
     }
 
     /// The downloads at once it allows one address, unless an account
@@ -400,6 +407,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: true,
         page_passes: false,
+        needs_account: false,
     },
     Known {
         names: &["gofile.io"],
@@ -412,6 +420,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
+        needs_account: true,
     },
     Known {
         names: &["buzzheavier.com"],
@@ -424,6 +433,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
+        needs_account: false,
     },
     Known {
         names: &["1fichier.com"],
@@ -436,6 +446,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
+        needs_account: false,
     },
     Known {
         names: &["rapidgator.net"],
@@ -448,6 +459,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
+        needs_account: true,
     },
     Known {
         names: &["nitroflare.com"],
@@ -460,6 +472,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
+        needs_account: true,
     },
     Known {
         names: &["mega.nz", "mega.co.nz"],
@@ -472,6 +485,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
+        needs_account: false,
     },
     Known {
         names: &["vikingfile.com", "vik1ngfile.site"],
@@ -484,6 +498,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: true,
+        needs_account: false,
     },
     Known {
         names: &["fileditchfiles.st"],
@@ -496,6 +511,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
+        needs_account: false,
     },
     Known {
         names: &["fileguard.cc"],
@@ -508,6 +524,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
+        needs_account: false,
     },
     Known {
         names: &["filecrypt.cc"],
@@ -520,6 +537,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
+        needs_account: false,
     },
     Known {
         names: &["mirrored.to"],
@@ -532,8 +550,14 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
+        needs_account: false,
     },
 ];
+
+/// Every host Haul knows.
+pub fn all() -> impl Iterator<Item = &'static Known> {
+    KNOWN.iter()
+}
 
 /// The known host a host name (as [`host_of`] gives it) belongs to.
 pub fn known(host: &str) -> Option<&'static Known> {

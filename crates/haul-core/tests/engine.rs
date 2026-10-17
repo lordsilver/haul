@@ -1316,6 +1316,46 @@ async fn a_page_of_links_adds_its_links() {
     .await;
 }
 
+/// A host that gives nothing without an account is off until one is set:
+/// its links are not tried, it says why, and setting the account tries them.
+#[tokio::test]
+async fn a_host_that_needs_an_account_is_off_without_one() {
+    let t = Setup::new().await;
+    let mut cfg = t.config();
+    cfg.endpoints.rapidgator = t.ip.clone();
+    let engine = Engine::start(Options {
+        config: Some(cfg),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.add_text("https://rapidgator.net/file/abc/x.rar.html", "");
+    let s = wait_for(&engine, "the file to wait for an account", |s| {
+        s.items.iter().any(|i| i.status == "error")
+    })
+    .await;
+    assert_eq!(
+        s.items[0].error,
+        "only on hosts that are off: rapidgator.net (needs an account)"
+    );
+    let host = s.hosts.iter().find(|h| h.name == "rapidgator.net").unwrap();
+    assert!(host.needs_account && !host.disabled);
+    assert!(
+        t.server.requests("/api/v2/user/login").is_empty(),
+        "not asked"
+    );
+
+    let account = json!({"rapidgator_user": "u", "rapidgator_pass": "p"});
+    engine
+        .update_settings(account.as_object().unwrap())
+        .unwrap();
+    let s = wait_for(&engine, "the file tried with the account", |s| {
+        !s.items[0].error.starts_with("only on hosts that are off")
+    })
+    .await;
+    assert!(!s.hosts.iter().any(|h| h.needs_account));
+}
+
 /// A release in parts lists part 1, part 2… on every host: one row per part,
 /// each with every host as a mirror, named after the links that name it.
 #[tokio::test]
@@ -2232,7 +2272,7 @@ async fn hosts_turned_off_are_never_tried() {
     .await;
     let failed = s.items.iter().find(|i| i.status == "error").unwrap();
     assert!(
-        failed.error.contains("only on hosts you turned off"),
+        failed.error.contains("only on hosts that are off"),
         "{}",
         failed.error
     );

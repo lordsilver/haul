@@ -369,26 +369,26 @@ async fn reorders_the_preferred_hosts() {
     };
     let star = s
         .post(
-            "/api/host/rapidgator.net/preferred",
+            "/api/host/1fichier.com/preferred",
             json!({"preferred": true}),
         )
         .await;
     assert_eq!(star.status(), StatusCode::OK);
     assert_eq!(
         preferred(s.state().await),
-        ["pixeldrain.com", "rapidgator.net"]
+        ["pixeldrain.com", "1fichier.com"]
     );
 
     let r = s
         .post(
             "/api/preferred-hosts",
-            json!({"hosts": ["rapidgator.net", "pixeldrain.com"]}),
+            json!({"hosts": ["1fichier.com", "pixeldrain.com"]}),
         )
         .await;
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(
         preferred(s.state().await),
-        ["rapidgator.net", "pixeldrain.com"]
+        ["1fichier.com", "pixeldrain.com"]
     );
 
     for bad in [
@@ -410,7 +410,7 @@ async fn reorders_the_preferred_hosts() {
     }
     assert_eq!(
         preferred(s.state().await),
-        ["rapidgator.net", "pixeldrain.com"],
+        ["1fichier.com", "pixeldrain.com"],
         "refused lists change nothing"
     );
 }

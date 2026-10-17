@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 use super::{AUTO_RETRIES, Clients, Engine, Event, State};
 use crate::{
     config::{self, ACCOUNTS, Config, FALLBACK_LIMIT, Route, Theme},
-    hosts::Http,
+    hosts::{self, Http},
     item::{Item, Status},
     paths, store,
 };
@@ -629,6 +629,11 @@ impl Engine {
         let move_to =
             (!self.0.download_dir_fixed && folder != self.download_dir()).then_some(folder);
         let theme_changed = new.theme != old.theme;
+        // Hosts an account just set turns on: what waited on them goes again.
+        let unlocked: Vec<&str> = hosts::all()
+            .filter(|k| k.lacks_account(&old) && !k.lacks_account(&new))
+            .flat_map(|k| k.names.iter().copied())
+            .collect();
         let retry_changed = new.retry_failed_minutes != old.retry_failed_minutes;
         {
             let mut st = self.lock();
@@ -654,6 +659,9 @@ impl Engine {
         }
         if let Some(folder) = move_to {
             tokio::spawn(self.clone().move_downloads(folder));
+        }
+        for host in unlocked {
+            self.retry_turned_on(host);
         }
         self.0.wake.notify_one();
     }
