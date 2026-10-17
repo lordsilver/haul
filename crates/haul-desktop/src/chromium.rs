@@ -127,7 +127,7 @@ pub fn pass(p: Pass<'_>, on_show: impl FnOnce()) -> Result<Outcome, String> {
         child,
         profile: p.profile.clone(),
     };
-    let result = drive(&mut browser, &p, on_show);
+    let result = drive(&mut browser, port, &p, on_show);
     drop(browser);
     result
 }
@@ -152,8 +152,13 @@ impl Drop for Browser {
     }
 }
 
-fn drive(browser: &mut Browser, p: &Pass<'_>, on_show: impl FnOnce()) -> Result<Outcome, String> {
-    let endpoint = wait_for_endpoint(browser)?;
+fn drive(
+    browser: &mut Browser,
+    port: u16,
+    p: &Pass<'_>,
+    on_show: impl FnOnce(),
+) -> Result<Outcome, String> {
+    let endpoint = wait_for_endpoint(browser, port)?;
     let mut cdp = Cdp::connect(&endpoint)?;
     let targets = cdp.call("Target.getTargets", json!({}), None)?;
     let target = pages(&targets)
@@ -252,23 +257,62 @@ fn drive(browser: &mut Browser, p: &Pass<'_>, on_show: impl FnOnce()) -> Result<
     }
 }
 
-/// The DevTools address the browser writes into its profile once up.
-fn wait_for_endpoint(browser: &mut Browser) -> Result<String, String> {
-    let file = browser.profile.join("DevToolsActivePort");
+/// The browser's DevTools WebSocket, from its `/json/version` once it
+/// listens. (`DevToolsActivePort` in the profile is written only when the
+/// browser picks the port itself.)
+fn wait_for_endpoint(browser: &mut Browser, port: u16) -> Result<String, String> {
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
         if let Some(status) = browser.child.try_wait().ok().flatten() {
             return Err(format!("the browser exited at start ({status})"));
         }
-        if let Ok(text) = std::fs::read_to_string(&file) {
-            let mut lines = text.lines();
-            if let (Some(port), Some(path)) = (lines.next(), lines.next()) {
-                return Ok(format!("ws://127.0.0.1:{}{}", port.trim(), path.trim()));
-            }
+        if let Some(url) = version(port) {
+            return Ok(url);
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(150));
     }
     Err("the browser did not open DevTools in time".into())
+}
+
+/// `webSocketDebuggerUrl` from `GET /json/version`, in plain HTTP/1.1.
+fn version(port: u16) -> Option<String> {
+    use std::io::{Read, Write};
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    write!(
+        stream,
+        "GET /json/version HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    // The browser keeps the connection open: read up to the body's length.
+    let mut answer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let body = loop {
+        let n = stream.read(&mut chunk).ok()?;
+        if n == 0 {
+            break String::from_utf8_lossy(&answer)
+                .split_once("\r\n\r\n")?
+                .1
+                .to_string();
+        }
+        answer.extend_from_slice(&chunk[..n]);
+        let text = String::from_utf8_lossy(&answer);
+        if let Some((head, body)) = text.split_once("\r\n\r\n") {
+            let length = head
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().ok())
+                })
+                .flatten();
+            if length.is_some_and(|len| body.len() >= len) {
+                break body.to_string();
+            }
+        }
+    };
+    let json: Value = serde_json::from_str(body.trim()).ok()?;
+    json["webSocketDebuggerUrl"].as_str().map(str::to_string)
 }
 
 /// The ids of the browser's pages (tabs), in its order.
