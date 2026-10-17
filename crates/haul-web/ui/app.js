@@ -813,6 +813,40 @@ function hostOf(url) {
 // whose links for the same file merged into it.
 const ofWrapper = (i, id) => i.source === id || (i.also_from ?? []).includes(id);
 
+// The pages a download can be solved on, in the system's browser: one
+// button for one page, else one button with a menu of their hosts.
+const pageMenu = el("div", { class: "page-menu", popover: "auto", role: "menu" });
+document.body.append(pageMenu);
+
+function pageLinks(urls, s) {
+  const pages = urls.filter(isWebLink);
+  if (!pages.length) return null;
+  const label = s.desktop ? "Open in browser" : "Open page";
+  const kind = s.desktop ? "" : " accent";
+  if (pages.length === 1) {
+    return el("a", { class: `button${kind}`, href: pages[0], target: "_blank", rel: "noopener noreferrer", title: pages[0] }, icon("open"), `${label} (${hostOf(pages[0])})`);
+  }
+  const node = button(`${label} (${pages.length} hosts)`, {
+    icon: "open",
+    kind: kind.trim(),
+    onclick: () => {
+      const rect = node.getBoundingClientRect();
+      pageMenu.replaceChildren(
+        ...pages.map((url) =>
+          el("a", { class: "menu-item", role: "menuitem", href: url, target: "_blank", rel: "noopener noreferrer", title: url, onclick: () => pageMenu.hidePopover() }, icon("open"), hostOf(url)),
+        ),
+      );
+      pageMenu.showPopover();
+      pageMenu.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - pageMenu.offsetWidth - 8))}px`;
+      const below = rect.bottom + 4;
+      pageMenu.style.top = `${below + pageMenu.offsetHeight > innerHeight - 8 ? rect.top - pageMenu.offsetHeight - 4 : below}px`;
+      pageMenu.querySelector("a")?.focus();
+    },
+  });
+  node.setAttribute("aria-haspopup", "menu");
+  return node;
+}
+
 function helpBar(r, it, s) {
   const actions = [];
   if (s.desktop) {
@@ -824,16 +858,7 @@ function helpBar(r, it, s) {
       }),
     );
   }
-  for (const url of it.open_urls.filter(isWebLink)) {
-    actions.push(
-      el(
-        "a",
-        { class: `button${s.desktop ? "" : " accent"}`, href: url, target: "_blank", rel: "noopener noreferrer", title: url },
-        icon("open"),
-        `Open ${hostOf(url)}`,
-      ),
-    );
-  }
+  actions.push(pageLinks(it.open_urls, s));
   actions.push(button("Paste link", { icon: "link", onclick: () => openEditor(r, it) }));
   actions.push(button("Try again", { icon: "arrow-clockwise", kind: "subtle", onclick: () => act(it.id, "retry_manual") }));
   const hint = s.desktop
@@ -1308,16 +1333,7 @@ function wrapperHelp(c, w, s) {
   const it = { id: w.id, name: wrapperName(w), open_urls: w.open_urls, error: w.error, host: w.host, mirrors: [w.host] };
   const actions = [];
   if (s.desktop) actions.push(button("Open here", { icon: "globe", kind: "accent", onclick: () => openHere(w.id) }));
-  for (const url of w.open_urls.filter(isWebLink)) {
-    actions.push(
-      el(
-        "a",
-        { class: `button${s.desktop ? "" : " accent"}`, href: url, target: "_blank", rel: "noopener noreferrer", title: url },
-        icon("open"),
-        s.desktop ? "Open in browser" : "Open page",
-      ),
-    );
-  }
+  actions.push(pageLinks(w.open_urls, s));
   actions.push(button("Paste link", { icon: "link", onclick: () => openEditor(c, it) }));
   actions.push(button("Try again", { icon: "arrow-clockwise", kind: "subtle", onclick: () => act(w.id, "retry_manual") }));
   const hint = s.desktop
