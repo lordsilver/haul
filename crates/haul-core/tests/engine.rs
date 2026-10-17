@@ -1469,7 +1469,7 @@ async fn wrappers_listing_the_same_file_share_it() {
         .id
         .clone();
     assert_eq!(file.source.as_deref(), Some(first.as_str()));
-    assert_eq!(file.also_from, [twin.clone()]);
+    assert_eq!(file.also_from, std::slice::from_ref(&twin));
 
     // Removing one wrapper leaves the file to the other.
     assert!(engine.remove_wrapper(&first));
