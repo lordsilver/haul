@@ -95,8 +95,15 @@ pub struct Pass<'a> {
 pub fn pass(p: Pass<'_>, on_show: impl FnOnce()) -> Result<Outcome, String> {
     let _ = std::fs::remove_dir_all(&p.profile);
     std::fs::create_dir_all(&p.profile).map_err(|e| format!("{}: {e}", p.profile.display()))?;
+    // A port of our own choosing: with `--remote-debugging-port=0` (the
+    // browser picks one) Turnstile asked for its box every time, with a
+    // port named it passed (docs/decisions.md).
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|l| l.local_addr())
+        .map_err(|e| format!("a port for DevTools: {e}"))?
+        .port();
     let mut args = vec![
-        "--remote-debugging-port=0".to_string(),
+        format!("--remote-debugging-port={port}"),
         format!("--user-data-dir={}", p.profile.display()),
         "--no-first-run".into(),
         "--no-default-browser-check".into(),
