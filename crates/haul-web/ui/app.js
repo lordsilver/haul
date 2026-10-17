@@ -2045,35 +2045,66 @@ function textField(key, value, { label, placeholder = "", secret = false, wide =
 // and the router's login or a command for any other router.
 let routerAsked = false;
 
+// Asks before the line is cut, in place, with what it does to downloads;
+// no timer to race.
+function redialButton(s) {
+  const onLine = s.items.filter((i) => i.status === "downloading").length;
+  const holder = el("span", { class: "redial" });
+  const ask = () => {
+    const what = onLine ? `${onLine} ${onLine === 1 ? "download pauses" : "downloads pause"} and then resume.` : "Nothing is downloading.";
+    holder.replaceChildren(
+      el("span", { class: "sub" }, `Cuts your line for a few seconds. ${what}`),
+      button("Cut the line now", {
+        icon: "arrow-clockwise",
+        kind: "accent",
+        onclick: async () => {
+          holder.replaceChildren(button("Getting a new IP…", { icon: "arrow-clockwise", disabled: true }));
+          try {
+            const out = await api("/api/reconnect");
+            toast(`New IP: ${out.address}`, "success");
+          } catch (error) {
+            report(error);
+          }
+        },
+      }),
+      button("Cancel", { kind: "subtle", onclick: idle }),
+    );
+  };
+  const idle = () => holder.replaceChildren(button("Get a new IP", { icon: "arrow-clockwise", onclick: ask }));
+  idle();
+  return holder;
+}
+
 function reconnectCards(s, d) {
   if (!routerAsked) {
     routerAsked = true;
     api("/api/router").catch(() => {});
   }
   const r = s.reconnect;
-  let found = r.router ? `${r.router} found on your network.` : "No router answered on this network yet; a command of your own works with any.";
-  // A FRITZ!Box redials only for its login (TR-064), whatever UPnP allows.
-  if (r.router?.includes("FRITZ!Box") && !d.accounts.router_password) found += " It redials only with its login: set it under Router login.";
+  const found = r.router ? `${r.router} found on your network.` : "No router answered on this network yet; a command of your own works with any.";
   const now = r.busy
     ? button("Getting a new IP…", { icon: "arrow-clockwise", disabled: true })
-    : confirmButton("Get a new IP", "Cut the line for a moment?", async () => {
-        try {
-          const out = await api("/api/reconnect");
-          toast(`New address: ${out.address}`, "success");
-        } catch (error) {
-          report(error);
-        }
-      }, { icon: "arrow-clockwise" });
+    : r.blocked
+      ? button("Get a new IP", { icon: "arrow-clockwise", disabled: true, title: r.blocked })
+      : redialButton(s);
+  const router = settingCard("globe", "Router", `${found} Hosts limit what one address may fetch; a new IP usually brings a fresh allowance.`, now);
+  // What stands in the way, or how the last attempt went, under the card.
+  if (r.blocked) router.append(infobar("caution", "warning", "Cannot get a new IP yet", `${r.blocked.charAt(0).toUpperCase()}${r.blocked.slice(1)}.`));
+  else if (r.note) router.append(infobar(r.failed ? "critical" : "info", r.failed ? "error-circle" : "checkmark-circle-filled", null, r.note));
+  router.classList.add("with-bar");
+  const auto = settingCard(
+    "arrow-clockwise",
+    "Get a new IP on its own",
+    r.blocked
+      ? el("span", { class: "warn-text" }, "Off until Haul can get a new IP: see Router above.")
+      : "When a host has slowed your address for the day, or asked it to wait a long while, and no proxy can take over. At most every ten minutes; each redial cuts the line for a few seconds.",
+    r.blocked && !d.reconnect ? toggleSwitch("reconnect", false, "Get a new IP on its own", true) : toggleSwitch("reconnect", d.reconnect, "Get a new IP on its own"),
+  );
   return el(
     "div",
     { class: "cards" },
-    settingCard("globe", "Router", r.note ? `${found} ${r.note}.` : `${found} Hosts limit what one address may fetch; a redial usually brings another.`, now),
-    settingCard(
-      "arrow-clockwise",
-      "Get a new IP on its own",
-      "When a host has slowed your address for the day, or asked it to wait a long while, and no proxy can take over. At most every ten minutes; each redial cuts the line for a few seconds.",
-      toggleSwitch("reconnect", d.reconnect, "Get a new IP on its own"),
-    ),
+    router,
+    auto,
     settingCard(
       "key",
       "Router login (TR-064)",
@@ -2125,10 +2156,10 @@ function withReveal(input) {
 const accountField = (key, label, secret = true) =>
   textField(key, settingsData.accounts[key] ?? "", { label, placeholder: label, secret });
 
-function toggleSwitch(key, on, label) {
+function toggleSwitch(key, on, label, disabled = false) {
   return el(
     "button",
-    { type: "button", role: "switch", class: "toggle", "aria-checked": String(on), "aria-label": label, onclick: () => save({ [key]: !on }, null) },
+    { type: "button", role: "switch", class: "toggle", "aria-checked": String(on), "aria-label": label, disabled, onclick: () => save({ [key]: !on }, null) },
     el("span", { class: "toggle-text" }, on ? "On" : "Off"),
     el("span", { class: "track" }, el("span", { class: "knob" })),
   );

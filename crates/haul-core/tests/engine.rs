@@ -441,6 +441,21 @@ async fn start_server() -> (Server, u16) {
                         .and_then(|h| h.to_str().ok())
                         .unwrap_or_default();
                     let port = host.rsplit(':').next().unwrap_or_default();
+                    if id == "held" {
+                        // One file on gofile (its page passes in the desktop
+                        // app) and on a host Haul has no code for.
+                        return (
+                            [(header::CONTENT_TYPE, "text/html")],
+                            format!(
+                                r#"<div class="link-group" data-host="gofile.io">
+                                     <a class="target-link" href="https://gofile.io/d/held">1</a>
+                                   </div>
+                                   <div class="link-group" data-host="example.com">
+                                     <a class="target-link" href="http://{host}/files/held.bin">1</a>
+                                   </div>"#
+                            ),
+                        );
+                    }
                     if id == "parts" {
                         return (
                             [(header::CONTENT_TYPE, "text/html")],
@@ -1495,6 +1510,83 @@ async fn wrappers_listing_the_same_file_share_it() {
     assert_eq!(s.items[0].source.as_deref(), Some(twin.as_str()));
     // And that one starts it.
     assert_eq!(engine.start_wrapper(&twin), Some(1));
+}
+
+/// A file whose page the desktop app passes by itself waits for that page
+/// rather than go to a host Haul has no code for; once the page wants a
+/// person, its other mirrors may go.
+#[tokio::test]
+async fn a_file_waits_for_its_page_before_an_unknown_host() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.add_text("https://fileguard.cc/vault/held", "");
+    let w = wrapper_settled(&engine, "done").await.wrappers[0]
+        .id
+        .clone();
+    let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    assert_eq!(s.items[0].mirrors.len(), 2, "{:?}", s.items[0].mirrors);
+    let id = s.items[0].id.clone();
+    engine.start_wrapper(&w);
+    wait_for(&engine, "the file held for its page", |s| {
+        s.items[0].status == "passing"
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        t.server.requests("/files/held.bin").is_empty(),
+        "not from the unknown host"
+    );
+    assert_eq!(engine.snapshot().items[0].status, "passing");
+
+    engine.page_wants_person(&id);
+    wait_for(&engine, "the other mirror", all_done).await;
+}
+
+/// Downloads with data on disk start first, the nearest to done first.
+#[tokio::test]
+async fn the_nearest_to_done_resumes_first() {
+    let t = Setup::new().await;
+    let mut cfg = t.config();
+    cfg.max_total = 1;
+    let engine = Engine::start(Options {
+        config: Some(cfg),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.set_paused(true);
+    for name in ["fresh", "half", "most"] {
+        engine.add_text(&format!("{}/slow/{name}.bin", t.ip), "");
+    }
+    let s = wait_for(&engine, "three probed", |s| {
+        s.items.len() == 3 && s.items.iter().all(|i| i.status == "queued")
+    })
+    .await;
+    let id = |n: &str| {
+        s.items
+            .iter()
+            .find(|i| i.name.starts_with(n))
+            .unwrap()
+            .id
+            .clone()
+    };
+    engine.debug_set_done(&id("half"), SIZE as u64 / 2);
+    engine.debug_set_done(&id("most"), SIZE as u64 * 9 / 10);
+    engine.set_paused(false);
+    let s = wait_for(&engine, "one started", |s| {
+        s.items
+            .iter()
+            .any(|i| i.status == "downloading" || i.status == "resolving")
+    })
+    .await;
+    let started: Vec<&str> = s
+        .items
+        .iter()
+        .filter(|i| i.status == "downloading" || i.status == "resolving")
+        .map(|i| i.name.as_str())
+        .collect();
+    assert_eq!(started, ["most.bin"]);
 }
 
 /// A release in parts lists part 1, part 2… on every host: one row per part,

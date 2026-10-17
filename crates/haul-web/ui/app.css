@@ -1631,3 +1631,13 @@ input.wide {
   margin-bottom: 4px;
   color: var(--critical);
 }
+
+/* Get a new IP: the question in place of the button. */
+.redial {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 420px;
+}

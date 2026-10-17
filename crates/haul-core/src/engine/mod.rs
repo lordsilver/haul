@@ -1523,8 +1523,28 @@ impl Engine {
                 .filter(|i| i.running())
                 .map(|i| i.size)
                 .sum();
-            let ids: Vec<String> = st.items.keys().cloned().collect();
-            for id in ids {
+            // Downloads with data on disk go first, the nearest to done
+            // first; the rest keep the queue's order.
+            // (By bytes on disk where the size is not known yet.)
+            let mut ids: Vec<(String, f64, u64)> = st
+                .items
+                .iter()
+                .map(|(k, i)| {
+                    let near = if i.size > 0 {
+                        i.done as f64 / i.size as f64
+                    } else {
+                        0.0
+                    };
+                    (k.clone(), near, i.done)
+                })
+                .collect();
+            ids.sort_by(|a, b| {
+                (b.2 > 0)
+                    .cmp(&(a.2 > 0))
+                    .then(b.1.total_cmp(&a.1))
+                    .then(b.2.cmp(&a.2))
+            });
+            for (id, _, _) in ids {
                 if running >= st.max_total {
                     break;
                 }
@@ -1599,6 +1619,17 @@ impl Engine {
         let pages = self.pages_pass();
         let off = |m: &String| cfg.is_off(&hosts::host_of(m), pages);
         let it = &st.items[id];
+        // A mirror whose page the desktop app passes by itself, waiting its
+        // turn in the browser: the file waits for it rather than go to a
+        // host Haul knows nothing of, or one measured slower.
+        let pass_host = (pages && !it.page_wants_person)
+            .then(|| {
+                it.manual_urls
+                    .iter()
+                    .find(|m| hosts::page_passes(m) && !off(m) && !it.failed.contains(*m))
+                    .map(|m| hosts::host_of(m))
+            })
+            .flatten();
         let candidates: Vec<String> = it
             .mirrors
             .iter()
@@ -1663,9 +1694,22 @@ impl Engine {
             }
             return None;
         }
+        let pass_speed = pass_host
+            .as_ref()
+            .map(|h| st.host(h, &cfg).ema)
+            .unwrap_or_default();
         let mut best: Option<(String, Exit, f64)> = None;
+        let mut held = false;
         for m in candidates {
             let name = hosts::host_of(&m);
+            if pass_host.is_some() {
+                let known = hosts::known(&name).is_some();
+                let ema = st.host(&name, &cfg).ema;
+                if !known || ema < pass_speed {
+                    held = true;
+                    continue;
+                }
+            }
             let exits = self.exits_for(&name, st);
             let Some(exit) = st.open_exit(&name, &exits, &cfg, now) else {
                 continue;
@@ -1673,6 +1717,12 @@ impl Engine {
             let score = st.host(&name, &cfg).score(now);
             if best.as_ref().is_none_or(|(_, _, s)| score > *s) {
                 best = Some((m, exit, score));
+            }
+        }
+        if best.is_none() && held {
+            // Shown as passing until its page's turn comes.
+            if let Some(it) = st.items.get_mut(id) {
+                it.status = Status::Captcha;
             }
         }
         best.map(|(m, exit, _)| (m, exit))
@@ -2672,14 +2722,28 @@ impl Engine {
     /// A host's page, passed out of sight, said its file is gone: that
     /// mirror failed like any other, and the item goes on to the next one
     /// (or fails with `reason` when none is left), asking nobody.
+    /// Sets item `id`'s downloaded bytes, for tests of what goes first.
+    #[doc(hidden)]
+    pub fn debug_set_done(&self, id: &str, done: u64) {
+        if let Some(it) = self.lock().items.get_mut(id) {
+            it.done = done;
+        }
+    }
+
     /// The desktop app's page for item `id` wants a person after all: the
     /// item shows as needing one from now on, until it is tried again.
     pub fn page_wants_person(&self, id: &str) {
         let mut st = self.lock();
         if let Some(it) = st.items.get_mut(id) {
             it.page_wants_person = true;
+            // Held for that page: its other mirrors may go now.
+            if it.status == Status::Captcha && it.task.is_none() {
+                it.status = Status::Queued;
+            }
         }
         self.touch(&mut st);
+        drop(st);
+        self.0.wake.notify_one();
     }
 
     pub fn page_gone(&self, id: &str, reason: &str) {
