@@ -130,8 +130,10 @@ async function api(path, body) {
 // ---- toasts
 
 // A toast can offer one action: a button (`onclick`) or a link (`href` opens
-// it). One that offers something stays longer, to be read and used.
-function toast(message, kind = "info", action = null) {
+// it). One that offers something stays longer, to be read and used. A toast
+// with a `key` takes the place of the one with the same key still showing,
+// so news that keeps coming updates one toast instead of stacking more.
+function toast(message, kind = "info", action = null, key = null) {
   const names = { info: "info", success: "checkmark-circle", error: "error-circle" };
   const body = el("div", { class: "toast-body" }, el("div", {}, message));
   const node = el("div", { class: `toast ${kind}` }, icon(names[kind] ?? "info"), body);
@@ -155,7 +157,10 @@ function toast(message, kind = "info", action = null) {
   }
   node.addEventListener("click", () => node.remove());
   const box = $("toasts");
-  box.append(node);
+  const old = key ? [...box.children].find((n) => n.dataset.key === key) : null;
+  if (key) node.dataset.key = key;
+  if (old) old.replaceWith(node);
+  else box.append(node);
   while (box.childElementCount > 4) box.firstElementChild.remove();
   setTimeout(() => node.remove(), action ? 12000 : kind === "error" ? 7000 : 4000);
 }
@@ -281,6 +286,9 @@ const needsPending = new Map();
 let needsTimer = null;
 const unwrappedPending = new Set();
 let unwrappedTimer = null;
+// The wrappers the unwrapped toast tells of while it shows: those that
+// finish later join it rather than raising a toast of their own.
+const unwrappedShown = new Set();
 
 // A wrapper waits for a person like a download does, with its own name and
 // its own section to land on.
@@ -317,8 +325,9 @@ function spotNeedsUser(s) {
     if (unwrappedPending.size && !unwrappedTimer) {
       unwrappedTimer = setTimeout(() => {
         unwrappedTimer = null;
-        const done = (state?.wrappers ?? []).filter((w) => unwrappedPending.has(w.id));
+        for (const id of unwrappedPending) unwrappedShown.add(id);
         unwrappedPending.clear();
+        const done = (state?.wrappers ?? []).filter((w) => unwrappedShown.has(w.id));
         if (done.length) unwrappedToast(done, state);
       }, 2000);
     }
@@ -348,12 +357,20 @@ function needsToast(items) {
 // releases at once.
 function unwrappedToast(ws, s) {
   // Already where the toast would lead.
-  if (view === "wrappers") return;
+  if (view === "wrappers") return unwrappedShown.clear();
   const ids = new Set(ws.map((w) => w.id));
   const waiting = s.items.filter((i) => i.status === "paused" && [i.source, ...(i.also_from ?? [])].some((id) => ids.has(id))).length;
   const names = [...new Set(ws.map(wrapperName))];
   const what = names.length === 1 ? names[0] : plural(names.length, "release");
-  toast(waiting ? `${what}: ${plural(waiting, "file")} ready to start` : `${what} unwrapped`, "info", { label: "Show", icon: "link", onclick: () => go("wrappers") });
+  toast(waiting ? `${what}: ${plural(waiting, "file")} ready to start` : `${what} unwrapped`, "info", { label: "Show", icon: "link", onclick: () => go("wrappers") }, "unwrapped");
+  // Once it is gone, the next wrapper to finish starts a toast of its own.
+  const node = [...$("toasts").children].find((n) => n.dataset.key === "unwrapped");
+  new MutationObserver((_, watch) => {
+    if (!node.isConnected) {
+      watch.disconnect();
+      if (![...$("toasts").children].some((n) => n.dataset.key === "unwrapped")) unwrappedShown.clear();
+    }
+  }).observe($("toasts"), { childList: true });
 }
 
 // ---- render
@@ -436,7 +453,7 @@ function renderNav(s) {
     }
     if (key === "wrappers") {
       // Counted like a list; it calls for attention while one waits or failed.
-      const count = s.wrappers.length;
+      const count = wrapperGroups(s).length;
       const kind = s.wrappers.some((w) => w.status === "error") ? "critical" : s.wrappers.some((w) => w.status === "captcha") ? "attention" : "";
       setText(item.badge, count ? String(count) : "");
       item.badge.className = `badge${kind ? ` ${kind}` : ""}`;
@@ -1212,8 +1229,12 @@ function updateGroupRow(g, entry) {
   const size = parts.reduce((n, i) => n + i.size, 0);
   const done = parts.reduce((n, i) => n + (i.status === "done" ? i.size : Math.min(i.done, i.size || i.done)), 0);
   const hosts = [...new Set(parts.map((i) => shownHost(i)))];
+  // The other hosts that are on and could take over, over every part.
+  const known = new Map((state?.hosts ?? []).map((h) => [h.name, h]));
+  const others = new Set(parts.flatMap((i) => i.mirrors).filter((m) => !hosts.includes(m) && !hostOff(known.get(m)))).size;
+  const otherHosts = others ? `${others} other ${others === 1 ? "host" : "hosts"}` : null;
   const from = wrapperNames.has(parts[0].source) ? `from ${wrapperNames.get(parts[0].source)}` : null;
-  setText(g.sub, [`${parts.length} parts`, size ? bytes(size) : null, ...hosts, parts[0].package || null, from].filter(Boolean).join(" · "));
+  setText(g.sub, [`${parts.length} parts`, size ? bytes(size) : null, ...hosts, otherHosts, parts[0].package || null, from].filter(Boolean).join(" · "));
 
   // By bytes when every unfinished part's size is known, by parts otherwise.
   const sized = parts.every((i) => i.size > 0 || i.status === "done");
@@ -1318,14 +1339,17 @@ let wrapperNames = new Map();
 
 const wrapperName = (w) => w.title || w.url;
 
-function startWrapper(w) {
-  return api(`/api/wrapper/${encodeURIComponent(w.id)}/start`).then((r) => {
-    if (r.started) toast(`Started ${plural(r.started, "file")} from ${wrapperName(w)}`, "success");
+// A card's wrappers together: their files counted once, since a file two
+// of them list starts with the first.
+function startWrappers(ws) {
+  return Promise.all(ws.map((w) => api(`/api/wrapper/${encodeURIComponent(w.id)}/start`))).then((rs) => {
+    const started = rs.reduce((n, r) => n + (r.started || 0), 0);
+    if (started) toast(`Started ${plural(started, "file")} from ${wrapperName(ws[0])}`, "success");
   }, report);
 }
 
-function removeWrapper(w) {
-  return api(`/api/wrapper/${encodeURIComponent(w.id)}/remove`).catch(report);
+function removeWrappers(ws) {
+  return Promise.all(ws.map((w) => api(`/api/wrapper/${encodeURIComponent(w.id)}/remove`))).catch(report);
 }
 
 // What a wrapper is doing, in a few words; once unwrapped, how its files stand.
@@ -1374,44 +1398,61 @@ function makeWrapperCard(id) {
   return c;
 }
 
+// The wrappers to show as one card: those of one release (the same name,
+// unwrapped, often one per host) share it; one still working, waiting for a
+// person or failed keeps a card of its own, with what it needs.
+function wrapperGroups(s) {
+  const groups = new Map();
+  for (const w of s.wrappers) {
+    const key = w.status === "done" && w.title ? `t\u0000${w.package}\u0000${w.title}` : `w\u0000${w.id}`;
+    if (!groups.has(key)) groups.set(key, { key, ws: [] });
+    groups.get(key).ws.push(w);
+  }
+  return [...groups.values()];
+}
+
 function renderWrappers(s) {
   const box = $("wrappers");
   let previous = null;
   const seen = new Set();
-  for (const w of s.wrappers) {
-    seen.add(w.id);
-    let c = wrapperCards.get(w.id);
+  for (const { key: groupKey, ws } of wrapperGroups(s)) {
+    const w = ws[0];
+    const ids = new Set(ws.map((x) => x.id));
+    seen.add(groupKey);
+    let c = wrapperCards.get(groupKey);
     if (!c) {
       c = makeWrapperCard(w.id);
-      wrapperCards.set(w.id, c);
+      wrapperCards.set(groupKey, c);
     }
-    const files = s.items.filter((i) => ofWrapper(i, w.id));
+    const files = s.items.filter((i) => ws.some((x) => ofWrapper(i, x.id)));
     const waiting = files.filter((i) => i.status === "paused");
     const unstarted = files.filter(notStarted);
     setText(c.name, wrapperName(w));
-    c.name.title = w.url;
+    c.name.title = ws.map((x) => x.url).join("\n");
     const error = ["error", "waiting"].includes(w.status) ? withoutHost(w.error, w.host) : "";
-    // Wrappers of one release are often one per host: the hosts their
-    // links are on tell them apart.
-    const on = (w.hosts ?? []).length ? `${w.hosts.slice(0, 3).join(", ")}${w.hosts.length > 3 ? ` +${w.hosts.length - 3}` : ""}` : "";
-    const line = [w.host, on, wrapperStatus(w, files)].filter(Boolean).join(" · ");
+    // The hosts the links are on, over every wrapper of the card: a release
+    // often has one wrapper per host.
+    const hosts = [...new Set(ws.flatMap((x) => x.hosts ?? []))];
+    const on = hosts.length ? `${hosts.slice(0, 3).join(", ")}${hosts.length > 3 ? ` +${hosts.length - 3}` : ""}` : "";
+    const status = ws.length > 1 ? `${plural(ws.length, "wrapper")} · ${plural(files.length, "file")} · ${partsSummary(files)}` : wrapperStatus(w, files);
+    const line = [w.host, on, status].filter(Boolean).join(" · ");
     const subKey = `${line}|${error}`;
     if (c.sub.dataset.key !== subKey) {
       c.sub.dataset.key = subKey;
       c.sub.replaceChildren(line, error ? " · " : "", error ? el("span", { class: w.status === "error" ? "error" : "" }, error) : "");
-      c.sub.title = (w.hosts ?? []).join(", ");
+      c.sub.title = hosts.join(", ");
     }
-    const key = `${w.status}|${waiting.length}|${unstarted.length}|${s.desktop}|${w.error}|${w.open_urls.join(" ")}`;
+    const key = `${[...ids].join(",")}|${w.status}|${waiting.length}|${unstarted.length}|${s.desktop}|${w.error}|${w.open_urls.join(" ")}`;
     if (c.key !== key && !(c.editing && w.status === "captcha")) {
       c.key = key;
       const actions = [];
-      if (waiting.length) actions.push(button("Start all", { icon: "play", kind: "accent", onclick: () => startWrapper(w) }));
+      if (waiting.length) actions.push(button("Start all", { icon: "play", kind: "accent", onclick: () => startWrappers(ws) }));
       if (w.status === "error") actions.push(button("Try again", { icon: "arrow-clockwise", kind: "subtle", onclick: () => act(w.id, "retry") }));
       // Its files that never started go with it, so that asks twice.
       actions.push(
         unstarted.length
-          ? confirmButton("Remove", `Remove ${plural(unstarted.length, "file")} too?`, () => removeWrapper(w), { icon: "dismiss", kind: "subtle" })
-          : button("Remove", { icon: "dismiss", kind: "subtle", onclick: () => removeWrapper(w) }),
+          ? confirmButton("Remove", `Remove ${plural(unstarted.length, "file")} too?`, () => removeWrappers(ws), { icon: "dismiss", kind: "subtle" })
+          : button("Remove", { icon: "dismiss", kind: "subtle", onclick: () => removeWrappers(ws) }),
       );
       c.actions.replaceChildren(...actions);
       c.editing = false;
@@ -1423,10 +1464,10 @@ function renderWrappers(s) {
     if (want !== c.node) box.insertBefore(c.node, want);
     previous = c;
   }
-  for (const [id, c] of wrapperCards) {
-    if (!seen.has(id)) {
+  for (const [key, c] of wrapperCards) {
+    if (!seen.has(key)) {
       c.node.remove();
-      wrapperCards.delete(id);
+      wrapperCards.delete(key);
     }
   }
   const empty = $("no-wrappers");
