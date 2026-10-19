@@ -281,6 +281,8 @@ pub struct WrapperView {
     pub open_urls: Vec<String>,
     /// What unwrapping found.
     pub found: Option<Found>,
+    /// The hosts its links are on.
+    pub hosts: Vec<String>,
 }
 
 /// A host's daily allowance at full speed, over the addresses it was asked
@@ -425,6 +427,10 @@ struct HostStats {
 }
 
 const PENALTY_HALF_LIFE: f64 = 600.0;
+
+/// How long a file waits before its host's page is passed again, after the
+/// page could not hand out its link.
+const PAGE_LATER: Duration = Duration::from_secs(90);
 
 /// How long a limit a host showed holds before one more is tried.
 const CAP_RELAX: Duration = Duration::from_secs(600);
@@ -1183,7 +1189,7 @@ impl Engine {
                 return;
             };
             if let Some(found) = found {
-                it.name = Some(found.name);
+                it.name = Some(hosts::tidy_name(&found.name));
                 if let Some(size) = found.size.filter(|s| *s > 0) {
                     it.size = size;
                 }
@@ -1792,7 +1798,9 @@ impl Engine {
                     // A row that came from this folder before: find its file again.
                     (_, Some(name)) => entries
                         .into_iter()
-                        .find(|e| e.name.as_deref() == Some(name.as_str()))
+                        .find(|e| {
+                            e.name.as_deref().map(hosts::name_key) == Some(hosts::name_key(&name))
+                        })
                         .ok_or_else(|| Fail::Error(format!("{name} is no longer in the folder")))?,
                     (_, None) => {
                         self.expand(id, source, entries);
@@ -1805,7 +1813,7 @@ impl Engine {
             let mut st = self.lock();
             let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
             if it.name.is_none() {
-                it.name = entry.name.clone();
+                it.name = entry.name.as_deref().map(hosts::tidy_name);
             }
             if let Some(size) = entry.size.filter(|s| *s > 0) {
                 it.size = size;
@@ -1900,6 +1908,7 @@ impl Engine {
         let mut wrappers = wrapper_keys(&st);
         wrappers.insert(hosts::wrapper_key(url));
         let mut seen = Found::default();
+        let mut found_hosts: Vec<String> = Vec::new();
         let mut after = id.to_string();
         let cfg = self.cfg();
         for e in found.files {
@@ -1910,6 +1919,12 @@ impl Engine {
             };
             let nested = hosts::wraps(&e.url);
             seen.links += 1 + e.mirrors.len();
+            for u in std::iter::once(&e.url).chain(&e.mirrors) {
+                let host = hosts::host_of(u);
+                if !nested && !found_hosts.contains(&host) {
+                    found_hosts.push(host);
+                }
+            }
             if !nested {
                 seen.files += 1;
             }
@@ -1960,6 +1975,7 @@ impl Engine {
             }
             row.status = Status::Done;
             row.found = Some(seen);
+            row.found_hosts = found_hosts;
             row.title = found.title;
             row.error.clear();
             row.pre = None;
@@ -2345,7 +2361,7 @@ impl Engine {
                 let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
                 let unnamed = it.name.is_none();
                 if unnamed {
-                    it.name = hosts::disposition_name(resp.headers());
+                    it.name = hosts::disposition_name(resp.headers()).map(|n| hosts::tidy_name(&n));
                 }
                 let named_now = unnamed && it.name.is_some();
                 if let Some(total) = total {
@@ -2746,6 +2762,24 @@ impl Engine {
         self.0.wake.notify_one();
     }
 
+    /// A host's page passed out of sight could not hand out its link this
+    /// time (a rate limit, an error it shows, no answer): the item waits a
+    /// while and the page is passed again, asking nobody.
+    pub fn page_later(&self, id: &str, reason: &str) {
+        let mut st = self.lock();
+        if let Some(it) = st.items.get_mut(id) {
+            tracing::info!(item = %id, "page later: {reason}");
+            it.error = reason.to_string();
+            if it.status == Status::Captcha && it.task.is_none() {
+                it.status = Status::Waiting;
+                it.not_before = Some(Instant::now() + PAGE_LATER);
+            }
+        }
+        self.touch(&mut st);
+        drop(st);
+        self.0.wake.notify_one();
+    }
+
     pub fn page_gone(&self, id: &str, reason: &str) {
         let Some(page) = self.page_for(id) else {
             return;
@@ -2818,7 +2852,8 @@ impl Engine {
         if it.name.is_none() && !deferred {
             it.name = name_hint
                 .filter(|n| !n.is_empty())
-                .or_else(|| hosts::guess_name(url));
+                .or_else(|| hosts::guess_name(url))
+                .map(|n| hosts::tidy_name(&n));
         }
         it.pre = Some(Entry {
             url: url.into(),
@@ -3079,6 +3114,7 @@ impl Engine {
                 retry_in: retry_in(it),
                 open_urls: open_urls(it),
                 found: it.found,
+                hosts: it.found_hosts.clone(),
             })
             .collect();
         let items: Vec<ItemView> = st

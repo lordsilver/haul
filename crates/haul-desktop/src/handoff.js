@@ -23,6 +23,14 @@
     send({ files: absolute, agent: navigator.userAgent }, "https://haul.invalid/take?" + new URLSearchParams({ files: JSON.stringify(absolute), agent: navigator.userAgent }));
   };
 
+  // The page passed its check but could not give the link this time (a
+  // host's rate limit, an error it shows): Haul tries the page again later.
+  const later = (reason) => {
+    if (handed) return;
+    handed = true;
+    send({ later: reason }, "https://haul.invalid/later?" + new URLSearchParams({ reason }));
+  };
+
   // The page says the file is gone: the mirror failed, nobody is asked.
   const gone = (reason) => {
     if (handed) return;
@@ -35,14 +43,26 @@
       // Once its Turnstile check passes, the page fetches the file's link
       // and sets it on its download button.
       site: /(^|\.)(vikingfile\.com|vik1ngfile\.site)$/,
+      // After the check, the button reads "Generating download link…"
+      // until the link comes, or "Error : …" when the page's request for it
+      // fails; a request that never answers leaves it generating.
       watch() {
+        let since = 0;
         const look = () => {
-          const url = document.getElementById("download-link")?.getAttribute("href");
-          if (!url) return;
-          const name = document.getElementById("filename")?.textContent.trim() || undefined;
-          hand([{ url, name }]);
+          const button = document.getElementById("download-link");
+          if (!button) return;
+          const url = button.getAttribute("href");
+          if (url && url !== "#") {
+            const name = document.getElementById("filename")?.textContent.trim() || undefined;
+            return hand([{ url, name }]);
+          }
+          const text = button.textContent.trim();
+          if (/^error\b/i.test(text)) return later(`vikingfile: ${text.replace(/^error\s*:\s*/i, "") || "no link this time"}`);
+          if (!button.classList.contains("hidden") && !since) since = Date.now();
+          if (since && Date.now() - since > 45000) later("vikingfile: its page did not hand out the link");
         };
-        new MutationObserver(look).observe(document, { subtree: true, attributes: true, attributeFilter: ["href"] });
+        new MutationObserver(look).observe(document, { subtree: true, attributes: true, childList: true, characterData: true });
+        setInterval(look, 5000);
       },
     },
     {

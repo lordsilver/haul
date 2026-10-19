@@ -25,4 +25,4 @@ tracing = "0.1.44"
 tungstenite = "0.30.0"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_System_DataExchange"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_UI_WindowsAndMessaging"] }

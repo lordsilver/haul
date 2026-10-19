@@ -79,13 +79,15 @@ function duration(seconds) {
 
 const isWebLink = (url) => /^https?:\/\//i.test(url);
 
-// The host a row names: the one in use, else the first mirror's.
+// A host Haul leaves out: switched off, or needing an account not set.
+const hostOff = (h) => Boolean(h?.disabled || h?.needs_account);
+
 // The host a row downloads from, or before it starts the one it would try
 // first: the best preferred host it has, else its first host that is on.
 const shownHost = (it) => {
   if (it.host) return it.host;
   const hosts = new Map((state?.hosts ?? []).map((h) => [h.name, h]));
-  const on = it.mirrors.filter((m) => !hosts.get(m)?.disabled);
+  const on = it.mirrors.filter((m) => !hostOff(hosts.get(m)));
   const rank = (m) => hosts.get(m)?.preferred ?? Infinity;
   return [...on].sort((a, b) => rank(a) - rank(b))[0] || it.mirrors[0] || "";
 };
@@ -277,6 +279,8 @@ const THEMES = [
 let seenStatus = null;
 const needsPending = new Map();
 let needsTimer = null;
+const unwrappedPending = new Set();
+let unwrappedTimer = null;
 
 // A wrapper waits for a person like a download does, with its own name and
 // its own section to land on.
@@ -304,10 +308,19 @@ function spotNeedsUser(s) {
         if (items.length) needsToast(items);
       }, 1200);
     }
-    // A wrapper just unwrapped: its files wait for a start.
+    // Wrappers just unwrapped: their files wait for a start. A page of
+    // links adds many at once, so a burst shares one toast.
     for (const w of s.wrappers) {
       const before = seenStatus.get(w.id);
-      if (w.status === "done" && before && before !== "done") unwrappedToast(w, s);
+      if (w.status === "done" && before && before !== "done") unwrappedPending.add(w.id);
+    }
+    if (unwrappedPending.size && !unwrappedTimer) {
+      unwrappedTimer = setTimeout(() => {
+        unwrappedTimer = null;
+        const done = (state?.wrappers ?? []).filter((w) => unwrappedPending.has(w.id));
+        unwrappedPending.clear();
+        if (done.length) unwrappedToast(done, state);
+      }, 2000);
     }
   }
   seenStatus = statuses;
@@ -329,10 +342,18 @@ function needsToast(items) {
   toast(one ? `${one.name} needs you` : `${items.length} ${place === "wrappers" ? "wrappers" : "downloads"} need you`, "info", action);
 }
 
-function unwrappedToast(w, s) {
-  const waiting = s.items.filter((i) => ofWrapper(i, w.id) && i.status === "paused").length;
-  const action = waiting ? { label: "Start all", icon: "play", onclick: () => startWrapper(w) } : { label: "Show", icon: "link", onclick: () => go("wrappers") };
-  toast(waiting ? `${wrapperName(w)}: ${plural(waiting, "file")} ready to start` : `${wrapperName(w)} is unwrapped`, "info", action);
+// One toast for the wrappers a burst unwrapped: their files counted once
+// (wrappers of one release share them), named by the release when there is
+// one, and a button for the list rather than starting what may be several
+// releases at once.
+function unwrappedToast(ws, s) {
+  // Already where the toast would lead.
+  if (view === "wrappers") return;
+  const ids = new Set(ws.map((w) => w.id));
+  const waiting = s.items.filter((i) => i.status === "paused" && [i.source, ...(i.also_from ?? [])].some((id) => ids.has(id))).length;
+  const names = [...new Set(ws.map(wrapperName))];
+  const what = names.length === 1 ? names[0] : plural(names.length, "release");
+  toast(waiting ? `${what}: ${plural(waiting, "file")} ready to start` : `${what} unwrapped`, "info", { label: "Show", icon: "link", onclick: () => go("wrappers") });
 }
 
 // ---- render
@@ -927,7 +948,7 @@ function updateRow(r, it, s, member = false) {
   const host = shownHost(it);
   const known = new Map((state?.hosts ?? []).map((h) => [h.name, h]));
   const sub = [`${known.get(host)?.preferred != null ? "★ " : ""}${host}`];
-  const others = it.mirrors.filter((m) => m !== host && !known.get(m)?.disabled).length;
+  const others = it.mirrors.filter((m) => m !== host && !hostOff(known.get(m))).length;
   if (others) sub.push(`${others} other ${others === 1 ? "host" : "hosts"}`);
   if (it.package) sub.push(it.package);
   if (wrapperNames.has(it.source)) sub.push(`from ${wrapperNames.get(it.source)}`);
@@ -1370,10 +1391,15 @@ function renderWrappers(s) {
     setText(c.name, wrapperName(w));
     c.name.title = w.url;
     const error = ["error", "waiting"].includes(w.status) ? withoutHost(w.error, w.host) : "";
-    const subKey = `${w.host}|${wrapperStatus(w, files)}|${error}`;
+    // Wrappers of one release are often one per host: the hosts their
+    // links are on tell them apart.
+    const on = (w.hosts ?? []).length ? `${w.hosts.slice(0, 3).join(", ")}${w.hosts.length > 3 ? ` +${w.hosts.length - 3}` : ""}` : "";
+    const line = [w.host, on, wrapperStatus(w, files)].filter(Boolean).join(" · ");
+    const subKey = `${line}|${error}`;
     if (c.sub.dataset.key !== subKey) {
       c.sub.dataset.key = subKey;
-      c.sub.replaceChildren(`${w.host} · ${wrapperStatus(w, files)}`, error ? " · " : "", error ? el("span", { class: w.status === "error" ? "error" : "" }, error) : "");
+      c.sub.replaceChildren(line, error ? " · " : "", error ? el("span", { class: w.status === "error" ? "error" : "" }, error) : "");
+      c.sub.title = (w.hosts ?? []).join(", ");
     }
     const key = `${w.status}|${waiting.length}|${unstarted.length}|${s.desktop}|${w.error}|${w.open_urls.join(" ")}`;
     if (c.key !== key && !(c.editing && w.status === "captcha")) {

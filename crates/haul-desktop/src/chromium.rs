@@ -72,6 +72,8 @@ pub enum Outcome {
     },
     /// The page said its file is gone.
     Gone(String),
+    /// The page could not hand out its link this time.
+    Later(String),
     /// The person closed the window, or the browser went away.
     Closed,
 }
@@ -213,8 +215,13 @@ fn drive(
         }
         let wants_person = start.elapsed() >= p.show_after || p.handle.show.load(Ordering::Relaxed);
         if wants_person && let Some(show) = on_show.take() {
+            taskbar::show(browser.child.id());
             bring_on_screen(&mut cdp, &target, s);
             show();
+        } else if on_show.is_some() {
+            // Out of sight means out of the taskbar too: the browser's
+            // windows (a new one may appear) get no button there.
+            taskbar::hide(browser.child.id());
         }
         let answer = match cdp.call(
             "Runtime.evaluate",
@@ -234,6 +241,9 @@ fn drive(
         };
         if let Some(reason) = sent["gone"].as_str() {
             return Ok(Outcome::Gone(reason.to_string()));
+        }
+        if let Some(reason) = sent["later"].as_str() {
+            return Ok(Outcome::Later(reason.to_string()));
         }
         let mut files = Vec::new();
         for f in sent["files"].as_array().into_iter().flatten() {
@@ -415,4 +425,91 @@ impl Cdp {
             }
         }
     }
+}
+
+/// The taskbar buttons of the browser's windows. A page passed out of sight
+/// shows nowhere, but each browser window still gets a button, and a queue
+/// of pages had Edge buttons come and go one after another.
+#[cfg(windows)]
+mod taskbar {
+    use windows_sys::{
+        Win32::{
+            Foundation::{HWND, LPARAM},
+            UI::WindowsAndMessaging::{
+                EnumWindows, GW_OWNER, GWL_EXSTYLE, GetWindow, GetWindowLongPtrW,
+                GetWindowThreadProcessId, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE,
+                SetWindowLongPtrW, ShowWindow, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+            },
+        },
+        core::BOOL,
+    };
+
+    /// The visible top-level windows of process `pid` that own no other.
+    fn windows_of(pid: u32) -> Vec<HWND> {
+        struct Search {
+            pid: u32,
+            found: Vec<HWND>,
+        }
+        unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            // SAFETY: `lparam` is the `Search` below, alive for the call.
+            let search = unsafe { &mut *(lparam as *mut Search) };
+            let mut owner = 0;
+            // SAFETY: plain queries on a window handle Windows gave us.
+            unsafe {
+                GetWindowThreadProcessId(hwnd, &mut owner);
+                if owner == search.pid
+                    && IsWindowVisible(hwnd) != 0
+                    && GetWindow(hwnd, GW_OWNER).is_null()
+                {
+                    search.found.push(hwnd);
+                }
+            }
+            1
+        }
+        let mut search = Search {
+            pid,
+            found: Vec::new(),
+        };
+        // SAFETY: the callback only touches `search`, which outlives the call.
+        unsafe { EnumWindows(Some(each), &mut search as *mut Search as LPARAM) };
+        search.found
+    }
+
+    /// Sets or clears the tool-window style, which keeps a window off the
+    /// taskbar; the change shows once the window is hidden and shown again.
+    fn set_tool(hwnd: HWND, tool: bool) {
+        // SAFETY: reading and writing a window's extended style.
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+            let want = if tool {
+                (style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW
+            } else {
+                (style & !WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
+            };
+            if want == style {
+                return;
+            }
+            ShowWindow(hwnd, SW_HIDE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, want as isize);
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+    }
+
+    pub fn hide(pid: u32) {
+        for hwnd in windows_of(pid) {
+            set_tool(hwnd, true);
+        }
+    }
+
+    pub fn show(pid: u32) {
+        for hwnd in windows_of(pid) {
+            set_tool(hwnd, false);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod taskbar {
+    pub fn hide(_pid: u32) {}
+    pub fn show(_pid: u32) {}
 }

@@ -689,6 +689,9 @@ fn remote_dns(proxy: &str) -> String {
 #[derive(Debug, Default)]
 pub struct Tokens {
     pub(crate) rapidgator: Mutex<Option<String>>,
+    /// When vikingfile's `check-file` may be asked next: one lookup at a
+    /// time, spaced out, since it turns a burst away with 429.
+    pub(crate) vikingfile_next: tokio::sync::Mutex<Option<std::time::Instant>>,
 }
 
 /// Everything a resolver may use.
@@ -794,12 +797,18 @@ fn group_named(links: Vec<(String, Option<String>)>) -> Vec<Entry> {
     if aligned {
         for n in 0..count {
             let links: Vec<String> = hosts.values().map(|links| links[n].clone()).collect();
-            let names: HashSet<String> = links.iter().filter_map(|url| guess_name(url)).collect();
-            if names.len() > 1 {
+            let names: Vec<String> = links.iter().filter_map(|url| guess_name(url)).collect();
+            if names
+                .iter()
+                .map(|n| name_key(n))
+                .collect::<HashSet<_>>()
+                .len()
+                > 1
+            {
                 grouped.clear();
                 break;
             }
-            grouped.push((links, names.into_iter().next()));
+            grouped.push((links, names.into_iter().reduce(better_name)));
         }
     }
     let mut out: Vec<Entry> = if grouped.len() == count && aligned {
@@ -835,14 +844,89 @@ fn group_named(links: Vec<(String, Option<String>)>) -> Vec<Entry> {
 
 /// A page's text for a heading: entities decoded, `None` when empty.
 fn page_text(raw: &str) -> Option<String> {
-    let text = raw
-        .trim()
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&amp;", "&");
+    let text = decode_entities(raw.trim());
     (!text.is_empty()).then_some(text)
+}
+
+static ENTITY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z]{2,6});").unwrap());
+
+/// HTML's character references, named and numeric (filecrypt.cc writes a
+/// name's brackets as `&#40;` and `&#41;`); an unknown one stays as it is.
+fn decode_entities(text: &str) -> String {
+    // Some pages escape a reference's own `&` too (`&amp;#40;`).
+    let once = decode_once(text);
+    if once.contains('&') {
+        decode_once(&once)
+    } else {
+        once
+    }
+}
+
+fn decode_once(text: &str) -> String {
+    ENTITY
+        .replace_all(text, |c: &regex::Captures<'_>| {
+            let body = &c[1];
+            let ch = if let Some(hex) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X"))
+            {
+                u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
+            } else if let Some(dec) = body.strip_prefix('#') {
+                dec.parse().ok().and_then(char::from_u32)
+            } else {
+                match body {
+                    "amp" => Some('&'),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    "nbsp" => Some(' '),
+                    _ => None,
+                }
+            };
+            ch.map_or_else(|| c[0].to_string(), String::from)
+        })
+        .into_owned()
+}
+
+/// A browser's mark for a second copy of a file, ` (2)` before its
+/// extension, as some uploads keep it.
+static COPY_MARK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(.+?) \(\d{1,3}\)(\.\w{2,5})$").unwrap());
+
+/// A file name as Haul saves and shows it: character references decoded
+/// and a copy mark (`name.part1 (2).rar`) taken off, since the parts of an
+/// archive are only found by their plain names.
+pub fn tidy_name(name: &str) -> String {
+    let name = decode_entities(name.trim());
+    match COPY_MARK.captures(&name) {
+        Some(c) => format!("{}{}", &c[1], &c[2]),
+        None => name,
+    }
+}
+
+/// What a file name is recognised by on every host: [`tidy_name`], with
+/// `_` for a space as some hosts write it, runs of spaces as one, and any
+/// case.
+pub fn name_key(name: &str) -> String {
+    tidy_name(name)
+        .replace('_', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// Of two names for the same file, the one to keep: the one a host wrote
+/// with spaces rather than `_`, then the one without a copy mark.
+pub fn better_name(a: String, b: String) -> String {
+    let rank = |n: &str| {
+        (
+            n.matches('_').count(),
+            COPY_MARK.is_match(n),
+            n.contains('&'),
+        )
+    };
+    if rank(&b) < rank(&a) { b } else { a }
 }
 
 /// Tells a search on another thread to stop once the resolve that started it
@@ -1176,7 +1260,43 @@ mod tests {
             ]
         );
         assert_eq!(page_text(" A &amp; B ").as_deref(), Some("A & B"));
+        assert_eq!(
+            page_text("Dra.0.10 &#40;15.10.2026&#41; &#x41;&bogus;.rar").as_deref(),
+            Some("Dra.0.10 (15.10.2026) A&bogus;.rar")
+        );
         assert_eq!(page_text("  "), None);
+    }
+
+    #[test]
+    fn names_are_tidied_and_recognised_across_hosts() {
+        assert_eq!(
+            tidy_name("Dra.Awa-ElAmigos.part1 (2).rar"),
+            "Dra.Awa-ElAmigos.part1.rar"
+        );
+        assert_eq!(
+            tidy_name("Dra.0.10 .1.1 &amp;#40;15.10.2026&amp;#41;.rar"),
+            "Dra.0.10 .1.1 (15.10.2026).rar"
+        );
+        assert_eq!(
+            tidy_name("Game (2024).rar"),
+            "Game (2024).rar",
+            "a year is not a copy mark"
+        );
+        assert_eq!(
+            name_key("Dra.0.10_.1.1_(.10.202-_1.1.1_(15.10.2026).rar"),
+            name_key("Dra.0.10 .1.1 (.10.202- 1.1.1 (15.10.2026).rar")
+        );
+        assert_eq!(name_key("a.part1 (2).rar"), name_key("A.part1.rar"));
+        assert_ne!(name_key("a.part1.rar"), name_key("a.part2.rar"));
+        assert_eq!(better_name("a_b.rar".into(), "a b.rar".into()), "a b.rar");
+        assert_eq!(better_name("a b.rar".into(), "a_b.rar".into()), "a b.rar");
+        // One file on two hosts that spell its name apart is still one file.
+        let files = group_mirrors(vec![
+            "https://megaup.net/x/A_B.part1.rar".into(),
+            "https://rapidgator.net/file/y/A B.part1.rar.html".into(),
+        ]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].name.as_deref(), Some("A B.part1.rar"));
     }
 
     #[test]

@@ -1132,6 +1132,15 @@ async fn vikingfile_checks_the_file_then_wants_a_person() {
         ("big.rar", Some(5_320_312_809))
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2, "asked again after the 429");
+    let spaced = tokens
+        .vikingfile_next
+        .lock()
+        .await
+        .expect("the next lookup is spaced");
+    assert!(
+        spaced > std::time::Instant::now(),
+        "the next lookup waits its turn"
+    );
     assert!(matches!(
         resolve(&cx, "https://vik1ngfile.site/f/acXWYKlHX0").await,
         Err(ResolveError::NeedsUser(_))

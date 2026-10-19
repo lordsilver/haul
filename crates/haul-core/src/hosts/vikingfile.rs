@@ -10,12 +10,18 @@
 //! name and size, so a gone file is not sent to a person and mirrors merge
 //! before anyone opens a page.
 
-use std::sync::LazyLock;
+use std::{
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use regex::Regex;
 use serde::Deserialize;
 
 use super::{Cx, Entry, Probed, ResolveError, retry_after};
+
+/// The least time between two `check-file` lookups.
+const SPACING: Duration = Duration::from_millis(400);
 
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/f/([A-Za-z0-9]+)").unwrap());
 
@@ -34,29 +40,38 @@ async fn check(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
         .ok_or_else(|| ResolveError::failed(format!("vikingfile: not a file link: {url}")))?;
     let base = &cx.cfg.endpoints.vikingfile;
     // It turns away a burst (a wrapper's thirty parts looked up at once)
-    // with 429 for a second or two.
+    // with 429, so lookups go one at a time and spaced out, and one turned
+    // away waits as long as it is asked to before the next goes.
+    let mut next = cx.tokens.vikingfile_next.lock().await;
     let mut tries = 0;
     let r = loop {
+        if let Some(at) = *next {
+            tokio::time::sleep_until(at.into()).await;
+        }
         let r = cx
             .http
             .client
             .post(format!("{base}/api/check-file"))
             .form(&[("hash", id.as_str())])
             .send()
-            .await?;
+            .await;
         tries += 1;
-        if r.status() != 429 || tries == 4 {
+        let now = Instant::now();
+        *next = Some(now + SPACING);
+        let r = r?;
+        if r.status() != 429 {
             break r;
         }
-        let seconds = retry_after(r.headers(), 2).clamp(1, 5);
-        tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
+        let seconds = retry_after(r.headers(), 2 << tries.min(4)).clamp(1, 30);
+        *next = Some(now + Duration::from_secs(seconds));
+        if tries == 5 {
+            return Err(ResolveError::Wait {
+                seconds: seconds.max(30),
+                message: "vikingfile: too many requests".into(),
+            });
+        }
     };
-    if r.status() == 429 {
-        return Err(ResolveError::Wait {
-            seconds: 30,
-            message: "vikingfile: too many requests".into(),
-        });
-    }
+    drop(next);
     if !r.status().is_success() {
         return Err(ResolveError::Network(format!(
             "vikingfile: check-file answered {}",

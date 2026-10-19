@@ -1543,6 +1543,32 @@ async fn a_file_waits_for_its_page_before_an_unknown_host() {
     wait_for(&engine, "the other mirror", all_done).await;
 }
 
+/// A page that passed its check but gave no link this time (vikingfile's
+/// "Error : …" or a request left generating) is tried again later rather
+/// than handed to a person.
+#[tokio::test]
+async fn a_page_without_its_link_is_passed_again_later() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.add_text("https://fileguard.cc/vault/held", "");
+    let w = wrapper_settled(&engine, "done").await.wrappers[0]
+        .id
+        .clone();
+    let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    let id = s.items[0].id.clone();
+    engine.start_wrapper(&w);
+    wait_for(&engine, "the file held for its page", |s| {
+        s.items[0].status == "passing"
+    })
+    .await;
+    engine.page_later(&id, "vikingfile: too many requests");
+    let s = engine.snapshot();
+    assert_eq!(s.items[0].status, "waiting");
+    assert!(s.items[0].wait > 0, "it counts down to the next pass");
+    assert_eq!(s.items[0].error, "vikingfile: too many requests");
+}
+
 /// Downloads with data on disk start first, the nearest to done first.
 #[tokio::test]
 async fn the_nearest_to_done_resumes_first() {

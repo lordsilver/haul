@@ -180,6 +180,7 @@ impl Browser {
                     }
                 }
                 Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
+                Ok(chromium::Outcome::Later(reason)) => engine.page_later(&id, &reason),
                 Ok(chromium::Outcome::Closed) => engine.page_wants_person(&id),
                 Err(e) => {
                     tracing::warn!(item = %id, "passing {url}: {e}");
@@ -241,6 +242,10 @@ impl Browser {
                 }
                 None if let Some(reason) = gone(url) => {
                     on_handoff.gone(&reason);
+                    false
+                }
+                None if let Some(reason) = later(url) => {
+                    on_handoff.later(&reason);
                     false
                 }
                 None => lock(&on_navigation).navigating(url.as_str()),
@@ -405,7 +410,17 @@ fn handed_off(url: &Url) -> Option<Handoff> {
 /// The reason the hand-off script gives when the page says its file is
 /// gone, when `url` is that message.
 fn gone(url: &Url) -> Option<String> {
-    if url.host_str() != Some("haul.invalid") || url.path() != "/gone" {
+    message(url, "/gone")
+}
+
+/// The reason the hand-off script gives when the page could not hand out
+/// its link this time, when `url` is that message.
+fn later(url: &Url) -> Option<String> {
+    message(url, "/later")
+}
+
+fn message(url: &Url, path: &str) -> Option<String> {
+    if url.host_str() != Some("haul.invalid") || url.path() != path {
         return None;
     }
     let reason = url
@@ -516,6 +531,18 @@ impl Capture {
         if let Some(window) = self.app.get_webview_window(&self.label) {
             let window = window.clone();
             // Not from inside the webview's own event.
+            std::thread::spawn(move || {
+                let _ = window.close();
+            });
+        }
+    }
+
+    /// The page could not hand out its link this time: it is tried again
+    /// later, and the window closes without asking anyone.
+    fn later(&self, reason: &str) {
+        self.engine.page_later(&self.id, reason);
+        if let Some(window) = self.app.get_webview_window(&self.label) {
+            let window = window.clone();
             std::thread::spawn(move || {
                 let _ = window.close();
             });

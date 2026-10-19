@@ -5,7 +5,7 @@ use std::{collections::HashSet, time::Instant};
 use serde::{Deserialize, Deserializer, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::hosts::{Checksum, Entry, guess_name};
+use crate::hosts::{Checksum, Entry, guess_name, name_key, tidy_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -120,6 +120,9 @@ pub(crate) struct Item {
     /// A wrapper page's own name for what it holds.
     pub title: Option<String>,
     pub found: Option<Found>,
+    /// The hosts a wrapper's links are on, in its order: what tells apart
+    /// wrappers of one release, one per host.
+    pub found_hosts: Vec<String>,
 }
 
 impl Item {
@@ -140,6 +143,7 @@ impl Item {
     }
 
     pub fn new(urls: Vec<String>, name: Option<String>, package: String) -> Self {
+        let name = name.map(|n| tidy_name(&n)).filter(|n| !n.is_empty());
         Self {
             id: uuid::Uuid::new_v4().simple().to_string()[..10].to_string(),
             mirrors: urls,
@@ -176,6 +180,7 @@ impl Item {
             page_wants_person: false,
             title: None,
             found: None,
+            found_hosts: Vec::new(),
         }
     }
 
@@ -188,14 +193,19 @@ impl Item {
         self.name
             .clone()
             .or_else(|| self.mirrors.first().and_then(|m| guess_name(m)))
+            .map(|n| tidy_name(&n))
     }
 
     /// Whether this row holds the file `name` of `size` bytes (0 = unknown):
     /// the names match, and so do the sizes when both are known.
     /// A wrapper's row holds no file, so it is never the same as one.
+    /// Names are compared as [`name_key`] gives them, so `a_b.rar` on one
+    /// host and `a b.rar` on another are one file.
     pub fn same_file(&self, name: &str, size: u64) -> bool {
         !self.wrapper
-            && self.key_name().as_deref() == Some(name)
+            && self
+                .key_name()
+                .is_some_and(|own| name_key(&own) == name_key(name))
             && (self.size == 0 || size == 0 || self.size == size)
     }
 
@@ -218,6 +228,7 @@ impl Item {
             also_from: self.also_from.clone(),
             title: self.title.clone(),
             found: self.found,
+            found_hosts: self.found_hosts.clone(),
         }
     }
 
@@ -260,10 +271,15 @@ impl Item {
         it.also_from = s.also_from;
         it.title = s.title;
         it.found = s.found;
+        it.found_hosts = s.found_hosts;
         it.status = match s.status {
             Status::Done | Status::Paused | Status::Error => s.status,
             _ => Status::Queued,
         };
+        // Downloaded bytes are not saved; a finished file has all of them.
+        if it.status == Status::Done {
+            it.done = it.size;
+        }
         it
     }
 }
@@ -305,6 +321,8 @@ pub(crate) struct Saved {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub found: Option<Found>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub found_hosts: Vec<String>,
 }
 
 fn lenient_status<'de, D: Deserializer<'de>>(d: D) -> Result<Status, D::Error> {
