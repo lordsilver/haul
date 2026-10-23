@@ -67,6 +67,7 @@ fn walk(node: &Value, token: &str, out: &mut Vec<Entry>) {
                     .and_then(|h| Checksum::from_hex(Algo::Md5, h)),
                 deferred: false,
                 mirrors: Vec::new(),
+                decrypt: None,
             });
         }
     }

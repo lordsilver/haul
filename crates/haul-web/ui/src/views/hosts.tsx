@@ -441,7 +441,7 @@ export function Hosts({ s }: { s: State }) {
         // biome-ignore lint/a11y/noStaticElementInteractions: where a dragged host lands; the arrows reorder from the keyboard
         <div
           ref={list}
-          className="-mx-2 flex min-h-0 flex-1 flex-col gap-2.5 overflow-x-hidden overflow-y-auto px-2 pb-4"
+          className="-mx-2 min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-4"
           onDragOver={(e) => {
             if (!drag || !e.dataTransfer.types.includes(HOST_DRAG)) return;
             const node = (e.target as HTMLElement).closest<HTMLElement>('[data-host]');
@@ -469,31 +469,33 @@ export function Hosts({ s }: { s: State }) {
             setPreferredOrder(next);
           }}
         >
-          {hosts.map((h) => {
-            // A heading where the next group starts: preferred, the rest, off.
-            const heading = headings.has(h.group) ? null : HEADINGS[h.group];
-            headings.add(h.group);
-            return [
-              heading ? (
-                <div key={`heading-${h.group}`} className="mt-3 flex flex-wrap items-baseline gap-x-2 first:mt-0">
-                  <strong className="text-sm">{heading[0]}</strong>
-                  <span className="text-sm text-muted-foreground">{heading[1]}</span>
-                </div>
-              ) : null,
-              <HostCard
-                key={h.name}
-                h={h}
-                s={s}
-                place={order.indexOf(h.name)}
-                count={order.length}
-                drop={drop}
-                dragging={drag?.name === h.name}
-                onDragStart={() => setDrag({ name: h.name, frozen: s.hosts })}
-                onDragEnd={() => setDrag(null)}
-                move={(delta) => move(h.name, delta)}
-              />,
-            ];
-          })}
+          <div className="flex max-w-4xl flex-col gap-2.5">
+            {hosts.map((h) => {
+              // A heading where the next group starts: preferred, the rest, off.
+              const heading = headings.has(h.group) ? null : HEADINGS[h.group];
+              headings.add(h.group);
+              return [
+                heading ? (
+                  <div key={`heading-${h.group}`} className="mt-3 flex flex-wrap items-baseline gap-x-2 first:mt-0">
+                    <strong className="text-sm">{heading[0]}</strong>
+                    <span className="text-sm text-muted-foreground">{heading[1]}</span>
+                  </div>
+                ) : null,
+                <HostCard
+                  key={h.name}
+                  h={h}
+                  s={s}
+                  place={order.indexOf(h.name)}
+                  count={order.length}
+                  drop={drop}
+                  dragging={drag?.name === h.name}
+                  onDragStart={() => setDrag({ name: h.name, frozen: s.hosts })}
+                  onDragEnd={() => setDrag(null)}
+                  move={(delta) => move(h.name, delta)}
+                />,
+              ];
+            })}
+          </div>
         </div>
       ) : (
         <Empty className="flex-1 border">

@@ -641,9 +641,17 @@ async fn start_server() -> (Server, u16) {
                         <a href="https://pixeldrain.com/u/postone">Part 1</a>
                         <a href="https://pixeldrain.com/u/posttwo">Part 2</a>
                         </body></html>"#,
+                    // Kept behind a check a browser passes (Cloudflare's).
+                    "guarded" => {
+                        return (
+                            StatusCode::FORBIDDEN,
+                            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                            "<html><head><title>Just a moment...</title></head><body>turnstile</body></html>",
+                        );
+                    }
                     _ => "<html><head><title>Nothing here</title></head><body><a href=\"/\">Home</a></body></html>",
                 };
-                ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
+                (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
             }),
         )
         .route(
@@ -702,6 +710,8 @@ impl Setup {
             download_dir: Some(self.root.join("dl")),
             endpoints: Endpoints {
                 pixeldrain: self.ip.clone(),
+                onefichier_site: self.ip.clone(),
+                mega: self.ip.clone(),
                 fileguard: self.ip.clone(),
                 filecrypt: self.ip.clone(),
                 dlc_service: format!("{}/dlc", self.ip),
@@ -1387,6 +1397,39 @@ async fn a_page_of_links_adds_its_links() {
         s.items.iter().any(|i| i.status == "captcha")
     })
     .await;
+}
+
+/// A page behind a check Haul cannot pass waits for a person; the links its
+/// window then shows (the person past the check, or on a paste the page
+/// led to) stand in for it, the site's own and ads left out.
+#[tokio::test]
+async fn a_guarded_page_takes_the_links_its_window_shows() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let page = format!("{}/blog/guarded", t.ip);
+    engine.add_text(&page, "Pkg");
+    let s = wait_for(&engine, "the guarded page to need a person", |s| {
+        s.items.iter().any(|i| i.status == "captcha")
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    // Nothing known yet (the check itself, the site's menu): the row stays.
+    assert_eq!(
+        engine.page_listed(&id, &[format!("{}/blog/other", t.ip)]),
+        0
+    );
+    let shown = [
+        format!("{}/blog/other", t.ip),
+        "https://casino.example/win".to_string(),
+        "https://pixeldrain.com/u/postone".to_string(),
+        "https://pixeldrain.com/u/posttwo".to_string(),
+    ];
+    assert_eq!(engine.page_listed(&id, &shown), 2);
+    let s = wait_for(&engine, "the page's files, named", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.name.ends_with(".bin"))
+    })
+    .await;
+    assert!(s.items.iter().all(|i| i.package == "Pkg" && i.id != id));
 }
 
 /// A host that gives nothing without an account is off until one is set:

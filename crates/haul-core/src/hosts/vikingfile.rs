@@ -90,7 +90,7 @@ async fn check(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     if !check(cx, url).await?.exist {
-        return Err(ResolveError::failed("vikingfile: the file is gone"));
+        return Err(ResolveError::failed("vikingfile: the file was deleted"));
     }
     Err(ResolveError::NeedsUser(
         "vikingfile wants its Cloudflare check passed in a browser: the desktop app does it on its own and shows the page only if it wants a box ticked".into(),

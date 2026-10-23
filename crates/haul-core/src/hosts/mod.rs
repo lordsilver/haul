@@ -73,6 +73,10 @@ pub struct Entry {
     /// one row with every host as a mirror.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mirrors: Vec<String>,
+    /// The key the file's bytes are encrypted with (MEGA's), decrypted as
+    /// they arrive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decrypt: Option<mega::Key>,
 }
 
 /// What a wrapper's page holds once its gate is passed.
@@ -974,6 +978,13 @@ pub async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Vec<String>, ResolveEr
     generic::page_links(cx, url).await
 }
 
+/// The links in `text` (addresses, one per line or in a page's markup) to
+/// hosts Haul knows and to wrappers, as [`page_links`] keeps them from the
+/// page at `page`.
+pub fn listed_links(text: &str, page: &str) -> Vec<String> {
+    url::Url::parse(page).map_or_else(|_| Vec::new(), |base| generic::links_in(text, &base, page))
+}
+
 /// Direct links for `url`. Folders and lists expand to several entries.
 pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     match kind_of(url) {
@@ -983,7 +994,7 @@ pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError>
         Some(Kind::OneFichier) => onefichier::resolve(cx, url).await,
         Some(Kind::Rapidgator) => rapidgator::resolve(cx, url).await,
         Some(Kind::Nitroflare) => nitroflare::resolve(cx, url).await,
-        Some(Kind::Mega) => mega::resolve(cx, url),
+        Some(Kind::Mega) => mega::resolve(cx, url).await,
         Some(Kind::Vikingfile) => vikingfile::resolve(cx, url).await,
         Some(Kind::Direct) => Ok(vec![Entry {
             url: url.into(),
@@ -1005,8 +1016,10 @@ pub async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
     match kind_of(url) {
         Some(Kind::Pixeldrain) => pixeldrain::probe(cx, url).await,
         Some(Kind::Vikingfile) => vikingfile::probe(cx, url).await,
+        Some(Kind::OneFichier) => onefichier::probe(cx, url).await,
+        Some(Kind::Mega) => mega::probe(cx, url).await,
         // No free metadata route; resolve at download time.
-        Some(Kind::Mega | Kind::Gofile | Kind::OneFichier) => None,
+        Some(Kind::Gofile) => None,
         // A wrapper says nothing useful before its solve; that is the
         // resolver's work, once, at download time.
         Some(Kind::Fileguard | Kind::Filecrypt | Kind::Mirrored) => None,

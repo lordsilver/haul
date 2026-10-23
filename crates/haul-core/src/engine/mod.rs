@@ -2375,6 +2375,15 @@ impl Engine {
                 message: format!("{status} rate limited"),
             });
         }
+        // The host's transfer allowance for this address is used up (MEGA's
+        // free quota answers so): it comes back over time.
+        if status == 509 {
+            let seconds = hosts::retry_after(resp.headers(), 1800);
+            return Err(Fail::Wait {
+                seconds,
+                message: "509 transfer allowance used up for now".into(),
+            });
+        }
         let known_size = self.lock().items.get(id).map(|i| i.size).unwrap_or(0);
         if status == 416 && have > 0 {
             // Nothing left to send: the partial file is complete, unless we
@@ -2515,6 +2524,14 @@ impl Engine {
                     }
                     let Some(chunk) = chunk else { continue };
                     let Some(chunk) = chunk else { return Ok(()) };
+                    let chunk = match &entry.decrypt {
+                        Some(key) => {
+                            let mut plain = chunk.to_vec();
+                            key.apply(&mut plain, done);
+                            plain.into()
+                        }
+                        None => chunk,
+                    };
                     file.write_all(&chunk).await?;
                     done += chunk.len() as u64;
                     self.0.limiter.throttle(chunk.len()).await;
@@ -2863,6 +2880,31 @@ impl Engine {
         self.touch(&mut st);
         drop(st);
         self.0.wake.notify_one();
+    }
+
+    /// A page a person opened for item `id` in the desktop app's browser
+    /// (past a check that kept Haul out) links files on hosts Haul knows, or
+    /// wrappers: they stand in for the row, as if the page's text had been
+    /// pasted. `links` is every address the page shows; the rest are left
+    /// out as for a page Haul reads itself. Returns how many it took; with
+    /// none the row stays as it is.
+    pub fn page_listed(&self, id: &str, links: &[String]) -> usize {
+        let Some(page) = self.page_for(id) else {
+            return 0;
+        };
+        let known = hosts::listed_links(&links.join("\n"), &page);
+        if known.is_empty() {
+            return 0;
+        }
+        tracing::info!(item = %id, "{page} links {} files and wrappers, in its window", known.len());
+        let package = {
+            let mut st = self.lock();
+            let package = st.items.shift_remove(id).map(|it| it.package);
+            self.touch(&mut st);
+            package.unwrap_or_default()
+        };
+        self.add_text(&known.join("\n"), &package);
+        known.len()
     }
 
     pub fn page_gone(&self, id: &str, reason: &str) {

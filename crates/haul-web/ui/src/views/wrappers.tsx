@@ -160,7 +160,7 @@ export function Wrappers({ s }: { s: State }) {
       </header>
       {s.wrapper_cards.length ? (
         <div className="-mx-2 min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-4">
-          <div className="flex flex-col gap-2.5">
+          <div className="flex max-w-4xl flex-col gap-2.5">
             {s.wrapper_cards.map((card) => (
               <Card key={card.key} card={card} s={s} />
             ))}

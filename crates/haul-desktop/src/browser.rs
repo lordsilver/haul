@@ -214,8 +214,11 @@ impl Browser {
                 .data_dir()
                 .join("webview")
                 .join(if proxied { "proxy" } else { "direct" });
-        // A wrapper's page leads to other hosts: its window is not sent back.
-        let stay = Arc::new(Mutex::new(Stay::new(url, !hosts::wraps(url))));
+        // A wrapper's page leads to other hosts, and so does a page on a site
+        // Haul has no code for (a release's post, a paste): such a window is
+        // not sent back, and the page's script hands over the links it shows.
+        let lists = hosts::may_list_links(url);
+        let stay = Arc::new(Mutex::new(Stay::new(url, !hosts::wraps(url) && !lists)));
         let capture = Capture {
             app: self.app.clone(),
             engine: self.engine.clone(),
@@ -232,6 +235,11 @@ impl Browser {
             .inner_size(1100.0, 800.0)
             .data_directory(profile)
             .initialization_script(OVERLAYS)
+            .initialization_script(if lists {
+                "window.__haulLists = true;"
+            } else {
+                ""
+            })
             .initialization_script(HANDOFF)
             .on_download(move |_, event| on_download.on_download(event))
             .on_new_window(move |url, _| capture.on_popup(url))
@@ -242,6 +250,10 @@ impl Browser {
                 }
                 None if let Some(reason) = gone(url) => {
                     on_handoff.gone(&reason);
+                    false
+                }
+                None if let Some(links) = listed(url) => {
+                    on_handoff.listed(&links);
                     false
                 }
                 None if let Some(reason) = later(url) => {
@@ -413,6 +425,16 @@ fn gone(url: &Url) -> Option<String> {
     message(url, "/gone")
 }
 
+/// The addresses a page shows, when `url` is the hand-off script's message
+/// with them.
+fn listed(url: &Url) -> Option<Vec<String>> {
+    if url.host_str() != Some("haul.invalid") || url.path() != "/links" {
+        return None;
+    }
+    let links = url.query_pairs().find(|(k, _)| k == "links")?.1;
+    serde_json::from_str(&links).ok()
+}
+
 /// The reason the hand-off script gives when the page could not hand out
 /// its link this time, when `url` is that message.
 fn later(url: &Url) -> Option<String> {
@@ -429,7 +451,7 @@ fn message(url: &Url, path: &str) -> Option<String> {
         .map(|(_, v)| v.into_owned())
         .unwrap_or_default();
     Some(if reason.is_empty() {
-        "the page says the file is gone".into()
+        "the page says the file was deleted".into()
     } else {
         reason
     })
@@ -522,6 +544,23 @@ impl Capture {
             size: None,
         };
         self.take_files(vec![(url, file)], None);
+    }
+
+    /// The page shows links to hosts Haul knows, or wrappers: they stand in
+    /// for the row, and the window closes. Other links leave it open.
+    fn listed(&self, links: &[String]) {
+        let this = self.clone();
+        let links = links.to_vec();
+        // Adding links starts their lookups, which need the async runtime;
+        // this runs on the window's own thread, which has none.
+        tauri::async_runtime::spawn(async move {
+            if this.engine.page_listed(&this.id, &links) == 0 {
+                return;
+            }
+            if let Some(window) = this.app.get_webview_window(&this.label) {
+                let _ = window.close();
+            }
+        });
     }
 
     /// The page says its file is gone: the mirror failed, and the window

@@ -80,7 +80,7 @@
               .clone()
               .json()
               .then((answer) => {
-                if (answer?.status === "error-notFound") return gone("gofile: the folder is gone");
+                if (answer?.status === "error-notFound") return gone("gofile: the folder was deleted");
                 if (answer?.status !== "ok") return;
                 const data = answer.data ?? {};
                 const nodes = data.type === "file" ? [data] : Object.values(data.children ?? {});
@@ -92,7 +92,55 @@
         };
       },
     },
+    {
+      // A person solves 1fichier's captcha here and the download starts by
+      // itself; all the page can say first is that the file was deleted
+      // (its own words, French then English, with the 404 it answers).
+      site: /(^|\.)1fichier\.com$/,
+      watch() {
+        const look = () => {
+          const text = document.body?.innerText ?? "";
+          if (/\b(File not found|Fichier introuvable)\b/.test(text)) gone("1fichier: the file was deleted");
+        };
+        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", look);
+        else look();
+      },
+    },
   ];
+
+  // A page on a site Haul has no code for (a release's post, a paste), which
+  // kept Haul out with a check a person passes here: every address it shows
+  // goes to Haul, which keeps those on hosts it knows and wrappers. Until it
+  // finds some the window stays, so the person can go on to the page that
+  // has them, in this window: a link meant for a new one opens here, as the
+  // window takes no new ones (ads open those).
+  if (window.__haulLists) {
+    document.addEventListener(
+      "click",
+      (e) => {
+        const a = e.target instanceof Element ? e.target.closest("a[target]") : null;
+        if (a && a.target !== "_self") a.target = "_self";
+      },
+      true,
+    );
+    let shown = 0;
+    let timer;
+    const look = () => {
+      const links = new Set();
+      for (const a of document.querySelectorAll("a[href]")) if (/^https?:/.test(a.href)) links.add(a.href);
+      for (const m of (document.body?.innerText ?? "").matchAll(/https?:\/\/[^\s"'<>()[\]{}]+/g)) links.add(m[0]);
+      if (links.size <= shown) return;
+      shown = links.size;
+      const all = [...links];
+      send({ links: all }, "https://haul.invalid/links?" + new URLSearchParams({ links: JSON.stringify(all) }));
+    };
+    const soon = () => {
+      clearTimeout(timer);
+      timer = setTimeout(look, 700);
+    };
+    new MutationObserver(soon).observe(document, { subtree: true, childList: true, characterData: true });
+    soon();
+  }
 
   recipes.find((r) => r.site.test(location.hostname))?.watch();
 })();
