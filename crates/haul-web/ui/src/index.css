@@ -4,6 +4,10 @@
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
 
+/* The built page is committed beside the sources: scanned, it would carry the
+   previous build's classes into the next one. */
+@source not "../dist";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
