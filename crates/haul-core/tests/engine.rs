@@ -645,13 +645,14 @@ async fn start_server() -> (Server, u16) {
                     "guarded" => {
                         return (
                             StatusCode::FORBIDDEN,
-                            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                            [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::HeaderName::from_static("cf-mitigated"), "challenge")],
                             "<html><head><title>Just a moment...</title></head><body>turnstile</body></html>",
-                        );
+                        )
+                            .into_response();
                     }
                     _ => "<html><head><title>Nothing here</title></head><body><a href=\"/\">Home</a></body></html>",
                 };
-                (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
+(StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response()
             }),
         )
         .route(
@@ -841,6 +842,27 @@ async fn a_saved_row_without_links_is_dropped() {
     let engine = t.engine().await;
     let ids: Vec<String> = engine.snapshot().items.into_iter().map(|i| i.id).collect();
     assert_eq!(ids, ["kept"]);
+}
+
+/// A MEGA download that failed in Haul 0.15.0 for want of megatools goes
+/// again, as Haul now downloads from MEGA itself.
+#[tokio::test]
+async fn a_download_that_failed_for_want_of_megatools_goes_again() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("data")).unwrap();
+    std::fs::write(
+        t.root.join("data/queue.json"),
+        r#"{"m":{"mirrors":["https://mega.nz/file/AAAAAAAA#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"],"status":"error","error":"mega.nz needs megatools on PATH (https://megatools.megous.com)","pre":{"url":"https://mega.nz/file/AAAAAAAA","exec":["megatools","dl"]}}}"#,
+    )
+    .unwrap();
+    let engine = t.engine().await;
+    let s = engine.snapshot();
+    assert_ne!(s.items[0].status, "error", "queued again: {:?}", s.items[0]);
+    assert!(
+        !s.items[0].error.contains("megatools"),
+        "{}",
+        s.items[0].error
+    );
 }
 
 #[tokio::test]
@@ -1413,9 +1435,14 @@ async fn a_guarded_page_takes_the_links_its_window_shows() {
     })
     .await;
     let id = s.items[0].id.clone();
+    assert!(
+        engine.page_passes(&page),
+        "a page behind Cloudflare's check is passed out of sight: {}",
+        s.items[0].error
+    );
     // Nothing known yet (the check itself, the site's menu): the row stays.
     assert_eq!(
-        engine.page_listed(&id, &[format!("{}/blog/other", t.ip)]),
+        engine.page_listed(&id, &[format!("{}/blog/other", t.ip)], &[]),
         0
     );
     let shown = [
@@ -1424,7 +1451,7 @@ async fn a_guarded_page_takes_the_links_its_window_shows() {
         "https://pixeldrain.com/u/postone".to_string(),
         "https://pixeldrain.com/u/posttwo".to_string(),
     ];
-    assert_eq!(engine.page_listed(&id, &shown), 2);
+    assert_eq!(engine.page_listed(&id, &shown, &[]), 2);
     let s = wait_for(&engine, "the page's files, named", |s| {
         s.items.len() == 2 && s.items.iter().all(|i| i.name.ends_with(".bin"))
     })

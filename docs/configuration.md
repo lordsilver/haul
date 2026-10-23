@@ -41,7 +41,6 @@ disabled_hosts = ["gofile.io"]         # never downloaded from: their links are 
 proxies = ["socks5://u:p@nl.example:1080"]  # more proxies; downloads spread over them
 proxy_with_direct = false       # your own connection as one more of them
 proxy_fresh_connections = false # a new connection per download, for rotating endpoints
-megatools = "C:/Tools/megatools/megatools.exe" # for MEGA folder links; default: found on PATH
 user_agent = "..."              # default: Haul's own
 
 # Accounts

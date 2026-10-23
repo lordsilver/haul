@@ -22,7 +22,7 @@ use indexmap::IndexMap;
 use reqwest::header::{ACCEPT_ENCODING, RANGE};
 use serde::Serialize;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
+    io::{AsyncWriteExt, BufWriter},
     sync::{Notify, Semaphore, broadcast, watch},
 };
 use tokio_util::sync::CancellationToken;
@@ -581,9 +581,18 @@ struct State {
     reconnecting: bool,
     max_total: usize,
     dirty: bool,
+    /// Pages that answered with a browser check (Cloudflare's) a browser
+    /// usually passes by itself: the desktop app passes them out of sight,
+    /// as a host's whose page passes ([`hosts::page_passes`]).
+    guarded: HashSet<String>,
 }
 
 impl State {
+    /// Whether the desktop app passes page `url` by itself.
+    fn passes(&self, url: &str) -> bool {
+        hosts::page_passes(url) || self.guarded.contains(url)
+    }
+
     fn host(&mut self, name: &str, cfg: &Config) -> &mut HostStats {
         self.hosts
             .entry(name.to_string())
@@ -917,6 +926,7 @@ impl Engine {
                 reconnecting: false,
                 max_total: cfg.max_total.max(1),
                 dirty: false,
+                guarded: HashSet::new(),
             }),
             limiter: Limiter::new(cfg.rate_limit_mbps * 1e6),
             config_seen: Mutex::new(config_path.as_deref().and_then(settings::stamp)),
@@ -1343,6 +1353,9 @@ impl Engine {
             // while downloads are paused.
             Ok(Err(ResolveError::NeedsUser(message))) => {
                 let mut st = self.lock();
+                if hosts::is_guarded(&message) {
+                    st.guarded.insert(url.clone());
+                }
                 let mut event = None;
                 if let Some(it) = st.items.get_mut(&id)
                     && !it.running()
@@ -1708,7 +1721,7 @@ impl Engine {
             .then(|| {
                 it.manual_urls
                     .iter()
-                    .find(|m| hosts::page_passes(m) && !off(m) && !it.failed.contains(*m))
+                    .find(|m| st.passes(m) && !off(m) && !it.failed.contains(*m))
                     .map(|m| hosts::host_of(m))
             })
             .flatten();
@@ -1928,11 +1941,7 @@ impl Engine {
             it.error.clear();
             self.touch(&mut st);
         }
-        match &entry.exec {
-            Some(exec) => self.run_exec(id, &entry, host, exec, cancel).await?,
-            None => return self.fetch(id, &entry, (host, exit), &http, cancel).await,
-        }
-        Ok(Outcome::Done)
+        self.fetch(id, &entry, (host, exit), &http, cancel).await
     }
 
     /// Replaces a folder row with one row per file, in the same place, each
@@ -2147,6 +2156,9 @@ impl Engine {
                     }
                 }
                 Err(Fail::NeedsUser(message)) => {
+                    if hosts::is_guarded(&message) {
+                        st.guarded.insert(url.to_string());
+                    }
                     if let Some(it) = st.items.get_mut(id) {
                         drop_used_pre(it, url);
                         it.manual_urls.insert(url.to_string());
@@ -2616,98 +2628,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Runs an external downloader (megatools) and follows its percentage.
-    async fn run_exec(
-        &self,
-        id: &str,
-        entry: &Entry,
-        host: &str,
-        exec: &[String],
-        cancel: &CancellationToken,
-    ) -> Result<(), Fail> {
-        let package = self
-            .lock()
-            .items
-            .get(id)
-            .map(|i| i.package.clone())
-            .unwrap_or_default();
-        let out = self.out_dir(host, if package.is_empty() { "mega" } else { &package });
-        tokio::fs::create_dir_all(&out).await?;
-        if let Some(it) = self.lock().items.get_mut(id) {
-            it.path = Some(out.display().to_string());
-        }
-        let (program, args) = exec
-            .split_first()
-            .ok_or_else(|| Fail::Error("empty command".into()))?;
-        let mut cmd = tokio::process::Command::new(program);
-        cmd.args(args)
-            .arg("--path")
-            .arg(&out)
-            .arg(&entry.url)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        #[cfg(windows)]
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| Fail::Error(format!("{program}: {e}")))?;
-        let stdout = child.stdout.take().expect("piped");
-        let stderr = child.stderr.take().expect("piped");
-        let follow = async {
-            tokio::join!(
-                self.follow_percent(id, stdout),
-                self.follow_percent(id, stderr)
-            );
-            child.wait().await
-        };
-        let status = or_cancel(cancel, follow).await??;
-        if !status.success() {
-            return Err(Fail::Error("megatools failed (quota? bad link?)".into()));
-        }
-        Ok(())
-    }
-
-    async fn follow_percent(&self, id: &str, stream: impl tokio::io::AsyncRead + Unpin) {
-        static PERCENT: std::sync::LazyLock<regex::Regex> =
-            std::sync::LazyLock::new(|| regex::Regex::new(r"(\d+(?:\.\d+)?)%").unwrap());
-        // Progress lines end in carriage returns, so split on both.
-        let mut reader = BufReader::new(stream);
-        let mut buf = Vec::new();
-        loop {
-            buf.clear();
-            let mut byte = [0u8; 1];
-            loop {
-                match reader.read(&mut byte).await {
-                    Ok(1) if byte[0] != b'\r' && byte[0] != b'\n' => buf.push(byte[0]),
-                    Ok(1) => break,
-                    _ => {
-                        if buf.is_empty() {
-                            return;
-                        }
-                        break;
-                    }
-                }
-            }
-            let line = String::from_utf8_lossy(&buf);
-            let Some(pct) = PERCENT
-                .captures_iter(&line)
-                .last()
-                .and_then(|c| c[1].parse::<f32>().ok())
-            else {
-                continue;
-            };
-            let mut st = self.lock();
-            if let Some(it) = st.items.get_mut(id) {
-                it.percent = Some(pct.min(100.0));
-                if it.size > 0 {
-                    it.done = (it.size as f64 * f64::from(pct) / 100.0) as u64;
-                }
-            }
-        }
-    }
-
     // ---- controls
 
     /// Returns false when there is no such item. A finished download only
@@ -2888,11 +2808,18 @@ impl Engine {
     /// pasted. `links` is every address the page shows; the rest are left
     /// out as for a page Haul reads itself. Returns how many it took; with
     /// none the row stays as it is.
-    pub fn page_listed(&self, id: &str, links: &[String]) -> usize {
+    /// `shown` are the addresses written out in the page's text: on a paste
+    /// they are its list, so they count on any host.
+    pub fn page_listed(&self, id: &str, links: &[String], shown: &[String]) -> usize {
         let Some(page) = self.page_for(id) else {
             return 0;
         };
-        let known = hosts::listed_links(&links.join("\n"), &page);
+        let mut known = hosts::listed_links(&links.join("\n"), &page);
+        for link in hosts::pasted_links(shown, &page) {
+            if !known.contains(&link) {
+                known.push(link);
+            }
+        }
         if known.is_empty() {
             return 0;
         }
@@ -3009,6 +2936,13 @@ impl Engine {
     }
 
     /// The page a person should open for this item.
+    /// Whether the desktop app passes page `url` by itself, out of sight: a
+    /// host's whose page does ([`hosts::page_passes`]), or one that answered
+    /// with a browser check a browser usually passes.
+    pub fn page_passes(&self, url: &str) -> bool {
+        self.lock().passes(url)
+    }
+
     pub fn page_for(&self, id: &str) -> Option<String> {
         let st = self.lock();
         let it = st.items.get(id)?;
@@ -3266,7 +3200,7 @@ impl Engine {
                 } else if it.status == Status::Captcha
                     && pages
                     && !it.page_wants_person
-                    && it.manual_urls.iter().any(|u| hosts::page_passes(u))
+                    && it.manual_urls.iter().any(|u| st.passes(u))
                 {
                     // The desktop app passes one of its pages by itself, in
                     // turn: nothing for the person yet.
@@ -3560,8 +3494,8 @@ fn drop_used_pre(it: &mut Item, url: &str) {
 
 /// Moves a finished file to the system's bin, or into `bin` in tests.
 /// Returns false, leaving it alone, when there is no such file: it is gone
-/// already, or it is a folder (megatools downloads into one that other
-/// downloads share).
+/// already, or it is a folder (older Haul versions had megatools download
+/// MEGA's files into one that other downloads share).
 fn recycle(file: &Path, bin: Option<&Path>) -> Result<bool, String> {
     if !file.is_file() {
         return Ok(false);
@@ -3658,6 +3592,7 @@ mod exit_tests {
             reconnecting: false,
             max_total: 8,
             dirty: false,
+            guarded: HashSet::new(),
         }
     }
 

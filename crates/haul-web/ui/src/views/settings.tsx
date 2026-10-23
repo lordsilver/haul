@@ -376,16 +376,6 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
         }
       />
       <Section>Advanced</Section>
-      <SettingCard icon={Wrench} title="megatools" description="For mega.nz links. Leave empty to find it on PATH.">
-        <TextField
-          d={d}
-          name="megatools"
-          value={d.megatools}
-          label="megatools"
-          placeholder="C:\Tools\megatools\megatools.exe"
-          wide
-        />
-      </SettingCard>
       <SettingCard icon={Globe} title="User agent" description="Sent to hosts. Leave empty for Haul's default.">
         <TextField
           d={d}

@@ -1304,7 +1304,7 @@ async fn mega_names_and_decrypts_a_file_without_megatools() {
     assert_eq!(e[0].url, "https://gfs.example/dl/x");
     assert_eq!(e[0].name.as_deref(), Some("Release.part1.rar"));
     assert_eq!(e[0].size, Some(4096));
-    assert!(e[0].decrypt.is_some() && e[0].exec.is_none());
+    assert!(e[0].decrypt.is_some());
     assert_eq!(
         mega::probe(&cx, &format!("https://mega.nz/#!AAAAAAAA!{link_key}")).await,
         Some(Probed {
@@ -1321,4 +1321,122 @@ async fn mega_names_and_decrypts_a_file_without_megatools() {
         mega::resolve(&cx, &format!("https://mega.nz/file/BUSYBUSY#{link_key}")).await,
         Err(ResolveError::Wait { .. })
     ));
+}
+
+#[tokio::test]
+async fn mega_lists_a_folder_and_downloads_its_files() {
+    use aes::cipher::{
+        BlockCipherEncrypt, BlockModeEncrypt, KeyInit, KeyIvInit, block_padding::NoPadding,
+    };
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    let master = *b"folder-master-k!";
+    // A node's key as the folder listing holds it: encrypted with the
+    // folder's key, block by block.
+    let wrap = |key: &[u8]| {
+        let aes = aes::Aes128::new_from_slice(&master).unwrap();
+        let mut out = key.to_vec();
+        for chunk in out.chunks_mut(16) {
+            let mut block = aes::Block::try_from(&*chunk).unwrap();
+            aes.encrypt_block(&mut block);
+            chunk.copy_from_slice(&block);
+        }
+        format!("owner:{}", URL_SAFE_NO_PAD.encode(out))
+    };
+    let attributes = |name: &str, key: &[u8]| {
+        let mut a = format!(r#"MEGA{{"n":"{name}"}}"#).into_bytes();
+        a.resize(a.len().div_ceil(16) * 16, 0);
+        let len = a.len();
+        cbc::Encryptor::<aes::Aes128>::new_from_slices(key, &[0; 16])
+            .unwrap()
+            .encrypt_padded::<NoPadding>(&mut a, len)
+            .unwrap();
+        URL_SAFE_NO_PAD.encode(a)
+    };
+    let file_key = |seed: u8| -> (Vec<u8>, Vec<u8>) {
+        let raw: Vec<u8> = (0..32).map(|i| i ^ seed).collect();
+        let aes_key = (0..16).map(|i| raw[i] ^ raw[i + 16]).collect();
+        (raw, aes_key)
+    };
+    let root_key = b"root-folder-key!".to_vec();
+    let sub_key = b"sub-folder-key!!".to_vec();
+    let (one_raw, one_aes) = file_key(1);
+    let (two_raw, two_aes) = file_key(2);
+    let nodes = json!({"f": [
+        {"h": "ROOTROOT", "p": "", "t": 1, "k": wrap(&root_key), "a": attributes("Release", &root_key)},
+        {"h": "FILEONE1", "p": "ROOTROOT", "t": 0, "s": 100, "k": wrap(&one_raw), "a": attributes("R.part1.rar", &one_aes)},
+        {"h": "SUBSUB12", "p": "ROOTROOT", "t": 1, "k": wrap(&sub_key), "a": attributes("Extras", &sub_key)},
+        {"h": "FILETWO2", "p": "SUBSUB12", "t": 0, "s": 200, "k": wrap(&two_raw), "a": attributes("R.part2.rar", &two_aes)},
+    ]});
+    let app = Router::new().route(
+        "/cs",
+        post(move |Query(q): Query<HashMap<String, String>>, Json(body): Json<Value>| {
+            let nodes = nodes.clone();
+            async move {
+                assert_eq!(q.get("n").map(String::as_str), Some("ROOTROOT"), "asked about the folder");
+                match body[0]["a"].as_str().unwrap() {
+                    "f" => Json(json!([nodes])),
+                    "g" => {
+                        let h = body[0]["n"].as_str().unwrap();
+                        Json(json!([{"s": if h == "FILEONE1" { 100 } else { 200 }, "at": "", "g": format!("https://gfs.example/{h}")}]))
+                    }
+                    _ => Json(json!([-2])),
+                }
+            }
+        }),
+    );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
+    let key = URL_SAFE_NO_PAD.encode(master);
+    let folder = format!("https://mega.nz/folder/ROOTROOT#{key}");
+
+    // The folder: one row per file, subfolders included, named, sized and
+    // packaged under the folder's name, each resolved later by its own link.
+    let rows = mega::resolve(&cx, &folder).await.unwrap();
+    let mut seen: Vec<(String, String, u64)> = rows
+        .iter()
+        .map(|e| (e.name.clone().unwrap(), e.url.clone(), e.size.unwrap()))
+        .collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            ("R.part1.rar".into(), format!("{folder}/file/FILEONE1"), 100),
+            ("R.part2.rar".into(), format!("{folder}/file/FILETWO2"), 200),
+        ]
+    );
+    assert!(
+        rows.iter()
+            .all(|e| e.deferred && e.package.as_deref() == Some("Release"))
+    );
+
+    // A subfolder's link holds only its own files.
+    let sub = mega::resolve(&cx, &format!("{folder}/folder/SUBSUB12"))
+        .await
+        .unwrap();
+    assert_eq!(sub.len(), 1);
+    assert_eq!(sub[0].name.as_deref(), Some("R.part2.rar"));
+
+    // A file in the folder downloads with its own key.
+    let file = mega::resolve(&cx, &format!("{folder}/file/FILEONE1"))
+        .await
+        .unwrap();
+    assert_eq!(file[0].url, "https://gfs.example/FILEONE1");
+    assert_eq!(file[0].name.as_deref(), Some("R.part1.rar"));
+    assert!(file[0].decrypt.is_some() && !file[0].deferred);
+    assert_eq!(
+        mega::probe(&cx, &format!("{folder}/file/FILETWO2")).await,
+        Some(Probed {
+            name: "R.part2.rar".into(),
+            size: Some(200),
+            checksum: None,
+        })
+    );
 }

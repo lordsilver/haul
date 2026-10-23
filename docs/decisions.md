@@ -29,6 +29,7 @@ A download that needs the user is a row of its own, tinted amber, with what the 
 Each thing that needs attention is shown once. A download that needs you is flagged by its own row, and its count rides on **Needs you** in the sidebar (the desktop app also sends a notification); the bars above the list are kept for state that affects every list: paused downloads (only while the pause holds a download back; with nothing waiting, the status bar alone says Paused), a settings file with an error, a lost connection. The status bar has the speed, the counts and what is left with when it should be done, so the header carries no summary of its own.
 
 The theme follows the system unless the user picks one; the choice is saved in `config.toml`, so the window frame can match it from the first paint.
+
 ## Local API
 
 Loopback-only servers are still reachable from any page the user visits, so the API guards itself with `Host` and `Origin` checks and a framing ban ([HTTP API](api.md) has the details). There are no tokens to manage, and scripts without an `Origin` keep working.
@@ -57,7 +58,7 @@ Hosts' checksums could prove more than name and size, but only by reading the fi
 
 ## Removing downloads and host folders
 
-A removed file goes to the Recycle Bin rather than being deleted, so a slip can be undone. Only the remove button of a finished download does that: **Clear completed** never touches files, because one click there would empty a folder of finished work into the bin. A file that cannot be moved (open in another program, say) keeps its row, so the user sees why and can try again. Files megatools downloads are left alone, since Haul only knows the folder it shares with other downloads.
+A removed file goes to the Recycle Bin rather than being deleted, so a slip can be undone. Only the remove button of a finished download does that: **Clear completed** never touches files, because one click there would empty a folder of finished work into the bin. A file that cannot be moved (open in another program, say) keeps its row, so the user sees why and can try again. Files that older versions had megatools download are left alone, since Haul only knows the folder they share with other downloads.
 
 A host's folder is decided when a file finishes, by the host that delivered it: a file merged from several mirrors goes where the mirror that won sends it, and a changed folder applies to downloads already running. Folder names are cleaned like file names and cannot climb out of the download folder.
 

@@ -323,6 +323,16 @@ impl Item {
             Status::Done | Status::Paused | Status::Error => s.status,
             _ => Status::Queued,
         };
+        // MEGA needed megatools in Haul 0.15.0 and earlier; it no longer
+        // does, so a download that failed for want of it goes again, resolved
+        // afresh.
+        if it.status == Status::Error && it.error.contains("megatools") {
+            it.status = Status::Queued;
+            it.error.clear();
+            it.pre = None;
+            it.pre_for = None;
+            it.probed = it.name.is_some();
+        }
         // Downloaded bytes are not saved; a finished file has all of them.
         if it.status == Status::Done {
             it.done = it.size;

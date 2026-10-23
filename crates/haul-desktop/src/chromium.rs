@@ -74,6 +74,8 @@ pub enum Outcome {
     Gone(String),
     /// The page could not hand out its link this time.
     Later(String),
+    /// The page showed links Haul took ([`Pass::take_links`]).
+    Listed,
     /// The person closed the window, or the browser went away.
     Closed,
 }
@@ -90,7 +92,14 @@ pub struct Pass<'a> {
     /// How long the page gets before it comes on screen.
     pub show_after: Duration,
     pub handle: Handle,
+    /// For a page that lists links: offered every address the page shows,
+    /// and those written out in its text, as more appear; true once it took
+    /// some, which ends the pass.
+    pub take_links: Option<TakeLinks<'a>>,
 }
+
+/// Offered a page's addresses; true once it took some.
+pub type TakeLinks<'a> = &'a dyn Fn(&[String], &[String]) -> bool;
 
 /// Passes the page; blocks until it hands something back, says its file is
 /// gone, or is closed. `on_show` runs when the window comes on screen.
@@ -195,6 +204,8 @@ fn drive(
     cdp.call("Page.navigate", json!({ "url": p.url }), s)?;
     let start = Instant::now();
     let mut on_show = Some(on_show);
+    // How many addresses the page last offered.
+    let mut offered = 0;
     loop {
         if p.handle.stop.load(Ordering::Relaxed)
             || browser.child.try_wait().ok().flatten().is_some()
@@ -244,6 +255,24 @@ fn drive(
         }
         if let Some(reason) = sent["later"].as_str() {
             return Ok(Outcome::Later(reason.to_string()));
+        }
+        if let (Some(take), Some(_)) = (p.take_links, sent["links"].as_array()) {
+            let strings = |key: &str| -> Vec<String> {
+                sent[key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|l| l.as_str().map(str::to_string))
+                    .collect()
+            };
+            let links = strings("links");
+            if links.len() != offered {
+                offered = links.len();
+                if take(&links, &strings("shown")) {
+                    return Ok(Outcome::Listed);
+                }
+            }
+            continue;
         }
         let mut files = Vec::new();
         for f in sent["files"].as_array().into_iter().flatten() {

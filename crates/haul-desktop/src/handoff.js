@@ -93,6 +93,39 @@
       },
     },
     {
+      // Behind Cloudflare's check, the page's "Download File" button asks
+      // for the file with htmx (`hx-get="/<id>/download?t=…"`) and is
+      // answered with where the file is (`HX-Redirect`, as buzzheavier's).
+      // The request goes from the page, with its cookies. The heading, or
+      // the link's part after #, names the file.
+      site: /(^|\.)fuckingfast\.(net|co)$/,
+      watch() {
+        let asked = false;
+        const look = async () => {
+          const button = document.querySelector("a.download-btn[hx-get], a[hx-get*='/download?']");
+          if (asked || !button) return;
+          asked = true;
+          const ask = new URL(button.getAttribute("hx-get"), location.href).href;
+          const fromLink = decodeURIComponent(location.hash.slice(1)) || undefined;
+          const heading = document.querySelector("h1, h2")?.textContent.trim() || undefined;
+          const name = fromLink || heading;
+          try {
+            const answer = await fetch(ask, { headers: { "HX-Request": "true", "HX-Current-URL": location.href } });
+            const to = answer.headers.get("HX-Redirect") || (answer.redirected ? answer.url : null);
+            if (to) return hand([{ url: new URL(to, location.href).href, name }]);
+            const text = await answer.text();
+            const found = text.match(/https?:\/\/[^"'\s<>]+/)?.[0];
+            if (found) return hand([{ url: found, name }]);
+          } catch (_) {}
+          // Without an answer to read, the address the button asks is the
+          // download itself.
+          hand([{ url: ask, name }]);
+        };
+        new MutationObserver(look).observe(document, { subtree: true, childList: true });
+        look();
+      },
+    },
+    {
       // A person solves 1fichier's captcha here and the download starts by
       // itself; all the page can say first is that the file was deleted
       // (its own words, French then English, with the 404 it answers).
@@ -123,16 +156,23 @@
       },
       true,
     );
-    let shown = 0;
+    let offered = 0;
     let timer;
     const look = () => {
-      const links = new Set();
+      // Addresses written out in the page's text apart: on a paste they are
+      // its list, whatever host they are on; a button is as likely an ad.
+      const text = new Set();
+      for (const m of (document.body?.innerText ?? "").matchAll(/https?:\/\/[^\s"'<>()[\]{}]+/g)) text.add(m[0]);
+      const links = new Set(text);
       for (const a of document.querySelectorAll("a[href]")) if (/^https?:/.test(a.href)) links.add(a.href);
-      for (const m of (document.body?.innerText ?? "").matchAll(/https?:\/\/[^\s"'<>()[\]{}]+/g)) links.add(m[0]);
-      if (links.size <= shown) return;
-      shown = links.size;
+      if (links.size <= offered) return;
+      offered = links.size;
       const all = [...links];
-      send({ links: all }, "https://haul.invalid/links?" + new URLSearchParams({ links: JSON.stringify(all) }));
+      const shown = [...text];
+      send(
+        { links: all, shown },
+        "https://haul.invalid/links?" + new URLSearchParams({ links: JSON.stringify(all), shown: JSON.stringify(shown) }),
+      );
     };
     const soon = () => {
       clearTimeout(timer);
@@ -140,6 +180,23 @@
     };
     new MutationObserver(soon).observe(document, { subtree: true, childList: true, characterData: true });
     soon();
+
+    // Pastes often hold their links behind a Turnstile of their own and a
+    // button to press once it passed (zpaste.net's "Verify & continue"):
+    // once the check has its answer, its form is sent, once.
+    let sent = false;
+    setInterval(() => {
+      // Cloudflare's own check page sends itself: hands off.
+      if (sent || window._cf_chl_opt || document.getElementById("challenge-form")) return;
+      const answer = document.querySelector('input[name="cf-turnstile-response"]');
+      if (!answer?.value) return;
+      const form = answer.closest("form");
+      const button = form?.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
+      if (!form) return;
+      sent = true;
+      if (button) button.click();
+      else form.requestSubmit();
+    }, 1000);
   }
 
   recipes.find((r) => r.site.test(location.hostname))?.watch();
