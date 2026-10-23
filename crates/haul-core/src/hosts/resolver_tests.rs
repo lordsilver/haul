@@ -44,6 +44,7 @@ fn config(base: &str) -> Config {
             filecrypt: base.into(),
             vikingfile: base.into(),
             mega: base.into(),
+            rootz: base.into(),
             mirrored: base.into(),
             router: format!("{base}/igddesc.xml"),
             ip_echo: format!("{base}/ip"),

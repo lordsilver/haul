@@ -20,6 +20,7 @@ mod nitroflare;
 mod onefichier;
 mod pixeldrain;
 mod rapidgator;
+mod rootz;
 mod vikingfile;
 
 use std::{
@@ -325,6 +326,7 @@ enum Kind {
     Nitroflare,
     Mega,
     Vikingfile,
+    Rootz,
     /// Its links are the files.
     Direct,
     Fileguard,
@@ -479,11 +481,25 @@ static KNOWN: &[Known] = &[
         needs_account: true,
     },
     Known {
-        names: &["mega.nz", "mega.co.nz"],
+        names: &["mega.nz", "mega.co.nz", "transfer.it"],
         kind: Kind::Mega,
         accounts: &[],
         free: Free {
             at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+        page_passes: false,
+        needs_account: false,
+    },
+    Known {
+        names: &["rootz.so"],
+        kind: Kind::Rootz,
+        accounts: &[],
+        // One download per address every two minutes.
+        free: Free {
+            at_once: Some(1),
             daily_bytes: None,
             slowed_to: None,
         },
@@ -1047,6 +1063,7 @@ pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError>
         Some(Kind::Nitroflare) => nitroflare::resolve(cx, url).await,
         Some(Kind::Mega) => mega::resolve(cx, url).await,
         Some(Kind::Vikingfile) => vikingfile::resolve(cx, url).await,
+        Some(Kind::Rootz) => rootz::resolve(cx, url).await,
         Some(Kind::Direct) => Ok(vec![Entry {
             url: url.into(),
             name: guess_name(url),
@@ -1067,6 +1084,7 @@ pub async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
     match kind_of(url) {
         Some(Kind::Pixeldrain) => pixeldrain::probe(cx, url).await,
         Some(Kind::Vikingfile) => vikingfile::probe(cx, url).await,
+        Some(Kind::Rootz) => rootz::probe(cx, url).await,
         Some(Kind::OneFichier) => onefichier::probe(cx, url).await,
         Some(Kind::Mega) => mega::probe(cx, url).await,
         // No free metadata route; resolve at download time.
