@@ -34,6 +34,9 @@ impl Engine {
                 *value = json!(value.as_str().is_some_and(|v| !v.is_empty()));
             }
         }
+        if let Some(passwords) = settings.get_mut("archive_passwords") {
+            *passwords = json!(passwords.as_array().map_or(0, Vec::len));
+        }
         if let Some(proxy) = settings.get_mut("proxy") {
             *proxy = json!(without_credentials(proxy.as_str().unwrap_or_default()));
         }
@@ -99,6 +102,9 @@ fn item_report(it: &Item) -> Value {
         "busy": it.busy,
         "existing": it.existing,
         "path": it.path,
+        "extract": it.extract,
+        "extract_error": it.extract_error,
+        "extract_password": it.extract_password.is_some(),
         "history": crate::logging::history(&it.id)
             .into_iter()
             .map(|m| json!({"at": m.at, "level": m.level, "message": without_fragment_in(&m.message)}))

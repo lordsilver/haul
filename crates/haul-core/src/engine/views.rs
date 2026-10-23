@@ -60,6 +60,8 @@ pub enum Command {
     Extract,
     /// Extract once more, after it failed.
     ExtractAgain,
+    /// Ask for the archive's password, then extract with it.
+    Password,
 }
 
 /// Which list a download is in, beside All downloads.
@@ -303,6 +305,7 @@ pub(super) fn archives(
             match extract {
                 Extract::No => commands.push(Command::Extract),
                 Extract::Failed => commands.push(Command::ExtractAgain),
+                Extract::Password => commands.push(Command::Password),
                 _ => {}
             }
         }
@@ -323,7 +326,7 @@ pub(super) fn archives(
             source: first.source.clone(),
             source_name: first.source_name.clone(),
             extract,
-            extract_error: if extract == Extract::Failed {
+            extract_error: if matches!(extract, Extract::Failed | Extract::Password) {
                 first.extract_error.clone()
             } else {
                 String::new()
@@ -881,6 +884,15 @@ mod tests {
         let a = archives(&mut items, &hosts, vec![set("R", &["p1", "p2"], &[])]);
         assert_eq!(a[0].commands, [Command::ExtractAgain]);
         assert_eq!(a[0].extract_error, "the archive needs a password");
+
+        let mut items = done();
+        for it in &mut items {
+            it.extract = Extract::Password;
+            it.extract_error = "none of the passwords fits".into();
+        }
+        let a = archives(&mut items, &hosts, vec![set("R", &["p1", "p2"], &[])]);
+        assert_eq!(a[0].commands, [Command::Password]);
+        assert_eq!(a[0].extract_error, "none of the passwords fits");
 
         // A part the names show is missing: nothing to extract yet.
         let mut items = done();

@@ -134,6 +134,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/item/{id}/direct", post(direct))
         .route("/api/item/{id}/browse", post(browse))
         .route("/api/item/{id}/reveal", post(reveal))
+        .route("/api/item/{id}/extract", post(extract))
         .route("/api/item/{id}/{action}", post(item))
         .route("/api/wrapper/{id}/{action}", post(wrapper))
         .route("/api/host/{name}/limit/{n}", post(host_limit))
@@ -408,17 +409,37 @@ async fn item(State(app): State<App>, Path((id, action)): Path<(String, String)>
             Ok(found) => found,
             Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
         },
-        // Says why when the archive cannot be unpacked yet.
-        ItemAction::Extract => match app.engine.extract(&id) {
-            Ok(found) => found,
-            Err(e) => return error(StatusCode::CONFLICT, e),
-        },
         _ => app.engine.item_action(&id, action),
     };
     if found {
         ok()
     } else {
         error(StatusCode::NOT_FOUND, "no such item")
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct ExtractBody {
+    #[serde(default)]
+    password: Option<String>,
+}
+
+/// Unpacks the archive an item is a part of, with a password for it when
+/// the body gives one; a script may send no body at all. Says why when the
+/// archive cannot be unpacked yet.
+async fn extract(State(app): State<App>, Path(id): Path<String>, body: Bytes) -> Response {
+    let body: ExtractBody = if body.iter().all(u8::is_ascii_whitespace) {
+        ExtractBody::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(body) => body,
+            Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+        }
+    };
+    match app.engine.extract(&id, body.password.as_deref()) {
+        Ok(true) => ok(),
+        Ok(false) => error(StatusCode::NOT_FOUND, "no such item"),
+        Err(e) => error(StatusCode::CONFLICT, e),
     }
 }
 

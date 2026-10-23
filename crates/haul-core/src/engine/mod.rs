@@ -2685,7 +2685,7 @@ impl Engine {
     pub fn item_action(&self, id: &str, action: ItemAction) -> bool {
         if action == ItemAction::Extract {
             // Whether it could start is for [`Engine::extract`] to say.
-            return self.extract(id).unwrap_or(true);
+            return self.extract(id, None).unwrap_or(true);
         }
         let mut st = self.lock();
         let Some(it) = st.items.get_mut(id) else {

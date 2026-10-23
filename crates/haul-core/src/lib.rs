@@ -23,7 +23,7 @@ pub mod vpn;
 
 pub use config::{Config, Route, Theme};
 pub use engine::{
-    Added, Engine, Event, HostView, ItemAction, ItemView, Options, SettingsView, Snapshot,
+    Added, Command, Engine, Event, HostView, ItemAction, ItemView, Options, SettingsView, Snapshot,
     StartError, WrapperView,
 };
 pub use item::{Extract, Found, Verifying};

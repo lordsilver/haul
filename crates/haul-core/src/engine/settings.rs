@@ -38,6 +38,7 @@ pub struct SettingsView {
     pub verify_existing: bool,
     pub auto_extract: bool,
     pub delete_after_extract: bool,
+    pub archive_passwords: Vec<String>,
     pub detailed_log: bool,
     pub reconnect: bool,
     pub reconnect_command: String,
@@ -109,6 +110,7 @@ impl Engine {
             verify_existing: cfg.verify_existing,
             auto_extract: cfg.auto_extract,
             delete_after_extract: cfg.delete_after_extract,
+            archive_passwords: cfg.archive_passwords.clone(),
             detailed_log: cfg.detailed_log,
             reconnect: cfg.reconnect,
             reconnect_command: cfg.reconnect_command.clone().unwrap_or_default(),
@@ -242,6 +244,32 @@ impl Engine {
                     let on = value.as_bool().ok_or("auto_extract is true or false")?;
                     cfg.auto_extract = on;
                     writes.push(top(key, Some(on.into())));
+                }
+                "archive_passwords" => {
+                    // A list, or text with one password per line. A password
+                    // keeps its spaces: only empty lines go.
+                    let list: Vec<String> = match value.as_array() {
+                        Some(items) => items
+                            .iter()
+                            .map(|v| v.as_str().map(str::to_string))
+                            .collect::<Option<_>>()
+                            .ok_or("archive passwords are text")?,
+                        None => text(value, key)?.lines().map(str::to_string).collect(),
+                    };
+                    let mut list: Vec<String> = list
+                        .into_iter()
+                        .map(|p| p.trim_end_matches('\r').to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect();
+                    let mut seen = std::collections::HashSet::new();
+                    list.retain(|p| seen.insert(p.clone()));
+                    writes.push(top(
+                        key,
+                        Some(toml_edit::Value::Array(
+                            list.iter().map(String::as_str).collect(),
+                        )),
+                    ));
+                    cfg.archive_passwords = list;
                 }
                 "delete_after_extract" => {
                     let on = value

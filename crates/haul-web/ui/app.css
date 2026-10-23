@@ -901,6 +901,10 @@ input[type="number"] {
   color: var(--critical);
 }
 
+.row.group.extract-password .progress .caption {
+  color: var(--caution);
+}
+
 .progress .caption,
 .rate {
   font-size: 12px;

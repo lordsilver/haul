@@ -18,6 +18,7 @@ skip_add_dialog = false         # dropped and opened links are added without the
 verify_existing = false         # compare files already there with the host's checksum
 auto_extract = false            # unpack an archive in parts once the last part is downloaded
 delete_after_extract = false    # an archive's parts go to the Recycle Bin once it is unpacked without error
+archive_passwords = []          # tried in order on an encrypted archive, after the one typed for it
 detailed_log = false            # write every request, retry and mirror choice to haul.log
 reconnect = false               # a new address from the router when yours holds downloads back
 reconnect_command = ""           # a command that gets the new address instead of the router

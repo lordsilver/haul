@@ -14,7 +14,7 @@ use indexmap::IndexMap;
 
 use super::{BIN, Engine, Event, State, recycle};
 use crate::{
-    extract::{self, Part, Progress},
+    extract::{self, Failure, Part, Progress},
     item::{Extract, Item, Status},
     parts::{self as names, PartName},
 };
@@ -96,8 +96,9 @@ impl Engine {
 
     /// Unpacks the archive `id` is a part of, because the user asked: again
     /// after it failed or was unpacked, and whatever `auto_extract` says.
+    /// A `password` given is kept with the archive and tried first.
     /// `Ok(false)` when there is no such row.
-    pub fn extract(&self, id: &str) -> Result<bool, String> {
+    pub fn extract(&self, id: &str, password: Option<&str>) -> Result<bool, String> {
         let mut st = self.lock();
         if !st.items.contains_key(id) {
             return Ok(false);
@@ -119,6 +120,13 @@ impl Engine {
         }
         if let Some(p) = parts.iter().find(|p| p.status != Status::Done) {
             return Err(format!("{} is not downloaded yet", super::display_name(p)));
+        }
+        if let Some(password) = password.filter(|p| !p.is_empty()) {
+            for id in &ids {
+                if let Some(it) = st.items.get_mut(id) {
+                    it.extract_password = Some(password.to_string());
+                }
+            }
         }
         self.queue_extract(&mut st, archive, ids);
         Ok(true)
@@ -160,7 +168,8 @@ impl Engine {
         let Ok(_turn) = self.0.extractor.acquire().await else {
             return;
         };
-        let parts: Result<Vec<Part>, String> = {
+        let mut own = None;
+        let parts: Result<Vec<Part>, Failure> = {
             let mut st = self.lock();
             let mut parts = Vec::new();
             let mut missing = None;
@@ -170,6 +179,7 @@ impl Engine {
                     continue;
                 };
                 it.extract = Extract::Extracting;
+                own = own.or_else(|| it.extract_password.clone());
                 match (&it.path, it.key_name()) {
                     (Some(path), Some(name)) if it.status == Status::Done => parts.push(Part {
                         path: PathBuf::from(path),
@@ -184,10 +194,17 @@ impl Engine {
             }
             self.touch(&mut st);
             match missing {
-                Some(why) => Err(why),
+                Some(why) => Err(Failure::Other(why)),
                 None => Ok(parts),
             }
         };
+        // The archive's own password first, then the list of the settings.
+        let mut passwords: Vec<String> = own.into_iter().collect();
+        for p in &self.cfg().archive_passwords {
+            if !passwords.contains(p) {
+                passwords.push(p.clone());
+            }
+        }
         tracing::info!("unpacking {archive}");
         let progress = Arc::new(Progress::default());
         *self.0.unpacking.lock().unwrap_or_else(|e| e.into_inner()) = Some(progress.clone());
@@ -195,21 +212,28 @@ impl Engine {
             Ok(parts) => {
                 let progress = progress.clone();
                 let files = parts.iter().map(|p| p.path.clone()).collect::<Vec<_>>();
-                tokio::task::spawn_blocking(move || extract::extract(&parts, &progress))
+                tokio::task::spawn_blocking(move || extract::extract(&parts, &passwords, &progress))
                     .await
-                    .unwrap_or_else(|e| Err(e.to_string()))
-                    .map(|placed| (placed, files))
+                    .unwrap_or_else(|e| Err(Failure::Other(e.to_string())))
+                    .map(|done| (done, files))
             }
             Err(why) => Err(why),
         };
         *self.0.unpacking.lock().unwrap_or_else(|e| e.into_inner()) = None;
 
         let notice = match &result {
-            Ok((placed, _)) => {
-                tracing::info!("unpacked {archive}: {}", placed.len());
+            Ok((done, _)) => {
+                tracing::info!("unpacked {archive}: {}", done.placed.len());
                 Event::Notice {
                     title: "Extracted".into(),
                     body: archive.clone(),
+                }
+            }
+            Err(e @ Failure::Password { .. }) => {
+                tracing::info!("unpacking {archive}: {e}");
+                Event::Notice {
+                    title: "Archive needs a password".into(),
+                    body: format!("{archive}: {e}"),
                 }
             }
             Err(e) => {
@@ -225,10 +249,20 @@ impl Engine {
             for id in &ids {
                 if let Some(it) = st.items.get_mut(id) {
                     match &result {
-                        Ok(_) => it.extract = Extract::Done,
+                        Ok((done, _)) => {
+                            it.extract = Extract::Done;
+                            // The one that fit, to open it again.
+                            if done.password.is_some() {
+                                it.extract_password.clone_from(&done.password);
+                            }
+                        }
+                        Err(e @ Failure::Password { .. }) => {
+                            it.extract = Extract::Password;
+                            it.extract_error = e.to_string();
+                        }
                         Err(e) => {
                             it.extract = Extract::Failed;
-                            it.extract_error = e.clone();
+                            it.extract_error = e.to_string();
                         }
                     }
                 }

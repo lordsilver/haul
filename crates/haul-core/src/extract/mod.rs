@@ -65,9 +65,56 @@ enum Kind {
     SpannedZip,
 }
 
+/// Why an archive could not be unpacked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Failure {
+    /// It is encrypted, and no password fits; `tried` says whether there
+    /// was any to try.
+    Password {
+        tried: bool,
+    },
+    Other(String),
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failure::Password { tried: false } => f.write_str("the archive needs a password"),
+            Failure::Password { tried: true } => f.write_str("none of the passwords fits"),
+            Failure::Other(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(why: String) -> Self {
+        Failure::Other(why)
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(why: &str) -> Self {
+        Failure::Other(why.to_string())
+    }
+}
+
+/// What an extraction put beside the parts, and the password that opened
+/// the archive, when it took one.
+#[derive(Debug)]
+pub struct Extracted {
+    pub placed: Vec<PathBuf>,
+    pub password: Option<String>,
+}
+
 /// Unpacks the archive whose parts are `parts`, in part order, beside the
-/// first one. Returns what it put there: the top-level files and folders.
-pub fn extract(parts: &[Part], progress: &Progress) -> Result<Vec<PathBuf>, String> {
+/// first one: as it is, and when it is encrypted with each of `passwords`
+/// in turn until one fits. Every try unpacks into a hidden folder of its
+/// own, so only the one that succeeds is moved out.
+pub fn extract(
+    parts: &[Part],
+    passwords: &[String],
+    progress: &Progress,
+) -> Result<Extracted, Failure> {
     let first = parts.first().ok_or("no parts")?;
     let dest = first
         .path
@@ -80,7 +127,10 @@ pub fn extract(parts: &[Part], progress: &Progress) -> Result<Vec<PathBuf>, Stri
         // Pieces of a file that is no archive: the file, joined again.
         None if name.as_ref().is_some_and(|n| n.form == Form::Pieces) => {
             let name = name.expect("checked above");
-            return join(parts, &dest, &name.archive, progress).map(|file| vec![file]);
+            return join(parts, &dest, &name.archive, progress).map(|file| Extracted {
+                placed: vec![file],
+                password: None,
+            });
         }
         None => return Err("not a RAR, 7-Zip or zip archive".into()),
     };
@@ -90,15 +140,34 @@ pub fn extract(parts: &[Part], progress: &Progress) -> Result<Vec<PathBuf>, Stri
         "{STAGING}{}",
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     )));
-    let out = staging.0.join("out");
-    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    match kind {
-        Kind::Rar => rar::rar(parts, &staging.0, &out, progress)?,
-        Kind::SevenZip => seven_zip(Joined::open(parts)?, &out, progress)?,
-        Kind::Zip => zip(Joined::open(parts)?, &out, progress)?,
-        Kind::SpannedZip => zip(spanned::unspan(parts)?, &out, progress)?,
+    let candidates = std::iter::once(None).chain(passwords.iter().map(|p| Some(p.as_str())));
+    for (n, password) in candidates.enumerate() {
+        let out = staging.0.join(format!("out{n}"));
+        std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        progress.done.store(0, Ordering::Relaxed);
+        progress.total.store(0, Ordering::Relaxed);
+        let run = match kind {
+            Kind::Rar => rar::rar(parts, &staging.0, &out, password, progress),
+            Kind::SevenZip => seven_zip(Joined::open(parts)?, &out, password, progress),
+            Kind::Zip => zip(Joined::open(parts)?, &out, password, progress),
+            Kind::SpannedZip => zip(spanned::unspan(parts)?, &out, password, progress),
+        };
+        match run {
+            Ok(()) => {
+                return Ok(Extracted {
+                    placed: place(&out, &dest)?,
+                    password: password.map(String::from),
+                });
+            }
+            Err(Failure::Password { .. }) => {
+                let _ = std::fs::remove_dir_all(&out);
+            }
+            Err(other) => return Err(other),
+        }
     }
-    place(&out, &dest)
+    Err(Failure::Password {
+        tried: !passwords.is_empty(),
+    })
 }
 
 /// Takes away hidden extraction folders a run that did not finish left in
@@ -145,7 +214,7 @@ fn kind_of(path: &Path) -> Result<Option<Kind>, String> {
 
 /// Writes the pieces one after the other into `name` beside them, under a
 /// name nothing has yet, by way of a hidden file so a failure leaves none.
-fn join(parts: &[Part], dest: &Path, name: &str, progress: &Progress) -> Result<PathBuf, String> {
+fn join(parts: &[Part], dest: &Path, name: &str, progress: &Progress) -> Result<PathBuf, Failure> {
     let mut from = Joined::open(parts)?;
     progress.total.store(from.len(), Ordering::Relaxed);
     clear_staging(dest);
@@ -178,36 +247,74 @@ fn enclosed(name: &str) -> Option<PathBuf> {
     (!rel.as_os_str().is_empty()).then_some(rel)
 }
 
-fn seven_zip(mut joined: Joined, out: &Path, progress: &Progress) -> Result<(), String> {
-    let seven_error = |e: sevenz_rust2::Error| match e {
-        sevenz_rust2::Error::PasswordRequired | sevenz_rust2::Error::MaybeBadPassword(_) => {
-            "the archive needs a password".to_string()
+/// A 7-Zip archive, opened with `password` when it has one. An encrypted
+/// one turns a wrong password into garbage that fails to decode, so with a
+/// password any failure to read it counts as that password not fitting.
+fn seven_zip(
+    mut joined: Joined,
+    out: &Path,
+    password: Option<&str>,
+    progress: &Progress,
+) -> Result<(), Failure> {
+    use sevenz_rust2::Error;
+
+    let key = password.map_or_else(sevenz_rust2::Password::empty, sevenz_rust2::Password::from);
+    let failure = |e: Error| match e {
+        Error::PasswordRequired | Error::MaybeBadPassword(_) => Failure::Password { tried: true },
+        Error::ChecksumVerificationFailed if password.is_some() => {
+            Failure::Password { tried: true }
         }
-        e => e.to_string(),
+        e => Failure::Other(e.to_string()),
     };
-    let archive = sevenz_rust2::Archive::read(&mut joined, &sevenz_rust2::Password::empty())
-        .map_err(seven_error)?;
+    let archive = match sevenz_rust2::Archive::read(&mut joined, &key) {
+        Ok(archive) => archive,
+        // Its headers are encrypted, and this password does not open them.
+        Err(_) if password.is_some() => return Err(Failure::Password { tried: true }),
+        Err(e) => return Err(failure(e)),
+    };
     let total = archive.files.iter().map(|f| f.size()).sum();
     progress.total.store(total, Ordering::Relaxed);
     joined.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    sevenz_rust2::decompress_with_extract_fn(joined, out, |entry, reader, dest| {
-        let mut counted = Counted(reader, &progress.done);
-        sevenz_rust2::default_entry_extract_fn(entry, &mut counted, dest)
-    })
-    .map_err(seven_error)
+    sevenz_rust2::decompress_with_extract_fn_and_password(
+        joined,
+        out,
+        key,
+        |entry, reader, dest| {
+            let mut counted = Counted(reader, &progress.done);
+            sevenz_rust2::default_entry_extract_fn(entry, &mut counted, dest)
+        },
+    )
+    .map_err(failure)
 }
 
-fn zip(joined: Joined, out: &Path, progress: &Progress) -> Result<(), String> {
+/// A zip, its encrypted entries (ZipCrypto or AES) opened with `password`.
+/// ZipCrypto checks a password against one byte only, so an entry that
+/// then fails its checksum counts as the password not fitting too.
+fn zip(
+    joined: Joined,
+    out: &Path,
+    password: Option<&str>,
+    progress: &Progress,
+) -> Result<(), Failure> {
     let mut archive = zip::ZipArchive::new(joined).map_err(|e| e.to_string())?;
     let total = (0..archive.len())
         .filter_map(|i| archive.by_index_raw(i).ok().map(|f| f.size()))
         .sum();
     progress.total.store(total, Ordering::Relaxed);
     for i in 0..archive.len() {
-        if archive.by_index_raw(i).is_ok_and(|f| f.encrypted()) {
-            return Err("the archive needs a password".into());
-        }
-        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let encrypted = archive.by_index_raw(i).is_ok_and(|f| f.encrypted());
+        let file = match (encrypted, password) {
+            (false, _) => archive.by_index(i),
+            (true, None) => return Err(Failure::Password { tried: false }),
+            (true, Some(p)) => archive.by_index_decrypt(i, p.as_bytes()),
+        };
+        let mut file = match file {
+            Ok(file) => file,
+            Err(zip::result::ZipError::InvalidPassword) => {
+                return Err(Failure::Password { tried: true });
+            }
+            Err(e) => return Err(e.to_string().into()),
+        };
         // A name that would lead out of the folder is left out.
         let Some(rel) = file.enclosed_name() else {
             tracing::warn!(
@@ -225,8 +332,13 @@ fn zip(joined: Joined, out: &Path, progress: &Progress) -> Result<(), String> {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         let mut to = File::create(&target).map_err(|e| format!("{}: {e}", target.display()))?;
-        io::copy(&mut Counted(&mut file, &progress.done), &mut to)
-            .map_err(|e| format!("{}: {e}", rel.display()))?;
+        if let Err(e) = io::copy(&mut Counted(&mut file, &progress.done), &mut to) {
+            return Err(if encrypted {
+                Failure::Password { tried: true }
+            } else {
+                format!("{}: {e}", rel.display()).into()
+            });
+        }
     }
     Ok(())
 }
@@ -397,7 +509,7 @@ mod tests {
         let names = ["R5.part1.rar", "R5.part2.rar", "R5.part3.rar"];
         let parts = parts_in(dir.path(), &names.map(|n| (n, n)));
         let progress = Progress::default();
-        let placed = extract(&parts, &progress).unwrap();
+        let placed = extract(&parts, &[], &progress).unwrap().placed;
         assert_eq!(placed, [dir.path().join("Release")]);
         assert_release(&dir.path().join("Release"));
         assert_eq!(progress.fraction(), 1.0);
@@ -420,7 +532,7 @@ mod tests {
         );
         // Something by the same name is there already, and stays.
         std::fs::create_dir_all(dir.path().join("a/Release")).unwrap();
-        let placed = extract(&parts, &Progress::default()).unwrap();
+        let placed = extract(&parts, &[], &Progress::default()).unwrap().placed;
         assert_eq!(placed, [dir.path().join("a/Release (1)")]);
         assert_release(&dir.path().join("a/Release (1)"));
         assert_eq!(
@@ -446,7 +558,7 @@ mod tests {
                 ],
             );
             let progress = Progress::default();
-            extract(&parts, &progress).unwrap();
+            extract(&parts, &[], &progress).unwrap();
             assert_release(&dir.path().join("Release"));
             assert_eq!(progress.fraction(), 1.0, "{set:?}");
         }
@@ -467,7 +579,7 @@ mod tests {
                 &[(&z01, &format!("a/{z01}")), (&zip, &format!("b/{zip}"))],
             );
             let progress = Progress::default();
-            extract(&parts, &progress).unwrap();
+            extract(&parts, &[], &progress).unwrap();
             let release = dir.path().join("a/Release");
             let movie = std::fs::read(release.join("movie.bin")).unwrap();
             assert_eq!(movie.len(), 70000, "{name}");
@@ -500,7 +612,7 @@ mod tests {
             .collect();
         std::fs::write(dir.path().join("movie.mkv"), "another").unwrap();
         let progress = Progress::default();
-        let placed = extract(&parts, &progress).unwrap();
+        let placed = extract(&parts, &[], &progress).unwrap().placed;
         assert_eq!(placed, [dir.path().join("movie (1).mkv")]);
         assert_eq!(std::fs::read(&placed[0]).unwrap(), whole);
         assert_eq!(progress.fraction(), 1.0);
@@ -512,8 +624,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let parts = parts_in(dir.path(), &[("E.rar", "E.rar")]);
         assert_eq!(
-            extract(&parts, &Progress::default()).unwrap_err(),
-            "the archive needs a password"
+            extract(&parts, &[], &Progress::default()).unwrap_err(),
+            Failure::Password { tried: false }
         );
 
         let parts = parts_in(
@@ -524,13 +636,15 @@ mod tests {
             ],
         );
         assert_eq!(
-            extract(&parts, &Progress::default()).unwrap_err(),
+            extract(&parts, &[], &Progress::default())
+                .unwrap_err()
+                .to_string(),
             "a part is missing"
         );
 
         // A split zip without its last piece has no directory to read.
         let parts = parts_in(dir.path(), &[("ZS.z01", "ZS.z01")]);
-        assert!(extract(&parts, &Progress::default()).is_err());
+        assert!(extract(&parts, &[], &Progress::default()).is_err());
 
         let junk = dir.path().join("J.part1.rar");
         std::fs::write(&junk, b"not an archive").unwrap();
@@ -539,12 +653,73 @@ mod tests {
                 path: junk,
                 name: "J.part1.rar".into(),
             }],
+            &[],
             &Progress::default(),
         );
-        assert_eq!(err.unwrap_err(), "not a RAR, 7-Zip or zip archive");
+        assert_eq!(
+            err.unwrap_err().to_string(),
+            "not a RAR, 7-Zip or zip archive"
+        );
         assert!(
             !names_in(dir.path()).iter().any(|n| n.starts_with(STAGING)),
             "no hidden folder stays"
+        );
+    }
+
+    /// `Secret/note.txt` and `Secret/data.bin` (20000 bytes counting 0 to
+    /// 252 over and over), with the password `open sesame`: RAR with its
+    /// files encrypted, 7-Zip with its headers encrypted and without,
+    /// ZipCrypto and AES zips. `E.rar` has its headers encrypted, with the
+    /// password `Secret`.
+    #[test]
+    fn opens_an_encrypted_archive_with_the_password_that_fits() {
+        let passwords = ["wrong".to_string(), "open sesame".to_string()];
+        for name in ["PR.rar", "PH.7z", "PD.7z", "PZ.zip", "PA.zip"] {
+            let dir = tempfile::tempdir().unwrap();
+            let parts = parts_in(dir.path(), &[(name, name)]);
+            let progress = Progress::default();
+            let done =
+                extract(&parts, &passwords, &progress).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(done.password.as_deref(), Some("open sesame"), "{name}");
+            let secret = dir.path().join("Secret");
+            assert_eq!(
+                std::fs::read_to_string(secret.join("note.txt")).unwrap(),
+                "secret stuff\n",
+                "{name}"
+            );
+            let data = std::fs::read(secret.join("data.bin")).unwrap();
+            assert!(
+                data.len() == 20000 && data.iter().enumerate().all(|(i, &b)| b == (i % 253) as u8),
+                "{name}"
+            );
+            assert_eq!(progress.fraction(), 1.0, "{name}");
+            assert_eq!(
+                names_in(dir.path()),
+                [name, "Secret"],
+                "{name}: only what fit"
+            );
+
+            // Without the right one, it says which: none given, none fits.
+            let parts = parts_in(dir.path(), &[(name, name)]);
+            assert_eq!(
+                extract(&parts, &[], &Progress::default()).unwrap_err(),
+                Failure::Password { tried: false },
+                "{name}"
+            );
+            assert_eq!(
+                extract(&parts, &passwords[..1], &Progress::default()).unwrap_err(),
+                Failure::Password { tried: true },
+                "{name}"
+            );
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let parts = parts_in(dir.path(), &[("E.rar", "E.rar")]);
+        let done = extract(&parts, &["Secret".into()], &Progress::default()).unwrap();
+        assert_eq!(done.placed, [dir.path().join("note.txt")]);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+            "secret stuff\n"
         );
     }
 }

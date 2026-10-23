@@ -52,7 +52,7 @@ impl Status {
 
 /// Where the archive a row is a part of stands with being unpacked; every
 /// part of it carries the same. Serialized as `""`, `"waiting"`,
-/// `"extracting"`, `"done"` and `"failed"`.
+/// `"extracting"`, `"done"`, `"password"` and `"failed"`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Extract {
@@ -63,6 +63,8 @@ pub enum Extract {
     Waiting,
     Extracting,
     Done,
+    /// It is encrypted, and no password Haul has fits: one is wanted.
+    Password,
     Failed,
 }
 
@@ -149,6 +151,9 @@ pub(crate) struct Item {
     pub extract: Extract,
     /// Why unpacking it failed.
     pub extract_error: String,
+    /// The password for its archive: the one the user gave, or the one that
+    /// opened it.
+    pub extract_password: Option<String>,
 }
 
 impl Item {
@@ -209,6 +214,7 @@ impl Item {
             found_hosts: Vec::new(),
             extract: Extract::No,
             extract_error: String::new(),
+            extract_password: None,
         }
     }
 
@@ -259,6 +265,7 @@ impl Item {
             found_hosts: self.found_hosts.clone(),
             extract: self.extract,
             extract_error: self.extract_error.clone(),
+            extract_password: self.extract_password.clone(),
         }
     }
 
@@ -308,6 +315,7 @@ impl Item {
             other => other,
         };
         it.extract_error = s.extract_error;
+        it.extract_password = s.extract_password;
         it.status = match s.status {
             Status::Done | Status::Paused | Status::Error => s.status,
             _ => Status::Queued,
@@ -363,6 +371,8 @@ pub(crate) struct Saved {
     pub extract: Extract,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub extract_error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract_password: Option<String>,
 }
 
 fn lenient_status<'de, D: Deserializer<'de>>(d: D) -> Result<Status, D::Error> {

@@ -2904,7 +2904,7 @@ async fn an_archive_unpacks_when_asked_and_says_why_it_cannot() {
     );
     let id = s.items[0].id.clone();
     // The third part is not on the list yet: the archive lacks it.
-    assert!(engine.extract(&id).unwrap());
+    assert!(engine.extract(&id, None).unwrap());
     let s = wait_for(&engine, "failed", |s| {
         s.items.iter().all(|i| i.extract == Extract::Failed)
     })
@@ -2913,7 +2913,7 @@ async fn an_archive_unpacks_when_asked_and_says_why_it_cannot() {
     assert_eq!(files_in(&t.root.join("dl")), ["S.7z.001", "S.7z.002"]);
 
     engine.add_text(&format!("{}/archive/S.7z.003", t.ip), "");
-    let err = engine.extract(&id).unwrap_err();
+    let err = engine.extract(&id, None).unwrap_err();
     assert!(err.contains("S.7z.003"), "{err}");
     wait_for(&engine, "three parts", |s| {
         s.items.len() == 3 && all_done(s)
@@ -2935,8 +2935,11 @@ async fn an_archive_unpacks_when_asked_and_says_why_it_cannot() {
     assert_eq!(single.added, 1);
     let s = wait_for(&engine, "done", |s| s.items.len() == 4 && all_done(s)).await;
     let single = s.items.iter().find(|i| i.name == "single.bin").unwrap();
-    assert!(engine.extract(&single.id).is_err(), "no archive in parts");
-    assert!(!engine.extract("nope").unwrap());
+    assert!(
+        engine.extract(&single.id, None).is_err(),
+        "no archive in parts"
+    );
+    assert!(!engine.extract("nope", None).unwrap());
 }
 
 #[tokio::test]
@@ -2968,7 +2971,7 @@ async fn a_part_missing_from_the_list_holds_the_archive_back() {
             .iter()
             .all(|i| i.archive.as_deref() == Some(a.key.as_str()))
     );
-    let err = engine.extract(&a.ids[0]).unwrap_err();
+    let err = engine.extract(&a.ids[0], None).unwrap_err();
     assert_eq!(err, "R5.part2.rar is missing from the list");
 
     // With it on the list, the archive extracts by itself.
@@ -3002,4 +3005,83 @@ async fn a_zip_split_into_z01_pieces_extracts() {
         std::fs::read_to_string(t.root.join("dl/Release/zlast.txt")).unwrap(),
         "after the split\n"
     );
+}
+
+#[tokio::test]
+async fn an_encrypted_archive_asks_for_its_password_and_keeps_it() {
+    let t = Setup::new().await;
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            auto_extract: true,
+            archive_passwords: vec!["wrong".into()],
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.add_text(
+        &format!("{0}/archive/PV.part1.rar {0}/archive/PV.part2.rar", t.ip),
+        "",
+    );
+    let s = wait_for(&engine, "a password wanted", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.extract == Extract::Password)
+    })
+    .await;
+    let a = &s.archives[0];
+    assert_eq!(a.extract_error, "none of the passwords fits");
+    assert_eq!(a.commands, [haul_core::Command::Password]);
+
+    // The one the user types opens it, and stays with the archive.
+    assert!(engine.extract(&a.ids[0], Some("open sesame")).unwrap());
+    wait_for(&engine, "extracted", |s| {
+        s.items.iter().all(|i| i.extract == Extract::Done)
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(t.root.join("dl/Secret/note.txt")).unwrap(),
+        "secret stuff\n"
+    );
+    engine.shutdown().await;
+    let queue = std::fs::read_to_string(t.root.join("data/queue.json")).unwrap();
+    assert!(
+        queue.contains("\"extract_password\":\"open sesame\""),
+        "{queue}"
+    );
+    assert!(
+        !serde_json::to_string(&engine.snapshot())
+            .unwrap()
+            .contains("open sesame"),
+        "never in the state the views receive"
+    );
+}
+
+#[tokio::test]
+async fn a_password_from_the_settings_opens_an_archive_on_its_own() {
+    let t = Setup::new().await;
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            auto_extract: true,
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    let list = json!({"archive_passwords": "wrong\nopen sesame\n\nwrong"});
+    engine.update_settings(list.as_object().unwrap()).unwrap();
+    assert_eq!(
+        engine.settings().archive_passwords,
+        ["wrong", "open sesame"]
+    );
+    engine.add_text(
+        &format!("{0}/archive/PV.part1.rar {0}/archive/PV.part2.rar", t.ip),
+        "",
+    );
+    wait_for(&engine, "extracted", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.extract == Extract::Done)
+    })
+    .await;
+    let report = engine.diagnostics().to_string();
+    assert!(!report.contains("open sesame"), "{report}");
 }

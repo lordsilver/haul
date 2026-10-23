@@ -1147,7 +1147,7 @@ function updateGroupRow(g, entry, s) {
   const picked = entry.members.filter((i) => selected.has(i.id)).length;
   const all = picked === entry.members.length;
   g.check.setAttribute("aria-checked", all ? "true" : picked ? "mixed" : "false");
-  const extractClass = { extracting: " extracting", failed: " extract-failed" }[a.extract] ?? "";
+  const extractClass = { extracting: " extracting", failed: " extract-failed", password: " extract-password" }[a.extract] ?? "";
   const rowClass = `row group s-${a.status}${a.complete ? " complete" : ""}${extractClass}${all ? " selected" : ""}`;
   if (g.node.className !== rowClass) g.node.className = rowClass;
   if (g.glyphKey !== a.status) {
@@ -1193,8 +1193,52 @@ function updateGroupRow(g, entry, s) {
   const actionsKey = `${a.commands.join(",")}|${a.ids.join(",")}|${s.items.length}`;
   if (g.actionsKey !== actionsKey) {
     g.actionsKey = actionsKey;
-    g.actions.replaceChildren(...groupActions(a, s));
+    g.actions.replaceChildren(...groupActions(a, s, g));
   }
+
+  // An archive that wants its password asks for it under its row; what is
+  // being typed there stays while states come in.
+  const asking = a.commands.includes("password");
+  const barKey = asking ? `${a.ids[0]}|${a.extract_error}` : "";
+  if (g.barKey !== barKey && !g.bar?.contains(document.activeElement)) {
+    g.barKey = barKey;
+    g.bar?.remove();
+    g.bar = asking ? passwordBar(a) : null;
+    if (g.bar) g.node.append(g.bar);
+  }
+}
+
+// The password of an encrypted archive, typed in: Haul keeps it with the
+// archive and extracts with it.
+function passwordBar(a) {
+  const input = el("input", {
+    type: "password",
+    required: true,
+    autocomplete: "off",
+    placeholder: "Password",
+    "aria-label": `Password for ${a.name}`,
+  });
+  const form = el(
+    "form",
+    {
+      onsubmit: async (e) => {
+        e.preventDefault();
+        try {
+          await api(`/api/item/${encodeURIComponent(a.ids[0])}/extract`, { password: input.value });
+          input.value = "";
+          input.blur();
+        } catch (error) {
+          report(error);
+        }
+      },
+    },
+    withReveal(input),
+    el("button", { type: "submit", class: "button accent" }, "Extract"),
+  );
+  const why = a.extract_error === "none of the passwords fits" ? "None of the passwords fits this archive." : "This archive is encrypted.";
+  const bar = infobar("caution", null, null, why, [form]);
+  bar.append(el("p", { class: "hint" }, "Haul keeps the password with this archive. Passwords that open many releases go under Settings › Archive passwords, tried on every one."));
+  return bar;
 }
 
 // The archive's caption: where unpacking it stands once asked for, else
@@ -1209,6 +1253,8 @@ function archiveCaption(a) {
       return "Extracted";
     case "failed":
       return `Extraction failed: ${a.extract_error}`;
+    case "password":
+      return "Needs a password";
   }
   if (a.missing.length) {
     const more = a.missing.length > 1 ? ` and ${a.missing.length - 1} more` : "";
@@ -1242,7 +1288,7 @@ function partsWith(a, s, ...commands) {
 // Pause, resume or retry the parts together, and extract them once they are
 // all done. Removing them goes through the selection: a click on the group
 // picks them all.
-function groupActions(a, s) {
+function groupActions(a, s, g) {
   const subtle = (label, name, onclick) => button(label, { icon: name, kind: "subtle small", iconOnly: true, onclick });
   const extract = () => api(`/api/item/${encodeURIComponent(a.ids[0])}/extract`).catch(report);
   const buttons = {
@@ -1252,6 +1298,7 @@ function groupActions(a, s) {
     start: () => subtle("Start the parts", "play", () => bulk(partsWith(a, s, "start", "resume"), "resume")),
     resume: () => subtle("Resume the parts", "play", () => bulk(partsWith(a, s, "start", "resume"), "resume")),
     retry: () => subtle("Retry the failed parts", "arrow-clockwise", () => bulk(partsWith(a, s, "retry"), "retry")),
+    password: () => subtle("Enter the password", "key", () => g.bar?.querySelector("input")?.focus()),
   };
   return a.commands.map((c) => buttons[c]?.()).filter(Boolean);
 }
@@ -2141,6 +2188,19 @@ function proxyList(d) {
 }
 
 // A password field with a button that shows what it holds.
+function archivePasswords(d) {
+  const box = el("textarea", {
+    rows: Math.min(8, Math.max(3, d.archive_passwords.length + 1)),
+    spellcheck: "false",
+    autocomplete: "off",
+    class: "wide mono",
+    "aria-label": "Archive passwords, one per line",
+  });
+  box.value = d.archive_passwords.join("\n");
+  box.addEventListener("change", () => save({ archive_passwords: box.value }));
+  return box;
+}
+
 function withReveal(input) {
   const reveal = button("Show", {
     icon: "eye",
@@ -2287,6 +2347,12 @@ function renderSettings(s) {
       "Extract archives when their parts are done",
       "An archive in parts (name.part1.rar, name.7z.001 and so on) is unpacked beside its parts once the last one is downloaded, one archive at a time: RAR, 7‑Zip and zip. Off: extract one with its button in the list.",
       toggleSwitch("auto_extract", d.auto_extract, "Extract archives when their parts are done"),
+    ),
+    settingCard(
+      "key",
+      "Archive passwords",
+      "Tried in order on an encrypted archive, after the one typed for it. One per line.",
+      archivePasswords(d),
     ),
     settingCard(
       "delete",
