@@ -4,6 +4,11 @@ A download manager for file hosts. Paste links, or drop a `.dlc` or `.txt` file,
 
 It comes as a Windows desktop app (a Tauri 2 shell around the engine) and as `haul`, a headless server with the same web UI for any browser.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/haul-dark.png">
+  <img alt="Haul's download list: three downloads running, one waiting for a captcha page under Needs you, one failed, one completed and one paused" src="docs/images/haul-light.png">
+</picture>
+
 ## Status
 
 Early. Working today:

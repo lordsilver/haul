@@ -46,6 +46,8 @@ cp -r crates/haul-web/ui/dist $D/ui-still
 echo '*,*::before,*::after{animation:none!important;transition:none!important}' >> $D/ui-still/assets/index.css
 ```
 
+The README shows `docs/images/haul-light.png` and `haul-dark.png`: the light and dark `all` shots at 1280×760. Replace them whenever a change alters how the list looks.
+
 When done, stop the server and the file server and delete `$D`: the downloads are real bytes, on a disk that has run full.
 
 ## The desktop app and the in-app browser
