@@ -16,16 +16,25 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
         // Downloads whose page was opened during their current wait.
         let mut tried: HashSet<String> = HashSet::new();
         loop {
-            let waiting: Vec<(String, String, bool)> = engine
-                .snapshot()
+            let snapshot = engine.snapshot();
+            // Downloads and wrappers (pages and pastes) alike.
+            let rows = snapshot
                 .items
                 .into_iter()
+                .map(|i| (i.id, i.status, i.open_urls))
+                .chain(
+                    snapshot
+                        .wrappers
+                        .into_iter()
+                        .map(|w| (w.id, w.status, w.open_urls)),
+                );
+            let waiting: Vec<(String, String, bool)> = rows
                 // Waiting their turn ("passing"), or shown to the person after
                 // their turn ("captcha"): kept, so the tried set stays theirs.
-                .filter(|i| i.status == "passing" || i.status == "captcha")
-                .filter_map(|i| {
-                    let page = i.open_urls.iter().find(|u| engine.page_passes(u))?;
-                    Some((i.id, page.clone(), i.status == "passing"))
+                .filter(|(_, status, _)| *status == "passing" || *status == "captcha")
+                .filter_map(|(id, status, open)| {
+                    let page = open.iter().find(|u| engine.page_passes(u))?;
+                    Some((id, page.clone(), status == "passing"))
                 })
                 .collect();
             tried.retain(|id| waiting.iter().any(|(w, ..)| w == id));

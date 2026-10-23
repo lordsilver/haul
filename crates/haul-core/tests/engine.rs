@@ -909,6 +909,24 @@ async fn a_copy_of_an_archive_on_another_host_becomes_its_backup() {
     );
 }
 
+/// A paste Haul 0.15.2 saved as a download row comes back as the wrapper
+/// it is.
+#[tokio::test]
+async fn a_paste_saved_as_a_download_comes_back_a_wrapper() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("data")).unwrap();
+    std::fs::write(
+        t.root.join("data/queue.json"),
+        r#"{"p":{"mirrors":["https://zpaste.net/p/91f42"],"status":"queued"}}"#,
+    )
+    .unwrap();
+    let engine = t.engine().await;
+    let s = engine.snapshot();
+    assert!(s.items.is_empty(), "no download row: {:?}", s.items);
+    assert_eq!(s.wrappers.len(), 1);
+    assert_eq!(s.wrappers[0].url, "https://zpaste.net/p/91f42");
+}
+
 /// A MEGA download that failed in Haul 0.15.0 for want of megatools goes
 /// again, as Haul now downloads from MEGA itself.
 #[tokio::test]
@@ -1458,10 +1476,11 @@ async fn removing_a_wrappers_last_file_takes_the_wrapper() {
 }
 
 /// A web page on a site Haul has no code for, linking files on hosts it
-/// knows, stands for those links, as if its text were pasted: no wrapper,
-/// no row of its own. One linking none waits for a person.
+/// knows, is a wrapper of them: named after the page, its files join the
+/// queue not started, as a wrapper's do. One linking none waits for a
+/// person.
 #[tokio::test]
-async fn a_page_of_links_adds_its_links() {
+async fn a_page_of_links_is_a_wrapper_of_them() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     engine.add_text(&format!("{}/blog/release", t.ip), "Pkg");
@@ -1469,14 +1488,26 @@ async fn a_page_of_links_adds_its_links() {
         s.items.len() == 2 && s.items.iter().all(|i| i.name.ends_with(".bin"))
     })
     .await;
-    assert!(s.wrappers.is_empty(), "the page is not a wrapper");
-    let mut rows: Vec<(&str, &str)> = s
+    assert_eq!(s.wrappers.len(), 1, "the page is a wrapper");
+    assert_eq!(s.wrappers[0].title.as_deref(), Some("Release R"));
+    assert_eq!(s.wrappers[0].status, "done");
+    let mut rows: Vec<(&str, &str, &str)> = s
         .items
         .iter()
-        .map(|i| (i.name.as_str(), i.package.as_str()))
+        .map(|i| (i.name.as_str(), i.package.as_str(), i.status))
         .collect();
     rows.sort();
-    assert_eq!(rows, [("postone.bin", "Pkg"), ("posttwo.bin", "Pkg")]);
+    assert_eq!(
+        rows,
+        [
+            ("postone.bin", "Pkg", "paused"),
+            ("posttwo.bin", "Pkg", "paused")
+        ],
+        "not started: the user picks, as for any wrapper's files"
+    );
+    for i in &s.items {
+        engine.item_action(&i.id, ItemAction::Resume);
+    }
     wait_for(&engine, "both downloaded", all_done).await;
 
     engine.add_text(&format!("{}/blog/empty", t.ip), "");
@@ -1507,7 +1538,7 @@ async fn a_guarded_page_takes_the_links_its_window_shows() {
     );
     // Nothing known yet (the check itself, the site's menu): the row stays.
     assert_eq!(
-        engine.page_listed(&id, &[format!("{}/blog/other", t.ip)], &[]),
+        engine.page_listed(&id, &[format!("{}/blog/other", t.ip)], &[], None),
         0
     );
     let shown = [
@@ -1516,7 +1547,7 @@ async fn a_guarded_page_takes_the_links_its_window_shows() {
         "https://pixeldrain.com/u/postone".to_string(),
         "https://pixeldrain.com/u/posttwo".to_string(),
     ];
-    assert_eq!(engine.page_listed(&id, &shown, &[]), 2);
+    assert_eq!(engine.page_listed(&id, &shown, &[], Some("Release R")), 2);
     let s = wait_for(&engine, "the page's files, named", |s| {
         s.items.len() == 2 && s.items.iter().all(|i| i.name.ends_with(".bin"))
     })

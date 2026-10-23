@@ -34,6 +34,8 @@ function status(card: WrapperCard): string {
       return 'Unwrapping…';
     case 'waiting':
       return card.wait ? `Trying again in ${duration(card.wait)}` : 'Waiting to try again';
+    case 'passing':
+      return 'Haul opens its page by itself, in turn';
     case 'captcha':
       return 'Needs you';
     case 'paused':
@@ -63,16 +65,25 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
   const on = card.hosts.length
     ? `${card.hosts.slice(0, 3).join(', ')}${card.hosts.length > 3 ? ` +${card.hosts.length - 3}` : ''}`
     : '';
+  // A card of several wrappers (one per host, or a release's page and the
+  // pastes it links) counts them, and says what still goes on.
   const state =
     card.ids.length > 1
-      ? `${plural(card.ids.length, 'wrapper')} · ${plural(card.files, 'file')} · ${partsSummary(card.tally, card.files)}`
+      ? [
+          plural(card.ids.length, 'wrapper'),
+          plural(card.files, 'file'),
+          partsSummary(card.tally, card.files),
+          card.status === 'done' ? '' : status(card),
+        ]
+          .filter(Boolean)
+          .join(' · ')
       : status(card);
   const line = [card.host, on, state].filter(Boolean).join(' · ');
   const reason = ['error', 'waiting', 'captcha'].includes(card.status) ? card.error_shown : '';
   const first = card.ids[0] ?? '';
   const hint = s.desktop
-    ? "Open here, pass the page's check and press its .dlc button: Haul unwraps what the page hands over."
-    : 'Open the page, pass its check, then copy the .dlc link it offers and paste it here.';
+    ? "Open here and pass the page's check: Haul takes what the page then shows (its links, or its .dlc)."
+    : 'Open the page, pass its check, then copy the links it shows (or its .dlc link) and paste them here.';
   return (
     <div
       className={cn(
@@ -152,10 +163,11 @@ export function Wrappers({ s }: { s: State }) {
       <header className="flex flex-col gap-1">
         <h1 className="text-2xl font-semibold tracking-tight">Wrappers</h1>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          A wrapper link, such as fileguard.cc's, filecrypt.cc's or mirrored.to's, holds a release's files, on one host
-          or on many. Haul unwraps it as soon as you add it, and each file joins the list once: the same file from
-          another host, on this wrapper or another one, becomes a mirror of it rather than a second download. The files
-          wait for you to start them, here or in the list.
+          A wrapper link holds a release's files, on one host or on many: fileguard.cc's, filecrypt.cc's or
+          mirrored.to's, a release's page on a site Haul has no code for, or a paste (zpaste.net, paste2.org…). Haul
+          unwraps it as soon as you add it, pastes a page links included, and each file joins the list once: the same
+          file from another host becomes a mirror of it rather than a second download. The files wait for you to start
+          them, here or in the list.
         </p>
       </header>
       {s.wrapper_cards.length ? (

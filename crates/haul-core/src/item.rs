@@ -333,6 +333,20 @@ impl Item {
             it.pre_for = None;
             it.probed = it.name.is_some();
         }
+        // A paste saved as a download (Haul 0.15.2 made them rows) is the
+        // list of links it is: a wrapper, unwrapped again.
+        if !it.wrapper
+            && it.status != Status::Done
+            && it.mirrors.len() == 1
+            && crate::hosts::is_paste(&it.mirrors[0])
+        {
+            it.wrapper = true;
+            it.status = Status::Queued;
+            it.name = None;
+            it.pre = None;
+            it.pre_for = None;
+            it.probed = false;
+        }
         // Downloaded bytes are not saved; a finished file has all of them.
         if it.status == Status::Done {
             it.done = it.size;

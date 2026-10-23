@@ -2,7 +2,7 @@
 //! as is; one that answers with a web page needs a person, unless the page
 //! links files on hosts Haul knows or wrappers (a release's post on a blog
 //! or forum, say): then those links are added as if pasted
-//! ([`page_links`]).
+//! ([`page`]).
 
 use std::sync::LazyLock;
 
@@ -173,7 +173,11 @@ static BARE: LazyLock<Regex> =
 /// The links of a web page to files on hosts Haul knows and to wrappers,
 /// each once, in the page's order. Links elsewhere (the site's own pages,
 /// ads) are left out; a page with none waits for a person as before.
-pub(super) async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Vec<String>, ResolveError> {
+/// With them, the page's own name for what it holds.
+pub(super) async fn page(
+    cx: &Cx<'_>,
+    url: &str,
+) -> Result<(Option<String>, Vec<String>), ResolveError> {
     let mut r = cx.http.client.get(url).send().await?;
     let status = r.status().as_u16();
     if challenged(r.headers()) {
@@ -208,7 +212,42 @@ pub(super) async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Vec<String>, Re
             host_of(url)
         )));
     }
-    Ok(urls)
+    Ok((page_title(&page), urls))
+}
+
+/// A page's name for itself: its `og:title`, else its `<title>`, the site's
+/// name after a separator left off.
+pub(super) fn page_title(page: &str) -> Option<String> {
+    let raw = [&OG_TITLE, &TITLE]
+        .into_iter()
+        .find_map(|re| re.captures(page).map(|c| c[1].to_string()))?;
+    short_title(
+        &raw.replace("&amp;", "&")
+            .replace("&#039;", "'")
+            .replace("&quot;", "\""),
+    )
+}
+
+/// A page's title without the site's name after a separator.
+pub(super) fn short_title(raw: &str) -> Option<String> {
+    let name = [" | ", " – ", " — ", " - "]
+        .iter()
+        .fold(raw, |name, sep| name.split(sep).next().unwrap_or(name))
+        .trim();
+    // Download sites title every page "Download …".
+    let name = name
+        .strip_prefix("Download ")
+        .or_else(|| name.strip_prefix("Descargar "))
+        .unwrap_or(name)
+        .trim()
+        .to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Whether `url` is on a paste site (see [`PASTES`]): a list of links,
+/// never a file.
+pub(super) fn is_paste(url: &str) -> bool {
+    PASTES.contains(&host_of(url).as_str())
 }
 
 /// Sites that hold lists of links (pastes): a release's page often links
@@ -280,6 +319,16 @@ pub(super) fn links_in(page: &str, base: &url::Url, own: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_title_names_the_release_alone() {
+        assert_eq!(
+            short_title("Download Naruto X Boruto [PC] | ElAmigos Games").as_deref(),
+            Some("Naruto X Boruto [PC]")
+        );
+        assert_eq!(short_title("Release R").as_deref(), Some("Release R"));
+        assert_eq!(short_title(" | Site"), None);
+    }
 
     #[test]
     fn a_paste_lists_what_its_text_shows_on_any_host() {

@@ -169,9 +169,11 @@
       offered = links.size;
       const all = [...links];
       const shown = [...text];
+      const title = document.title.trim();
       send(
-        { links: all, shown },
-        "https://haul.invalid/links?" + new URLSearchParams({ links: JSON.stringify(all), shown: JSON.stringify(shown) }),
+        { links: all, shown, title },
+        "https://haul.invalid/links?" +
+          new URLSearchParams({ links: JSON.stringify(all), shown: JSON.stringify(shown), title }),
       );
     };
     const soon = () => {

@@ -953,14 +953,55 @@ pub fn wrapper_key(url: &str) -> String {
     key.unwrap_or_else(|| url.to_string())
 }
 
-/// The files behind a wrapper link, once its gate is passed.
+/// The files behind a wrapper link, once its gate is passed. A web page on
+/// a site Haul has no code for (a release's post, a paste) unwraps to the
+/// links it shows.
 pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
     match kind_of(url) {
         Some(Kind::Fileguard) => fileguard::unwrap(cx, url).await,
         Some(Kind::Filecrypt) => filecrypt::unwrap(cx, url).await,
         Some(Kind::Mirrored) => mirrored::unwrap(cx, url).await,
+        None => {
+            let (title, links) = generic::page(cx, url).await?;
+            Ok(listed(title, links))
+        }
         _ => Err(ResolveError::failed("not a wrapper link")),
     }
+}
+
+/// A page's links as what unwrapping it found: one entry each, resolved
+/// when its turn comes.
+pub fn listed(title: Option<String>, links: Vec<String>) -> Unwrapped {
+    Unwrapped {
+        title,
+        files: links
+            .into_iter()
+            .map(|url| Entry {
+                name: guess_name(&url),
+                url,
+                deferred: true,
+                ..Entry::default()
+            })
+            .collect(),
+    }
+}
+
+/// A page's title without the site's name after a separator ("Release |
+/// Site" is "Release").
+pub fn short_title(raw: &str) -> Option<String> {
+    generic::short_title(raw)
+}
+
+/// Whether `url` is a paste (zpaste.net, paste2.org…): a list of links,
+/// taken as a wrapper from the start.
+pub fn is_paste(url: &str) -> bool {
+    generic::is_paste(url)
+}
+
+/// Whether `url` stands for more links rather than a file: a wrapper's, or
+/// a paste.
+pub fn lists(url: &str) -> bool {
+    wraps(url) || is_paste(url)
 }
 
 /// Whether a resolver's request for a person is for a page behind a
@@ -975,14 +1016,15 @@ pub fn may_list_links(url: &str) -> bool {
     kind_of(url).is_none()
 }
 
-/// The links a web page holds to hosts Haul knows and to wrappers, as if
-/// the page's text were pasted (see [`generic::page_links`]).
-pub async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Vec<String>, ResolveError> {
-    generic::page_links(cx, url).await
+/// The links a web page holds to hosts Haul knows, to wrappers and to
+/// pastes, as if the page's text were pasted (see [`generic::page`]),
+/// with the page's own name for what it holds.
+pub async fn page(cx: &Cx<'_>, url: &str) -> Result<(Option<String>, Vec<String>), ResolveError> {
+    generic::page(cx, url).await
 }
 
 /// The links in `text` (addresses, one per line or in a page's markup) to
-/// hosts Haul knows and to wrappers, as [`page_links`] keeps them from the
+/// hosts Haul knows and to wrappers, as [`page`] keeps them from the
 /// page at `page`.
 pub fn listed_links(text: &str, page: &str) -> Vec<String> {
     url::Url::parse(page).map_or_else(|_| Vec::new(), |base| generic::links_in(text, &base, page))

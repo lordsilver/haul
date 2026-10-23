@@ -15,10 +15,11 @@ url: string, host: string,
  */
 title: string | null, package: string, 
 /**
- * `unwrapping`, `waiting` (to try again), `captcha` (a person has to
- * pass its gate), `paused`, `error` or `done` (unwrapped).
+ * `unwrapping`, `waiting` (to try again), `passing` (the desktop app
+ * passes its page's check by itself), `captcha` (a person has to pass
+ * its gate), `paused`, `error` or `done` (unwrapped).
  */
-status: "unwrapping" | "waiting" | "captcha" | "paused" | "error" | "done", error: string, 
+status: "unwrapping" | "waiting" | "passing" | "captcha" | "paused" | "error" | "done", error: string, 
 /**
  * Seconds until it is tried again.
  */
@@ -38,4 +39,8 @@ found: Found | null,
 /**
  * The hosts its links are on.
  */
-hosts: Array<string>, };
+hosts: Array<string>, 
+/**
+ * The wrapper it was found on (a paste a release's page links).
+ */
+source: string | null, };

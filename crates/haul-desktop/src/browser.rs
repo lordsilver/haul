@@ -143,8 +143,13 @@ impl Browser {
             // A page that lists links hands them over as they show; Haul
             // keeps those to hosts it knows, which ends the pass.
             let lists = hosts::may_list_links(&url);
-            let take =
-                |links: &[String], shown: &[String]| engine.page_listed(&id, links, shown) > 0;
+            // From this thread, outside the async runtime adding links (and
+            // starting their lookups) needs.
+            let take = |s: &chromium::Shown| {
+                tauri::async_runtime::block_on(async {
+                    engine.page_listed(&id, &s.links, &s.text, s.title.as_deref()) > 0
+                })
+            };
             let pass = chromium::Pass {
                 exe: &exe,
                 url: &url,
@@ -259,8 +264,8 @@ impl Browser {
                     on_handoff.gone(&reason);
                     false
                 }
-                None if let Some((links, shown)) = listed(url) => {
-                    on_handoff.listed(&links, &shown);
+                None if let Some(shown) = listed(url) => {
+                    on_handoff.listed(shown);
                     false
                 }
                 None if let Some(reason) = later(url) => {
@@ -434,19 +439,27 @@ fn gone(url: &Url) -> Option<String> {
     message(url, "/gone")
 }
 
-/// The addresses a page shows, and those written out in its text, when
-/// `url` is the hand-off script's message with them.
-fn listed(url: &Url) -> Option<(Vec<String>, Vec<String>)> {
+/// What a page that lists links shows, when `url` is the hand-off script's
+/// message with it.
+fn listed(url: &Url) -> Option<chromium::Shown> {
     if url.host_str() != Some("haul.invalid") || url.path() != "/links" {
         return None;
     }
-    let list = |key: &str| -> Vec<String> {
+    let pair = |key: &str| {
         url.query_pairs()
             .find(|(k, _)| k == key)
-            .and_then(|(_, v)| serde_json::from_str(&v).ok())
+            .map(|(_, v)| v.into_owned())
+    };
+    let list = |key: &str| -> Vec<String> {
+        pair(key)
+            .and_then(|v| serde_json::from_str(&v).ok())
             .unwrap_or_default()
     };
-    Some((list("links"), list("shown")))
+    Some(chromium::Shown {
+        links: list("links"),
+        text: list("shown"),
+        title: pair("title").filter(|t| !t.is_empty()),
+    })
 }
 
 /// The reason the hand-off script gives when the page could not hand out
@@ -562,13 +575,17 @@ impl Capture {
 
     /// The page shows links to hosts Haul knows, or wrappers: they stand in
     /// for the row, and the window closes. Other links leave it open.
-    fn listed(&self, links: &[String], shown: &[String]) {
+    fn listed(&self, shown: chromium::Shown) {
         let this = self.clone();
-        let (links, shown) = (links.to_vec(), shown.to_vec());
         // Adding links starts their lookups, which need the async runtime;
         // this runs on the window's own thread, which has none.
         tauri::async_runtime::spawn(async move {
-            if this.engine.page_listed(&this.id, &links, &shown) == 0 {
+            let s = shown;
+            if this
+                .engine
+                .page_listed(&this.id, &s.links, &s.text, s.title.as_deref())
+                == 0
+            {
                 return;
             }
             if let Some(window) = this.app.get_webview_window(&this.label) {
