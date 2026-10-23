@@ -909,6 +909,24 @@ async fn a_copy_of_an_archive_on_another_host_becomes_its_backup() {
     );
 }
 
+/// A paste Haul 0.15.2 saved as a download row comes back as the wrapper
+/// it is.
+#[tokio::test]
+async fn a_paste_saved_as_a_download_comes_back_a_wrapper() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("data")).unwrap();
+    std::fs::write(
+        t.root.join("data/queue.json"),
+        r#"{"p":{"mirrors":["https://zpaste.net/p/91f42"],"status":"queued"}}"#,
+    )
+    .unwrap();
+    let engine = t.engine().await;
+    let s = engine.snapshot();
+    assert!(s.items.is_empty(), "no download row: {:?}", s.items);
+    assert_eq!(s.wrappers.len(), 1);
+    assert_eq!(s.wrappers[0].url, "https://zpaste.net/p/91f42");
+}
+
 /// A MEGA download that failed in Haul 0.15.0 for want of megatools goes
 /// again, as Haul now downloads from MEGA itself.
 #[tokio::test]
