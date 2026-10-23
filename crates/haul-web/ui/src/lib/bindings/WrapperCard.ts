@@ -19,7 +19,7 @@ name: string, urls: Array<string>, host: string,
 /**
  * The hosts their links are on, over every wrapper of the card.
  */
-hosts: Array<string>, status: "unwrapping" | "waiting" | "captcha" | "paused" | "error" | "done", 
+hosts: Array<string>, status: "unwrapping" | "waiting" | "passing" | "captcha" | "paused" | "error" | "done", 
 /**
  * Its error without the wrapper's host.
  */

@@ -321,9 +321,12 @@ pub struct WrapperView {
     /// The page's own name for what it holds, once unwrapped.
     pub title: Option<String>,
     pub package: String,
-    /// `unwrapping`, `waiting` (to try again), `captcha` (a person has to
-    /// pass its gate), `paused`, `error` or `done` (unwrapped).
-    #[ts(type = "\"unwrapping\" | \"waiting\" | \"captcha\" | \"paused\" | \"error\" | \"done\"")]
+    /// `unwrapping`, `waiting` (to try again), `passing` (the desktop app
+    /// passes its page's check by itself), `captcha` (a person has to pass
+    /// its gate), `paused`, `error` or `done` (unwrapped).
+    #[ts(
+        type = "\"unwrapping\" | \"waiting\" | \"passing\" | \"captcha\" | \"paused\" | \"error\" | \"done\""
+    )]
     pub status: &'static str,
     pub error: String,
     /// Seconds until it is tried again.
@@ -336,6 +339,8 @@ pub struct WrapperView {
     pub found: Option<Found>,
     /// The hosts its links are on.
     pub hosts: Vec<String>,
+    /// The wrapper it was found on (a paste a release's page links).
+    pub source: Option<String>,
 }
 
 /// A host's daily allowance at full speed, over the addresses it was asked
@@ -1130,7 +1135,7 @@ impl Engine {
                     added.duplicates += 1;
                     continue;
                 }
-                if hosts::wraps(&link.url) {
+                if hosts::lists(&link.url) {
                     // One wrapper whichever of its links came: every link of a
                     // fileguard.cc vault shows the same page.
                     if !wrappers.insert(hosts::wrapper_key(&link.url)) {
@@ -1243,26 +1248,24 @@ impl Engine {
         // page's text had been pasted.
         let listed = match (&found, &url) {
             (None, Some(url)) if hosts::may_list_links(url) => {
-                tokio::time::timeout(Duration::from_secs(30), hosts::page_links(&cx, url))
+                tokio::time::timeout(Duration::from_secs(30), hosts::page(&cx, url))
                     .await
                     .ok()
                     .and_then(Result::ok)
-                    .filter(|links| !links.is_empty())
+                    .filter(|(_, links)| !links.is_empty())
             }
             _ => None,
         };
         // The slot is for asking hosts; comparing with a file on disk waits
         // for its own turn below, so other links keep being looked up.
         drop(permit);
-        if let (Some(links), Some(url)) = (listed, &url) {
+        // A page that lists links is a wrapper of them: its links join the
+        // queue under it, not started, as a wrapper's files do.
+        if let (Some((title, links)), Some(url)) = (listed, &url) {
             tracing::info!(item = %id, "{url} links {} files and wrappers", links.len());
-            let package = {
-                let mut st = self.lock();
-                let package = st.items.shift_remove(&id).map(|it| it.package);
-                self.touch(&mut st);
-                package.unwrap_or_default()
-            };
-            self.add_text(&links.join("\n"), &package);
+            for id in self.unwrapped(&id, url, hosts::listed(title, links)) {
+                self.spawn_probe(id);
+            }
             return;
         }
         let learned = found.is_some();
@@ -1876,7 +1879,7 @@ impl Engine {
                 };
                 // A wrapper holds files, not a file: they join the queue, not
                 // started, and the row keeps what it found.
-                if hosts::wraps(source) {
+                if hosts::lists(source) || self.lock().items.get(id).is_some_and(|i| i.wrapper) {
                     let found = or_cancel(cancel, hosts::unwrap(&cx, source)).await??;
                     for id in self.unwrapped(id, source, found) {
                         self.spawn_probe(id);
@@ -2007,7 +2010,7 @@ impl Engine {
             } else {
                 package.clone()
             };
-            let nested = hosts::wraps(&e.url);
+            let nested = hosts::lists(&e.url);
             seen.links += 1 + e.mirrors.len();
             for u in std::iter::once(&e.url).chain(&e.mirrors) {
                 let host = hosts::host_of(u);
@@ -2817,15 +2820,21 @@ impl Engine {
         self.0.wake.notify_one();
     }
 
-    /// A page a person opened for item `id` in the desktop app's browser
-    /// (past a check that kept Haul out) links files on hosts Haul knows, or
-    /// wrappers: they stand in for the row, as if the page's text had been
-    /// pasted. `links` is every address the page shows; the rest are left
-    /// out as for a page Haul reads itself. Returns how many it took; with
-    /// none the row stays as it is.
-    /// `shown` are the addresses written out in the page's text: on a paste
-    /// they are its list, so they count on any host.
-    pub fn page_listed(&self, id: &str, links: &[String], shown: &[String]) -> usize {
+    /// A page opened for item `id` in the desktop app's browser (out of
+    /// sight or by a person, past a check that kept Haul out) shows links to
+    /// hosts Haul knows, wrappers or pastes: the row becomes a wrapper of
+    /// them, named `title`, as a page Haul reads itself does. `links` is
+    /// every address the page shows, the rest left out as for such a page;
+    /// `shown` are those written out in its text, which on a paste are its
+    /// list and count on any host. Returns how many it took; with none the
+    /// row stays as it is.
+    pub fn page_listed(
+        &self,
+        id: &str,
+        links: &[String],
+        shown: &[String],
+        title: Option<&str>,
+    ) -> usize {
         let Some(page) = self.page_for(id) else {
             return 0;
         };
@@ -2838,15 +2847,13 @@ impl Engine {
         if known.is_empty() {
             return 0;
         }
-        tracing::info!(item = %id, "{page} links {} files and wrappers, in its window", known.len());
-        let package = {
-            let mut st = self.lock();
-            let package = st.items.shift_remove(id).map(|it| it.package);
-            self.touch(&mut st);
-            package.unwrap_or_default()
-        };
-        self.add_text(&known.join("\n"), &package);
-        known.len()
+        let count = known.len();
+        tracing::info!(item = %id, "{page} links {count} files and wrappers, in its window");
+        let title = title.and_then(hosts::short_title);
+        for id in self.unwrapped(id, &page, hosts::listed(title, known)) {
+            self.spawn_probe(id);
+        }
+        count
     }
 
     pub fn page_gone(&self, id: &str, reason: &str) {
@@ -3191,8 +3198,19 @@ impl Engine {
                 package: it.package.clone(),
                 status: match it.status {
                     Status::Queued | Status::Resolving | Status::Downloading => "unwrapping",
+                    // The desktop app passes its page by itself (a page or
+                    // paste behind Cloudflare's check): nothing for the
+                    // person yet.
+                    Status::Captcha
+                        if pages
+                            && !it.page_wants_person
+                            && it.manual_urls.iter().any(|u| st.passes(u)) =>
+                    {
+                        "passing"
+                    }
                     other => other.as_str(),
                 },
+                source: it.source.clone(),
                 error: it.error.clone(),
                 wait: wait(it),
                 retry_in: retry_in(it),

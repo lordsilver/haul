@@ -390,7 +390,9 @@ pub struct WrapperCard {
     pub host: String,
     /// The hosts their links are on, over every wrapper of the card.
     pub hosts: Vec<String>,
-    #[ts(type = "\"unwrapping\" | \"waiting\" | \"captcha\" | \"paused\" | \"error\" | \"done\"")]
+    #[ts(
+        type = "\"unwrapping\" | \"waiting\" | \"passing\" | \"captcha\" | \"paused\" | \"error\" | \"done\""
+    )]
     pub status: &'static str,
     /// Its error without the wrapper's host.
     pub error_shown: String,
@@ -403,12 +405,36 @@ pub struct WrapperCard {
     pub tally: Tally,
 }
 
+/// What needs attention first among a card's wrappers.
+const WRAPPER_URGENCY: [&str; 7] = [
+    "error",
+    "captcha",
+    "waiting",
+    "passing",
+    "unwrapping",
+    "paused",
+    "done",
+];
+
 pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec<WrapperCard> {
+    let by_id: HashMap<&str, &WrapperView> = wrappers.iter().map(|w| (w.id.as_str(), w)).collect();
+    // A wrapper found on another (a paste a release's page links) is on the
+    // card of the one it was found on, whatever state it is in.
+    fn root<'a>(by_id: &HashMap<&str, &'a WrapperView>, mut w: &'a WrapperView) -> &'a WrapperView {
+        for _ in 0..32 {
+            match w.source.as_deref().and_then(|s| by_id.get(s)) {
+                Some(up) => w = up,
+                None => break,
+            }
+        }
+        w
+    }
     let mut groups: Vec<(String, Vec<&WrapperView>)> = Vec::new();
     for w in wrappers {
-        let key = match (&w.title, w.status) {
-            (Some(title), "done") => format!("t\u{0}{}\u{0}{title}", w.package),
-            _ => format!("w\u{0}{}", w.id),
+        let top = root(&by_id, w);
+        let key = match (&top.title, top.status) {
+            (Some(title), "done") => format!("t\u{0}{}\u{0}{title}", top.package),
+            _ => format!("w\u{0}{}", top.id),
         };
         match groups.iter_mut().find(|(k, _)| *k == key) {
             Some((_, ws)) => ws.push(w),
@@ -419,6 +445,12 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
         .into_iter()
         .map(|(key, ws)| {
             let w = ws[0];
+            // The card shows what needs attention first among them.
+            let urgent = WRAPPER_URGENCY
+                .iter()
+                .find_map(|s| ws.iter().find(|x| x.status == *s))
+                .copied()
+                .unwrap_or(w);
             let files: Vec<&ItemView> = items
                 .iter()
                 .filter(|it| {
@@ -440,11 +472,11 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 urls: ws.iter().map(|x| x.url.clone()).collect(),
                 host: w.host.clone(),
                 hosts,
-                status: w.status,
-                error_shown: without_host(&w.error, &w.host),
-                wait: w.wait,
-                retry_in: w.retry_in,
-                open_urls: w.open_urls.clone(),
+                status: urgent.status,
+                error_shown: without_host(&urgent.error, &urgent.host),
+                wait: urgent.wait,
+                retry_in: urgent.retry_in,
+                open_urls: urgent.open_urls.clone(),
                 found: w.found,
                 files: files.len(),
                 tally: tally(files),
@@ -784,7 +816,27 @@ mod tests {
             open_urls: Vec::new(),
             found: None,
             hosts: vec![format!("{id}.example")],
+            source: None,
         }
+    }
+
+    #[test]
+    fn pastes_found_on_a_release_page_share_its_card() {
+        let page = wrapper("page", "done", Some("Release"));
+        let mut done = wrapper("paste1", "done", Some("Paste one"));
+        done.source = Some("page".into());
+        let mut passing = wrapper("paste2", "passing", None);
+        passing.source = Some("page".into());
+        let other = wrapper("other", "captcha", None);
+        let cards = wrapper_cards(&[page, done, passing, other], &[]);
+        assert_eq!(
+            cards.len(),
+            2,
+            "the release's page and its pastes on one card, the other on its own"
+        );
+        assert_eq!(cards[0].ids, ["page", "paste1", "paste2"]);
+        assert_eq!(cards[0].name, "Release");
+        assert_eq!(cards[0].status, "passing", "what still goes on shows");
     }
 
     #[test]

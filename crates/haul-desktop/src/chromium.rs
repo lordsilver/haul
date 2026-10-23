@@ -99,7 +99,16 @@ pub struct Pass<'a> {
 }
 
 /// Offered a page's addresses; true once it took some.
-pub type TakeLinks<'a> = &'a dyn Fn(&[String], &[String]) -> bool;
+pub type TakeLinks<'a> = &'a dyn Fn(&Shown) -> bool;
+
+/// What a page that lists links shows: every address on it, those written
+/// out in its text, and its title.
+#[derive(Debug, Default)]
+pub struct Shown {
+    pub links: Vec<String>,
+    pub text: Vec<String>,
+    pub title: Option<String>,
+}
 
 /// Passes the page; blocks until it hands something back, says its file is
 /// gone, or is closed. `on_show` runs when the window comes on screen.
@@ -268,7 +277,12 @@ fn drive(
             let links = strings("links");
             if links.len() != offered {
                 offered = links.len();
-                if take(&links, &strings("shown")) {
+                let shown = Shown {
+                    links,
+                    text: strings("shown"),
+                    title: sent["title"].as_str().map(str::to_string),
+                };
+                if take(&shown) {
                     return Ok(Outcome::Listed);
                 }
             }
