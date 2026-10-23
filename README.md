@@ -15,6 +15,7 @@ Early. Working today:
 - One global speed limit, parallel downloads and per-host slots, all changeable while downloads run.
 - Proxy (SOCKS5 or HTTP, with credentials) that a host leaves only when you allow it.
 - Settings editable in the app or in `config.toml`, each kept in step with the other.
+- Archives in parts (RAR, 7-Zip, zip, a zip split into `.z01` pieces, and pieces cut by a file splitter) recognised in the forms JDownloader knows, held back while a part is missing, and extracted once their last part is downloaded, or from their row, optionally moving the parts to the Recycle Bin afterwards.
 - Clipboard watching, per-host subfolders, and an optional move to the Recycle Bin when you remove a finished download.
 - A diagnostics report to save and send when something goes wrong, with account keys and passwords left out.
 - Hosts: pixeldrain, gofile, buzzheavier, vikingfile, 1fichier, rapidgator and nitroflare (premium accounts), mega.nz through `megatools`, and any direct link.

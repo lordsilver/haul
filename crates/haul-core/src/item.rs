@@ -50,6 +50,30 @@ impl Status {
     }
 }
 
+/// Where the archive a row is a part of stands with being unpacked; every
+/// part of it carries the same. Serialized as `""`, `"waiting"`,
+/// `"extracting"`, `"done"`, `"password"` and `"failed"`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Extract {
+    #[default]
+    #[serde(rename = "")]
+    No,
+    /// For its turn: one archive is unpacked at a time.
+    Waiting,
+    Extracting,
+    Done,
+    /// It is encrypted, and no password Haul has fits: one is wanted.
+    Password,
+    Failed,
+}
+
+impl Extract {
+    fn is_no(&self) -> bool {
+        *self == Extract::No
+    }
+}
+
 /// What unwrapping a wrapper found on its page.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Found {
@@ -123,6 +147,13 @@ pub(crate) struct Item {
     /// The hosts a wrapper's links are on, in its order: what tells apart
     /// wrappers of one release, one per host.
     pub found_hosts: Vec<String>,
+    /// Unpacking the archive this row is a part of.
+    pub extract: Extract,
+    /// Why unpacking it failed.
+    pub extract_error: String,
+    /// The password for its archive: the one the user gave, or the one that
+    /// opened it.
+    pub extract_password: Option<String>,
 }
 
 impl Item {
@@ -181,6 +212,9 @@ impl Item {
             title: None,
             found: None,
             found_hosts: Vec::new(),
+            extract: Extract::No,
+            extract_error: String::new(),
+            extract_password: None,
         }
     }
 
@@ -229,6 +263,9 @@ impl Item {
             title: self.title.clone(),
             found: self.found,
             found_hosts: self.found_hosts.clone(),
+            extract: self.extract,
+            extract_error: self.extract_error.clone(),
+            extract_password: self.extract_password.clone(),
         }
     }
 
@@ -272,6 +309,13 @@ impl Item {
         it.title = s.title;
         it.found = s.found;
         it.found_hosts = s.found_hosts;
+        // An archive Haul stopped in the middle of is unpacked again.
+        it.extract = match s.extract {
+            Extract::Extracting => Extract::Waiting,
+            other => other,
+        };
+        it.extract_error = s.extract_error;
+        it.extract_password = s.extract_password;
         it.status = match s.status {
             Status::Done | Status::Paused | Status::Error => s.status,
             _ => Status::Queued,
@@ -323,6 +367,12 @@ pub(crate) struct Saved {
     pub found: Option<Found>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub found_hosts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Extract::is_no")]
+    pub extract: Extract,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub extract_error: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract_password: Option<String>,
 }
 
 fn lenient_status<'de, D: Deserializer<'de>>(d: D) -> Result<Status, D::Error> {

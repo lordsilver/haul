@@ -9,10 +9,12 @@ pub mod bridge;
 pub mod config;
 pub mod container;
 pub mod engine;
+pub mod extract;
 pub mod hosts;
 mod item;
 mod limiter;
 pub mod logging;
+pub mod parts;
 pub mod paths;
 pub mod router;
 pub mod stay;
@@ -21,7 +23,7 @@ pub mod vpn;
 
 pub use config::{Config, Route, Theme};
 pub use engine::{
-    Added, Engine, Event, HostView, ItemAction, ItemView, Options, SettingsView, Snapshot,
+    Added, Command, Engine, Event, HostView, ItemAction, ItemView, Options, SettingsView, Snapshot,
     StartError, WrapperView,
 };
-pub use item::{Found, Verifying};
+pub use item::{Extract, Found, Verifying};

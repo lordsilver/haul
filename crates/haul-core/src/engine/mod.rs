@@ -30,8 +30,9 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     config::{self, Config, Route, Theme},
     container::{self, Link},
+    extract,
     hosts::{self, Cx, Entry, Http, ResolveError, Tokens},
-    item::{Found, Item, Status, Verifying},
+    item::{Extract, Found, Item, Status, Verifying},
     limiter::Limiter,
     paths, store,
 };
@@ -40,11 +41,14 @@ mod diagnostics;
 mod reconnect;
 mod services;
 mod settings;
+mod unpack;
+mod views;
 
 pub use reconnect::ReconnectView;
 pub use services::ServicesView;
 
 pub use settings::SettingsView;
+pub use views::{ArchiveView, Command, Counts, PoolSource, PoolSummary, Tally, WrapperCard};
 
 /// Automatic retries of a failed download, when `retry_failed_minutes` is on.
 const AUTO_RETRIES: u32 = 3;
@@ -104,6 +108,8 @@ pub enum ItemAction {
     /// Try the mirrors that wanted a person again.
     RetryManual,
     Remove,
+    /// Unpack the archive in parts the item is one of.
+    Extract,
 }
 
 impl FromStr for ItemAction {
@@ -116,6 +122,7 @@ impl FromStr for ItemAction {
             "retry" => Self::Retry,
             "retry_manual" => Self::RetryManual,
             "remove" => Self::Remove,
+            "extract" => Self::Extract,
             _ => return Err(()),
         })
     }
@@ -193,7 +200,12 @@ pub struct Added {
 #[derive(Debug, Serialize)]
 pub struct Snapshot {
     pub items: Vec<ItemView>,
+    /// The archives in parts among the items.
+    pub archives: Vec<ArchiveView>,
     pub wrappers: Vec<WrapperView>,
+    /// The wrappers as the Wrappers view shows them, one card per release.
+    pub wrapper_cards: Vec<WrapperCard>,
+    pub counts: Counts,
     pub hosts: Vec<HostView>,
     pub paused: bool,
     /// Bytes per second over every transfer.
@@ -204,6 +216,10 @@ pub struct Snapshot {
     pub proxy: bool,
     /// The addresses downloads go out through, for the status bar.
     pub pool: PoolView,
+    /// The pool in words, and each source of addresses.
+    pub pool_summary: PoolSummary,
+    /// The most downloads a host can be set to run at once.
+    pub slots_max: usize,
     pub theme: Theme,
     pub watch_clipboard: bool,
     /// Removing a finished download moves its file to the [`BIN`].
@@ -256,6 +272,33 @@ pub struct ItemView {
     pub source: Option<String>,
     /// Other wrappers that list it too.
     pub also_from: Vec<String>,
+    /// Unpacking the archive in parts it is one of.
+    pub extract: Extract,
+    /// Why unpacking it failed.
+    pub extract_error: String,
+    /// How far unpacking is, between 0 and 1, while it runs.
+    pub extract_progress: Option<f32>,
+    /// The list it is in beside All downloads: `active`, `attention`,
+    /// `failed`, `paused` or `done`.
+    pub list: &'static str,
+    /// Paused before any byte came: what a wrapper's files are until
+    /// started.
+    pub not_started: bool,
+    /// The host it downloads from, or before it starts the one it would
+    /// try first.
+    pub shown_host: String,
+    /// That host is a preferred one.
+    pub preferred_host: bool,
+    /// Other hosts that are on and could take over.
+    pub other_hosts: usize,
+    /// Its error without `shown_host`'s name in front.
+    pub error_shown: String,
+    /// What its buttons do.
+    pub commands: Vec<Command>,
+    /// The key of the archive in parts it is one of.
+    pub archive: Option<String>,
+    /// The name of the wrapper it came from.
+    pub source_name: Option<String>,
 }
 
 /// A wrapper link: a page or container of further links, which unwrapping
@@ -333,6 +376,16 @@ pub struct HostView {
     /// The most downloads it takes at once, learned when it refused one more
     /// than it was serving; `None` until it does.
     pub cap: Option<usize>,
+    /// `preferred`, `other` or `off`: the group the Hosts view shows it in.
+    pub group: &'static str,
+    /// The fastest host measured.
+    pub fastest: bool,
+    /// Downloads it runs at once: `limit`, or `cap` when lower.
+    pub slots: usize,
+    /// A limit is set or was learned, so its slot buttons show.
+    pub limited: bool,
+    /// It can trade places with another preferred host.
+    pub movable: bool,
 }
 
 /// Where a download leaves this machine from: 0 is its own connection, `n`
@@ -761,6 +814,10 @@ struct Inner {
     /// One comparison with a file on disk at a time: they read whole files,
     /// and several at once make a spinning disk seek between them.
     verifier: Semaphore,
+    /// One archive unpacked at a time.
+    extractor: Semaphore,
+    /// How far the archive being unpacked is.
+    unpacking: Mutex<Option<Arc<extract::Progress>>>,
     /// `State::paused`, for comparisons running outside the lock.
     paused_now: Arc<AtomicBool>,
     /// The desktop app passes hosts' pages out of sight ([`Engine::set_pages_pass`]).
@@ -865,6 +922,8 @@ impl Engine {
             events: broadcast::Sender::new(64),
             probes: Semaphore::new(4),
             verifier: Semaphore::new(1),
+            extractor: Semaphore::new(1),
+            unpacking: Mutex::new(None),
             paused_now: Arc::new(AtomicBool::new(paused)),
             pages_pass: AtomicBool::new(false),
             save_lock: Mutex::new(()),
@@ -894,6 +953,7 @@ impl Engine {
         tokio::spawn(engine.clone().watch_services());
         tokio::spawn(engine.clone().saver());
         tokio::spawn(engine.clone().watch_config());
+        engine.resume_extractions();
         Ok(engine)
     }
 
@@ -1223,6 +1283,9 @@ impl Engine {
             }
             _ => false,
         };
+        if adopted {
+            self.extract_when_complete(&mut st, &id);
+        }
         self.touch(&mut st);
         drop(st);
         if adopted {
@@ -1995,6 +2058,7 @@ impl Engine {
     fn finish(&self, id: &str, url: &str, host: &str, exit: Exit, result: Result<Outcome, Fail>) {
         let mut events = Vec::new();
         let mut removed = Vec::new();
+        let complete = matches!(result, Ok(Outcome::Done | Outcome::Existing(_)));
         {
             let mut st = self.lock();
             let now = Instant::now();
@@ -2130,6 +2194,9 @@ impl Engine {
                 }
                 // Removed or merged away while it ran.
                 None => removed.push(id.to_string()),
+            }
+            if complete {
+                self.extract_when_complete(&mut st, id);
             }
             self.touch(&mut st);
         }
@@ -2616,6 +2683,10 @@ impl Engine {
     /// Returns false when there is no such item. A finished download only
     /// goes away: there is nothing to pause, resume or retry.
     pub fn item_action(&self, id: &str, action: ItemAction) -> bool {
+        if action == ItemAction::Extract {
+            // Whether it could start is for [`Engine::extract`] to say.
+            return self.extract(id, None).unwrap_or(true);
+        }
         let mut st = self.lock();
         let Some(it) = st.items.get_mut(id) else {
             return false;
@@ -2649,6 +2720,7 @@ impl Engine {
                 it.manual_urls.clear();
                 it.page_wants_person = false;
             }
+            ItemAction::Extract => {}
             ItemAction::Remove => {
                 let running = it.running();
                 if let Some(t) = &it.task {
@@ -3072,6 +3144,14 @@ impl Engine {
                 on: cfg.use_proxy,
             }
         };
+        let pool_summary = views::pool(
+            &self.cfg(),
+            pool,
+            views::VpnFound {
+                servers: services.nordvpn.len(),
+                error: services.error.clone(),
+            },
+        );
         let st = self.lock();
         let now = Instant::now();
         let has_proxy = self.clients().exits.len() > 1;
@@ -3117,6 +3197,7 @@ impl Engine {
                 hosts: it.found_hosts.clone(),
             })
             .collect();
+        let unpacked = self.unpack_progress();
         let items: Vec<ItemView> = st
             .items
             .values()
@@ -3153,6 +3234,18 @@ impl Engine {
                 verifying: it.verifying,
                 source: it.source.clone(),
                 also_from: it.also_from.clone(),
+                extract: it.extract,
+                extract_error: it.extract_error.clone(),
+                extract_progress: unpacked.filter(|_| it.extract == Extract::Extracting),
+                list: "",
+                not_started: false,
+                shown_host: String::new(),
+                preferred_host: false,
+                other_hosts: 0,
+                error_shown: String::new(),
+                commands: Vec::new(),
+                archive: None,
+                source_name: None,
             })
             .collect();
         let route = |name: &str| {
@@ -3201,6 +3294,11 @@ impl Engine {
                         .filter(|f| *f != hosts::Free::default()),
                     account: hosts::known(name).is_some_and(|k| k.has_account(&cfg)),
                     exits: exits.len(),
+                    group: "",
+                    fastest: false,
+                    slots: 0,
+                    limited: false,
+                    movable: false,
                 }
             })
             .collect();
@@ -3252,6 +3350,11 @@ impl Engine {
                         .filter_map(|e| st.lanes.get(&(name.clone(), *e)).and_then(|l| l.quota)),
                 ),
                 name,
+                group: "",
+                fastest: false,
+                slots: 0,
+                limited: false,
+                movable: false,
             });
         }
         // In the order downloads pick them: preferred, then fastest, and the
@@ -3264,16 +3367,27 @@ impl Engine {
                 .then_with(|| b.speed.total_cmp(&a.speed))
                 .then_with(|| a.name.cmp(&b.name))
         });
+        let mut items = items;
+        views::hosts(&mut hosts);
+        views::items(&mut items, &hosts, &wrappers, cfg.recycle_on_remove);
+        let archives = views::archives(&mut items, &hosts, unpack::archives(&st.items));
+        let wrapper_cards = views::wrapper_cards(&wrappers, &items);
+        let counts = views::counts(&items, &wrappers, wrapper_cards.len(), st.paused);
         Snapshot {
             speed: items.iter().map(|i| i.speed).sum(),
             items,
+            archives,
             wrappers,
+            wrapper_cards,
+            counts,
             hosts,
             paused: st.paused,
             max_total: st.max_total,
             rate: self.0.limiter.rate(),
             proxy: has_proxy,
             pool,
+            pool_summary,
+            slots_max: config::FALLBACK_LIMIT,
             theme: cfg.theme,
             watch_clipboard: cfg.watch_clipboard,
             recycle_on_remove: cfg.recycle_on_remove,
