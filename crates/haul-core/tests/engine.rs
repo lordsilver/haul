@@ -2860,22 +2860,22 @@ async fn an_archive_in_parts_unpacks_when_its_last_part_is_done() {
         .map(|n| format!("{}/archive/R5.part{n}.rar", t.ip))
         .collect();
     engine.add_text(&links.join("\n"), "");
-    let s = wait_for(&engine, "extracted", |s| {
-        s.items.len() == 3 && s.items.iter().all(|i| i.extract == Extract::Done)
+    // Extracted, and then its parts moved to the bin, which their rows say
+    // by keeping no path.
+    let s = wait_for(&engine, "extracted and recycled", |s| {
+        s.items.len() == 3
+            && s.items
+                .iter()
+                .all(|i| i.extract == Extract::Done && i.path.is_none())
     })
     .await;
     assert_release(&t.root.join("dl/Release"));
-    // The parts went to the bin, and their rows say so by keeping no path.
     assert_eq!(files_in(&t.root.join("dl")), ["Release"]);
     assert_eq!(
         files_in(&t.root.join("bin")),
         ["R5.part1.rar", "R5.part2.rar", "R5.part3.rar"]
     );
-    assert!(
-        s.items
-            .iter()
-            .all(|i| i.path.is_none() && i.status == "done")
-    );
+    assert!(s.items.iter().all(|i| i.status == "done"));
     let notice = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Ok(Event::Notice { title, body }) = events.recv().await {
