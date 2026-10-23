@@ -21,7 +21,7 @@ use std::{
     time::Duration,
 };
 
-use haul_core::{Engine, Event, Options, Theme, hosts, paths};
+use haul_core::{Engine, Event, Options, Theme, paths};
 use haul_web::Desktop;
 use tauri::{
     AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
@@ -337,7 +337,7 @@ fn spawn_notifications(app: AppHandle, engine: &Engine) {
             // comes forward (which tells the user then).
             batch.retain(|e| {
                 !matches!(e, Event::NeedsUser { id, .. }
-                    if engine.page_for(id).is_some_and(|u| hosts::page_passes(&u)))
+                    if engine.page_for(id).is_some_and(|u| engine.page_passes(&u)))
             });
             let focused = app
                 .get_webview_window(MAIN)

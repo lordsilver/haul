@@ -39,6 +39,9 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         }
     };
     let status = r.status().as_u16();
+    if challenged(r.headers()) {
+        return Err(guarded(url));
+    }
     if matches!(status, 429 | 503) {
         let seconds = retry_after(r.headers(), 90);
         return Err(ResolveError::Wait {
@@ -71,6 +74,28 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         "{} answers with a web page: it wants a browser (captcha, timer or a click)",
         host_of(url)
     )))
+}
+
+/// Whether a site answered with Cloudflare's browser check instead of the
+/// page: a person's browser usually passes it by itself.
+fn challenged(headers: &reqwest::header::HeaderMap) -> bool {
+    headers
+        .get("cf-mitigated")
+        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"challenge"))
+}
+
+/// What a page behind a browser check needs: a browser, which the desktop
+/// app opens out of sight ([`is_guarded`]).
+fn guarded(url: &str) -> ResolveError {
+    ResolveError::NeedsUser(format!("{} {GUARD}", host_of(url)))
+}
+
+const GUARD: &str = "is behind a browser check (Cloudflare's)";
+
+/// Whether a resolver's request for a person is [`guarded`]'s: a page whose
+/// check a browser usually passes by itself.
+pub(super) fn is_guarded(message: &str) -> bool {
+    message.ends_with(GUARD)
 }
 
 const PEEK: usize = 64 * 1024;
@@ -151,6 +176,9 @@ static BARE: LazyLock<Regex> =
 pub(super) async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Vec<String>, ResolveError> {
     let mut r = cx.http.client.get(url).send().await?;
     let status = r.status().as_u16();
+    if challenged(r.headers()) {
+        return Err(guarded(url));
+    }
     if matches!(status, 429 | 503) {
         let seconds = retry_after(r.headers(), 90);
         return Err(ResolveError::Wait {
@@ -183,21 +211,69 @@ pub(super) async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Vec<String>, Re
     Ok(urls)
 }
 
-/// The links in `page` to known hosts and wrappers, absolute, each once.
+/// Sites that hold lists of links (pastes): a release's page often links
+/// one per host instead of the hosts' links, so they are read in turn, each
+/// as a page of links.
+const PASTES: &[&str] = &[
+    "zpaste.net",
+    "paste2.org",
+    "pastebin.com",
+    "rentry.co",
+    "rentry.org",
+    "justpaste.it",
+    "controlc.com",
+    "pastes.io",
+    "paste.ee",
+    "privatebin.net",
+];
+
+/// See [`super::pasted_links`].
+pub(super) fn pasted_links(shown: &[String], page: &str) -> Vec<String> {
+    let site = host_of(page);
+    if !PASTES.contains(&site.as_str()) {
+        return Vec::new();
+    }
+    let mut seen = std::collections::HashSet::new();
+    shown
+        .iter()
+        .filter_map(|s| url::Url::parse(s).ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https"))
+        .filter(|u| host_of(u.as_str()) != site && (u.path().len() > 1 || u.query().is_some()))
+        .map(|u| u.to_string())
+        .filter(|u| seen.insert(u.clone()))
+        .collect()
+}
+
+/// The links in `page` to known hosts, wrappers and pastes, absolute, each
+/// once.
 pub(super) fn links_in(page: &str, base: &url::Url, own: &str) -> Vec<String> {
     let found = HREF
         .captures_iter(page)
         .map(|c| c.get(1).expect("one group").as_str())
         .chain(BARE.find_iter(page).map(|m| m.as_str()));
+    let own_site = host_of(own);
     let mut seen = std::collections::HashSet::new();
     found
         .filter_map(|raw| base.join(&raw.replace("&amp;", "&")).ok())
         .filter(|u| matches!(u.scheme(), "http" | "https"))
-        .map(|u| u.to_string())
-        .filter(|u| u != own && (wraps(u) || known(&host_of(u)).is_some_and(|k| !k.wraps())))
         // A host's front page is not a file.
-        .filter(|u| url::Url::parse(u).is_ok_and(|p| p.path().len() > 1 || p.query().is_some()))
-        .filter(|u| seen.insert(u.clone()))
+        .filter(|u| u.path().len() > 1 || u.query().is_some())
+        .filter_map(|mut u| {
+            let host = host_of(u.as_str());
+            if PASTES.contains(&host.as_str()) {
+                // A paste site's own menu (its other pastes, its terms) is
+                // not what a page on it lists; a paste is the same paste
+                // whatever part of it a link points at.
+                if host == own_site {
+                    return None;
+                }
+                u.set_fragment(None);
+                return Some(u.to_string());
+            }
+            let u = u.to_string();
+            (wraps(&u) || known(&host).is_some_and(|k| !k.wraps())).then_some(u)
+        })
+        .filter(|u| u != own && seen.insert(u.clone()))
         .collect()
 }
 
@@ -206,12 +282,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_paste_lists_what_its_text_shows_on_any_host() {
+        let shown = [
+            "https://fuckingfast.net/dt50dvannvhf".to_string(),
+            "https://zpaste.net/p/other".to_string(),
+            "https://fuckingfast.net/".to_string(),
+        ];
+        assert_eq!(
+            pasted_links(&shown, "https://zpaste.net/p/91f42"),
+            ["https://fuckingfast.net/dt50dvannvhf"]
+        );
+        assert!(
+            pasted_links(&shown, "https://blog.example/post").is_empty(),
+            "only a paste's text is a list"
+        );
+    }
+
+    #[test]
+    fn a_paste_gives_its_links_not_its_sites_menu() {
+        let page = r#"<a href="/p/other#tm-mobile">Recent paste</a>
+            <a href="/pages/terms">Terms</a>
+            <pre>https://mega.nz/file/LrBUURwJ#yQvKtW0qGYmJGFoW_4g8NSiAS9IJ4ms2ROfv7FRpk54</pre>"#;
+        let base = url::Url::parse("https://zpaste.net/p/pae3o").unwrap();
+        assert_eq!(
+            links_in(page, &base, "https://zpaste.net/p/pae3o"),
+            ["https://mega.nz/file/LrBUURwJ#yQvKtW0qGYmJGFoW_4g8NSiAS9IJ4ms2ROfv7FRpk54"]
+        );
+    }
+
+    #[test]
     fn a_page_gives_its_links_to_known_hosts() {
         let page = r#"<a href="/about">About</a>
             <a href="https://casino.example/win">Ad</a>
             <a href="https://filecrypt.cc/Container/679EC150BC.html">Mirror 1</a>
             <a href='https://rapidgator.net/file/abc/R.part1.rar.html'>Part 1</a>
             <a href="https://rapidgator.net/">Rapidgator</a>
+            <a href="https://zpaste.net/p/pae3o">MEGA</a>
+            <a href="https://zpaste.net/p/pae3o#tm-mobile">MEGA, on a phone</a>
+            <a href="https://zpaste.net/">zpaste</a>
             <p>Also: https://pixeldrain.com/u/xyz and https://filecrypt.cc/Container/679EC150BC.html again</p>"#;
         let base = url::Url::parse("https://blog.example/post/1").unwrap();
         assert_eq!(
@@ -219,6 +327,7 @@ mod tests {
             [
                 "https://filecrypt.cc/Container/679EC150BC.html",
                 "https://rapidgator.net/file/abc/R.part1.rar.html",
+                "https://zpaste.net/p/pae3o",
                 "https://pixeldrain.com/u/xyz",
             ]
         );

@@ -131,7 +131,8 @@ pub struct Config {
     /// Gets a new address instead of asking the router: any command, run in
     /// the system's shell.
     pub reconnect_command: Option<String>,
-    /// `megatools` executable for mega.nz; looked up on `PATH` when unset.
+    /// No longer used: Haul downloads from mega.nz itself. Kept so a file
+    /// that still sets it loads.
     pub megatools: Option<PathBuf>,
     #[serde(skip)]
     pub endpoints: Endpoints,
@@ -642,9 +643,6 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # router_user = ""
 # router_password = ""
 # reconnect_command = "my-router-cli reconnect"
-
-# megatools for mega.nz links (default: found on PATH).
-# megatools = "C:/Tools/megatools/megatools.exe"
 
 # Hosts a file with mirrors downloads from first, in this order (default:
 # pixeldrain.com); the rest follow by measured speed. A file waits for a free

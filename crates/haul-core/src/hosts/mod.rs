@@ -58,9 +58,6 @@ pub struct Entry {
     pub size: Option<u64>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
-    /// Run this program with `--path <dir> <url>` instead of downloading.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub exec: Option<Vec<String>>,
     /// The file's checksum, when the host publishes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<Checksum>,
@@ -966,6 +963,12 @@ pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
     }
 }
 
+/// Whether a resolver's request for a person is for a page behind a
+/// browser check a browser usually passes by itself (Cloudflare's).
+pub fn is_guarded(message: &str) -> bool {
+    generic::is_guarded(message)
+}
+
 /// Whether `url` may be a web page that lists links: a host Haul has no
 /// code for.
 pub fn may_list_links(url: &str) -> bool {
@@ -983,6 +986,12 @@ pub async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Vec<String>, ResolveEr
 /// page at `page`.
 pub fn listed_links(text: &str, page: &str) -> Vec<String> {
     url::Url::parse(page).map_or_else(|_| Vec::new(), |base| generic::links_in(text, &base, page))
+}
+
+/// The addresses a paste at `page` writes out, on any host: its list. None
+/// when `page` is no paste, whose text may name anything.
+pub fn pasted_links(shown: &[String], page: &str) -> Vec<String> {
+    generic::pasted_links(shown, page)
 }
 
 /// Direct links for `url`. Folders and lists expand to several entries.

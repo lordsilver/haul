@@ -13,7 +13,7 @@ download_dir_fixed: boolean, max_total: number, rate_limit_mbps: number, max_act
 /**
  * Account keys by their name in the file; empty when unset.
  */
-accounts: { [key in string]: string }, megatools: string, 
+accounts: { [key in string]: string }, 
 /**
  * Keys an environment variable set, with its name; read-only here.
  */

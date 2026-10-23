@@ -60,7 +60,6 @@ pub struct SettingsView {
     pub default_user_agent: &'static str,
     /// Account keys by their name in the file; empty when unset.
     pub accounts: BTreeMap<&'static str, String>,
-    pub megatools: String,
     /// Keys an environment variable set, with its name; read-only here.
     pub from_env: BTreeMap<&'static str, &'static str>,
     pub config_file: Option<String>,
@@ -134,11 +133,6 @@ impl Engine {
                 .iter()
                 .map(|(key, _)| (*key, shown(cfg.account(key).expect("listed account"))))
                 .collect(),
-            megatools: cfg
-                .megatools
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
             from_env: cfg.from_env.clone(),
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
             error: self.config_error(),
@@ -421,11 +415,6 @@ impl Engine {
                     } else {
                         agent
                     };
-                }
-                "megatools" => {
-                    let exe = text(value, key)?;
-                    writes.push(top(key, (!exe.is_empty()).then(|| exe.as_str().into())));
-                    cfg.megatools = (!exe.is_empty()).then(|| PathBuf::from(exe));
                 }
                 "download_dir" => {
                     if self.0.download_dir_fixed {

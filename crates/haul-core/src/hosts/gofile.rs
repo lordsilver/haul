@@ -61,7 +61,6 @@ fn walk(node: &Value, token: &str, out: &mut Vec<Entry>) {
                 package: None,
                 size: child["size"].as_u64(),
                 headers: BTreeMap::from([("Cookie".into(), format!("accountToken={token}"))]),
-                exec: None,
                 checksum: child["md5"]
                     .as_str()
                     .and_then(|h| Checksum::from_hex(Algo::Md5, h)),
