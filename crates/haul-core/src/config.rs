@@ -343,8 +343,9 @@ impl Config {
 }
 
 /// The app's appearance; `System` follows the operating system.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum Theme {
     #[default]
     System,
@@ -363,8 +364,9 @@ impl Theme {
 }
 
 /// How a host is reached when a proxy is configured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum Route {
     Proxy,
     Direct,

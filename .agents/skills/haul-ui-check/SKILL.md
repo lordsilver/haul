@@ -17,7 +17,7 @@ for f in Season.1.Episode.01.mkv:300M ubuntu-26.04-desktop-amd64.iso:180M holida
          photos-backup.part1.rar:25M Season.1.Episode.02.mkv:400M; do truncate -s ${f#*:} $D/files/cdn/${f%%:*}; done
 printf '<title>Download project-files.7z</title>captcha' > $D/files/getfile.html
 (cd $D/files && python3 -m http.server 8799 --bind 127.0.0.1 >/dev/null 2>&1 &)
-cargo build -p haul-web && (HAUL_UI_DIR=$PWD/crates/haul-web/ui target/debug/haul --port 8766 --data-dir $D/data --dir $D/dl >$D/haul.log 2>&1 &)
+(cd crates/haul-web/ui && pnpm build) && cargo build -p haul-web && (HAUL_UI_DIR=$PWD/crates/haul-web/ui/dist target/debug/haul --port 8766 --data-dir $D/data --dir $D/dl >$D/haul.log 2>&1 &)
 B=http://127.0.0.1:8766 F=http://127.0.0.1:8799
 curl -s -H 'Content-Type: application/json' -d '{"max_total":4,"rate_limit_mbps":6}' $B/api/settings
 curl -s -H 'Content-Type: application/json' -d "{\"text\":\"$F/cdn/Season.1.Episode.01.mkv http://localhost:8799/cdn/Season.1.Episode.01.mkv $F/cdn/ubuntu-26.04-desktop-amd64.iso $F/cdn/holiday-photos.zip $F/getfile.html $F/cdn/missing-file.zip http://localhost:8799/cdn/photos-backup.part1.rar http://localhost:8799/cdn/Season.1.Episode.02.mkv\"}" $B/api/add
@@ -39,11 +39,11 @@ Check both themes for contrast and that nothing is clipped; the narrow shot must
 
 Also capture the empty list: a second server with its own empty data folder shows what a new user starts from, and it is easy to miss because every demo has downloads in it. Look at icons inside buttons in particular: a descendant rule such as `.empty .icon` reaches into any button placed there and blows its icon up to the size of the illustration.
 
-Drag states cannot be triggered in a headless screenshot. Copy `crates/haul-web/ui` to a scratch folder, append one line to the copy's `app.js` that forces the state, and point another server's `HAUL_UI_DIR` at the copy:
+Headless Chrome captures a dialog, menu or toast partway through its opening animation, so it looks see-through and slightly shrunk. To judge one, and to force states a headless screenshot cannot trigger (a drag over the window), copy the built UI to a scratch folder, change the copy, and point another server's `HAUL_UI_DIR` at it:
 
 ```sh
-cp -r crates/haul-web/ui $D/ui-drag
-echo '$("drop").hidden = false;' >> $D/ui-drag/app.js                # the window-wide drop zone
+cp -r crates/haul-web/ui/dist $D/ui-still
+echo '*,*::before,*::after{animation:none!important;transition:none!important}' >> $D/ui-still/assets/index.css
 ```
 
 When done, stop the server and the file server and delete `$D`: the downloads are real bytes, on a disk that has run full.

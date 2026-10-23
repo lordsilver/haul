@@ -6,76 +6,10 @@
     <meta name="color-scheme" content="light dark" />
     <title>Haul</title>
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/app.css" />
     <script src="/theme.js"></script>
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/src/main.tsx"></script>
   </head>
   <body>
-    <div class="app">
-      <nav class="pane" aria-label="Views">
-        <div id="nav" class="nav"></div>
-        <div class="nav-spacer"></div>
-        <div id="nav-footer" class="nav"></div>
-      </nav>
-
-      <main class="content">
-        <header class="page-head">
-          <h1 id="title">Downloads</h1>
-          <div id="commands" class="commands"></div>
-        </header>
-
-        <section id="view-downloads" class="view" aria-labelledby="title">
-          <div id="banner"></div>
-          <ul id="list" class="list"></ul>
-          <div id="empty" class="empty" hidden></div>
-        </section>
-
-        <section id="view-wrappers" class="view" aria-labelledby="title" hidden>
-          <p class="lead">A wrapper link, such as fileguard.cc's, filecrypt.cc's or mirrored.to's, holds a release's files, on one host or on many. Haul unwraps it as soon as you add it, and each file joins the list once: the same file from another host, on this wrapper or another one, becomes a mirror of it rather than a second download. The files wait for you to start them, here or in the list.</p>
-          <div id="wrappers" class="cards"></div>
-          <div id="no-wrappers" class="empty" hidden></div>
-        </section>
-
-        <section id="view-hosts" class="view" aria-labelledby="title" hidden>
-          <p class="lead">Choose which hosts Haul uses and in what order. A file on several hosts downloads from the first of your preferred hosts that has it (star a host to add it; drag it by its grip, or use its arrows, to reorder), otherwise from the fastest of the others. A host switched off is never used. The gauge limits how many files download from a host at once, and the folder keeps its files in a subfolder.</p>
-          <div id="hosts" class="cards"></div>
-          <div id="no-hosts" class="empty" hidden></div>
-        </section>
-
-        <section id="view-connections" class="view" aria-labelledby="title" hidden>
-          <p class="lead">What downloads go out through. Hosts limit what one address may fetch (downloads at once, daily allowances, waits), so every address Haul can use is another share: a new one from your router, proxies, or a VPN service's servers.</p>
-          <div id="connections" class="settings"></div>
-        </section>
-
-        <section id="view-settings" class="view" aria-labelledby="title" hidden>
-          <div id="settings" class="settings"></div>
-        </section>
-      </main>
-
-      <footer id="status" class="statusbar"></footer>
-    </div>
-
-    <dialog id="add-dialog" class="dialog" aria-labelledby="add-title">
-      <form method="dialog" id="add-form">
-        <div class="dialog-body">
-          <h2 id="add-title">Add links</h2>
-          <label class="field-label" for="add-text">Links, or any text with links in it</label>
-          <textarea id="add-text" rows="7" spellcheck="false" required placeholder="https://pixeldrain.com/u/…&#10;https://gofile.io/d/…"></textarea>
-          <label class="field-label" for="add-package">Package <span class="hint">optional subfolder</span></label>
-          <input id="add-package" type="text" autocomplete="off" />
-          <p class="hint">Tip: paste anywhere in Haul, or drop links and .dlc / .txt files on the window.</p>
-        </div>
-        <div class="dialog-foot">
-          <button type="button" class="button" id="add-import"></button>
-          <input id="add-file" type="file" accept=".dlc,.txt,.crawljob" multiple hidden />
-          <span class="grow"></span>
-          <button type="submit" class="button accent" id="add-submit" value="add">Add</button>
-          <button type="button" class="button" id="add-cancel">Cancel</button>
-        </div>
-      </form>
-    </dialog>
-
-    <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
-    <div id="drop" class="drop" hidden><div class="drop-card"></div></div>
+    <div id="app"></div>
   </body>
 </html>

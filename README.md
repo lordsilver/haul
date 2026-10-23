@@ -41,6 +41,8 @@ cd crates/haul-desktop && npx @tauri-apps/cli@2 build   # installers in target/r
 
 Headless: `haul --port 8765 --dir D:\Downloads`, then open <http://127.0.0.1:8765/>. `haul --help` lists the options.
 
+The web UI lives in `crates/haul-web/ui` (React, TypeScript, Tailwind and shadcn/ui, built with Vite). Git keeps the built page in `ui/dist`, so the commands above need no Node. To change it, with Node 26 and pnpm (`mise install` sets them up): `pnpm install`, then `pnpm dev` for a live page that talks to a Haul already running on port 8765, and `pnpm check && pnpm build` before committing the sources together with `dist`. `cargo test` regenerates the page's types from the Rust ones (`ui/src/lib/bindings`).
+
 ## Documentation
 
 - [Using Haul](docs/usage.md): adding links, **Needs you**, hosts, selecting and removing.

@@ -40,8 +40,9 @@ const URGENCY: [&str; 10] = [
 ];
 
 /// What a row's buttons do; a view gives each its label and icon.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
+#[ts(export)]
 pub enum Command {
     Pause,
     /// Resume a download that never started.
@@ -156,7 +157,8 @@ fn item_commands(it: &ItemView, recycle_on_remove: bool) -> Vec<Command> {
 }
 
 /// How a set of downloads stands, counted by state.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Tally {
     pub done: usize,
     pub downloading: usize,
@@ -188,7 +190,8 @@ fn tally<'a>(items: impl IntoIterator<Item = &'a ItemView>) -> Tally {
 }
 
 /// An archive in parts, as one row over its parts.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct ArchiveView {
     pub key: String,
     pub name: String,
@@ -197,6 +200,9 @@ pub struct ArchiveView {
     /// Parts its names show are missing.
     pub missing: Vec<String>,
     /// The state that needs attention first among the parts.
+    #[ts(
+        type = "\"queued\" | \"resolving\" | \"checking\" | \"downloading\" | \"waiting\" | \"passing\" | \"paused\" | \"captcha\" | \"done\" | \"error\""
+    )]
     pub status: &'static str,
     /// Every part done.
     pub complete: bool,
@@ -352,7 +358,8 @@ fn wrapper_name(w: &WrapperView) -> String {
 /// The wrappers one card stands for: those of one release (the same name,
 /// unwrapped, often one per host) share it; one still working, waiting for
 /// a person or failed keeps a card of its own.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct WrapperCard {
     pub key: String,
     /// Its wrappers' ids, the first one's state being the card's.
@@ -363,6 +370,7 @@ pub struct WrapperCard {
     pub host: String,
     /// The hosts their links are on, over every wrapper of the card.
     pub hosts: Vec<String>,
+    #[ts(type = "\"unwrapping\" | \"waiting\" | \"captcha\" | \"paused\" | \"error\" | \"done\"")]
     pub status: &'static str,
     /// Its error without the wrapper's host.
     pub error_shown: String,
@@ -426,7 +434,8 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
 }
 
 /// The counts the navigation pane and the status bar show.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Counts {
     pub all: usize,
     pub active: usize,
@@ -439,9 +448,13 @@ pub struct Counts {
     pub waiting: usize,
     /// Paused, and the pause holds something back that would run.
     pub held: bool,
+    /// Bytes still to download in the Active list, over the files whose
+    /// size is known: with the speed, when everything is done.
+    pub left: u64,
     /// Wrapper cards, and whether one failed (`critical`) or waits for a
     /// person (`attention`).
     pub wrappers: usize,
+    #[ts(type = "\"\" | \"attention\" | \"critical\"")]
     pub wrappers_alert: &'static str,
 }
 
@@ -463,6 +476,11 @@ pub(super) fn counts(
         downloading: t.downloading,
         waiting: t.waiting,
         held: paused && items.iter().any(|i| i.list == "active"),
+        left: items
+            .iter()
+            .filter(|i| i.list == "active")
+            .map(|i| i.size.saturating_sub(i.done))
+            .sum(),
         wrappers: cards,
         wrappers_alert: if wrappers.iter().any(|w| w.status == "error") {
             "critical"
@@ -503,7 +521,8 @@ pub(super) fn hosts(hosts: &mut [HostView]) {
 }
 
 /// One source of addresses and where it stands.
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, PartialEq, ts_rs::TS)]
+#[ts(export)]
 pub struct PoolSource {
     pub name: &'static str,
     pub status: String,
@@ -517,7 +536,8 @@ pub struct PoolSource {
 }
 
 /// What downloads go out through, in words, and each source of addresses.
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, PartialEq, ts_rs::TS)]
+#[ts(export)]
 pub struct PoolSummary {
     /// "Line + 2 proxies + 5 NordVPN", or "Line only".
     pub label: String,
@@ -934,6 +954,10 @@ mod tests {
         assert_eq!((c.all, c.active, c.paused, c.done), (3, 1, 1, 1));
         assert_eq!((c.wrappers, c.wrappers_alert), (3, "critical"));
         assert!(!c.held);
+        assert_eq!(
+            c.left, 100,
+            "the queued file; paused and done ones wait for nothing"
+        );
         assert!(
             counts(&items, &wrappers, 3, true).held,
             "a pause that holds one back"

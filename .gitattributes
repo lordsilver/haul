@@ -1,0 +1,4 @@
+# Built and generated: review their sources instead.
+crates/haul-web/ui/dist/** linguist-generated=true
+crates/haul-web/ui/src/lib/bindings/** linguist-generated=true
+crates/haul-web/ui/pnpm-lock.yaml linguist-generated=true

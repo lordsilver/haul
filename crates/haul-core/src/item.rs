@@ -24,8 +24,9 @@ pub enum Status {
 /// Where a row stands with comparing a file already on disk to the
 /// checksum its host published. Serialized as `""`, `"waiting"` and
 /// `"comparing"`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum Verifying {
     #[default]
     #[serde(rename = "")]
@@ -53,8 +54,9 @@ impl Status {
 /// Where the archive a row is a part of stands with being unpacked; every
 /// part of it carries the same. Serialized as `""`, `"waiting"`,
 /// `"extracting"`, `"done"`, `"password"` and `"failed"`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum Extract {
     #[default]
     #[serde(rename = "")]
@@ -75,7 +77,8 @@ impl Extract {
 }
 
 /// What unwrapping a wrapper found on its page.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Found {
     /// Files: the rows it added, or merged into rows already there.
     pub files: usize,

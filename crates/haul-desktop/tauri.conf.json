@@ -4,7 +4,7 @@
   "mainBinaryName": "Haul",
   "identifier": "io.github.garysassano.haul",
   "build": {
-    "frontendDist": "../haul-web/ui"
+    "frontendDist": "../haul-web/ui/dist"
   },
   "app": {
     "windows": [],

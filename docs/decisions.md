@@ -14,16 +14,21 @@ On Windows, Tauri renders with WebView2, which is the same Chromium engine Elect
 
 ## One UI, served by the engine
 
-The web UI is plain files served by the engine's local HTTP server, and the desktop window simply loads that page. The same UI then works headless in any browser (or from another machine's browser through an SSH tunnel), the browser-facing API is the one the UI uses, and the desktop shell stays a few hundred lines. The shell adds only what a page cannot do itself: the tray, notifications, single-instance handling, file associations and the in-app browser, the latter reached through one API route.
+The web UI is a page served by the engine's local HTTP server, and the desktop window simply loads that page. The same UI then works headless in any browser (or from another machine's browser through an SSH tunnel), the browser-facing API is the one the UI uses, and the desktop shell stays a few hundred lines. The shell adds only what a page cannot do itself: the tray, notifications, single-instance handling, file associations and the in-app browser, the latter reached through one API route.
 
-The page is vanilla JavaScript modules with no build step, so `cargo build` produces everything. Rows and cards are updated in place rather than re-rendered, so state pushed every second never wipes what the user is typing.
+The page is React and TypeScript, built by Vite into `crates/haul-web/ui/dist`, which haul-web embeds. Git keeps the built files, so `cargo build` and `cargo install` still need no Node; CI rebuilds them and fails when they no longer match their sources. The page's types for the state and settings are generated from the Rust ones with ts-rs, so a change in the engine's state breaks the UI's build instead of the running page. The page only lays out what the engine derived.
 
-## Windows 11 look
+## shadcn look
 
-The UI follows Fluent design as Windows 11 apps do: navigation pane, command bar, cards in the style of the Settings app, InfoBars, WinUI 3's light and dark theme colors, Fluent System Icons (MIT), Segoe UI Variable. The theme follows Windows unless the user picks one; the choice is saved in `config.toml`, so the window frame can match it from the first paint.
+The UI uses shadcn/ui components, copied into `ui/src/components/ui` and styled with Tailwind: neutral colors, Geist, Lucide icons. The window has a sidebar with the lists, the download folder and the pages; a header with the title on the left and the commands on the right; a status bar. It replaced a Windows 11 Fluent look because its user prefers this one, and the same page serves headless users in any browser.
 
-Each thing that needs attention is shown once. A download that needs you is flagged by its own row, and its count rides on **Needs you** in the navigation pane (the desktop app also sends a notification); the InfoBars above the list are kept for state that affects every list: paused downloads (only while the pause holds a download back; with nothing waiting, the status bar alone says Paused), a settings file with an error, a lost connection. An InfoBar inside a row leaves its icon out, as WinUI's `IsIconVisible` allows, because the row's icon already says it.
+Color says what a download's state is, and only that: blue runs, green is done, amber wants the user, red failed, grey is paused or waiting. The sidebar's counts sit in pills of those colors (Active only while something downloads), so the lists that need the user stand out; Wrappers, a source rather than a state, turns amber or red only when one of its wrappers waits for the user or failed.
 
+A download that needs the user is a row of its own, tinted amber, with what the host wants at the end of its host line and one button where its bar would be: **Open here** in the desktop app, the page itself in a browser. The other ways (the page in the system's browser, pasting a link, trying again) are in that button's menu, so ten such downloads are ten rows, not ten boxes. The list never scrolls sideways: a row's columns wrap instead.
+
+Each thing that needs attention is shown once. A download that needs you is flagged by its own row, and its count rides on **Needs you** in the sidebar (the desktop app also sends a notification); the bars above the list are kept for state that affects every list: paused downloads (only while the pause holds a download back; with nothing waiting, the status bar alone says Paused), a settings file with an error, a lost connection. The status bar has the speed, the counts and what is left with when it should be done, so the header carries no summary of its own.
+
+The theme follows the system unless the user picks one; the choice is saved in `config.toml`, so the window frame can match it from the first paint.
 ## Local API
 
 Loopback-only servers are still reachable from any page the user visits, so the API guards itself with `Host` and `Origin` checks and a framing ban ([HTTP API](api.md) has the details). There are no tokens to manage, and scripts without an `Origin` keep working.

@@ -40,7 +40,8 @@ pub(super) struct Services {
 }
 
 /// What the Connections view shows about VPN services.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, ts_rs::TS)]
+#[ts(export)]
 pub struct ServicesView {
     /// NordVPN's servers in use.
     pub nordvpn: Vec<Server>,
