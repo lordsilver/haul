@@ -41,7 +41,8 @@ pub(super) struct Reconnects {
 }
 
 /// What the settings view shows about getting a new address.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, ts_rs::TS)]
+#[ts(export)]
 pub struct ReconnectView {
     /// The router found, as it names itself.
     pub router: Option<String>,

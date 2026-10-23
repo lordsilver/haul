@@ -49,7 +49,9 @@ struct App {
     port: u16,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+#[ts(rename = "State")]
 struct View {
     #[serde(flatten)]
     snapshot: Snapshot,
@@ -77,37 +79,7 @@ pub async fn serve(
     axum::serve(listener, router(engine, desktop, port)).await
 }
 
-/// The UI, built into the binary: path, file in `ui/`, content type, body.
-const ASSETS: [(&str, &str, &str, &str); 7] = [
-    (
-        "/",
-        "index.html",
-        "text/html; charset=utf-8",
-        include_str!("../ui/index.html"),
-    ),
-    (
-        "/app.css",
-        "app.css",
-        "text/css; charset=utf-8",
-        include_str!("../ui/app.css"),
-    ),
-    ("/app.js", "app.js", JS, include_str!("../ui/app.js")),
-    ("/icons.js", "icons.js", JS, include_str!("../ui/icons.js")),
-    ("/theme.js", "theme.js", JS, include_str!("../ui/theme.js")),
-    (
-        "/icon.svg",
-        "icon.svg",
-        "image/svg+xml",
-        include_str!("../ui/icon.svg"),
-    ),
-    (
-        "/favicon.ico",
-        "icon.svg",
-        "image/svg+xml",
-        include_str!("../ui/icon.svg"),
-    ),
-];
-const JS: &str = "text/javascript; charset=utf-8";
+include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
 pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> Router {
     let app = App {
@@ -116,8 +88,11 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         port,
     };
     let mut router = Router::new();
-    for (path, file, content_type, body) in ASSETS {
+    for &(path, file, content_type, body) in ASSETS {
         router = router.route(path, get(move || page(file, content_type, body)));
+        if path == "/icon.svg" {
+            router = router.route("/favicon.ico", get(move || page(file, content_type, body)));
+        }
     }
     router
         .route("/api/state", get(state))
@@ -216,19 +191,20 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     next.run(req).await
 }
 
-/// Debug builds read the UI from `HAUL_UI_DIR` when it is set, so a change to
-/// the page shows on the next reload without a rebuild.
-fn ui_from_disk(file: &str) -> Option<String> {
+/// Debug builds read the UI from `HAUL_UI_DIR` when it is set (a `dist`
+/// folder `pnpm build` wrote), so a new build shows on the next reload
+/// without rebuilding Haul.
+fn ui_from_disk(file: &str) -> Option<Vec<u8>> {
     if !cfg!(debug_assertions) {
         return None;
     }
     let dir = std::env::var_os("HAUL_UI_DIR")?;
-    std::fs::read_to_string(std::path::Path::new(&dir).join(file)).ok()
+    std::fs::read(std::path::Path::new(&dir).join(file)).ok()
 }
 
-async fn page(file: &'static str, content_type: &'static str, body: &'static str) -> Response {
+async fn page(file: &'static str, content_type: &'static str, body: &'static [u8]) -> Response {
     let mut resp = match ui_from_disk(file) {
-        Some(text) => text.into_response(),
+        Some(bytes) => bytes.into_response(),
         None => body.into_response(),
     };
     let h = resp.headers_mut();
@@ -238,10 +214,11 @@ async fn page(file: &'static str, content_type: &'static str, body: &'static str
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    // No framing: a page that framed the UI could trick clicks on it.
+    // No framing: a page that framed the UI could trick clicks on it. Styles
+    // may be inline: the toasts and dialogs add theirs from script.
     h.insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"),
+        HeaderValue::from_static("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"),
     );
     resp
 }

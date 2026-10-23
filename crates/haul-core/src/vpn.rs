@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::{Config, secret};
 
 /// One server of a service, as the views show it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Server {
     pub host: String,
     pub country: String,

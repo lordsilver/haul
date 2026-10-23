@@ -23,7 +23,8 @@ use crate::{
 
 /// Every setting, for the settings view. Unlike the state stream this
 /// carries the account secrets, so it is only sent when asked for.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct SettingsView {
     pub download_dir: String,
     /// Given on the command line, so it cannot change here.

@@ -333,7 +333,8 @@ enum Kind {
 
 /// What a free user gets from a host, where it is known; an account the
 /// user sets may lift it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Free {
     /// Downloads at once from one address.
     pub at_once: Option<usize>,

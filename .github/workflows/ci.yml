@@ -59,14 +59,35 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: runner.os == 'Linux'
         with:
-          node-version: 24
+          node-version: 26
       - name: Format
         if: runner.os == 'Linux'
         run: cargo fmt --all --check
-      - name: Check the UI scripts
+      # The built UI is committed (haul-web embeds it, and a Rust-only build
+      # needs no Node), so it has to match its sources.
+      - name: Check and build the UI
         if: runner.os == 'Linux'
-        run: for f in crates/haul-web/ui/*.js; do node --check "$f"; done
+        working-directory: crates/haul-web/ui
+        run: |
+          npm install --global pnpm@12.15.0
+          pnpm install --frozen-lockfile
+          pnpm check
+          pnpm build
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            git status --short -- dist
+            echo "::error::ui/dist is out of date: run pnpm build in crates/haul-web/ui and commit it"
+            exit 1
+          fi
       - name: Clippy
         run: mbx clippy --locked --workspace --all-targets
       - name: Test
         run: mbx test --locked --workspace
+      # `cargo test` writes the UI's TypeScript types from the Rust ones (ts-rs).
+      - name: Check the UI's types
+        if: runner.os == 'Linux'
+        run: |
+          if [ -n "$(git status --porcelain -- crates/haul-web/ui/src/lib/bindings)" ]; then
+            git status --short -- crates/haul-web/ui/src/lib/bindings
+            echo "::error::the UI's bindings are out of date: run cargo test and commit them"
+            exit 1
+          fi

@@ -172,7 +172,8 @@ pub enum Event {
 /// The addresses in use: this machine's line, proxies of the settings and
 /// a VPN's servers. One pool; the status bar switches the proxies and the
 /// VPN off together, each source also has a switch of its own.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct PoolView {
     /// Downloads may leave through this machine's own line.
     pub line: bool,
@@ -183,7 +184,8 @@ pub struct PoolView {
 }
 
 /// What adding links did.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Added {
     /// New rows.
     pub added: usize,
@@ -197,7 +199,8 @@ pub struct Added {
     pub wrappers: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Snapshot {
     pub items: Vec<ItemView>,
     /// The archives in parts among the items.
@@ -242,11 +245,15 @@ pub struct Snapshot {
     pub services: ServicesView,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct ItemView {
     pub id: String,
     pub name: String,
     pub package: String,
+    #[ts(
+        type = "\"queued\" | \"resolving\" | \"checking\" | \"downloading\" | \"waiting\" | \"passing\" | \"paused\" | \"captcha\" | \"done\" | \"error\""
+    )]
     pub status: &'static str,
     pub error: String,
     pub size: u64,
@@ -280,6 +287,7 @@ pub struct ItemView {
     pub extract_progress: Option<f32>,
     /// The list it is in beside All downloads: `active`, `attention`,
     /// `failed`, `paused` or `done`.
+    #[ts(type = "\"active\" | \"attention\" | \"failed\" | \"paused\" | \"done\"")]
     pub list: &'static str,
     /// Paused before any byte came: what a wrapper's files are until
     /// started.
@@ -303,7 +311,8 @@ pub struct ItemView {
 
 /// A wrapper link: a page or container of further links, which unwrapping
 /// turns into files that wait for the user to start them.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct WrapperView {
     pub id: String,
     /// The link as added.
@@ -314,6 +323,7 @@ pub struct WrapperView {
     pub package: String,
     /// `unwrapping`, `waiting` (to try again), `captcha` (a person has to
     /// pass its gate), `paused`, `error` or `done` (unwrapped).
+    #[ts(type = "\"unwrapping\" | \"waiting\" | \"captcha\" | \"paused\" | \"error\" | \"done\"")]
     pub status: &'static str,
     pub error: String,
     /// Seconds until it is tried again.
@@ -330,7 +340,8 @@ pub struct WrapperView {
 
 /// A host's daily allowance at full speed, over the addresses it was asked
 /// from.
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, ts_rs::TS)]
+#[ts(export)]
 pub struct QuotaView {
     /// Bytes per address per day at full speed.
     pub limit: u64,
@@ -343,7 +354,8 @@ pub struct QuotaView {
     pub known: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct HostView {
     pub name: String,
     pub limit: usize,
@@ -377,6 +389,7 @@ pub struct HostView {
     /// than it was serving; `None` until it does.
     pub cap: Option<usize>,
     /// `preferred`, `other` or `off`: the group the Hosts view shows it in.
+    #[ts(type = "\"preferred\" | \"other\" | \"off\"")]
     pub group: &'static str,
     /// The fastest host measured.
     pub fastest: bool,

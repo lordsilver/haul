@@ -79,7 +79,13 @@ async fn serves_the_ui_with_a_strict_policy() {
         .to_string();
     assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
     assert!(page.text().await.unwrap().contains("<title>Haul</title>"));
-    for asset in ["/app.js", "/app.css", "/icons.js", "/theme.js", "/icon.svg"] {
+    for asset in [
+        "/assets/app.js",
+        "/assets/index.css",
+        "/theme.js",
+        "/icon.svg",
+        "/favicon.ico",
+    ] {
         let r = s
             .http
             .get(format!("{}{asset}", s.base))

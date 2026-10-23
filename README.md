@@ -4,6 +4,11 @@ A download manager for file hosts. Paste links, or drop a `.dlc` or `.txt` file,
 
 It comes as a Windows desktop app (a Tauri 2 shell around the engine) and as `haul`, a headless server with the same web UI for any browser.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/haul-dark.png">
+  <img alt="Haul's download list: three downloads running, one waiting for a captcha page under Needs you, one failed, one completed and one paused" src="docs/images/haul-light.png">
+</picture>
+
 ## Status
 
 Early. Working today:
@@ -40,6 +45,8 @@ cd crates/haul-desktop && npx @tauri-apps/cli@2 build   # installers in target/r
 ```
 
 Headless: `haul --port 8765 --dir D:\Downloads`, then open <http://127.0.0.1:8765/>. `haul --help` lists the options.
+
+The web UI lives in `crates/haul-web/ui` (React, TypeScript, Tailwind and shadcn/ui, built with Vite). Git keeps the built page in `ui/dist`, so the commands above need no Node. To change it, with Node 26 and pnpm (`mise install` sets them up): `pnpm install`, then `pnpm dev` for a live page that talks to a Haul already running on port 8765, and `pnpm check && pnpm build` before committing the sources together with `dist`. `cargo test` regenerates the page's types from the Rust ones (`ui/src/lib/bindings`).
 
 ## Documentation
 
