@@ -361,6 +361,19 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/id/{key}",
+            // A host whose links are ids: the name (`A_part1_rar` for
+            // A.part1.rar) comes only in the answer.
+            get(|State(s): State<Server>, UrlPath(key): UrlPath<String>, headers: HeaderMap| async move {
+                log(&s, &format!("/id/{key}"), &headers);
+                let name = key.replace('_', ".");
+                let mut resp = file_response(content(&name, SIZE), &headers);
+                resp.headers_mut()
+                    .insert(header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"").parse().unwrap());
+                resp
+            }),
+        )
+        .route(
             "/hidden/{key}",
             get(|State(s): State<Server>, UrlPath(key): UrlPath<String>, headers: HeaderMap| async move {
                 log(&s, &format!("/hidden/{key}"), &headers);
@@ -842,6 +855,58 @@ async fn a_saved_row_without_links_is_dropped() {
     let engine = t.engine().await;
     let ids: Vec<String> = engine.snapshot().items.into_iter().map(|i| i.id).collect();
     assert_eq!(ids, ["kept"]);
+}
+
+/// A release uploaded to two hosts under other names (each host's parts
+/// named after an id of its own) downloads once: the second copy's parts,
+/// as many and each the same size to the byte, become more links of the
+/// first copy's. A set that differs stays as it is.
+#[tokio::test]
+async fn a_copy_of_an_archive_on_another_host_becomes_its_backup() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    let links: Vec<String> = [
+        "A.part1.rar",
+        "A.part2.rar",
+        "B.part1.rar",
+        "B.part2.rar",
+        "C.part1.rar",
+        "C.part2.rar",
+        "C.part3.rar",
+    ]
+    .iter()
+    .map(|n| format!("{}/id/{}", t.ip, n.replace('.', "_")))
+    .collect();
+    engine.add_text(&links.join("\n"), "Release");
+    let s = wait_for(
+        &engine,
+        "the copy folded into the first, every row named",
+        |s| s.items.len() == 5 && s.items.iter().all(|i| i.name.ends_with(".rar")),
+    )
+    .await;
+    let mut rows: Vec<(String, usize)> = s
+        .items
+        .iter()
+        .map(|i| (i.name.clone(), engine.debug_links(&i.id).len()))
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            ("A.part1.rar".to_string(), 2),
+            ("A.part2.rar".to_string(), 2),
+            ("C.part1.rar".to_string(), 1),
+            ("C.part2.rar".to_string(), 1),
+            ("C.part3.rar".to_string(), 1),
+        ],
+        "B's parts stand by A's; C, a set of its own, stays"
+    );
+    let a1 = s.items.iter().find(|i| i.name == "A.part1.rar").unwrap();
+    assert_eq!(
+        engine.debug_links(&a1.id),
+        [links[0].clone(), links[2].clone()]
+    );
 }
 
 /// A MEGA download that failed in Haul 0.15.0 for want of megatools goes

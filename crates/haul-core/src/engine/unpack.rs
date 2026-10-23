@@ -63,7 +63,89 @@ pub(super) fn archives(items: &IndexMap<String, Item>) -> Vec<ArchiveSet> {
         .collect()
 }
 
+/// The release a row came from, when it says: its package, or the name of
+/// the wrapper it was unwrapped from.
+fn release(items: &IndexMap<String, Item>, it: &Item) -> Option<String> {
+    (!it.package.is_empty())
+        .then(|| it.package.clone())
+        .or_else(|| items.get(it.source.as_ref()?)?.title.clone())
+}
+
+/// Pairs of archives that are the same files on other hosts, uploaded under
+/// other names: as many parts, none missing, every part the same size as its
+/// counterpart to the byte, and not from two releases that say otherwise.
+/// The first of a pair is the one higher in the queue, which keeps its rows.
+/// A copy that has started downloading is left as it is.
+fn copies(items: &IndexMap<String, Item>) -> Vec<(Vec<String>, Vec<String>)> {
+    let sets = archives(items);
+    let sizes = |set: &ArchiveSet| -> Option<Vec<u64>> {
+        set.ids
+            .iter()
+            .map(|id| items.get(id).map(|it| it.size).filter(|s| *s > 0))
+            .collect()
+    };
+    let untouched = |set: &ArchiveSet| {
+        set.ids.iter().all(|id| {
+            items
+                .get(id)
+                .is_some_and(|it| it.done == 0 && !it.running() && it.status != Status::Done)
+        })
+    };
+    let mut pairs = Vec::new();
+    let mut taken = std::collections::HashSet::new();
+    for (i, keep) in sets.iter().enumerate() {
+        if taken.contains(&i) || !keep.missing.is_empty() {
+            continue;
+        }
+        let Some(want) = sizes(keep) else { continue };
+        let keep_release = release(items, &items[&keep.ids[0]]);
+        for (j, copy) in sets.iter().enumerate().skip(i + 1) {
+            if taken.contains(&j) || !copy.missing.is_empty() || copy.ids.len() != keep.ids.len() {
+                continue;
+            }
+            let copy_release = release(items, &items[&copy.ids[0]]);
+            if keep_release.is_some() && copy_release.is_some() && keep_release != copy_release {
+                continue;
+            }
+            if sizes(copy).as_ref() == Some(&want) && untouched(copy) {
+                taken.insert(j);
+                pairs.push((keep.ids.clone(), copy.ids.clone()));
+            }
+        }
+    }
+    pairs
+}
+
 impl Engine {
+    /// Folds archives that are copies of one another on other hosts (see
+    /// [`copies`]) into one: each part of the copy becomes more links of the
+    /// same part, so the release downloads once, from whichever host serves
+    /// each part, the others standing by.
+    pub(super) fn merge_copies(&self, st: &mut State) {
+        for (keep, copy) in copies(&st.items) {
+            for (k, c) in keep.iter().zip(&copy) {
+                let Some(gone) = st.items.shift_remove(c) else {
+                    continue;
+                };
+                tracing::info!(item = %k, "{} is a copy of it on another host", gone.key_name().unwrap_or_default());
+                let Some(it) = st.items.get_mut(k) else {
+                    continue;
+                };
+                for m in gone.mirrors {
+                    if !it.mirrors.contains(&m) {
+                        it.mirrors.push(m);
+                    }
+                }
+                it.manual_urls.extend(gone.manual_urls);
+                it.merge_wrappers(gone.source.as_ref(), &gone.also_from);
+                if it.checksum.is_none() {
+                    it.checksum = gone.checksum;
+                }
+                let _ = std::fs::remove_file(self.part_path(c));
+            }
+        }
+    }
+
     /// The archive `id` is a part of, when the queue has two parts of it
     /// or more.
     fn archive_of(st: &State, id: &str) -> Option<ArchiveSet> {

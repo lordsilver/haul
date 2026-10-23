@@ -1309,6 +1309,11 @@ impl Engine {
         if adopted {
             self.extract_when_complete(&mut st, &id);
         }
+        // With its size known, this row may complete a copy of another
+        // archive.
+        if learned {
+            self.merge_copies(&mut st);
+        }
         self.touch(&mut st);
         drop(st);
         if adopted {
@@ -2760,6 +2765,16 @@ impl Engine {
     /// A host's page, passed out of sight, said its file is gone: that
     /// mirror failed like any other, and the item goes on to the next one
     /// (or fails with `reason` when none is left), asking nobody.
+    /// Item `id`'s links, for tests of what they merge into.
+    #[doc(hidden)]
+    pub fn debug_links(&self, id: &str) -> Vec<String> {
+        self.lock()
+            .items
+            .get(id)
+            .map(|it| it.mirrors.clone())
+            .unwrap_or_default()
+    }
+
     /// Sets item `id`'s downloaded bytes, for tests of what goes first.
     #[doc(hidden)]
     pub fn debug_set_done(&self, id: &str, done: u64) {
