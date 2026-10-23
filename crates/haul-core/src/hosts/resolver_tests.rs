@@ -36,12 +36,14 @@ fn config(base: &str) -> Config {
             gofile: base.into(),
             buzzheavier: base.into(),
             onefichier: base.into(),
+            onefichier_site: base.into(),
             rapidgator: base.into(),
             nitroflare: base.into(),
             dlc_service: format!("{base}/dlc"),
             fileguard: base.into(),
             filecrypt: base.into(),
             vikingfile: base.into(),
+            mega: base.into(),
             mirrored: base.into(),
             router: format!("{base}/igddesc.xml"),
             ip_echo: format!("{base}/ip"),
@@ -262,12 +264,29 @@ async fn onefichier_api_key_and_free_mode() {
             }),
         )
         .route(
+            "/check_links.pl",
+            post(|Form(form): Form<HashMap<String, String>>| async move {
+                let link = form["links[]"].clone();
+                assert!(!link.contains("af="), "the affiliate parameter is dropped");
+                if link.contains("gone") {
+                    format!("{link};;;NOT FOUND\n")
+                } else if link.contains("named") {
+                    format!("{link};Release.part1.rar;4294967296\n")
+                } else {
+                    // The checker sometimes says nothing of a link.
+                    String::new()
+                }
+            }),
+        )
+        .route(
             "/",
             post(|Query(q): Query<HashMap<String, String>>, Form(form): Form<HashMap<String, String>>| async move {
                 assert_eq!(form.get("dl_no_ssl").map(String::as_str), Some("on"));
                 assert!(!q.contains_key("af"), "the affiliate parameter is dropped");
                 if q.contains_key("ready") {
                     r#"<a href="https://a-2.1fichier.com/p456" class="ok btn-general btn-orange">Download</a>"#
+                } else if q.contains_key("deleted") {
+                    "<h1>File not found</h1>"
                 } else if q.contains_key("later") {
                     "You must wait 4 minutes between downloads"
                 } else {
@@ -300,6 +319,26 @@ async fn onefichier_api_key_and_free_mode() {
         onefichier::resolve(&cx, &format!("{base}/?abc")).await,
         Err(ResolveError::NeedsUser(_))
     ));
+    // A deleted file fails without its page, whether the checker or the
+    // page says so.
+    let gone = Err(ResolveError::failed("1fichier: the file was deleted"));
+    assert_eq!(
+        onefichier::resolve(&cx, &format!("{base}/?gone&af=1")).await,
+        gone
+    );
+    assert_eq!(
+        onefichier::resolve(&cx, &format!("{base}/?deleted")).await,
+        gone
+    );
+    assert_eq!(
+        onefichier::probe(&cx, &format!("{base}/?named&af=1")).await,
+        Some(Probed {
+            name: "Release.part1.rar".into(),
+            size: Some(4_294_967_296),
+            checksum: None,
+        })
+    );
+    assert_eq!(onefichier::probe(&cx, &format!("{base}/?gone")).await, None);
 
     cfg.onefichier_key = Some("key".into());
     let cx = Cx {
@@ -1148,7 +1187,7 @@ async fn vikingfile_checks_the_file_then_wants_a_person() {
     assert!(probe(&cx, "https://vikingfile.com/f/gone").await.is_none());
     assert!(matches!(
         resolve(&cx, "https://vikingfile.com/f/gone").await,
-        Err(ResolveError::Failed(m)) if m.contains("gone")
+        Err(ResolveError::Failed(m)) if m.contains("deleted")
     ));
 }
 
@@ -1215,4 +1254,71 @@ async fn mirrored_lists_one_file_on_every_host_that_took_it() {
             ["https://1fichier.com/?abc123".to_string()].as_slice()
         )
     );
+}
+
+#[tokio::test]
+async fn mega_names_and_decrypts_a_file_without_megatools() {
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    // A link's key: the AES key is its two halves XORed together.
+    let raw: Vec<u8> = (0u8..32).collect();
+    let key: Vec<u8> = (0..16).map(|i| raw[i] ^ raw[i + 16]).collect();
+    let mut attributes = br#"MEGA{"n":"Release.part1.rar"}"#.to_vec();
+    attributes.resize(attributes.len().div_ceil(16) * 16, 0);
+    let len = attributes.len();
+    cbc::Encryptor::<aes::Aes128>::new_from_slices(&key, &[0; 16])
+        .unwrap()
+        .encrypt_padded::<NoPadding>(&mut attributes, len)
+        .unwrap();
+    let at = URL_SAFE_NO_PAD.encode(&attributes);
+    let app = Router::new().route(
+        "/cs",
+        post(move |Json(body): Json<Value>| {
+            let at = at.clone();
+            async move {
+                assert_eq!(body[0]["a"], "g");
+                match body[0]["p"].as_str().unwrap() {
+                    "AAAAAAAA" => {
+                        Json(json!([{"s": 4096, "at": at, "g": "https://gfs.example/dl/x"}]))
+                    }
+                    "GONEGONE" => Json(json!([-9])),
+                    _ => Json(json!(-3)),
+                }
+            }
+        }),
+    );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
+    let link_key = URL_SAFE_NO_PAD.encode(&raw);
+    let e = mega::resolve(&cx, &format!("https://mega.nz/file/AAAAAAAA#{link_key}"))
+        .await
+        .unwrap();
+    assert_eq!(e[0].url, "https://gfs.example/dl/x");
+    assert_eq!(e[0].name.as_deref(), Some("Release.part1.rar"));
+    assert_eq!(e[0].size, Some(4096));
+    assert!(e[0].decrypt.is_some() && e[0].exec.is_none());
+    assert_eq!(
+        mega::probe(&cx, &format!("https://mega.nz/#!AAAAAAAA!{link_key}")).await,
+        Some(Probed {
+            name: "Release.part1.rar".into(),
+            size: Some(4096),
+            checksum: None,
+        })
+    );
+    assert_eq!(
+        mega::resolve(&cx, &format!("https://mega.nz/file/GONEGONE#{link_key}")).await,
+        Err(ResolveError::failed("mega: the file was deleted"))
+    );
+    assert!(matches!(
+        mega::resolve(&cx, &format!("https://mega.nz/file/BUSYBUSY#{link_key}")).await,
+        Err(ResolveError::Wait { .. })
+    ));
 }

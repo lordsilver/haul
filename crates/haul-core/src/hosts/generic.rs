@@ -184,7 +184,7 @@ pub(super) async fn page_links(cx: &Cx<'_>, url: &str) -> Result<Vec<String>, Re
 }
 
 /// The links in `page` to known hosts and wrappers, absolute, each once.
-fn links_in(page: &str, base: &url::Url, own: &str) -> Vec<String> {
+pub(super) fn links_in(page: &str, base: &url::Url, own: &str) -> Vec<String> {
     let found = HREF
         .captures_iter(page)
         .map(|c| c.get(1).expect("one group").as_str())

@@ -58,5 +58,6 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         checksum: None,
         deferred: false,
         mirrors: Vec::new(),
+        decrypt: None,
     }])
 }

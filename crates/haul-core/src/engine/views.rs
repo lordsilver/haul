@@ -227,6 +227,26 @@ pub struct ArchiveView {
     pub commands: Vec<Command>,
 }
 
+/// Whether a file's name is only an id an uploader gave it (a UUID, or a
+/// long run of hex), which says nothing of what it holds.
+fn says_nothing(stem: &str) -> bool {
+    let hex = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let groups: Vec<&str> = stem.split('-').collect();
+    let uuid = groups.iter().map(|g| g.len()).eq([8, 4, 4, 4, 12]) && groups.iter().all(|g| hex(g));
+    uuid || (stem.len() >= 16 && hex(stem))
+}
+
+/// An archive's name: its files' own, or the wrapper's name for the release
+/// when the files are named after nothing but an id.
+fn archive_name(name: String, release: Option<&str>) -> String {
+    let (stem, ext) = name.rsplit_once('.').unwrap_or((&name, ""));
+    match release.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(release) if says_nothing(stem) && !ext.is_empty() => format!("{release}.{ext}"),
+        Some(release) if says_nothing(stem) => release.to_string(),
+        _ => name,
+    }
+}
+
 /// Each archive in parts, its parts marked with its key.
 pub(super) fn archives(
     items: &mut [ItemView],
@@ -317,7 +337,7 @@ pub(super) fn archives(
         }
         out.push(ArchiveView {
             key: set.key.clone(),
-            name: set.name,
+            name: archive_name(set.name, first.source_name.as_deref()),
             missing: set.missing,
             status,
             complete,
@@ -849,6 +869,30 @@ mod tests {
             super::items(&mut items, &hosts, &[], recycle);
             assert_eq!(items[0].commands, want, "{status} {done} {recycle}");
         }
+    }
+
+    #[test]
+    fn an_archive_named_after_an_id_takes_the_release_name() {
+        let release = Some("NARUTO.X.BORUTO.Ultimate.Ninja.STORM.CONNECTIONS-ElAmigos");
+        assert_eq!(
+            archive_name("186d2b09-9d89-48af-8306-fa3348c01fe6.rar".into(), release),
+            "NARUTO.X.BORUTO.Ultimate.Ninja.STORM.CONNECTIONS-ElAmigos.rar"
+        );
+        assert_eq!(
+            archive_name("9f86d081884c7d659a2feaa0c55ad015.7z".into(), release),
+            "NARUTO.X.BORUTO.Ultimate.Ninja.STORM.CONNECTIONS-ElAmigos.7z"
+        );
+        // A name that says something stays, and so does an id with no
+        // release to name it.
+        assert_eq!(
+            archive_name("Holiday.Photos.rar".into(), release),
+            "Holiday.Photos.rar"
+        );
+        assert_eq!(archive_name("deadbeef.rar".into(), release), "deadbeef.rar");
+        assert_eq!(
+            archive_name("186d2b09-9d89-48af-8306-fa3348c01fe6.rar".into(), None),
+            "186d2b09-9d89-48af-8306-fa3348c01fe6.rar"
+        );
     }
 
     fn set(key: &str, ids: &[&str], missing: &[&str]) -> ArchiveSet {
