@@ -19,6 +19,7 @@ regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["charset", "cookies", "form", "gzip", "json", "query", "rustls", "socks"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sevenz-rust2 = { version = "0.24.1", default-features = false, features = ["aes256", "bzip2", "ppmd", "util"] }
 sha1 = "0.11.0"
 sha2 = "0.11.1"
 thiserror = "2.0.21"
@@ -30,8 +31,10 @@ toml_edit = "0.25.17"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 trash = "5.2.9"
+unrar_sys = "0.5.8"
 url = "2.5.8"
 uuid = { version = "1.28.0", features = ["v4"] }
+zip = { version = "9.0.5", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2-zlib-rs", "deflate64", "lzma", "ppmd", "xz", "zstd"] }
 
 [dev-dependencies]
 axum = "0.8.9"

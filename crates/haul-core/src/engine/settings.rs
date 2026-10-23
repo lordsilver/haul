@@ -36,6 +36,8 @@ pub struct SettingsView {
     pub recycle_on_remove: bool,
     pub skip_add_dialog: bool,
     pub verify_existing: bool,
+    pub auto_extract: bool,
+    pub delete_after_extract: bool,
     pub detailed_log: bool,
     pub reconnect: bool,
     pub reconnect_command: String,
@@ -105,6 +107,8 @@ impl Engine {
             recycle_on_remove: cfg.recycle_on_remove,
             skip_add_dialog: cfg.skip_add_dialog,
             verify_existing: cfg.verify_existing,
+            auto_extract: cfg.auto_extract,
+            delete_after_extract: cfg.delete_after_extract,
             detailed_log: cfg.detailed_log,
             reconnect: cfg.reconnect,
             reconnect_command: cfg.reconnect_command.clone().unwrap_or_default(),
@@ -232,6 +236,18 @@ impl Engine {
                 "verify_existing" => {
                     let on = value.as_bool().ok_or("verify_existing is true or false")?;
                     cfg.verify_existing = on;
+                    writes.push(top(key, Some(on.into())));
+                }
+                "auto_extract" => {
+                    let on = value.as_bool().ok_or("auto_extract is true or false")?;
+                    cfg.auto_extract = on;
+                    writes.push(top(key, Some(on.into())));
+                }
+                "delete_after_extract" => {
+                    let on = value
+                        .as_bool()
+                        .ok_or("delete_after_extract is true or false")?;
+                    cfg.delete_after_extract = on;
                     writes.push(top(key, Some(on.into())));
                 }
                 "reconnect" => {

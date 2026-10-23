@@ -892,6 +892,15 @@ input[type="number"] {
   background: var(--success);
 }
 
+/* Unpacking the archive takes the bar over, and a failure says so. */
+.row.group.complete.extracting .bar > i {
+  background: var(--accent);
+}
+
+.row.group.extract-failed .progress .caption {
+  color: var(--critical);
+}
+
 .progress .caption,
 .rate {
   font-size: 12px;

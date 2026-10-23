@@ -49,6 +49,12 @@ pub struct Config {
     /// also read in full and compared with the checksum its host publishes,
     /// before its download is skipped. Off: name and size decide.
     pub verify_existing: bool,
+    /// An archive in parts is unpacked beside them once the last part is
+    /// downloaded.
+    pub auto_extract: bool,
+    /// After an archive is unpacked without error, its parts go to the
+    /// Recycle Bin.
+    pub delete_after_extract: bool,
     /// Haul's debug events in the log too: every request, retry and mirror
     /// choice, for reproducing a problem.
     pub detailed_log: bool,
@@ -143,6 +149,8 @@ impl Default for Config {
             recycle_on_remove: false,
             skip_add_dialog: false,
             verify_existing: false,
+            auto_extract: false,
+            delete_after_extract: false,
             detailed_log: false,
             resume_attempts: 5,
             min_speed_kbps: 0,
@@ -550,6 +558,15 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # a time: thorough, but slow on big files and spinning disks.
 # verify_existing = false
 
+# An archive in parts (name.part1.rar, name.7z.001, ...) is unpacked beside its
+# parts once the last one is downloaded. RAR, 7-Zip and zip, told apart by their
+# contents; one archive at a time.
+# auto_extract = false
+
+# After an archive is unpacked without error, its parts go to the Recycle Bin
+# (the trash outside Windows).
+# delete_after_extract = false
+
 # Writes Haul's debug events to haul.log too (every request, retry and mirror
 # choice), for reproducing a problem; off, the log keeps notable events.
 # detailed_log = false
@@ -708,6 +725,8 @@ mod tests {
             recycle_on_remove = true
             skip_add_dialog = true
             verify_existing = true
+            auto_extract = true
+            delete_after_extract = true
             retry_failed_minutes = 0
             proxy = "socks5://u:p@host:1080"
             1fichier_key = "k1"
@@ -730,6 +749,7 @@ mod tests {
         assert_eq!(cfg.limit_for("other.example"), FALLBACK_LIMIT);
         assert_eq!(cfg.routes.get("a.example"), Some(&Route::Direct));
         assert!(cfg.recycle_on_remove && cfg.skip_add_dialog && cfg.verify_existing);
+        assert!(cfg.auto_extract && cfg.delete_after_extract);
         assert_eq!(
             (cfg.preference("b.example"), cfg.preference("a.example")),
             (Some(0), Some(1))

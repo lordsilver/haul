@@ -79,24 +79,6 @@ function duration(seconds) {
 
 const isWebLink = (url) => /^https?:\/\//i.test(url);
 
-// A host Haul leaves out: switched off, or needing an account not set.
-const hostOff = (h) => Boolean(h?.disabled || h?.needs_account);
-
-// The host a row downloads from, or before it starts the one it would try
-// first: the best preferred host it has, else its first host that is on.
-const shownHost = (it) => {
-  if (it.host) return it.host;
-  const hosts = new Map((state?.hosts ?? []).map((h) => [h.name, h]));
-  const on = it.mirrors.filter((m) => !hostOff(hosts.get(m)));
-  const rank = (m) => hosts.get(m)?.preferred ?? Infinity;
-  return [...on].sort((a, b) => rank(a) - rank(b))[0] || it.mirrors[0] || "";
-};
-
-// Errors arrive as "host: message"; the host is on screen already.
-function withoutHost(message, host) {
-  return host && message.startsWith(`${host}: `) ? message.slice(host.length + 2) : message;
-}
-
 // localStorage can be missing or throw (private windows, blocked site data).
 const prefs = {
   get(key) {
@@ -181,19 +163,17 @@ function addedMessage(r) {
 
 // ---- views
 
-const ACTIVE = ["downloading", "resolving", "waiting", "queued", "checking", "passing"];
-
-// Paused before any byte came: what a wrapper's files are until started.
-const notStarted = (i) => i.status === "paused" && !i.done;
-
+// The lists, each item knowing its own (`list`) and the engine counting them.
 const LISTS = {
-  all: { label: "All downloads", icon: "apps-list", test: () => true },
-  active: { label: "Active", icon: "arrow-circle-down", test: (i) => ACTIVE.includes(i.status) },
-  attention: { label: "Needs you", icon: "warning", test: (i) => i.status === "captcha", badge: "attention" },
-  failed: { label: "Failed", icon: "error-circle", test: (i) => i.status === "error", badge: "critical" },
-  paused: { label: "Paused", icon: "pause-circle", test: (i) => i.status === "paused" },
-  done: { label: "Completed", icon: "checkmark-circle", test: (i) => i.status === "done" },
+  all: { label: "All downloads", icon: "apps-list" },
+  active: { label: "Active", icon: "arrow-circle-down" },
+  attention: { label: "Needs you", icon: "warning", badge: "attention" },
+  failed: { label: "Failed", icon: "error-circle", badge: "critical" },
+  paused: { label: "Paused", icon: "pause-circle" },
+  done: { label: "Completed", icon: "checkmark-circle" },
 };
+
+const inList = (i, key) => key === "all" || i.list === key;
 
 // Wrapper links, below the lists: what each held, or why it did not open.
 const SECTIONS = {
@@ -295,7 +275,7 @@ const unwrappedShown = new Set();
 function waitingNow(s) {
   return [
     ...s.items.filter((it) => it.status === "captcha"),
-    ...s.wrappers.filter((w) => w.status === "captcha").map((w) => ({ id: w.id, name: wrapperName(w), open_urls: w.open_urls, wrapper: true })),
+    ...s.wrappers.filter((w) => w.status === "captcha").map((w) => ({ id: w.id, name: w.title || w.url, open_urls: w.open_urls, wrapper: true })),
   ];
 }
 
@@ -359,8 +339,9 @@ function unwrappedToast(ws, s) {
   // Already where the toast would lead.
   if (view === "wrappers") return unwrappedShown.clear();
   const ids = new Set(ws.map((w) => w.id));
-  const waiting = s.items.filter((i) => i.status === "paused" && [i.source, ...(i.also_from ?? [])].some((id) => ids.has(id))).length;
-  const names = [...new Set(ws.map(wrapperName))];
+  const cards = s.wrapper_cards.filter((c) => c.ids.some((id) => ids.has(id)));
+  const waiting = cards.reduce((n, c) => n + c.tally.not_started + c.tally.paused, 0);
+  const names = [...new Set(ws.map((w) => w.title || w.url))];
   const what = names.length === 1 ? names[0] : plural(names.length, "release");
   toast(waiting ? `${what}: ${plural(waiting, "file")} ready to start` : `${what} unwrapped`, "info", { label: "Show", icon: "link", onclick: () => go("wrappers") }, "unwrapped");
   // Once it is gone, the next wrapper to finish starts a toast of its own.
@@ -377,7 +358,6 @@ function unwrappedToast(ws, s) {
 
 function render(s) {
   state = s;
-  wrapperNames = new Map(s.wrappers.map((w) => [w.id, wrapperName(w)]));
   if (s.theme !== theme) applyTheme(s.theme);
   spotNeedsUser(s);
   renderNav(s);
@@ -453,16 +433,16 @@ function renderNav(s) {
     }
     if (key === "wrappers") {
       // Counted like a list; it calls for attention while one waits or failed.
-      const count = wrapperGroups(s).length;
-      const kind = s.wrappers.some((w) => w.status === "error") ? "critical" : s.wrappers.some((w) => w.status === "captcha") ? "attention" : "";
+      const count = s.counts.wrappers;
+      const kind = s.counts.wrappers_alert;
       setText(item.badge, count ? String(count) : "");
       item.badge.className = `badge${kind ? ` ${kind}` : ""}`;
       item.node.classList.toggle("attention", Boolean(kind));
       item.node.classList.toggle("critical", kind === "critical");
       continue;
     }
-    if (!item.spec.test) continue;
-    const count = s.items.filter(item.spec.test).length;
+    if (!(key in LISTS)) continue;
+    const count = s.counts[key];
     setText(item.badge, count ? String(count) : "");
     item.badge.className = `badge${count && item.spec.badge ? ` ${item.spec.badge}` : ""}`;
     item.node.classList.toggle("attention", count > 0 && Boolean(item.spec.badge));
@@ -506,16 +486,15 @@ function renderHead(s) {
   const spec = LISTS[view] ?? SECTIONS[view] ?? PAGES[view];
   setText($("title"), view === "all" ? "Downloads" : spec.label);
   $("commands").hidden = !(view in LISTS);
-  const failed = s.items.filter((i) => i.status === "error");
-  const done = s.items.some((i) => i.status === "done");
+  const failed = s.counts.failed;
+  const done = s.counts.done > 0;
   const picked = s.items.filter((i) => selected.has(i.id));
-  // What the selection's Remove asks depends on partial files and the bin setting too.
-  const pickedKey = picked.map((i) => `${i.id}:${i.status}:${i.done > 0}`).join(",");
+  // What the selection's buttons do and ask follows each item's own.
+  const pickedKey = picked.map((i) => `${i.id}:${i.commands.join("+")}`).join(",");
   // Downloads in this view that wait for the user: never started, or paused.
-  const inView = LISTS[view]?.test ?? (() => false);
-  const waiting = s.items.filter((i) => i.status === "paused" && inView(i));
-  const fresh = waiting.length > 0 && waiting.every(notStarted);
-  const key = `${s.paused}|${failed.length}|${done}|${view}|${s.recycle_on_remove}|${pickedKey}|${waiting.length}|${fresh}`;
+  const waiting = view in LISTS ? s.items.filter((i) => i.list === "paused" && inList(i, view)) : [];
+  const fresh = waiting.length > 0 && waiting.every((i) => i.not_started);
+  const key = `${s.paused}|${failed}|${done}|${view}|${pickedKey}|${waiting.length}|${fresh}`;
   if (key === commandsKey) return;
   commandsKey = key;
   if (!commandButtons) makeCommands();
@@ -528,8 +507,8 @@ function renderHead(s) {
   // all, so it asks for a second click; elsewhere it tidies finished ones.
   const clear =
     view === "failed"
-      ? failed.length
-        ? confirmButton("Clear failed", `Clear ${plural(failed.length, "download")}?`, () => api("/api/global/clear_failed"), { icon: "broom", kind: "subtle" })
+      ? failed
+        ? confirmButton("Clear failed", `Clear ${plural(failed, "download")}?`, () => api("/api/global/clear_failed"), { icon: "broom", kind: "subtle" })
         : button("Clear failed", { icon: "broom", kind: "subtle", disabled: true })
       : button("Clear completed", {
           icon: "broom",
@@ -555,7 +534,7 @@ function renderHead(s) {
     button("Retry failed", {
       icon: "arrow-clockwise",
       kind: "subtle",
-      disabled: !failed.length,
+      disabled: !failed,
       onclick: () => api("/api/global/retry_failed").catch(report),
     }),
     clear,
@@ -574,9 +553,9 @@ let anchor = null; // where a Shift+click range starts
 function visibleIds() {
   const spec = LISTS[view];
   if (!spec || !state) return [];
-  const visible = state.items.filter((i) => spec.test(i) && matchesQuery(i));
+  const visible = state.items.filter((i) => inList(i, view) && matchesQuery(i));
   // Display order, with an archive's parts together even while folded.
-  return entriesOf(visible, state.items).flatMap((e) => (e.members ? e.members.map((i) => i.id) : [e.it.id]));
+  return entriesOf(visible, state).flatMap((e) => (e.members ? e.members.map((i) => i.id) : [e.it.id]));
 }
 
 // Whether a click on a row picks it. A selection starts at a checkbox (or
@@ -641,13 +620,13 @@ async function bulk(items, action) {
 }
 
 function selectionCommands(picked, s) {
-  const where = (test) => picked.filter(test);
-  const retry = where((i) => i.status === "error");
-  const pause = where((i) => ACTIVE.includes(i.status));
-  const resume = where((i) => i.status === "paused");
+  const where = (...commands) => picked.filter((i) => i.commands.some((c) => commands.includes(c)));
+  const retry = where("retry");
+  const pause = where("pause");
+  const resume = where("start", "resume");
   // Unfinished downloads lose their partial files, so that asks twice.
-  const losing = where((i) => i.status !== "done" && i.done > 0).length;
-  const recycling = s.recycle_on_remove ? where((i) => i.status === "done" && i.path && !i.existing).length : 0;
+  const losing = where("remove_partial").length;
+  const recycling = where("recycle").filter((i) => !i.existing).length;
   const remove = async () => {
     const n = await bulk(picked, "remove");
     clearSelection();
@@ -666,7 +645,7 @@ function selectionCommands(picked, s) {
     el("span", { class: "picked", role: "status" }, `${picked.length} selected`),
     retry.length ? button("Retry", { icon: "arrow-clockwise", kind: "subtle", onclick: () => bulk(retry, "retry") }) : null,
     pause.length ? button("Pause", { icon: "pause", kind: "subtle", onclick: () => bulk(pause, "pause") }) : null,
-    resume.length ? button(resume.every(notStarted) ? "Start" : "Resume", { icon: "play", kind: "subtle", onclick: () => bulk(resume, "resume") }) : null,
+    resume.length ? button(resume.every((i) => i.not_started) ? "Start" : "Resume", { icon: "play", kind: "subtle", onclick: () => bulk(resume, "resume") }) : null,
     removeButton,
     button("Clear selection", { icon: "dismiss", kind: "subtle", iconOnly: true, onclick: clearSelection }),
   ];
@@ -689,7 +668,7 @@ let bannerKey = null;
 function renderBanner(s) {
   // Paused matters only while it holds something back: a download that would
   // start, wait or retry. With nothing to hold, the status bar says it.
-  const held = s.paused && s.items.some((i) => ACTIVE.includes(i.status));
+  const held = s.counts.held;
   const key = `${offline}|${updated}|${held}|${s.config_error}`;
   if (key === bannerKey) return;
   bannerKey = key;
@@ -774,26 +753,24 @@ function caption(it) {
   }
 }
 
+// The buttons the engine lists for a row (`commands`), each with its label.
 function rowActions(it, s) {
-  const out = [];
   const subtle = (label, name, onclick) => button(label, { icon: name, kind: "subtle small", iconOnly: true, onclick });
-  if (ACTIVE.includes(it.status)) out.push(subtle("Pause", "pause", () => act(it.id, "pause")));
-  else if (it.status === "paused") out.push(subtle(notStarted(it) ? "Start" : "Resume", "play", () => act(it.id, "resume")));
-  else if (it.status === "error") out.push(subtle("Retry", "arrow-clockwise", () => act(it.id, "retry")));
-  if (it.status === "done" && it.path) {
-    out.push(subtle("Show in folder", "folder-open", () => act(it.id, "reveal")));
-  }
-  if (it.status === "done" && it.path && s.recycle_on_remove) {
-    const recycle = () =>
-      api(`/api/item/${encodeURIComponent(it.id)}/remove`).then(() => toast(`Moved ${it.name} to the ${s.bin}`, "success"), report);
-    out.push(subtle(`Move to the ${s.bin}`, "delete", recycle));
-  } else if (it.status !== "done" && it.done > 0) {
+  const recycle = () =>
+    api(`/api/item/${encodeURIComponent(it.id)}/remove`).then(() => toast(`Moved ${it.name} to the ${s.bin}`, "success"), report);
+  const buttons = {
+    pause: () => subtle("Pause", "pause", () => act(it.id, "pause")),
+    start: () => subtle("Start", "play", () => act(it.id, "resume")),
+    resume: () => subtle("Resume", "play", () => act(it.id, "resume")),
+    retry: () => subtle("Retry", "arrow-clockwise", () => act(it.id, "retry")),
+    reveal: () => subtle("Show in folder", "folder-open", () => act(it.id, "reveal")),
+    recycle: () => subtle(`Move to the ${s.bin}`, "delete", recycle),
     // Its partial file goes with it, so it asks twice, as Remove does for a selection.
-    out.push(confirmButton("Remove", "Delete partial file?", () => act(it.id, "remove"), { icon: "dismiss", kind: "subtle small", iconOnly: true }));
-  } else {
-    out.push(subtle(it.status === "done" ? "Clear from list" : "Remove", "dismiss", () => act(it.id, "remove")));
-  }
-  return out;
+    remove_partial: () => confirmButton("Remove", "Delete partial file?", () => act(it.id, "remove"), { icon: "dismiss", kind: "subtle small", iconOnly: true }),
+    clear: () => subtle("Clear from list", "dismiss", () => act(it.id, "remove")),
+    remove: () => subtle("Remove", "dismiss", () => act(it.id, "remove")),
+  };
+  return it.commands.map((c) => buttons[c]?.()).filter(Boolean);
 }
 
 function closeEditor(r) {
@@ -847,10 +824,6 @@ function hostOf(url) {
   }
 }
 
-// Whether wrapper `id` lists file `i`: its source, or another wrapper
-// whose links for the same file merged into it.
-const ofWrapper = (i, id) => i.source === id || (i.also_from ?? []).includes(id);
-
 // The pages a download can be solved on, in the system's browser: one
 // button for one page, else one button with a menu of their hosts.
 const pageMenu = el("div", { class: "page-menu", popover: "auto", role: "menu" });
@@ -902,7 +875,7 @@ function helpBar(r, it, s) {
   const hint = s.desktop
     ? "Open here, solve the page and press its download button: Haul takes the download over."
     : "Open the page, solve it, then copy the final download link and paste it here.";
-  const bar = infobar("caution", null, null, withoutHost(it.error, shownHost(it)), actions);
+  const bar = infobar("caution", null, null, it.error_shown, actions);
   bar.append(el("p", { class: "hint" }, hint));
   return bar;
 }
@@ -962,14 +935,12 @@ function updateRow(r, it, s, member = false) {
 
   // The host it comes from, starred when it is a preferred one, and how many
   // other hosts that are on could take over.
-  const host = shownHost(it);
-  const known = new Map((state?.hosts ?? []).map((h) => [h.name, h]));
-  const sub = [`${known.get(host)?.preferred != null ? "★ " : ""}${host}`];
-  const others = it.mirrors.filter((m) => m !== host && !hostOff(known.get(m))).length;
+  const sub = [`${it.preferred_host ? "★ " : ""}${it.shown_host}`];
+  const others = it.other_hosts;
   if (others) sub.push(`${others} other ${others === 1 ? "host" : "hosts"}`);
   if (it.package) sub.push(it.package);
-  if (wrapperNames.has(it.source)) sub.push(`from ${wrapperNames.get(it.source)}`);
-  const error = ["error", "waiting"].includes(it.status) ? withoutHost(it.error, host) : "";
+  if (it.source_name) sub.push(`from ${it.source_name}`);
+  const error = ["error", "waiting"].includes(it.status) ? it.error_shown : "";
   const subKey = `${sub.join(" · ")}|${error}`;
   if (r.sub.dataset.key !== subKey) {
     r.sub.dataset.key = subKey;
@@ -989,7 +960,7 @@ function updateRow(r, it, s, member = false) {
     r.rate.replaceChildren(...(speed ? [el("b", {}, speed), left ? `${left} left` : ""] : []));
   }
 
-  const actionsKey = `${it.status}|${Boolean(it.path)}|${s.recycle_on_remove}|${it.done > 0}`;
+  const actionsKey = it.commands.join(",");
   if (r.actionsKey !== actionsKey) {
     r.actionsKey = actionsKey;
     r.actions.replaceChildren(...rowActions(it, s));
@@ -1008,7 +979,7 @@ function updateRow(r, it, s, member = false) {
 
 function matchesQuery(it) {
   if (!query) return true;
-  return [it.name, it.package, it.host, wrapperNames.get(it.source), ...it.mirrors].some((v) => v?.toLowerCase().includes(query));
+  return [it.name, it.package, it.host, it.source_name, ...it.mirrors].some((v) => v?.toLowerCase().includes(query));
 }
 
 function rowFor(id) {
@@ -1022,8 +993,7 @@ function rowFor(id) {
 
 function renderList(s) {
   const list = $("list");
-  const spec = LISTS[view];
-  const visible = s.items.filter((i) => spec.test(i) && matchesQuery(i));
+  const visible = s.items.filter((i) => inList(i, view) && matchesQuery(i));
   const shownRows = new Set();
   const shownGroups = new Set();
   let previous = null;
@@ -1038,7 +1008,7 @@ function renderList(s) {
     shownRows.add(it.id);
     place(r.node);
   };
-  for (const entry of entriesOf(visible, s.items)) {
+  for (const entry of entriesOf(visible, s)) {
     if (!entry.members) {
       show(entry.it, false);
       continue;
@@ -1048,7 +1018,7 @@ function renderList(s) {
       g = makeGroupRow(entry.key);
       groupRows.set(entry.key, g);
     }
-    updateGroupRow(g, entry);
+    updateGroupRow(g, entry, s);
     shownGroups.add(entry.key);
     place(g.node);
     if (isOpen(entry.key)) for (const it of entry.members) show(it, true);
@@ -1074,65 +1044,33 @@ function renderList(s) {
 }
 
 // ---- archive groups: the parts of one multi-part archive under a row of
-// their own, like JDownloader's packages
+// their own, like JDownloader's packages. The engine finds them and sums
+// them up (`state.archives`); this lays them out.
 
-// The archive a file is a part of, and which part: name.part01.rar, name.rar
-// with name.r00 and on, name.zip with name.z01 and on, or name.7z.001 (any
-// name.NNN). Null for anything else.
-function archivePart(name) {
-  const forms = [
-    [/^(.+)\.part0*(\d+)\.rar$/i, (m) => [`${m[1]}.rar`, Number(m[2])]],
-    [/^(.+)\.r(\d{2})$/i, (m) => [`${m[1]}.rar`, Number(m[2]) + 2]],
-    [/^(.+)\.rar$/i, (m) => [`${m[1]}.rar`, 1]],
-    [/^(.+)\.z(\d{2})$/i, (m) => [`${m[1]}.zip`, Number(m[2])]],
-    [/^(.+)\.zip$/i, (m) => [`${m[1]}.zip`, 100]],
-    [/^(.+)\.(\d{3})$/, (m) => [m[1], Number(m[2])]],
-  ];
-  for (const [form, read] of forms) {
-    const m = name?.match(form);
-    if (m) {
-      const [archive, part] = read(m);
-      return { archive, part };
-    }
-  }
-  return null;
-}
-
-// The list in display order: single rows, and each archive with two parts or
-// more in the whole queue as one entry, at the place of its first part shown.
-// An entry has every part of its archive (`parts`, which its row sums up in
-// every view) and the parts this view shows (`members`), both in part order.
-// Archives in different packages never mix.
-function entriesOf(visible, items) {
-  const keyOf = new Map();
-  const sets = new Map();
-  for (const it of items) {
-    const p = archivePart(it.name);
-    if (!p) continue;
-    const key = `${it.package}\u0000${p.archive}`;
-    keyOf.set(it.id, key);
-    if (!sets.has(key)) sets.set(key, { key, archive: p.archive, parts: [] });
-    sets.get(key).parts.push({ it, part: p.part });
-  }
+// The list in display order: single rows, and each archive as one entry at
+// the place of its first part shown. An entry has its archive (which its row
+// sums up in every view) and the parts this view shows (`members`), in part
+// order.
+function entriesOf(visible, s) {
+  const archives = new Map(s.archives.map((a) => [a.key, a]));
   const out = [];
   const placed = new Map();
   for (const it of visible) {
-    const set = sets.get(keyOf.get(it.id));
-    if (!set || set.parts.length < 2) {
+    const archive = archives.get(it.archive);
+    if (!archive) {
       out.push({ it });
       continue;
     }
-    let entry = placed.get(set.key);
+    let entry = placed.get(archive.key);
     if (!entry) {
-      set.parts.sort((a, b) => a.part - b.part);
-      entry = { key: set.key, archive: set.archive, parts: set.parts.map((x) => x.it), members: [] };
-      placed.set(set.key, entry);
+      entry = { key: archive.key, archive, members: [] };
+      placed.set(archive.key, entry);
       out.push(entry);
     }
     entry.members.push(it);
   }
   for (const entry of placed.values()) {
-    const order = new Map(entry.parts.map((it, i) => [it.id, i]));
+    const order = new Map(entry.archive.ids.map((id, i) => [id, i]));
     entry.members.sort((a, b) => order.get(a.id) - order.get(b.id));
   }
   return out;
@@ -1162,9 +1100,6 @@ function toggleGroup(key) {
 }
 
 const groupRows = new Map();
-
-// The glyph shows what needs attention first among the parts.
-const URGENCY = ["error", "captcha", "downloading", "resolving", "passing", "waiting", "checking", "queued", "paused", "done"];
 
 function makeGroupRow(key) {
   const g = { actionsKey: null, glyphKey: null, members: [] };
@@ -1206,47 +1141,37 @@ function makeGroupRow(key) {
 
 // The row sums up the whole archive in every view; a click picks the parts
 // this view shows.
-function updateGroupRow(g, entry) {
-  const parts = entry.parts;
+function updateGroupRow(g, entry, s) {
+  const a = entry.archive;
   g.members = entry.members.map((i) => i.id);
   const picked = entry.members.filter((i) => selected.has(i.id)).length;
   const all = picked === entry.members.length;
   g.check.setAttribute("aria-checked", all ? "true" : picked ? "mixed" : "false");
-  const status = URGENCY.find((st) => parts.some((i) => i.status === st)) ?? "queued";
-  const complete = parts.every((i) => i.status === "done");
-  const rowClass = `row group s-${status}${complete ? " complete" : ""}${all ? " selected" : ""}`;
+  const extractClass = { extracting: " extracting", failed: " extract-failed" }[a.extract] ?? "";
+  const rowClass = `row group s-${a.status}${a.complete ? " complete" : ""}${extractClass}${all ? " selected" : ""}`;
   if (g.node.className !== rowClass) g.node.className = rowClass;
-  if (g.glyphKey !== status) {
-    g.glyphKey = status;
-    g.glyph.replaceChildren(icon(GLYPHS[status] ?? "clock"));
+  if (g.glyphKey !== a.status) {
+    g.glyphKey = a.status;
+    g.glyph.replaceChildren(icon(GLYPHS[a.status] ?? "clock"));
   }
-  if (g.name.textContent !== entry.archive) {
-    g.name.textContent = entry.archive;
-    g.name.title = entry.archive;
-    g.check.setAttribute("aria-label", `Select the parts of ${entry.archive}`);
+  if (g.name.textContent !== a.name) {
+    g.name.textContent = a.name;
+    g.name.title = a.name;
+    g.check.setAttribute("aria-label", `Select the parts of ${a.name}`);
   }
 
-  const size = parts.reduce((n, i) => n + i.size, 0);
-  const done = parts.reduce((n, i) => n + (i.status === "done" ? i.size : Math.min(i.done, i.size || i.done)), 0);
-  const hosts = [...new Set(parts.map((i) => shownHost(i)))];
-  // The other hosts that are on and could take over, over every part.
-  const known = new Map((state?.hosts ?? []).map((h) => [h.name, h]));
-  const others = new Set(parts.flatMap((i) => i.mirrors).filter((m) => !hosts.includes(m) && !hostOff(known.get(m)))).size;
-  const otherHosts = others ? `${others} other ${others === 1 ? "host" : "hosts"}` : null;
-  const from = wrapperNames.has(parts[0].source) ? `from ${wrapperNames.get(parts[0].source)}` : null;
-  setText(g.sub, [`${parts.length} parts`, size ? bytes(size) : null, ...hosts, otherHosts, parts[0].package || null, from].filter(Boolean).join(" · "));
+  const otherHosts = a.other_hosts ? `${a.other_hosts} other ${a.other_hosts === 1 ? "host" : "hosts"}` : null;
+  const from = a.source_name ? `from ${a.source_name}` : null;
+  setText(g.sub, [`${a.ids.length} parts`, a.size ? bytes(a.size) : null, ...a.hosts, otherHosts, a.package || null, from].filter(Boolean).join(" · "));
 
-  // By bytes when every unfinished part's size is known, by parts otherwise.
-  const sized = parts.every((i) => i.size > 0 || i.status === "done");
-  const finished = parts.filter((i) => i.status === "done").length;
-  const share = sized && size ? done / size : finished / parts.length;
+  // Once every part is done, the bar and its caption are the unpacking's.
+  const share = a.extract === "extracting" ? (a.extract_progress ?? 0) : a.share;
   const width = `${Math.min(100, share * 100).toFixed(1)}%`;
   if (g.fill.style.width !== width) g.fill.style.width = width;
-  setText(g.caption, partsSummary(parts));
-  g.caption.title = size ? `${bytes(done)} of ${bytes(size)}` : "";
+  setText(g.caption, archiveCaption(a));
+  g.caption.title = a.extract === "failed" ? a.extract_error : a.size ? `${bytes(a.done)} of ${bytes(a.size)}` : "";
 
-  const speed = parts.reduce((n, i) => n + (i.speed || 0), 0);
-  const rateKey = speed ? `${bytes(speed)}/s|${size > done ? duration((size - done) / speed) : ""}` : "";
+  const rateKey = a.speed ? `${bytes(a.speed)}/s|${a.size > a.done ? duration((a.size - a.done) / a.speed) : ""}` : "";
   if (g.rate.dataset.key !== rateKey) {
     g.rate.dataset.key = rateKey;
     const [shown, left] = rateKey.split("|");
@@ -1265,44 +1190,70 @@ function updateGroupRow(g, entry) {
     g.toggle.replaceChildren(icon(open ? "chevron-down" : "chevron-right"));
   }
 
-  const actionsKey = parts.map((i) => i.status).join(",");
+  const actionsKey = `${a.commands.join(",")}|${a.ids.join(",")}|${s.items.length}`;
   if (g.actionsKey !== actionsKey) {
     g.actionsKey = actionsKey;
-    g.actions.replaceChildren(...groupActions(parts));
+    g.actions.replaceChildren(...groupActions(a, s));
   }
 }
 
+// The archive's caption: where unpacking it stands once asked for, else
+// the parts that are missing, else how the parts stand.
+function archiveCaption(a) {
+  switch (a.extract) {
+    case "waiting":
+      return "Waiting to extract";
+    case "extracting":
+      return `Extracting · ${Math.floor((a.extract_progress ?? 0) * 100)}%`;
+    case "done":
+      return "Extracted";
+    case "failed":
+      return `Extraction failed: ${a.extract_error}`;
+  }
+  if (a.missing.length) {
+    const more = a.missing.length > 1 ? ` and ${a.missing.length - 1} more` : "";
+    return `${partsSummary(a.tally, a.ids.length)} · ${a.missing[0]}${more} missing`;
+  }
+  return partsSummary(a.tally, a.ids.length);
+}
+
 // "12 of 18 done · 3 downloading · 3 failed"
-function partsSummary(parts) {
-  const count = (test) => parts.filter(test).length;
-  const out = [`${count((i) => i.status === "done")} of ${parts.length} done`];
+function partsSummary(t, total) {
+  const out = [`${t.done} of ${total} done`];
   for (const [n, label] of [
-    [count((i) => i.status === "downloading"), "downloading"],
-    [count((i) => ["queued", "waiting", "checking", "resolving"].includes(i.status)), "waiting"],
-    [count(notStarted), "not started"],
-    [count((i) => i.status === "paused" && !notStarted(i)), "paused"],
-    [count((i) => i.status === "captcha"), "need you"],
-    [count((i) => i.status === "error"), "failed"],
+    [t.downloading, "downloading"],
+    [t.waiting, "waiting"],
+    [t.not_started, "not started"],
+    [t.paused, "paused"],
+    [t.captcha, "need you"],
+    [t.failed, "failed"],
   ]) {
     if (n) out.push(`${n} ${label}`);
   }
   return out.join(" · ");
 }
 
-// Pause, resume or retry the parts together. Removing them goes through the
-// selection: a click on the group picks them all.
-function groupActions(parts) {
+// The parts of an archive whose own buttons do `command`.
+function partsWith(a, s, ...commands) {
+  const ids = new Set(a.ids);
+  return s.items.filter((i) => ids.has(i.id) && i.commands.some((c) => commands.includes(c)));
+}
+
+// Pause, resume or retry the parts together, and extract them once they are
+// all done. Removing them goes through the selection: a click on the group
+// picks them all.
+function groupActions(a, s) {
   const subtle = (label, name, onclick) => button(label, { icon: name, kind: "subtle small", iconOnly: true, onclick });
-  const active = parts.filter((i) => ACTIVE.includes(i.status));
-  const paused = parts.filter((i) => i.status === "paused");
-  const failed = parts.filter((i) => i.status === "error");
-  return [
-    active.length ? subtle("Pause the parts", "pause", () => bulk(active, "pause")) : null,
-    !active.length && paused.length
-      ? subtle(paused.every(notStarted) ? "Start the parts" : "Resume the parts", "play", () => bulk(paused, "resume"))
-      : null,
-    failed.length ? subtle("Retry the failed parts", "arrow-clockwise", () => bulk(failed, "retry")) : null,
-  ].filter(Boolean);
+  const extract = () => api(`/api/item/${encodeURIComponent(a.ids[0])}/extract`).catch(report);
+  const buttons = {
+    extract: () => subtle("Extract", "folder-zip", extract),
+    extract_again: () => subtle("Extract again", "folder-zip", extract),
+    pause: () => subtle("Pause the parts", "pause", () => bulk(partsWith(a, s, "pause"), "pause")),
+    start: () => subtle("Start the parts", "play", () => bulk(partsWith(a, s, "start", "resume"), "resume")),
+    resume: () => subtle("Resume the parts", "play", () => bulk(partsWith(a, s, "start", "resume"), "resume")),
+    retry: () => subtle("Retry the failed parts", "arrow-clockwise", () => bulk(partsWith(a, s, "retry"), "retry")),
+  };
+  return a.commands.map((c) => buttons[c]?.()).filter(Boolean);
 }
 
 let emptyKey = null;
@@ -1331,60 +1282,57 @@ function renderEmpty(s, shown) {
   }
 }
 
-// ---- wrappers
+// ---- wrappers: one card per release, as the engine groups them
+// (`state.wrapper_cards`)
 
 const wrapperCards = new Map();
-// Each wrapper's name by its id, for the rows of the files it added.
-let wrapperNames = new Map();
-
-const wrapperName = (w) => w.title || w.url;
 
 // A card's wrappers together: their files counted once, since a file two
 // of them list starts with the first.
-function startWrappers(ws) {
-  return Promise.all(ws.map((w) => api(`/api/wrapper/${encodeURIComponent(w.id)}/start`))).then((rs) => {
+function startWrappers(card) {
+  return Promise.all(card.ids.map((id) => api(`/api/wrapper/${encodeURIComponent(id)}/start`))).then((rs) => {
     const started = rs.reduce((n, r) => n + (r.started || 0), 0);
-    if (started) toast(`Started ${plural(started, "file")} from ${wrapperName(ws[0])}`, "success");
+    if (started) toast(`Started ${plural(started, "file")} from ${card.name}`, "success");
   }, report);
 }
 
-function removeWrappers(ws) {
-  return Promise.all(ws.map((w) => api(`/api/wrapper/${encodeURIComponent(w.id)}/remove`))).catch(report);
+function removeWrappers(card) {
+  return Promise.all(card.ids.map((id) => api(`/api/wrapper/${encodeURIComponent(id)}/remove`))).catch(report);
 }
 
 // What a wrapper is doing, in a few words; once unwrapped, how its files stand.
-function wrapperStatus(w, files) {
-  switch (w.status) {
+function wrapperStatus(card) {
+  switch (card.status) {
     case "unwrapping":
       return "Unwrapping…";
     case "waiting":
-      return w.wait ? `Trying again in ${duration(w.wait)}` : "Waiting to try again";
+      return card.wait ? `Trying again in ${duration(card.wait)}` : "Waiting to try again";
     case "captcha":
       return "Needs you";
     case "paused":
       return "Paused";
     case "error":
-      return w.retry_in ? `Failed · trying again in ${duration(w.retry_in)}` : "Failed";
+      return card.retry_in ? `Failed · trying again in ${duration(card.retry_in)}` : "Failed";
     default: {
-      const found = w.found ? `${plural(w.found.files, "file")} from ${plural(w.found.links, "link")}` : "Unwrapped";
-      return files.length ? `${found} · ${partsSummary(files)}` : found;
+      const found = card.found ? `${plural(card.found.files, "file")} from ${plural(card.found.links, "link")}` : "Unwrapped";
+      return card.files ? `${found} · ${partsSummary(card.tally, card.files)}` : found;
     }
   }
 }
 
 // A gate a person passes: in the app's browser, which hands back the .dlc
 // the page offers, or in their own, and a pasted link.
-function wrapperHelp(c, w, s) {
-  const it = { id: w.id, name: wrapperName(w), open_urls: w.open_urls, error: w.error, host: w.host, mirrors: [w.host] };
+function wrapperHelp(c, card, s) {
+  const id = card.ids[0];
   const actions = [];
-  if (s.desktop) actions.push(button("Open here", { icon: "globe", kind: "accent", onclick: () => openHere(w.id) }));
-  actions.push(pageLinks(w.open_urls, s));
-  actions.push(button("Paste link", { icon: "link", onclick: () => openEditor(c, it) }));
-  actions.push(button("Try again", { icon: "arrow-clockwise", kind: "subtle", onclick: () => act(w.id, "retry_manual") }));
+  if (s.desktop) actions.push(button("Open here", { icon: "globe", kind: "accent", onclick: () => openHere(id) }));
+  actions.push(pageLinks(card.open_urls, s));
+  actions.push(button("Paste link", { icon: "link", onclick: () => openEditor(c, { id, name: card.name }) }));
+  actions.push(button("Try again", { icon: "arrow-clockwise", kind: "subtle", onclick: () => act(id, "retry_manual") }));
   const hint = s.desktop
     ? "Open here, pass the page's check and press its .dlc button: Haul unwraps what the page hands over."
     : "Open the page, pass its check, then copy the .dlc link it offers and paste it here.";
-  const bar = infobar("caution", null, null, withoutHost(w.error, w.host), actions);
+  const bar = infobar("caution", null, null, card.error_shown, actions);
   bar.append(el("p", { class: "hint" }, hint));
   return bar;
 }
@@ -1398,66 +1346,51 @@ function makeWrapperCard(id) {
   return c;
 }
 
-// The wrappers to show as one card: those of one release (the same name,
-// unwrapped, often one per host) share it; one still working, waiting for a
-// person or failed keeps a card of its own, with what it needs.
-function wrapperGroups(s) {
-  const groups = new Map();
-  for (const w of s.wrappers) {
-    const key = w.status === "done" && w.title ? `t\u0000${w.package}\u0000${w.title}` : `w\u0000${w.id}`;
-    if (!groups.has(key)) groups.set(key, { key, ws: [] });
-    groups.get(key).ws.push(w);
-  }
-  return [...groups.values()];
-}
-
 function renderWrappers(s) {
   const box = $("wrappers");
   let previous = null;
   const seen = new Set();
-  for (const { key: groupKey, ws } of wrapperGroups(s)) {
-    const w = ws[0];
-    const ids = new Set(ws.map((x) => x.id));
-    seen.add(groupKey);
-    let c = wrapperCards.get(groupKey);
+  for (const card of s.wrapper_cards) {
+    seen.add(card.key);
+    let c = wrapperCards.get(card.key);
     if (!c) {
-      c = makeWrapperCard(w.id);
-      wrapperCards.set(groupKey, c);
+      c = makeWrapperCard(card.ids[0]);
+      wrapperCards.set(card.key, c);
     }
-    const files = s.items.filter((i) => ws.some((x) => ofWrapper(i, x.id)));
-    const waiting = files.filter((i) => i.status === "paused");
-    const unstarted = files.filter(notStarted);
-    setText(c.name, wrapperName(w));
-    c.name.title = ws.map((x) => x.url).join("\n");
-    const error = ["error", "waiting"].includes(w.status) ? withoutHost(w.error, w.host) : "";
+    // Files that wait for a start: never started, or paused.
+    const waiting = card.tally.not_started + card.tally.paused;
+    const unstarted = card.tally.not_started;
+    setText(c.name, card.name);
+    c.name.title = card.urls.join("\n");
+    const error = ["error", "waiting"].includes(card.status) ? card.error_shown : "";
     // The hosts the links are on, over every wrapper of the card: a release
     // often has one wrapper per host.
-    const hosts = [...new Set(ws.flatMap((x) => x.hosts ?? []))];
-    const on = hosts.length ? `${hosts.slice(0, 3).join(", ")}${hosts.length > 3 ? ` +${hosts.length - 3}` : ""}` : "";
-    const status = ws.length > 1 ? `${plural(ws.length, "wrapper")} · ${plural(files.length, "file")} · ${partsSummary(files)}` : wrapperStatus(w, files);
-    const line = [w.host, on, status].filter(Boolean).join(" · ");
+    const on = card.hosts.length ? `${card.hosts.slice(0, 3).join(", ")}${card.hosts.length > 3 ? ` +${card.hosts.length - 3}` : ""}` : "";
+    const status =
+      card.ids.length > 1 ? `${plural(card.ids.length, "wrapper")} · ${plural(card.files, "file")} · ${partsSummary(card.tally, card.files)}` : wrapperStatus(card);
+    const line = [card.host, on, status].filter(Boolean).join(" · ");
     const subKey = `${line}|${error}`;
     if (c.sub.dataset.key !== subKey) {
       c.sub.dataset.key = subKey;
-      c.sub.replaceChildren(line, error ? " · " : "", error ? el("span", { class: w.status === "error" ? "error" : "" }, error) : "");
-      c.sub.title = hosts.join(", ");
+      c.sub.replaceChildren(line, error ? " · " : "", error ? el("span", { class: card.status === "error" ? "error" : "" }, error) : "");
+      c.sub.title = card.hosts.join(", ");
     }
-    const key = `${[...ids].join(",")}|${w.status}|${waiting.length}|${unstarted.length}|${s.desktop}|${w.error}|${w.open_urls.join(" ")}`;
-    if (c.key !== key && !(c.editing && w.status === "captcha")) {
+    const key = `${card.ids.join(",")}|${card.status}|${waiting}|${unstarted}|${s.desktop}|${card.error_shown}|${card.open_urls.join(" ")}`;
+    if (c.key !== key && !(c.editing && card.status === "captcha")) {
       c.key = key;
       const actions = [];
-      if (waiting.length) actions.push(button("Start all", { icon: "play", kind: "accent", onclick: () => startWrappers(ws) }));
-      if (w.status === "error") actions.push(button("Try again", { icon: "arrow-clockwise", kind: "subtle", onclick: () => act(w.id, "retry") }));
+      if (waiting) actions.push(button("Start all", { icon: "play", kind: "accent", onclick: () => startWrappers(card) }));
+      if (card.status === "error") actions.push(button("Try again", { icon: "arrow-clockwise", kind: "subtle", onclick: () => act(card.ids[0], "retry") }));
       // Its files that never started go with it, so that asks twice.
       actions.push(
-        unstarted.length
-          ? confirmButton("Remove", `Remove ${plural(unstarted.length, "file")} too?`, () => removeWrappers(ws), { icon: "dismiss", kind: "subtle" })
-          : button("Remove", { icon: "dismiss", kind: "subtle", onclick: () => removeWrappers(ws) }),
+        unstarted
+          ? confirmButton("Remove", `Remove ${plural(unstarted, "file")} too?`, () => removeWrappers(card), { icon: "dismiss", kind: "subtle" })
+          : button("Remove", { icon: "dismiss", kind: "subtle", onclick: () => removeWrappers(card) }),
       );
       c.actions.replaceChildren(...actions);
       c.editing = false;
       c.bar?.remove();
-      c.bar = w.status === "captcha" ? wrapperHelp(c, w, s) : null;
+      c.bar = card.status === "captcha" ? wrapperHelp(c, card, s) : null;
       if (c.bar) c.node.append(c.bar);
     }
     const want = previous ? previous.node.nextSibling : box.firstChild;
@@ -1494,12 +1427,10 @@ function setDisabled(name, disabled) {
   api(`/api/host/${encodeURIComponent(name)}/disabled`, { disabled }).catch(report);
 }
 
-// The preferred hosts in the order downloads try them.
+// The preferred hosts in the order downloads try them, as the engine sorts
+// the hosts.
 function preferredOrder(s) {
-  return s.hosts
-    .filter((h) => h.preferred !== null)
-    .sort((a, b) => a.preferred - b.preferred)
-    .map((h) => h.name);
+  return s.hosts.filter((h) => h.group === "preferred").map((h) => h.name);
 }
 
 function setPreferredOrder(hosts) {
@@ -1573,15 +1504,10 @@ $("hosts").addEventListener("drop", (e) => {
   setPreferredOrder(order);
 });
 
-// Downloads a host runs at once: your limit, or fewer when the host showed it
-// takes fewer.
-function slotsOf(host) {
-  return host.cap ? Math.min(host.cap, host.limit) : host.limit;
-}
-
+// One slot more or fewer than the host runs at once (`slots`).
 function setLimit(name, delta) {
   const host = state?.hosts.find((h) => h.name === name);
-  if (host) api(`/api/host/${encodeURIComponent(name)}/limit/${Math.max(1, slotsOf(host) + delta)}`).catch(report);
+  if (host) api(`/api/host/${encodeURIComponent(name)}/limit/${Math.max(1, host.slots + delta)}`).catch(report);
 }
 
 // A button that wants a second click within a few seconds. An icon-only one
@@ -1649,9 +1575,6 @@ function editFolder(c, name) {
   c.node.append(form);
   input.focus();
 }
-
-// The most slots a host can have, as the engine allows (FALLBACK_LIMIT).
-const MAX_SLOTS = 32;
 
 // The account a host's card asked for, shown once Settings has rendered.
 let accountFor = null;
@@ -1766,18 +1689,16 @@ function renderHosts(s) {
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
   let previous = null;
   const seen = new Set();
-  const fastest = s.hosts.reduce((a, h) => (h.speed > (a?.speed ?? 0) ? h : a), null)?.name;
   const order = preferredOrder(s);
   const preferredCount = order.length;
   let group = null;
   s.hosts.forEach((h, index) => {
     seen.add(h.name);
     // A heading where the next group starts: preferred, the rest, off.
-    const off = h.disabled || h.needs_account;
-    const now = off ? "off" : h.preferred !== null ? "preferred" : "other";
-    if (now !== group) {
-      group = now;
-      const heading = hostHeading(now);
+    const off = h.group === "off";
+    if (h.group !== group) {
+      group = h.group;
+      const heading = hostHeading(group);
       const want = previous ? previous.node.nextSibling : box.firstChild;
       if (want !== heading) box.insertBefore(heading, want);
       previous = { node: heading };
@@ -1800,15 +1721,14 @@ function renderHosts(s) {
     // Its own word on what an address may fetch at full speed today.
     if (h.quota) stats.push(`${bytes(h.quota.used)} used today`);
     setText(c.stats, stats.join(" · "));
-    const slots = slotsOf(h);
+    const slots = h.slots;
     setText(c.slots, `${h.active} / ${slots} ${slots === 1 ? "slot" : "slots"}${h.exits > 1 ? ` × ${h.exits}` : ""}`);
     c.fewer.disabled = slots <= 1;
-    c.more.disabled = slots >= MAX_SLOTS;
+    c.more.disabled = slots >= s.slots_max;
     // The slot buttons show when a limit is set or learned, or asked for.
-    const limited = h.limit < MAX_SLOTS || h.cap !== null;
-    c.stepper.hidden = !(limited || c.showSlots) || off;
+    c.stepper.hidden = !(h.limited || c.showSlots) || off;
     c.limitButton.hidden = !c.stepper.hidden || off;
-    const best = h.name === fastest;
+    const best = h.fastest;
     const place = order.indexOf(h.name);
     const quota = h.quota ? `${h.quota.slowed}/${h.quota.known}` : "";
     const key = `${h.blocked}|${h.route}|${s.proxy}|${best}|${h.folder}|${h.preferred}|${preferredCount}|${h.cap}|${place}|${h.disabled}|${h.needs_account}|${h.exits}|${quota}`;
@@ -1825,7 +1745,7 @@ function renderHosts(s) {
       c.power.querySelector(".toggle-text").textContent = h.disabled ? "Off" : "On";
       c.node.classList.toggle("best", best);
       // Two preferred hosts or more can trade places.
-      c.movable = place >= 0 && preferredCount > 1;
+      c.movable = h.movable;
       c.order.hidden = !c.movable;
       c.up.disabled = place === 0;
       c.down.disabled = place === preferredCount - 1;
@@ -1865,7 +1785,7 @@ function renderHosts(s) {
     previous = c;
   });
   for (const [kind, heading] of hostHeadings) {
-    if (!s.hosts.some((h) => (h.disabled || h.needs_account ? "off" : h.preferred !== null ? "preferred" : "other") === kind)) heading.remove();
+    if (!s.hosts.some((h) => h.group === kind)) heading.remove();
   }
   for (const [name, c] of hostCards) {
     if (!seen.has(name)) {
@@ -1899,17 +1819,17 @@ function renderConnections(s) {
   }
   const d = settingsData;
   if (!d) return;
-  const key = JSON.stringify([d, s.reconnect, s.services, s.desktop, s.pool]);
+  const key = JSON.stringify([d, s.reconnect, s.services, s.desktop, s.pool, s.pool_summary]);
   const active = document.activeElement;
   if (key === connectionsKey || ($("connections").contains(active) && active.matches("input, textarea"))) return;
   connectionsKey = key;
-  const pool = poolSources(d, s);
-  const why = poolWhy(d, s, pool.sources);
+  const pool = s.pool_summary;
+  const why = pool.why;
   fill(
     $("connections"),
     settingCard(
       "shield",
-      `In use: ${poolLabel(s.pool)}`,
+      `In use: ${pool.label}`,
       el(
         "div",
         {},
@@ -2362,6 +2282,18 @@ function renderSettings(s) {
       "A file in the download folder with the same name and size counts as downloaded. With this on, Haul also reads it in full and compares it with the checksum its host publishes, one file at a time and never while downloads are paused: thorough, but slow on big files and spinning disks.",
       toggleSwitch("verify_existing", d.verify_existing, "Compare checksums of files already there"),
     ),
+    settingCard(
+      "folder-zip",
+      "Extract archives when their parts are done",
+      "An archive in parts (name.part1.rar, name.7z.001 and so on) is unpacked beside its parts once the last one is downloaded, one archive at a time: RAR, 7‑Zip and zip. Off: extract one with its button in the list.",
+      toggleSwitch("auto_extract", d.auto_extract, "Extract archives when their parts are done"),
+    ),
+    settingCard(
+      "delete",
+      `Move extracted parts to the ${s.bin}`,
+      "Once an archive is unpacked without error, its parts go. Nothing goes when unpacking fails.",
+      toggleSwitch("delete_after_extract", d.delete_after_extract, `Move extracted parts to the ${s.bin}`),
+    ),
     s.desktop
       ? settingCard(
           "clipboard-link",
@@ -2490,8 +2422,7 @@ let statusKey = null;
 
 function renderStatus(s) {
   refreshPoolFlyout(s);
-  const downloading = s.items.filter((i) => i.status === "downloading").length;
-  const queued = s.items.filter((i) => ["queued", "waiting", "checking", "resolving"].includes(i.status)).length;
+  const { downloading, waiting: queued } = s.counts;
   const clipboard = s.desktop && s.watch_clipboard;
   const key = JSON.stringify([bytes(s.speed), downloading, queued, s.rate, s.pool, theme, s.paused, clipboard]);
   if (key === statusKey) return;
@@ -2508,7 +2439,7 @@ function renderStatus(s) {
     el("span", { class: "grow" }),
     clipboard ? flyoutItem("clipboard", "Links you copy are added", clipboardFlyout, icon("clipboard-link"), "Watching the clipboard") : null,
     flyoutItem("speed", "Speed limit", speedFlyout, icon("top-speed"), s.rate ? `${(s.rate / 1e6).toFixed(1)} MB/s cap` : "No speed limit"),
-    flyoutItem("proxy", "What downloads go out through", proxyFlyout, icon("shield"), poolLabel(s.pool)),
+    flyoutItem("proxy", "What downloads go out through", proxyFlyout, icon("shield"), s.pool_summary.label),
     el(
       "button",
       { type: "button", class: "status-item", title: `Theme: ${themeSpec[1]} (click for ${next})`, onclick: () => setTheme(next) },
@@ -2598,58 +2529,6 @@ function speedFlyout(anchor) {
   });
 }
 
-// The pool in a few words: "Line + 2 proxies + 5 NordVPN", or "Line only".
-function poolLabel(p) {
-  const parts = [p.line ? "Line" : null, p.proxies ? `${p.proxies} ${p.proxies === 1 ? "proxy" : "proxies"}` : null, p.vpn ? `${p.vpn} NordVPN` : null].filter(Boolean);
-  return parts.length === 1 && p.line ? "Line only" : parts.join(" + ");
-}
-
-// Each source of addresses and where it stands: what it adds to the pool,
-// or why it adds nothing, with the setting that switches it.
-function poolSources(d, s) {
-  const proxies = (d.proxy ? 1 : 0) + d.proxies.length;
-  const nord = Boolean(d.accounts.nordvpn_password || fromEnv(d, "nordvpn_password"));
-  const paused = !d.use_proxy;
-  const sources = [];
-  if (proxies) {
-    const status = !d.proxies_on ? "Off" : paused ? "Paused by the switch above" : `${s.pool.proxies} in use`;
-    sources.push({ name: "Proxies", status, key: "proxies_on", on: d.proxies_on });
-  }
-  if (nord) {
-    const servers = s.services.nordvpn.length;
-    const where = d.nordvpn_countries.length ? d.nordvpn_countries.join(", ") : "any country";
-    const status = !d.nordvpn_on
-      ? "Off"
-      : !d.nordvpn_servers
-        ? "No servers chosen"
-        : s.services.error && !servers
-          ? s.services.error
-          : paused
-            ? "Paused by the switch above"
-            : servers
-              ? `${servers} ${servers === 1 ? "server" : "servers"} · ${where}`
-              : "Looking for servers…";
-    sources.push({ name: "NordVPN", status, key: "nordvpn_on", on: d.nordvpn_on, problem: d.nordvpn_on && (!d.nordvpn_servers || (Boolean(s.services.error) && !servers)) });
-  }
-  if (sources.length) {
-    // Its switch adds it beside proxies and VPN; with nothing beside it, it
-    // carries every download whatever the switch says.
-    const alone = paused || !(s.pool.proxies + s.pool.vpn);
-    const status = alone ? "Every download" : d.proxy_with_direct ? "One more address beside them" : "Not used while they are on";
-    sources.unshift({ name: "Your line", status, key: alone ? null : "proxy_with_direct", on: d.proxy_with_direct, label: "Your line in the pool" });
-  }
-  return { sources, configured: sources.length > 0 };
-}
-
-// Why the pool is only the line although proxies or VPN are switched on.
-function poolWhy(d, s, sources) {
-  if (!d.use_proxy || s.pool.proxies + s.pool.vpn) return null;
-  const problem = sources.find((x) => x.problem);
-  if (problem?.name === "NordVPN" && !d.nordvpn_servers) return "Nothing added yet: NordVPN has no servers chosen. Set how many under VPN services › Servers.";
-  if (problem) return `Nothing added yet: ${problem.name}: ${problem.status}.`;
-  return "Nothing added yet: every proxy and VPN source is off.";
-}
-
 // One source as a row: its name and state, and its own switch.
 function sourceRow(x) {
   const sw = x.key ? flyoutSwitch(x.label ?? x.name, x.on, (on) => save({ [x.key]: on }, null)).querySelector(".toggle") : null;
@@ -2660,15 +2539,16 @@ function sourceRow(x) {
 // proxies and VPN together, each source with its own, and the way to the
 // page that sets them up.
 function proxyFlyout(anchor) {
-  openFlyout("proxy", anchor, "Connections", (d) => poolFlyoutContent(d, state));
+  openFlyout("proxy", anchor, "Connections", () => poolFlyoutContent(state));
 }
 
-function poolFlyoutContent(d, s) {
-  const { sources, configured } = poolSources(d, s);
-  const why = poolWhy(d, s, sources);
+// The pool as the engine sums it up (`pool_summary`); `pool.on` is the
+// switch for proxies and VPN together.
+function poolFlyoutContent(s) {
+  const { sources, configured, why, label } = s.pool_summary;
   return [
-    el("div", { class: "pool-now" }, el("span", { class: "sub" }, "In use"), el("strong", {}, poolLabel(s.pool))),
-    flyoutSwitch("Use proxies and VPN", configured && d.use_proxy, (on) => save({ use_proxy: on }, null), !configured),
+    el("div", { class: "pool-now" }, el("span", { class: "sub" }, "In use"), el("strong", {}, label)),
+    flyoutSwitch("Use proxies and VPN", configured && s.pool.on, (on) => save({ use_proxy: on }, null), !configured),
     why ? el("p", { class: "hint warn" }, why) : null,
     configured ? el("div", { class: "pool-sources" }, sources.map(sourceRow)) : el("p", { class: "hint" }, "No proxies or VPN set up yet: downloads use your line."),
     button("Open Connections", {
@@ -2684,19 +2564,14 @@ function poolFlyoutContent(d, s) {
 // The flyout follows the pool while open: a switch flipped there, or a VPN
 // server found, shows at once.
 let poolFlyoutKey = null;
-async function refreshPoolFlyout(s) {
+function refreshPoolFlyout(s) {
   if (flyoutFor !== "proxy" || !flyout.matches(":popover-open")) return;
-  const key = JSON.stringify([s.pool, s.services, s.config_version]);
+  const key = JSON.stringify([s.pool, s.pool_summary]);
   if (key === poolFlyoutKey) return;
   poolFlyoutKey = key;
-  try {
-    const res = await fetch("/api/settings");
-    if (!res.ok) return;
-    const d = await res.json();
-    const focused = flyout.contains(document.activeElement) ? document.activeElement.getAttribute("aria-label") : null;
-    fill(flyout, el("div", { class: "flyout-title" }, "Connections"), poolFlyoutContent(d, s));
-    if (focused) flyout.querySelector(`[aria-label="${CSS.escape(focused)}"]`)?.focus();
-  } catch {}
+  const focused = flyout.contains(document.activeElement) ? document.activeElement.getAttribute("aria-label") : null;
+  fill(flyout, el("div", { class: "flyout-title" }, "Connections"), poolFlyoutContent(s));
+  if (focused) flyout.querySelector(`[aria-label="${CSS.escape(focused)}"]`)?.focus();
 }
 
 function clipboardFlyout(anchor) {

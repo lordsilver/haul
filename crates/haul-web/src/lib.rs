@@ -408,6 +408,11 @@ async fn item(State(app): State<App>, Path((id, action)): Path<(String, String)>
             Ok(found) => found,
             Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
         },
+        // Says why when the archive cannot be unpacked yet.
+        ItemAction::Extract => match app.engine.extract(&id) {
+            Ok(found) => found,
+            Err(e) => return error(StatusCode::CONFLICT, e),
+        },
         _ => app.engine.item_action(&id, action),
     };
     if found {

@@ -21,8 +21,8 @@ use axum::{
     routing::{get, post},
 };
 use haul_core::{
-    Config, Engine, Event, Found, ItemAction, Options, Route, Snapshot, StartError, Verifying,
-    config::Endpoints,
+    Config, Engine, Event, Extract, Found, ItemAction, Options, Route, Snapshot, StartError,
+    Verifying, config::Endpoints,
 };
 use serde_json::json;
 
@@ -644,6 +644,18 @@ async fn start_server() -> (Server, u16) {
                     _ => "<html><head><title>Nothing here</title></head><body><a href=\"/\">Home</a></body></html>",
                 };
                 ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], body)
+            }),
+        )
+        .route(
+            "/archive/{name}",
+            // The archives in tests/fixtures/archives, by name.
+            get(|State(s): State<Server>, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                log(&s, &format!("/archive/{name}"), &headers);
+                let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/archives");
+                match std::fs::read(fixtures.join(&name)) {
+                    Ok(data) => file_response(data, &headers),
+                    Err(_) => StatusCode::NOT_FOUND.into_response(),
+                }
             }),
         )
         .route(
@@ -2816,4 +2828,178 @@ async fn nordvpn_servers_join_the_proxies() {
         s.services.error
     );
     assert_eq!(s.services.nordvpn.len(), 2, "kept, so nothing goes direct");
+}
+
+/// The files the fixture archives hold.
+fn assert_release(dir: &std::path::Path) {
+    assert_eq!(
+        std::fs::metadata(dir.join("movie.bin")).unwrap().len(),
+        60000
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("sub/readme.txt")).unwrap(),
+        "hello from haul\n"
+    );
+}
+
+#[tokio::test]
+async fn an_archive_in_parts_unpacks_when_its_last_part_is_done() {
+    let t = Setup::new().await;
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            auto_extract: true,
+            delete_after_extract: true,
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    let mut events = engine.subscribe();
+    let links: Vec<String> = (1..=3)
+        .map(|n| format!("{}/archive/R5.part{n}.rar", t.ip))
+        .collect();
+    engine.add_text(&links.join("\n"), "");
+    let s = wait_for(&engine, "extracted", |s| {
+        s.items.len() == 3 && s.items.iter().all(|i| i.extract == Extract::Done)
+    })
+    .await;
+    assert_release(&t.root.join("dl/Release"));
+    // The parts went to the bin, and their rows say so by keeping no path.
+    assert_eq!(files_in(&t.root.join("dl")), ["Release"]);
+    assert_eq!(
+        files_in(&t.root.join("bin")),
+        ["R5.part1.rar", "R5.part2.rar", "R5.part3.rar"]
+    );
+    assert!(
+        s.items
+            .iter()
+            .all(|i| i.path.is_none() && i.status == "done")
+    );
+    let notice = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(Event::Notice { title, body }) = events.recv().await {
+                return (title, body);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(notice, ("Extracted".to_string(), "R5.rar".to_string()));
+}
+
+#[tokio::test]
+async fn an_archive_unpacks_when_asked_and_says_why_it_cannot() {
+    let t = Setup::new().await;
+    // auto_extract is off.
+    let engine = t.engine().await;
+    engine.add_text(
+        &format!("{0}/archive/S.7z.001 {0}/archive/S.7z.002", t.ip),
+        "",
+    );
+    let s = wait_for(&engine, "two parts", |s| s.items.len() == 2 && all_done(s)).await;
+    assert!(
+        s.items.iter().all(|i| i.extract == Extract::No),
+        "not on its own"
+    );
+    let id = s.items[0].id.clone();
+    // The third part is not on the list yet: the archive lacks it.
+    assert!(engine.extract(&id).unwrap());
+    let s = wait_for(&engine, "failed", |s| {
+        s.items.iter().all(|i| i.extract == Extract::Failed)
+    })
+    .await;
+    assert!(!s.items[0].extract_error.is_empty());
+    assert_eq!(files_in(&t.root.join("dl")), ["S.7z.001", "S.7z.002"]);
+
+    engine.add_text(&format!("{}/archive/S.7z.003", t.ip), "");
+    let err = engine.extract(&id).unwrap_err();
+    assert!(err.contains("S.7z.003"), "{err}");
+    wait_for(&engine, "three parts", |s| {
+        s.items.len() == 3 && all_done(s)
+    })
+    .await;
+    assert!(engine.item_action(&id, ItemAction::Extract));
+    wait_for(&engine, "extracted", |s| {
+        s.items.iter().all(|i| i.extract == Extract::Done)
+    })
+    .await;
+    assert_release(&t.root.join("dl/Release"));
+    // delete_after_extract is off: the parts stay.
+    assert_eq!(
+        files_in(&t.root.join("dl")),
+        ["Release", "S.7z.001", "S.7z.002", "S.7z.003"]
+    );
+
+    let single = engine.add_text(&format!("{}/files/single.bin", t.ip), "");
+    assert_eq!(single.added, 1);
+    let s = wait_for(&engine, "done", |s| s.items.len() == 4 && all_done(s)).await;
+    let single = s.items.iter().find(|i| i.name == "single.bin").unwrap();
+    assert!(engine.extract(&single.id).is_err(), "no archive in parts");
+    assert!(!engine.extract("nope").unwrap());
+}
+
+#[tokio::test]
+async fn a_part_missing_from_the_list_holds_the_archive_back() {
+    let t = Setup::new().await;
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            auto_extract: true,
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.add_text(
+        &format!("{0}/archive/R5.part1.rar {0}/archive/R5.part3.rar", t.ip),
+        "",
+    );
+    let s = wait_for(&engine, "two parts", |s| s.items.len() == 2 && all_done(s)).await;
+    assert_eq!(s.archives.len(), 1);
+    let a = &s.archives[0];
+    assert_eq!(
+        (a.name.as_str(), a.missing.clone()),
+        ("R5.rar", vec!["R5.part2.rar".to_string()])
+    );
+    assert!(a.commands.is_empty(), "nothing to extract yet");
+    assert!(
+        s.items
+            .iter()
+            .all(|i| i.archive.as_deref() == Some(a.key.as_str()))
+    );
+    let err = engine.extract(&a.ids[0]).unwrap_err();
+    assert_eq!(err, "R5.part2.rar is missing from the list");
+
+    // With it on the list, the archive extracts by itself.
+    engine.add_text(&format!("{}/archive/R5.part2.rar", t.ip), "");
+    wait_for(&engine, "extracted", |s| {
+        s.items.len() == 3 && s.items.iter().all(|i| i.extract == Extract::Done)
+    })
+    .await;
+    assert_release(&t.root.join("dl/Release"));
+}
+
+#[tokio::test]
+async fn a_zip_split_into_z01_pieces_extracts() {
+    let t = Setup::new().await;
+    let engine = Engine::start(Options {
+        config: Some(Config {
+            auto_extract: true,
+            ..t.config()
+        }),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    engine.add_text(&format!("{0}/archive/ZS.z01 {0}/archive/ZS.zip", t.ip), "");
+    let s = wait_for(&engine, "extracted", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.extract == Extract::Done)
+    })
+    .await;
+    assert_eq!(s.archives[0].name, "ZS.zip");
+    assert_eq!(
+        std::fs::read_to_string(t.root.join("dl/Release/zlast.txt")).unwrap(),
+        "after the split\n"
+    );
 }
