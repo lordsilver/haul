@@ -84,6 +84,18 @@ fn copies(items: &IndexMap<String, Item>) -> Vec<(Vec<String>, Vec<String>)> {
             .map(|id| items.get(id).map(|it| it.size).filter(|s| *s > 0))
             .collect()
     };
+    // A set is whole only once every row that came with it (same package,
+    // same wrapper) has been looked up: until then a part not yet named
+    // makes it look shorter than it is, as long as another's first parts.
+    let looked_up = |set: &ArchiveSet| {
+        let Some(first) = items.get(&set.ids[0]) else {
+            return false;
+        };
+        items
+            .values()
+            .filter(|o| !o.wrapper && o.package == first.package && o.source == first.source)
+            .all(|o| o.probed && o.name.is_some())
+    };
     let untouched = |set: &ArchiveSet| {
         set.ids.iter().all(|id| {
             items
@@ -94,13 +106,17 @@ fn copies(items: &IndexMap<String, Item>) -> Vec<(Vec<String>, Vec<String>)> {
     let mut pairs = Vec::new();
     let mut taken = std::collections::HashSet::new();
     for (i, keep) in sets.iter().enumerate() {
-        if taken.contains(&i) || !keep.missing.is_empty() {
+        if taken.contains(&i) || !keep.missing.is_empty() || !looked_up(keep) {
             continue;
         }
         let Some(want) = sizes(keep) else { continue };
         let keep_release = release(items, &items[&keep.ids[0]]);
         for (j, copy) in sets.iter().enumerate().skip(i + 1) {
-            if taken.contains(&j) || !copy.missing.is_empty() || copy.ids.len() != keep.ids.len() {
+            if taken.contains(&j)
+                || !copy.missing.is_empty()
+                || copy.ids.len() != keep.ids.len()
+                || !looked_up(copy)
+            {
                 continue;
             }
             let copy_release = release(items, &items[&copy.ids[0]]);
@@ -403,5 +419,54 @@ impl Engine {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|p| p.fraction())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(name: Option<&str>, size: u64) -> Item {
+        let mut it = Item::new(
+            vec![format!("https://h.example/{}", uuid::Uuid::new_v4())],
+            name.map(str::to_string),
+            "Release".into(),
+        );
+        it.size = size;
+        it.probed = name.is_some();
+        it
+    }
+
+    fn queue(rows: Vec<Item>) -> IndexMap<String, Item> {
+        rows.into_iter().map(|it| (it.id.clone(), it)).collect()
+    }
+
+    /// A set whose last part is not looked up yet looks as long as another's
+    /// first parts: it is not a copy of anything until it is whole.
+    #[test]
+    fn a_set_still_being_looked_up_is_no_copy() {
+        let mut items = queue(vec![
+            row(Some("A.part1.rar"), 100),
+            row(Some("A.part2.rar"), 100),
+            row(Some("C.part1.rar"), 100),
+            row(Some("C.part2.rar"), 100),
+            row(None, 0),
+        ]);
+        assert!(copies(&items).is_empty(), "C's third part is still unnamed");
+        // Once named, C has three parts and is no copy of A's two.
+        let last = items.keys().last().unwrap().clone();
+        let it = items.get_mut(&last).unwrap();
+        it.name = Some("C.part3.rar".into());
+        it.size = 100;
+        it.probed = true;
+        assert!(copies(&items).is_empty());
+        // B, a true copy of A, is.
+        let (b1, b2) = (row(Some("B.part1.rar"), 100), row(Some("B.part2.rar"), 100));
+        let ids = [b1.id.clone(), b2.id.clone()];
+        items.insert(b1.id.clone(), b1);
+        items.insert(b2.id.clone(), b2);
+        let pairs = copies(&items);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].1, ids);
     }
 }
