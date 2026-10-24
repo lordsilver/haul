@@ -52,17 +52,28 @@ When done, stop the server and the file server and delete `$D`: the downloads ar
 
 ## The desktop app and the in-app browser
 
-Build `haul-desktop`, start `scripts/fake_host.py`, and run the app on Xvfb as `wsl-gui-check` describes, with `HAUL_DATA_DIR` and `HAUL_PORT` pointing at scratch values. Then:
+Serve a stand-in host page from the scratch folder: a page titled like a captcha that lists no links, which sets a cookie and then goes to its file, as a host's download button would:
+
+```sh
+H=$SCRATCH/host && mkdir -p $H/files && truncate -s 2M $H/files/solved-file.bin
+cat > $H/captcha.html <<'HTML'
+<title>Verify you are human</title><p>Solve the captcha to download.</p>
+<script>document.cookie = "session=s3cret; path=/"; setTimeout(() => { location.href = "/files/solved-file.bin"; }, 2000);</script>
+HTML
+(cd $H && python3 -m http.server 8798 --bind 127.0.0.1 >$H/host.log 2>&1 &)
+```
+
+Build `haul-desktop` and run the app on Xvfb as `wsl-gui-check` describes, with `HAUL_DATA_DIR` and `HAUL_PORT` pointing at scratch values. Then:
 
 ```sh
 B=http://127.0.0.1:8767
-curl -s -H 'Content-Type: application/json' -d '{"text":"http://127.0.0.1:8798/captcha"}' $B/api/add
+curl -s -H 'Content-Type: application/json' -d '{"text":"http://127.0.0.1:8798/captcha.html"}' $B/api/add
 sleep 2; id=$(curl -s $B/api/state | jq -r '.items[] | select(.status=="captcha") | .id')
 curl -s -H 'Content-Type: application/json' -H "Origin: $B" -d '{"user_agent":"Mozilla/5.0 TestAgent"}' $B/api/item/$id/browse
 sleep 1; python3 ~/.agents/skills/wsl-gui-check/scripts/xwindows.py :98      # the browse window is mapped, titled "<host>: solve the page…"
 sleep 4; curl -s $B/api/state | jq '.items[] | {name, status, path}'
 ```
 
-Expect the item `done` as `solved-file.bin`, `took over the download` in `$HAUL_DATA_DIR/haul.log`, and in the fake host's log a final `GET /files/solved-file.bin` carrying `cookie=session=s3cret` and the `TestAgent` user agent: that request is the engine's, with the page's cookie handed over. The webview's own request just before it is the download that was cancelled.
+Expect the item `done` as `solved-file.bin`, `took over the download` in `$HAUL_DATA_DIR/haul.log`, and two `GET /files/solved-file.bin` in `$H/host.log`: the webview's own, the download that was cancelled, then the engine's. `python3 -m http.server` logs no headers, so this does not show the page's cookie or the `TestAgent` user agent going with the engine's request. Stop the file server and delete `$H` when done.
 
 On Linux the app renders with WebKitGTK and Linux fonts. WebView2 on Windows behaves like Chrome, so judge the look from the Chrome screenshots.
