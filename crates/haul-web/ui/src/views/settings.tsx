@@ -20,14 +20,14 @@ import {
   Trash2,
   Wrench,
 } from 'lucide-react';
-import { type FormEvent, useEffect, useState } from 'react';
+import { type FormEvent, useState } from 'react';
 import { Infobar } from '@/components/infobar';
 import {
-  AccountField,
   LinesField,
   NumberField,
   Section,
   SettingCard,
+  SettingRow,
   SettingSwitch,
   TextField,
 } from '@/components/setting-card';
@@ -37,19 +37,9 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { api, openPlace, report, save } from '@/lib/api';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
-import { go } from '@/lib/route';
 import { envNote, useSettings } from '@/lib/settings';
 import { THEMES, setTheme, useTheme } from '@/lib/theme';
 import { toast } from '@/lib/toast';
-
-// The account a host's card asked for: in view and ready to type once the
-// page shows.
-let accountFor: string | null = null;
-
-export function showAccount(host: string) {
-  accountFor = host;
-  go('settings');
-}
 
 const THEME_ICONS: Record<string, LucideIcon> = { system: Monitor, light: Sun, dark: Moon };
 
@@ -132,13 +122,6 @@ async function saveDiagnostics(desktop: boolean) {
 
 function Page({ s, d }: { s: State; d: SettingsView }) {
   const theme = useTheme();
-  useEffect(() => {
-    if (!accountFor) return;
-    const card = document.querySelector(`[data-account="${CSS.escape(accountFor)}"]`);
-    accountFor = null;
-    card?.scrollIntoView({ block: 'center' });
-    card?.querySelector('input')?.focus({ preventScroll: true });
-  }, []);
   const note = (...keys: string[]) => envNote(d, ...keys);
   return (
     <div className="flex flex-col gap-2.5">
@@ -333,59 +316,6 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
           />
         }
       />
-      <Section>Accounts</Section>
-      <SettingCard
-        icon={KeyRound}
-        title="1fichier"
-        description={note('1fichier_key') ?? 'API key: no free-mode wait or captcha.'}
-        controls={<AccountField d={d} name="1fichier_key" label="API key" />}
-      />
-      <SettingCard
-        icon={KeyRound}
-        title="pixeldrain"
-        description={note('pixeldrain_key') ?? 'API key.'}
-        controls={<AccountField d={d} name="pixeldrain_key" label="API key" />}
-      />
-      <SettingCard
-        data-account="gofile.io"
-        icon={KeyRound}
-        title="gofile"
-        description={
-          note('gofile_token') ??
-          "A premium account's token. Without one gofile gives no file to Haul, so its links are left out."
-        }
-        controls={<AccountField d={d} name="gofile_token" label="Account token" />}
-      />
-      <SettingCard
-        data-account="rapidgator.net"
-        icon={KeyRound}
-        title="rapidgator"
-        description={
-          note('rapidgator_user', 'rapidgator_pass') ??
-          'Premium account. Without it rapidgator gives no file to Haul, so its links are left out.'
-        }
-        controls={
-          <>
-            <AccountField d={d} name="rapidgator_user" label="Username" secret={false} />
-            <AccountField d={d} name="rapidgator_pass" label="Password" />
-          </>
-        }
-      />
-      <SettingCard
-        data-account="nitroflare.com"
-        icon={KeyRound}
-        title="nitroflare"
-        description={
-          note('nitroflare_user', 'nitroflare_key') ??
-          'Premium account. Without it nitroflare gives no file to Haul, so its links are left out.'
-        }
-        controls={
-          <>
-            <AccountField d={d} name="nitroflare_user" label="User" secret={false} />
-            <AccountField d={d} name="nitroflare_key" label="Premium key" />
-          </>
-        }
-      />
       <Section>Advanced</Section>
       <SettingCard icon={Globe} title="User agent" description="Sent to hosts. Leave empty for Haul's default.">
         <TextField
@@ -449,16 +379,11 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
         }
       >
         {/* How much the log keeps: only worth more while reproducing. */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-3 pl-9">
-          <div className="min-w-0 flex-[1_1_280px] text-sm">
-            <div className="font-medium">Detailed log</div>
-            <div className="mt-0.5 text-muted-foreground">
-              Every request, retry and mirror choice, while you reproduce a problem before saving the report. Off, the
-              log keeps notable events.
-            </div>
-          </div>
-          <SettingSwitch name="detailed_log" on={d.detailed_log} label="Detailed log" />
-        </div>
+        <SettingRow
+          title="Detailed log"
+          description="Every request, retry and mirror choice, while you reproduce a problem before saving the report. Off, the log keeps notable events."
+          controls={<SettingSwitch name="detailed_log" on={d.detailed_log} label="Detailed log" />}
+        />
       </SettingCard>
     </div>
   );

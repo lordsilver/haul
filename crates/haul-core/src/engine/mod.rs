@@ -239,6 +239,8 @@ pub struct Snapshot {
     pub data_dir: String,
     /// The settings file, when the engine was started from one.
     pub config_file: Option<String>,
+    /// The hosts that take an account, and what each asks for.
+    pub accounts: Vec<hosts::AccountForm>,
     /// Getting a new address from the router.
     pub reconnect: ReconnectView,
     /// VPN services whose servers join the proxies.
@@ -3490,6 +3492,7 @@ impl Engine {
             download_dir: self.download_dir().display().to_string(),
             data_dir: self.0.data_dir.display().to_string(),
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
+            accounts: hosts::account_forms(&cfg),
             reconnect,
             services,
             update: self

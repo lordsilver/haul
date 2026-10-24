@@ -1,7 +1,7 @@
 import { FolderOpen, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
-import { HostPicker } from '@/components/host-picker';
+import { HostPicker, hostLabel } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { StatusGlyph } from '@/components/status-glyph';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -161,13 +161,15 @@ function RowActions({ it, s }: { it: ItemView; s: State }) {
   return <div className={COLUMNS.actions}>{it.commands.map((c) => buttons[c]?.())}</div>;
 }
 
-// The host it comes from, starred when it is a preferred one, how many other
+// The host it comes from, starred when it is a preferred one and pinned
+// when the user picked it, how many other
 // hosts that are on could take over, and where it belongs; then why it
 // failed or waits, or what the host wants of the user.
 function Subtitle({ it }: { it: ItemView }) {
   // The host part, which chooses the host when the file has several.
   const others = it.other_hosts ? ` · ${it.other_hosts} other ${it.other_hosts === 1 ? 'host' : 'hosts'}` : '';
-  const host = `${it.preferred_host || it.download_from ? '★ ' : ''}${it.shown_host}${others}`;
+  const host = `${it.shown_host}${others}`;
+  const label = hostLabel(host, { picked: Boolean(it.download_from), preferred: it.preferred_host });
   const rest: string[] = [];
   if (it.package) rest.push(it.package);
   if (it.source_name) rest.push(`from ${it.source_name}`);
@@ -175,7 +177,7 @@ function Subtitle({ it }: { it: ItemView }) {
   const tone = it.status === 'error' ? 'text-destructive' : it.status === 'captcha' ? 'text-warn-strong' : '';
   return (
     <div className="truncate text-xs text-muted-foreground" title={[host, ...rest, reason].filter(Boolean).join('\n')}>
-      <HostPicker ids={[it.id]} hosts={it.mirrors} chosen={it.download_from} label={host} />
+      <HostPicker ids={[it.id]} hosts={it.mirrors} chosen={it.download_from} label={label} />
       {rest.length ? ` · ${rest.join(' · ')}` : null}
       {reason ? <span className={tone}> · {reason}</span> : null}
     </div>

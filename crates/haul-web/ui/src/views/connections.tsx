@@ -1,4 +1,4 @@
-import { Globe, KeyRound, Monitor, RotateCw, Shield, Wrench } from 'lucide-react';
+import { Globe, KeyRound, Monitor, RotateCw, Shield } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Infobar } from '@/components/infobar';
 import {
@@ -7,12 +7,14 @@ import {
   NumberField,
   Section,
   SettingCard,
+  SettingRow,
   SettingSwitch,
   TextField,
 } from '@/components/setting-card';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { api, report, save } from '@/lib/api';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
@@ -80,45 +82,46 @@ function Redial({ s }: { s: State }) {
   );
 }
 
-// Getting this line a new public address from the router: what was found,
+// Getting this line a new public address, in one card: what was found and
 // the button that does it now, the switch that lets Haul do it on its own,
-// and the router's login or a command for any other router.
+// and how it is done (the router, with its login when it wants one, or a
+// command of the user's own).
 function YourLine({ s, d }: { s: State; d: SettingsView }) {
   useEffect(() => {
     api('/api/router').catch(() => {});
   }, []);
+  const [mode, setMode] = useState<'router' | 'command'>(d.reconnect_command ? 'command' : 'router');
+  useEffect(() => {
+    if (d.reconnect_command) setMode('command');
+  }, [d.reconnect_command]);
   const r = s.reconnect;
   const found = r.router
     ? `${r.router} found on your network.`
     : 'No router answered on this network yet; a command of your own works with any.';
   return (
-    <>
-      <SettingCard
-        icon={Globe}
-        title="Router"
-        description={`${found} Hosts limit what one address may fetch; a new IP usually brings a fresh allowance.`}
-        controls={<Redial s={s} />}
-      >
-        {/* What stands in the way, or how the last attempt went. */}
-        {r.blocked ? (
-          <Infobar kind="caution" title="Cannot get a new IP yet.">
-            {`${r.blocked.charAt(0).toUpperCase()}${r.blocked.slice(1)}.`}
-          </Infobar>
-        ) : r.note ? (
-          <Infobar kind={r.failed ? 'critical' : 'success'}>
-            {r.note_at ? `${r.note} · ${at(r.note_at)}` : r.note}
-          </Infobar>
-        ) : null}
-      </SettingCard>
-      <SettingCard
-        icon={RotateCw}
+    <SettingCard
+      icon={Globe}
+      title="Router"
+      description={`${found} Hosts limit what one address may fetch; a new IP usually brings a fresh allowance.`}
+      controls={<Redial s={s} />}
+    >
+      {/* What stands in the way, or how the last attempt went. */}
+      {r.blocked ? (
+        <Infobar kind="caution" title="Cannot get a new IP yet.">
+          {`${r.blocked.charAt(0).toUpperCase()}${r.blocked.slice(1)}.`}
+        </Infobar>
+      ) : r.note ? (
+        <Infobar kind={r.failed ? 'critical' : 'success'}>
+          {r.note_at ? `${r.note} · ${at(r.note_at)}` : r.note}
+        </Infobar>
+      ) : null}
+      <SettingRow
         title="Get a new IP on its own"
+        disabled={Boolean(r.blocked) && !d.reconnect}
         description={
-          r.blocked ? (
-            <span className="text-warn-strong">Off until Haul can get a new IP: see Router above.</span>
-          ) : (
-            'When a host has slowed your address for the day, or asked it to wait a long while, and no proxy can take over. At most every ten minutes; each redial cuts the line for a few seconds.'
-          )
+          r.blocked
+            ? 'Off until Haul can get a new IP: see above.'
+            : 'When a host has slowed your address for the day, or asked it to wait a long while, and no proxy can take over. At most every ten minutes; each redial cuts the line for a few seconds.'
         }
         controls={
           <SettingSwitch
@@ -129,35 +132,53 @@ function YourLine({ s, d }: { s: State; d: SettingsView }) {
           />
         }
       />
-      <SettingCard
-        icon={KeyRound}
-        title="Router login (TR-064)"
+      <SettingRow
+        title="How"
         description={
-          envNote(d, 'router_user', 'router_password') ??
-          'For a router that redials only over TR-064 with a login, such as a FRITZ!Box (its user is under System › FRITZ!Box Users). A router that redials over UPnP needs none. Not used while a reconnect command is set.'
+          mode === 'router'
+            ? (envNote(d, 'router_user', 'router_password') ??
+              'Haul asks the router over UPnP. A router that redials only over TR-064 with a login, such as a FRITZ!Box, needs that login here (its user is under System › FRITZ!Box Users).')
+            : "A command run in the system's shell instead: for a router with neither UPnP nor TR-064, or a VPN app's own command. Haul leaves the router alone."
         }
         controls={
-          <>
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            value={mode}
+            aria-label="How Haul gets a new IP"
+            onValueChange={(value) => {
+              if (!value) return;
+              setMode(value as typeof mode);
+              // The command, when set, is what Haul runs: the router needs it gone.
+              if (value === 'router' && d.reconnect_command) save({ reconnect_command: '' });
+            }}
+          >
+            <ToggleGroupItem value="router" className="px-3">
+              Router
+            </ToggleGroupItem>
+            <ToggleGroupItem value="command" className="px-3">
+              My own command
+            </ToggleGroupItem>
+          </ToggleGroup>
+        }
+      >
+        {mode === 'router' ? (
+          <div className="flex flex-wrap items-center gap-2">
             <AccountField d={d} name="router_user" label="User" secret={false} />
             <AccountField d={d} name="router_password" label="Password" />
-          </>
-        }
-      />
-      <SettingCard
-        icon={Wrench}
-        title="Reconnect command"
-        description="Instead of the router: for one that offers neither UPnP nor TR-064, or a VPN app's own command. When set, Haul runs it in the system's shell and leaves the router alone."
-      >
-        <TextField
-          d={d}
-          name="reconnect_command"
-          value={d.reconnect_command}
-          label="Reconnect command"
-          placeholder="my-router-cli reconnect"
-          wide
-        />
-      </SettingCard>
-    </>
+          </div>
+        ) : (
+          <TextField
+            d={d}
+            name="reconnect_command"
+            value={d.reconnect_command}
+            label="Reconnect command"
+            placeholder="my-router-cli reconnect"
+            wide
+          />
+        )}
+      </SettingRow>
+    </SettingCard>
   );
 }
 
