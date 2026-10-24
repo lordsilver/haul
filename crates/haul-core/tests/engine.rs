@@ -981,6 +981,48 @@ async fn a_newer_haul_is_found_and_its_installer_checked() {
     );
 }
 
+/// A file on several hosts downloads from the one the user picked, even
+/// over the hosts they prefer in general.
+#[tokio::test]
+async fn a_file_downloads_from_the_host_picked_for_it() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    // pixeldrain.com, preferred from the start, and a direct link: one file.
+    engine.add_text(
+        &format!("https://pixeldrain.com/u/pick\n{}/files/pick.bin", t.ip),
+        "",
+    );
+    let s = wait_for(&engine, "one row on two hosts", |s| {
+        s.items.len() == 1 && s.items[0].mirrors.len() == 2
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    assert_eq!(
+        engine.download_from(std::slice::from_ref(&id), Some("127.0.0.1")),
+        1
+    );
+    assert_eq!(
+        engine.snapshot().items[0].download_from.as_deref(),
+        Some("127.0.0.1")
+    );
+    engine.set_paused(false);
+    engine.item_action(&id, ItemAction::Resume);
+    wait_for(&engine, "done", all_done).await;
+    assert!(
+        !t.server.requests("/files/pick.bin").is_empty(),
+        "the picked host served it"
+    );
+    // pixeldrain was only asked what the file is, never for it.
+    assert!(
+        t.server
+            .requests("/api/file/pick")
+            .iter()
+            .all(|r| r.contains("/info")),
+        "pixeldrain stood by"
+    );
+}
+
 /// A MEGA download that failed in Haul 0.15.0 for want of megatools goes
 /// again, as Haul now downloads from MEGA itself.
 #[tokio::test]

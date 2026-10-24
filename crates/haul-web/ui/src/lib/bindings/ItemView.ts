@@ -9,6 +9,10 @@ export type ItemView = { id: string, name: string, package: string, status: "que
  */
 mirrors: Array<string>, 
 /**
+ * The host the user picked to download it from, when they did.
+ */
+download_from: string | null, 
+/**
  * Seconds until a waiting item may try again.
  */
 wait: number, 

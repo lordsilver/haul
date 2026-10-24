@@ -10,6 +10,8 @@ A link whose path names a file joins any row with the same file name as another 
 
 A file with mirrors downloads from the hosts you star (`preferred_hosts`, with pixeldrain.com preferred from the start), in that order, which **Hosts** changes when you drag a preferred host or use its arrows. A preferred host that is only busy is waited for; one that is cooling down or has failed for the file is passed over. Otherwise, among the mirrors whose host has a free slot and no cooldown, the host with the best measured speed per file wins; recent failures count against a host, and a host never tried scores high, so each gets a turn. Speeds come from earlier downloads and are remembered in `hosts.json` for a week.
 
+A file can also be sent to one host of its own: the host named under a row, or under an archive for all its parts, opens **Download from**, where you pick one of the file's hosts, or **Automatic** for the order above. The host you pick goes first for that file, waited for when it is only busy and passed over while it cools down or once its link has failed, the other hosts standing by. The row stars the host it downloads from.
+
 ## Files already there
 
 Before a download starts, once the host has reported the file's name, Haul looks for that file where the row would save it. The same name with exactly the size the host reported counts as the same file, and the name alone when the host did not say the size. A match finishes the row as **Already downloaded** and fetches nothing; a different file by that name is saved next to it as `name (1).ext`. Links Haul can look up cheaply (pixeldrain, direct links) are checked when added, the others after their download link is resolved.

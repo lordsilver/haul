@@ -32,7 +32,15 @@ share: number, tally: Tally,
  * The hosts its parts are shown under, and how many others that are
  * on could take over.
  */
-hosts: Array<string>, other_hosts: number, package: string, 
+hosts: Array<string>, other_hosts: number, 
+/**
+ * Every host its parts are on, for choosing one.
+ */
+all_hosts: Array<string>, 
+/**
+ * The host the user picked for every part, when they picked one.
+ */
+download_from: string | null, package: string, 
 /**
  * The wrapper its first part came from, and that wrapper's name.
  */
