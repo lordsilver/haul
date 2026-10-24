@@ -1,5 +1,6 @@
 import {
   ArrowDownToLine,
+  ArrowUpCircle,
   CircleCheck,
   Clipboard,
   Clock,
@@ -283,6 +284,16 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
           controls={<SettingSwitch name="watch_clipboard" on={d.watch_clipboard} label="Watch the clipboard" />}
         />
       ) : null}
+      <SettingCard
+        icon={ArrowUpCircle}
+        title="Look for updates"
+        description={
+          s.desktop
+            ? 'Haul asks GitHub for a newer version after it starts and every six hours, and offers to install it in the status bar.'
+            : 'Haul asks GitHub for a newer version after it starts and every six hours, and says so in the status bar.'
+        }
+        controls={<SettingSwitch name="check_updates" on={d.check_updates} label="Look for updates" />}
+      />
       <Section>When something fails</Section>
       <SettingCard
         icon={RotateCw}

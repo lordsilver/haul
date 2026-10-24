@@ -39,6 +39,8 @@ pub struct Config {
     pub theme: Theme,
     /// Add links copied anywhere (desktop app).
     pub watch_clipboard: bool,
+    /// Look for a newer Haul on GitHub now and then.
+    pub check_updates: bool,
     /// Removing a finished download from the list also moves its file to the
     /// Recycle Bin.
     pub recycle_on_remove: bool,
@@ -150,6 +152,7 @@ impl Default for Config {
             max_active_gb: 0.0,
             theme: Theme::System,
             watch_clipboard: false,
+            check_updates: true,
             recycle_on_remove: false,
             skip_add_dialog: false,
             verify_existing: false,
@@ -551,6 +554,10 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # Add links copied anywhere (desktop app).
 # watch_clipboard = false
 
+# Look for a newer Haul on GitHub after start and every six hours; the
+# desktop app offers to install it.
+# check_updates = true
+
 # Removing a finished download from the list also moves its file to the
 # Recycle Bin (the trash outside Windows). Clear completed never does.
 # recycle_on_remove = false
@@ -694,6 +701,8 @@ pub struct Endpoints {
     pub mega: String,
     pub rootz: String,
     pub mediafire: String,
+    /// GitHub's API, for Haul's own releases.
+    pub github_api: String,
     pub mirrored: String,
     /// The router's description; empty to look for it on the network.
     pub router: String,
@@ -719,6 +728,7 @@ impl Default for Endpoints {
             mega: "https://g.api.mega.co.nz".into(),
             rootz: "https://www.rootz.so".into(),
             mediafire: "https://www.mediafire.com".into(),
+            github_api: "https://api.github.com".into(),
             mirrored: "https://www.mirrored.to".into(),
             router: String::new(),
             nordvpn: "https://api.nordvpn.com".into(),

@@ -32,7 +32,8 @@
         "installerHooks": "windows/hooks.nsh",
         "installerIcon": "icons/icon.ico",
         "headerImage": "windows/art/header.bmp",
-        "sidebarImage": "windows/art/sidebar.bmp"
+        "sidebarImage": "windows/art/sidebar.bmp",
+        "template": "windows/installer.nsi"
       },
       "wix": {
         "bannerPath": "windows/art/banner.bmp",

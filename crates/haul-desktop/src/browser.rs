@@ -367,6 +367,27 @@ impl Desktop for Browser {
         std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Some(path))
     }
+
+    /// Tauri's installer installs over this version (`/UPDATE`, which skips
+    /// asking to uninstall it first), shows its progress without asking
+    /// anything (`/P`), and starts Haul again when done (`/R`). Haul closes
+    /// first, as its files are being replaced.
+    fn install_update(&self, installer: &std::path::Path) -> Result<(), String> {
+        if !cfg!(windows) {
+            return Err("only the Windows app installs updates itself".into());
+        }
+        std::process::Command::new(installer)
+            .args(["/P", "/UPDATE", "/R"])
+            .spawn()
+            .map_err(|e| format!("{}: {e}", installer.display()))?;
+        let app = self.app.clone();
+        std::thread::spawn(move || {
+            // Long enough for the answer to reach the page.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            app.exit(0);
+        });
+        Ok(())
+    }
 }
 
 /// Takes the layers ads lay over a page off it (see the script).
