@@ -726,6 +726,8 @@ impl Setup {
                 pixeldrain: self.ip.clone(),
                 onefichier_site: self.ip.clone(),
                 mega: self.ip.clone(),
+                rootz: self.ip.clone(),
+                mediafire: self.ip.clone(),
                 fileguard: self.ip.clone(),
                 filecrypt: self.ip.clone(),
                 dlc_service: format!("{}/dlc", self.ip),

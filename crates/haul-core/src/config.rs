@@ -692,6 +692,8 @@ pub struct Endpoints {
     pub vikingfile: String,
     /// MEGA's API.
     pub mega: String,
+    pub rootz: String,
+    pub mediafire: String,
     pub mirrored: String,
     /// The router's description; empty to look for it on the network.
     pub router: String,
@@ -715,6 +717,8 @@ impl Default for Endpoints {
             filecrypt: "https://filecrypt.cc".into(),
             vikingfile: "https://vikingfile.com".into(),
             mega: "https://g.api.mega.co.nz".into(),
+            rootz: "https://www.rootz.so".into(),
+            mediafire: "https://www.mediafire.com".into(),
             mirrored: "https://www.mirrored.to".into(),
             router: String::new(),
             nordvpn: "https://api.nordvpn.com".into(),

@@ -8,6 +8,10 @@
 //! with it, block by block. A folder becomes one row per file, each with
 //! MEGA's own link to that file in the folder (`…/folder/F#key/file/H`),
 //! which downloads like a file link.
+//!
+//! transfer.it is MEGA's: a transfer (`transfer.it/t/X`) lists like a
+//! folder (`f` with `x=X`), but hands its nodes' keys in clear, so its link
+//! needs none. Its files download as a folder's do.
 
 use std::sync::{
     LazyLock,
@@ -78,13 +82,49 @@ enum Link {
         id: String,
         key: Key,
     },
-    /// A folder, and maybe one file or subfolder in it.
+    /// A folder or a transfer, and maybe one file or subfolder in it.
     Folder {
-        id: String,
-        key: [u8; 16],
+        space: Space,
         file: Option<String>,
         sub: Option<String>,
     },
+}
+
+/// Where a folder's nodes live: a shared folder, whose link's key unwraps
+/// their keys, or a transfer.it transfer, which hands them in clear.
+#[derive(Debug, Clone, PartialEq)]
+enum Space {
+    Folder { id: String, key: [u8; 16] },
+    Transfer { id: String },
+}
+
+impl Space {
+    /// What the API's address takes to work in it.
+    fn query(&self) -> String {
+        match self {
+            Self::Folder { id, .. } => format!("&n={id}"),
+            Self::Transfer { id } => format!("&x={id}"),
+        }
+    }
+
+    /// A node's key as its listing gives it.
+    fn node_key(&self, k: &str) -> Option<Vec<u8>> {
+        match self {
+            Self::Folder { key, .. } => node_key(k, key),
+            Self::Transfer { .. } => URL_SAFE_NO_PAD.decode(k.rsplit(':').next()?).ok(),
+        }
+    }
+
+    /// The link to file `file` in it, which downloads that file alone.
+    fn link_to(&self, file: &str) -> String {
+        match self {
+            Self::Folder { id, key } => format!(
+                "https://mega.nz/folder/{id}#{}/file/{file}",
+                URL_SAFE_NO_PAD.encode(key)
+            ),
+            Self::Transfer { id } => format!("https://transfer.it/t/{id}/{file}"),
+        }
+    }
 }
 
 const ID: &str = "[A-Za-z0-9_-]{8}";
@@ -104,9 +144,24 @@ static FOLDER: LazyLock<[Regex; 2]> = LazyLock::new(|| {
         Regex::new(&format!(r"#F!({ID})!([A-Za-z0-9_-]{{22}})(?:!({ID}))?")).unwrap(),
     ]
 });
+static TRANSFER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"transfer\.it/t/([A-Za-z0-9_-]{{12}})(?:/({ID}))?"
+    ))
+    .unwrap()
+});
 
 /// The link's ids and keys; `None` without its key.
 fn link(url: &str) -> Option<Link> {
+    if let Some(c) = TRANSFER.captures(url) {
+        return Some(Link::Folder {
+            space: Space::Transfer {
+                id: c[1].to_string(),
+            },
+            file: c.get(2).map(|m| m.as_str().to_string()),
+            sub: None,
+        });
+    }
     if let Some(c) = FOLDER.iter().find_map(|re| re.captures(url)) {
         let key: [u8; 16] = URL_SAFE_NO_PAD.decode(&c[2]).ok()?.try_into().ok()?;
         // The new form names what it opens in the folder; the old one only
@@ -118,8 +173,10 @@ fn link(url: &str) -> Option<Link> {
             _ => (None, None),
         };
         return Some(Link::Folder {
-            id: c[1].to_string(),
-            key,
+            space: Space::Folder {
+                id: c[1].to_string(),
+                key,
+            },
             file,
             sub,
         });
@@ -203,14 +260,14 @@ async fn api(cx: &Cx<'_>, query: &str, command: Value) -> Result<Value, ResolveE
 }
 
 /// A file's size, encrypted attributes and download address: a public file
-/// (`p`), or one in folder `folder` (`n`).
+/// (`p`), or one in a folder or transfer (`n`).
 async fn file(
     cx: &Cx<'_>,
     id: &str,
-    folder: Option<&str>,
+    space: Option<&Space>,
 ) -> Result<(u64, String, String), ResolveError> {
-    let (query, which) = match folder {
-        Some(f) => (format!("&n={f}"), "n"),
+    let (query, which) = match space {
+        Some(space) => (space.query(), "n"),
         None => (String::new(), "p"),
     };
     let one = api(cx, &query, json!({ "a": "g", "g": 1, "ssl": 1, which: id })).await?;
@@ -235,15 +292,17 @@ struct Node {
     within: Vec<String>,
 }
 
-/// The files in folder `id`, with their names and keys.
-async fn listing(
-    cx: &Cx<'_>,
-    id: &str,
-    key: &[u8; 16],
-) -> Result<(Option<String>, Vec<Node>), ResolveError> {
+/// A folder's or transfer's top folder, by handle and name.
+struct Root {
+    id: String,
+    name: Option<String>,
+}
+
+/// The files in a folder or transfer, with their names and keys.
+async fn listing(cx: &Cx<'_>, space: &Space) -> Result<(Root, Vec<Node>), ResolveError> {
     let one = api(
         cx,
-        &format!("&n={id}"),
+        &space.query(),
         json!({ "a": "f", "c": 1, "ca": 1, "r": 1 }),
     )
     .await?;
@@ -252,23 +311,34 @@ async fn listing(
         .iter()
         .filter_map(|n| Some((n["h"].as_str()?, n["p"].as_str()?)))
         .collect();
-    let mut root = None;
+    // The top folder: the one no other node holds.
+    let mut root = Root {
+        id: match space {
+            Space::Folder { id, .. } => id.clone(),
+            Space::Transfer { id } => id.clone(),
+        },
+        name: None,
+    };
     let mut files = Vec::new();
     for n in &nodes {
         let (Some(h), Some(k), Some(at)) = (n["h"].as_str(), n["k"].as_str(), n["a"].as_str())
         else {
             continue;
         };
-        let Some(raw) = node_key(k, key) else {
+        let Some(raw) = space.node_key(k) else {
             continue;
         };
+        let top = !n["p"].as_str().is_some_and(|p| parent.contains_key(p));
         match n["t"].as_u64() {
-            Some(1) if h == id => {
-                root = raw
-                    .as_slice()
-                    .try_into()
-                    .ok()
-                    .and_then(|k| name_from(at, &k));
+            Some(1) if top => {
+                root = Root {
+                    id: h.to_string(),
+                    name: raw
+                        .as_slice()
+                        .try_into()
+                        .ok()
+                        .and_then(|k| name_from(at, &k)),
+                };
             }
             Some(0) => {
                 let Some(file_key) = Key::of_file(&raw) else {
@@ -280,10 +350,10 @@ async fn listing(
                 let mut within = Vec::new();
                 let mut at_node = h;
                 while let Some(&up) = parent.get(at_node) {
-                    within.push(up.to_string());
-                    if up == id || within.len() > 64 {
+                    if up.is_empty() || within.len() > 64 {
                         break;
                     }
+                    within.push(up.to_string());
                     at_node = up;
                 }
                 files.push(Node {
@@ -300,14 +370,6 @@ async fn listing(
     Ok((root, files))
 }
 
-/// MEGA's link to file `file` in folder `id`.
-fn in_folder(id: &str, key: &[u8; 16], file: &str) -> String {
-    format!(
-        "https://mega.nz/folder/{id}#{}/file/{file}",
-        URL_SAFE_NO_PAD.encode(key)
-    )
-}
-
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     match link(url) {
         Some(Link::File { id, key }) => {
@@ -321,17 +383,16 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             }])
         }
         Some(Link::Folder {
-            id,
-            key,
+            space,
             file: Some(wanted),
             ..
         }) => {
-            let (_, files) = listing(cx, &id, &key).await?;
+            let (_, files) = listing(cx, &space).await?;
             let node = files
                 .into_iter()
                 .find(|f| f.id == wanted)
                 .ok_or_else(|| ResolveError::failed("mega: the file is no longer in the folder"))?;
-            let (size, _, address) = file(cx, &node.id, Some(&id)).await?;
+            let (size, _, address) = file(cx, &node.id, Some(&space)).await?;
             Ok(vec![Entry {
                 url: address,
                 name: Some(node.name),
@@ -340,16 +401,32 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
                 ..Entry::default()
             }])
         }
-        Some(Link::Folder { id, key, sub, .. }) => {
-            let (root, files) = listing(cx, &id, &key).await?;
-            let within = sub.unwrap_or_else(|| id.clone());
-            Ok(files
+        Some(Link::Folder { space, sub, .. }) => {
+            let (root, files) = listing(cx, &space).await?;
+            let within = sub.unwrap_or(root.id);
+            let mut files: Vec<Node> = files
                 .into_iter()
                 .filter(|f| f.within.contains(&within))
+                .collect();
+            // One file (a transfer of one, often): the file itself, now.
+            if files.len() == 1 {
+                let node = files.remove(0);
+                let (size, _, address) = file(cx, &node.id, Some(&space)).await?;
+                return Ok(vec![Entry {
+                    url: address,
+                    name: Some(node.name),
+                    package: root.name,
+                    size: Some(size),
+                    decrypt: Some(node.key),
+                    ..Entry::default()
+                }]);
+            }
+            Ok(files
+                .into_iter()
                 .map(|f| Entry {
-                    url: in_folder(&id, &key, &f.id),
+                    url: space.link_to(&f.id),
                     name: Some(f.name),
-                    package: root.clone(),
+                    package: root.name.clone(),
                     size: Some(f.size),
                     deferred: true,
                     ..Entry::default()
@@ -369,12 +446,11 @@ pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
             (name_from(&at, &key.key)?, size)
         }
         Link::Folder {
-            id,
-            key,
+            space,
             file: Some(wanted),
             ..
         } => {
-            let (_, files) = listing(cx, &id, &key).await.ok()?;
+            let (_, files) = listing(cx, &space).await.ok()?;
             let f = files.into_iter().find(|f| f.id == wanted)?;
             (f.name, f.size)
         }
@@ -405,11 +481,28 @@ mod tests {
             Some(Link::File { id, key })
         );
         let folder = |file: Option<&str>, sub: Option<&str>| Link::Folder {
-            id: "abcdefgh".into(),
-            key: *b"0123456789abcdef",
+            space: Space::Folder {
+                id: "abcdefgh".into(),
+                key: *b"0123456789abcdef",
+            },
             file: file.map(str::to_string),
             sub: sub.map(str::to_string),
         };
+        let transfer = |file: Option<&str>| Link::Folder {
+            space: Space::Transfer {
+                id: "09mLLl4FWToI".into(),
+            },
+            file: file.map(str::to_string),
+            sub: None,
+        };
+        assert_eq!(
+            link("https://transfer.it/t/09mLLl4FWToI"),
+            Some(transfer(None))
+        );
+        assert_eq!(
+            link("https://transfer.it/t/09mLLl4FWToI/HtoRGbrT"),
+            Some(transfer(Some("HtoRGbrT")))
+        );
         let key = "MDEyMzQ1Njc4OWFiY2RlZg";
         assert_eq!(
             link(&format!("https://mega.nz/folder/abcdefgh#{key}")),
