@@ -78,6 +78,9 @@ pub enum Outcome {
     /// The page still wants someone after its time (its check asks for a
     /// box to tick): the pass ends, and the person opens the page in Haul.
     WantsPerson(Look),
+    /// The page passed every check and showed nothing Haul took
+    /// ([`Pass::ends_settled`]).
+    Settled,
     /// The browser went away, or the pass was stopped.
     Closed,
 }
@@ -98,6 +101,9 @@ pub struct Pass<'a> {
     /// and those written out in its text, as more appear; true once it took
     /// some, which ends the pass.
     pub take_links: Option<TakeLinks<'a>>,
+    /// The pass ends as soon as the page settles past its checks without
+    /// links Haul takes: on a paste, nothing more is coming.
+    pub ends_settled: bool,
 }
 
 /// Offered a page's addresses; true once it took some.
@@ -278,6 +284,9 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
                 if take(&shown) {
                     return Ok(Outcome::Listed);
                 }
+            }
+            if p.ends_settled && sent["settled"].as_bool() == Some(true) {
+                return Ok(Outcome::Settled);
             }
             continue;
         }

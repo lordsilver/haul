@@ -159,6 +159,7 @@ impl Browser {
                 show_after: SHOW_AFTER + hosts::page_takes(&url),
                 handle,
                 take_links: if lists { Some(&take) } else { None },
+                ends_settled: hosts::is_paste(&url),
             };
             let outcome = chromium::pass(pass);
             passes(&all).remove(&id);
@@ -193,6 +194,9 @@ impl Browser {
                 Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
                 Ok(chromium::Outcome::Later(reason)) => engine.page_later(&id, &reason),
                 Ok(chromium::Outcome::Listed) => tracing::info!("took the links {url} shows"),
+                Ok(chromium::Outcome::Settled) => {
+                    engine.page_gone(&id, &format!("the paste on {host} lists no links"));
+                }
                 Ok(chromium::Outcome::WantsPerson(look)) => {
                     tracing::info!(item = %id, page = %look.page, "{host} wants a person for its check");
                     // The last such page of each site, to see what it asked.

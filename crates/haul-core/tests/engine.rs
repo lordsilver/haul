@@ -1679,6 +1679,27 @@ async fn a_guarded_page_takes_the_links_its_window_shows() {
     assert!(s.items.iter().all(|i| i.package == "Pkg" && i.id != id));
 }
 
+/// A page passed out of sight that turns out to list nothing (a paste
+/// holding only a host's name) fails saying so, rather than ask a person.
+#[tokio::test]
+async fn a_page_that_lists_nothing_fails_without_asking() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.add_text(&format!("{}/blog/guarded", t.ip), "");
+    let s = wait_for(&engine, "the page passed out of sight", |s| {
+        s.items.iter().any(|i| i.status == "passing")
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    engine.page_gone(&id, "the paste on zpaste.net lists no links");
+    let s = wait_for(&engine, "the page to fail", |s| {
+        s.items.iter().all(|i| i.status == "error")
+    })
+    .await;
+    assert_eq!(s.items[0].error, "the paste on zpaste.net lists no links");
+}
+
 /// A host that gives nothing without an account is off until one is set:
 /// its links are not tried, it says why, and setting the account tries them.
 #[tokio::test]

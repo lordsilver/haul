@@ -231,5 +231,23 @@
     }, 1000);
   }
 
+  // Out of sight, a page past every check that shows nothing new for five
+  // seconds has shown all it will (a paste holding only a host's name), so
+  // the pass can end rather than wait out its time for a person.
+  if (window.__haulLists && window.__haulDevTools) {
+    let calm = 0;
+    let seen = 0;
+    setInterval(() => {
+      const check =
+        window._cf_chl_opt ||
+        document.getElementById("challenge-form") ||
+        document.querySelector('input[name="cf-turnstile-response"], iframe[src*="challenges.cloudflare.com"]');
+      const links = window.__haulHandoff?.links?.length ?? 0;
+      calm = document.readyState === "complete" && !check && links === seen ? calm + 1 : 0;
+      seen = links;
+      if (calm === 5) window.__haulHandoff = { links: [], shown: [], settled: true };
+    }, 1000);
+  }
+
   recipes.find((r) => r.site.test(location.hostname))?.watch();
 })();
