@@ -125,6 +125,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/global/{action}", post(global))
         .route("/api/router", post(find_router))
         .route("/api/reconnect", post(reconnect))
+        .route("/api/download-from", post(download_from))
         .route("/api/update/check", post(check_update))
         .route("/api/update/install", post(install_update))
         .route("/api/nordvpn/servers", post(nordvpn_servers))
@@ -519,6 +520,19 @@ async fn install_update(State(app): State<App>) -> Response {
         },
         Err(e) => error(StatusCode::BAD_GATEWAY, e),
     }
+}
+
+#[derive(Deserialize)]
+struct DownloadFrom {
+    ids: Vec<String>,
+    /// `null`: back to the usual order.
+    host: Option<String>,
+}
+
+/// Has downloads go to the host the user picked while it has their file.
+async fn download_from(State(app): State<App>, Json(body): Json<DownloadFrom>) -> Response {
+    let changed = app.engine.download_from(&body.ids, body.host.as_deref());
+    Json(serde_json::json!({ "changed": changed })).into_response()
 }
 
 async fn reconnect(State(app): State<App>) -> Response {

@@ -109,7 +109,8 @@ pub(super) fn items(
         it.not_started = it.status == "paused" && it.done == 0;
         it.shown_host = if it.host.is_empty() {
             let mut on: Vec<&String> = it.mirrors.iter().filter(|m| !off(m)).collect();
-            on.sort_by_key(|m| rank(m));
+            // The host the user picked comes first, then their preferred ones.
+            on.sort_by_key(|m| (it.download_from.as_deref() != Some(m.as_str()), rank(m)));
             on.first()
                 .or(it.mirrors.first().as_ref())
                 .map(|m| m.to_string())
@@ -217,6 +218,10 @@ pub struct ArchiveView {
     /// on could take over.
     pub hosts: Vec<String>,
     pub other_hosts: usize,
+    /// Every host its parts are on, for choosing one.
+    pub all_hosts: Vec<String>,
+    /// The host the user picked for every part, when they picked one.
+    pub download_from: Option<String>,
     pub package: String,
     /// The wrapper its first part came from, and that wrapper's name.
     pub source: Option<String>,
@@ -309,6 +314,16 @@ pub(super) fn archives(
             .collect();
         others.sort();
         others.dedup();
+        let mut all_hosts: Vec<String> = Vec::new();
+        for m in parts.iter().flat_map(|p| &p.mirrors) {
+            if !all_hosts.contains(m) {
+                all_hosts.push(m.clone());
+            }
+        }
+        let download_from = first
+            .download_from
+            .clone()
+            .filter(|h| parts.iter().all(|p| p.download_from.as_deref() == Some(h)));
         let extract = if complete { first.extract } else { Extract::No };
         let mut commands = Vec::new();
         if parts.iter().any(|p| ACTIVE.contains(&p.status)) {
@@ -348,6 +363,8 @@ pub(super) fn archives(
             tally,
             hosts: shown,
             other_hosts: others.len(),
+            all_hosts,
+            download_from,
             package: first.package.clone(),
             source: first.source.clone(),
             source_name: first.source_name.clone(),
@@ -770,6 +787,7 @@ mod tests {
             commands: Vec::new(),
             archive: None,
             source_name: None,
+            download_from: None,
         }
     }
 

@@ -1,5 +1,6 @@
 import { ChevronDown, ChevronRight, FileArchive, KeyRound, Pause, Play, RotateCw } from 'lucide-react';
 import { type FormEvent, type ReactNode, useRef, useState } from 'react';
+import { HostPicker } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
 import { SecretInput } from '@/components/secret-input';
@@ -148,16 +149,17 @@ export function ArchiveRow({
   const ids = members.map((i) => i.id);
   const count = ids.filter((id) => picked.has(id)).length;
   const checked = count === 0 ? false : count === ids.length ? true : 'indeterminate';
-  const sub = [
-    `${a.ids.length} parts`,
-    a.size ? bytes(a.size) : null,
-    ...a.hosts,
+  const lead = [`${a.ids.length} parts`, a.size ? bytes(a.size) : null].filter(Boolean).join(' · ');
+  // The host part, which chooses the host for every part when they have
+  // several.
+  const host = [
+    `${a.download_from ? '★ ' : ''}${a.hosts.join(', ')}`,
     a.other_hosts ? `${a.other_hosts} other ${a.other_hosts === 1 ? 'host' : 'hosts'}` : null,
-    a.package || null,
-    a.source_name ? `from ${a.source_name}` : null,
   ]
     .filter(Boolean)
     .join(' · ');
+  const rest = [a.package || null, a.source_name ? `from ${a.source_name}` : null].filter(Boolean).join(' · ');
+  const sub = [lead, host, rest].filter(Boolean).join(' · ');
   // Once every part is done, the bar and its caption are the unpacking's.
   const share = a.extract === 'extracting' ? (a.extract_progress ?? 0) : a.share;
   const label = open ? 'Hide the parts' : 'Show the parts';
@@ -202,7 +204,10 @@ export function ArchiveRow({
             {a.name}
           </div>
           <div className="truncate text-xs text-muted-foreground" title={sub}>
-            {sub}
+            {lead}
+            {host ? ' · ' : null}
+            <HostPicker ids={ids} hosts={a.all_hosts} chosen={a.download_from} label={host} />
+            {rest ? ` · ${rest}` : null}
           </div>
         </div>
         <div className={COLUMNS.progress}>

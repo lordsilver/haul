@@ -144,6 +144,9 @@ pub(crate) struct Item {
     /// Other wrappers that list the same file (its links merged here as
     /// mirrors): it counts, starts and stays as theirs too.
     pub also_from: Vec<String>,
+    /// The host the user picked to download it from, while it has the file;
+    /// the others stand by.
+    pub prefer: Option<String>,
     /// A wrapper page's own name for what it holds.
     pub title: Option<String>,
     pub found: Option<Found>,
@@ -211,6 +214,7 @@ impl Item {
             wrapper: false,
             source: None,
             also_from: Vec::new(),
+            prefer: None,
             page_wants_person: false,
             title: None,
             found: None,
@@ -263,6 +267,7 @@ impl Item {
             wrapper: self.wrapper,
             source: self.source.clone(),
             also_from: self.also_from.clone(),
+            prefer: self.prefer.clone(),
             title: self.title.clone(),
             found: self.found,
             found_hosts: self.found_hosts.clone(),
@@ -309,6 +314,7 @@ impl Item {
         it.wrapper = s.wrapper;
         it.source = s.source;
         it.also_from = s.also_from;
+        it.prefer = s.prefer;
         it.title = s.title;
         it.found = s.found;
         it.found_hosts = s.found_hosts;
@@ -388,6 +394,8 @@ pub(crate) struct Saved {
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub also_from: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

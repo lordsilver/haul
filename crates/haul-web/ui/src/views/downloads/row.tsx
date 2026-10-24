@@ -1,6 +1,7 @@
 import { FolderOpen, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
+import { HostPicker } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { StatusGlyph } from '@/components/status-glyph';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -164,16 +165,18 @@ function RowActions({ it, s }: { it: ItemView; s: State }) {
 // hosts that are on could take over, and where it belongs; then why it
 // failed or waits, or what the host wants of the user.
 function Subtitle({ it }: { it: ItemView }) {
-  const parts = [`${it.preferred_host ? '★ ' : ''}${it.shown_host}`];
-  if (it.other_hosts) parts.push(`${it.other_hosts} other ${it.other_hosts === 1 ? 'host' : 'hosts'}`);
-  if (it.package) parts.push(it.package);
-  if (it.source_name) parts.push(`from ${it.source_name}`);
-  const line = parts.join(' · ');
+  // The host part, which chooses the host when the file has several.
+  const others = it.other_hosts ? ` · ${it.other_hosts} other ${it.other_hosts === 1 ? 'host' : 'hosts'}` : '';
+  const host = `${it.preferred_host || it.download_from ? '★ ' : ''}${it.shown_host}${others}`;
+  const rest: string[] = [];
+  if (it.package) rest.push(it.package);
+  if (it.source_name) rest.push(`from ${it.source_name}`);
   const reason = ['error', 'waiting', 'captcha'].includes(it.status) ? it.error_shown : '';
   const tone = it.status === 'error' ? 'text-destructive' : it.status === 'captcha' ? 'text-warn-strong' : '';
   return (
-    <div className="truncate text-xs text-muted-foreground" title={[...parts, reason].filter(Boolean).join('\n')}>
-      {line}
+    <div className="truncate text-xs text-muted-foreground" title={[host, ...rest, reason].filter(Boolean).join('\n')}>
+      <HostPicker ids={[it.id]} hosts={it.mirrors} chosen={it.download_from} label={host} />
+      {rest.length ? ` · ${rest.join(' · ')}` : null}
       {reason ? <span className={tone}> · {reason}</span> : null}
     </div>
   );

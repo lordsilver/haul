@@ -265,6 +265,8 @@ pub struct ItemView {
     pub host: String,
     /// Host of every mirror.
     pub mirrors: Vec<String>,
+    /// The host the user picked to download it from, when they did.
+    pub download_from: Option<String>,
     /// Seconds until a waiting item may try again.
     pub wait: u64,
     /// Seconds until a failed item is tried again on its own; 0 when never.
@@ -1780,6 +1782,19 @@ impl Engine {
             }
             return None;
         }
+        // The host the user picked for this file, while it has it: waited
+        // for when only busy, passed over while it cools down or once its
+        // link failed, the others standing by.
+        if let Some(want) = st.items[id].prefer.clone()
+            && let Some(m) = candidates.iter().find(|m| hosts::host_of(m) == want)
+        {
+            let exits = self.exits_for(&want, st);
+            if !st.cooling(&want, &exits, now) {
+                return st
+                    .open_exit(&want, &exits, &cfg, now)
+                    .map(|exit| (m.clone(), exit));
+            }
+        }
         // Preferred hosts first, in the user's order. One that is only busy
         // is waited for; one cooling down is passed over like any other.
         let mut preferred: Vec<(usize, String)> = Vec::new();
@@ -2771,9 +2786,27 @@ impl Engine {
         }
     }
 
-    /// A host's page, passed out of sight, said its file is gone: that
-    /// mirror failed like any other, and the item goes on to the next one
-    /// (or fails with `reason` when none is left), asking nobody.
+    /// Has rows `ids` download from `host` while it has their file (`None`:
+    /// back to the usual order). Returns how many rows took it.
+    pub fn download_from(&self, ids: &[String], host: Option<&str>) -> usize {
+        let mut st = self.lock();
+        let mut n = 0;
+        for id in ids {
+            let Some(it) = st.items.get_mut(id) else {
+                continue;
+            };
+            let has = host.is_none_or(|h| it.mirrors.iter().any(|m| hosts::host_of(m) == h));
+            if has && !it.wrapper {
+                it.prefer = host.map(str::to_string);
+                n += 1;
+            }
+        }
+        self.touch(&mut st);
+        drop(st);
+        self.0.wake.notify_one();
+        n
+    }
+
     /// Item `id`'s links, for tests of what they merge into.
     #[doc(hidden)]
     pub fn debug_links(&self, id: &str) -> Vec<String> {
@@ -2862,6 +2895,9 @@ impl Engine {
         count
     }
 
+    /// A host's page, passed out of sight, said its file is gone: that
+    /// mirror failed like any other, and the item goes on to the next one
+    /// (or fails with `reason` when none is left), asking nobody.
     pub fn page_gone(&self, id: &str, reason: &str) {
         let Some(page) = self.page_for(id) else {
             return;
@@ -3274,6 +3310,7 @@ impl Engine {
                 commands: Vec::new(),
                 archive: None,
                 source_name: None,
+                download_from: it.prefer.clone(),
             })
             .collect();
         let route = |name: &str| {
