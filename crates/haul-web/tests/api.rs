@@ -148,7 +148,7 @@ async fn adds_imports_and_controls_items() {
         .unwrap();
     assert_eq!(
         r,
-        json!({"added": 1, "merged": 1, "duplicates": 0, "invalid": 0, "wrappers": 0})
+        json!({"added": 1, "merged": 1, "duplicates": 0, "invalid": 0, "wrappers": 0, "pages": 0})
     );
 
     let links_file = || {
