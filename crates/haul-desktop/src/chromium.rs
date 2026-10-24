@@ -4,11 +4,12 @@
 //! in Edge, Chrome and WebKitGTK alike (docs/decisions.md has the
 //! measurements), so Windows passes such pages here; Linux keeps its webview.
 //!
-//! The browser runs off screen with a profile of its own, deleted after.
+//! The browser runs off screen with a profile of its own, one per site, kept.
 //! Haul only adds its two page scripts (`overlays.js`, `handoff.js`), reads
-//! what the hand-off leaves in the page, closes the tabs ads open, and
-//! brings the window on screen when the page wants a person. It never turns
-//! on the DevTools domains automation is told apart by (`Runtime.enable`).
+//! what the hand-off leaves in the page and closes the tabs ads open; a page
+//! that still wants a person after its time ends the pass, and the person
+//! opens it in Haul's own window. It never turns on the DevTools domains
+//! automation is told apart by (`Runtime.enable`).
 
 use std::{
     net::{SocketAddr, TcpStream},
@@ -88,7 +89,7 @@ pub enum Outcome {
 pub struct Pass<'a> {
     pub exe: &'a Path,
     pub url: &'a str,
-    /// A folder of its own, deleted after.
+    /// The site's own folder, kept for its next pages.
     pub profile: PathBuf,
     /// Haul's local bridge to the proxy, for a proxied host.
     pub proxy: Option<SocketAddr>,

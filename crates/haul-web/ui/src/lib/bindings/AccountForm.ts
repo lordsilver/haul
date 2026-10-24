@@ -2,10 +2,6 @@
 import type { AccountField } from "./AccountField";
 
 /**
- * Every host with code of its own. Free limits are what was measured:
- * pixeldrain's from its own refusal ("maximum number of open download
- * connections for free/anonymous accounts", past 5) and its
- * `/api/misc/rate_limits`.
  * A host's account, as the Hosts view asks for it.
  */
 export type AccountForm = { host: string, 

@@ -2800,8 +2800,6 @@ impl Engine {
         Ok(self.item_action(id, ItemAction::Remove))
     }
 
-    /// Uses a direct link the user supplied (pasted, or caught from the
-    /// in-app browser) for this item.
     /// Says the desktop app passes the pages of hosts that allow it out of
     /// sight ([`hosts::Known::page_passes`]), so such a host needs no
     /// account here.
@@ -2998,6 +2996,8 @@ impl Engine {
         self.0.wake.notify_one();
     }
 
+    /// Uses a direct link the user supplied (pasted, or caught from the
+    /// in-app browser) for this item.
     pub fn set_direct(
         &self,
         id: &str,
@@ -3080,7 +3080,6 @@ impl Engine {
         Ok(())
     }
 
-    /// The page a person should open for this item.
     /// Whether the desktop app passes page `url` by itself, out of sight: a
     /// host's whose page does ([`hosts::page_passes`]), or one that answered
     /// with a browser check a browser usually passes.
@@ -3088,6 +3087,7 @@ impl Engine {
         self.lock().passes(url)
     }
 
+    /// The page a person should open for this item.
     pub fn page_for(&self, id: &str) -> Option<String> {
         let st = self.lock();
         let it = st.items.get(id)?;

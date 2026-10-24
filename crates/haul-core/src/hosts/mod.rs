@@ -401,10 +401,6 @@ impl Known {
     }
 }
 
-/// Every host with code of its own. Free limits are what was measured:
-/// pixeldrain's from its own refusal ("maximum number of open download
-/// connections for free/anonymous accounts", past 5) and its
-/// `/api/misc/rate_limits`.
 /// A host's account, as the Hosts view asks for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
 #[ts(export)]
@@ -472,6 +468,10 @@ pub fn account_forms(cfg: &Config) -> Vec<AccountForm> {
         .collect()
 }
 
+/// Every host with code of its own. Free limits are what was measured:
+/// pixeldrain's from its own refusal ("maximum number of open download
+/// connections for free/anonymous accounts", past 5) and its
+/// `/api/misc/rate_limits`.
 static KNOWN: &[Known] = &[
     Known {
         names: &["pixeldrain.com"],
@@ -683,8 +683,6 @@ pub fn known(host: &str) -> Option<&'static Known> {
     KNOWN.iter().find(|k| k.names.contains(&host))
 }
 
-/// Whether `url`'s page passes its check by itself (see
-/// [`Known::page_passes`]).
 /// How long a page that passes by itself takes on its own before it could
 /// want a person: ddownload's makes everyone wait a minute first.
 pub fn page_takes(url: &str) -> std::time::Duration {
@@ -694,6 +692,8 @@ pub fn page_takes(url: &str) -> std::time::Duration {
     }
 }
 
+/// Whether `url`'s page passes its check by itself (see
+/// [`Known::page_passes`]).
 pub fn page_passes(url: &str) -> bool {
     known(&host_of(url)).is_some_and(|k| k.page_passes)
 }
