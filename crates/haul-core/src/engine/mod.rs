@@ -1260,6 +1260,7 @@ impl Engine {
                 && !it.running()
             {
                 it.probed = true;
+                it.gone.insert(url.clone());
                 event = self.fail_mirror(&mut st, &id, url, &hosts::host_of(url), message.clone());
             }
             self.touch(&mut st);
@@ -2926,6 +2927,7 @@ impl Engine {
         if let Some(it) = st.items.get_mut(id) {
             tracing::info!(item = %id, "{page}: {reason}");
             it.manual_urls.remove(&page);
+            it.gone.insert(page.clone());
             it.failed.insert(page);
             it.error = reason.to_string();
             if it.status == Status::Captcha {

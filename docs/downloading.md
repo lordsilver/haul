@@ -28,7 +28,7 @@ A row that found its file never sends it to the Recycle Bin on removal, since it
 - **Cooldowns.** 429 and 503 put the whole host in a cooldown for its `Retry-After` (90 seconds if it gives none).
 - **Slow mirrors.** With `min_speed_kbps` set (**Settings › Give up on slow downloads**), a transfer that averages less over `min_speed_seconds` (60 by default), a stalled one included, gives up its mirror: the next mirror resumes the same partial file, or the download fails with the speed it managed. A speed limit of your own turns this off, since it would make every download look slow.
 - **Ranking.** Failures lower a host's rank, and each counts half as much every ten minutes, so a host that had a bad moment gets another chance.
-- **Failed downloads.** When every mirror has failed, the download waits `retry_failed_minutes` (15 by default) and starts over, up to three times; the row counts down to it.
+- **Failed downloads.** When every mirror has failed, the download waits `retry_failed_minutes` (15 by default) and starts over, up to three times; the row counts down to it. A download whose every link is gone for good (the host said the file was deleted, or a paste lists no links) is not tried again on its own; **Retry** still does.
 
 ## Proxy
 

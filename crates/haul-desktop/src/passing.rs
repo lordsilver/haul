@@ -38,8 +38,10 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
                 })
                 .collect();
             tried.retain(|id| waiting.iter().any(|(w, ..)| w == id));
-            // One page at a time out of sight; one shown to the person (its
-            // check wanted them) holds up no other.
+            // One page at a time out of sight: two at once from one address
+            // made Cloudflare ask for a person on pages that pass one by
+            // one. One shown to the person (its check wanted them) holds up
+            // no other.
             let busy = waiting
                 .iter()
                 .any(|(id, _, passing)| *passing && tried.contains(id) && browser.is_passing(id));

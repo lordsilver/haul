@@ -91,6 +91,9 @@ pub(crate) struct Item {
     pub id: String,
     pub mirrors: Vec<String>,
     pub failed: HashSet<String>,
+    /// Mirrors whose host or page said the file is gone (deleted, or a
+    /// paste that lists nothing): no use trying them again on a timer.
+    pub gone: HashSet<String>,
     /// Mirrors that need a person before they can be used.
     pub manual_urls: HashSet<String>,
     /// The desktop app tried this item's page out of sight and it wants a
@@ -185,6 +188,7 @@ impl Item {
             id: uuid::Uuid::new_v4().simple().to_string()[..10].to_string(),
             mirrors: urls,
             failed: HashSet::new(),
+            gone: HashSet::new(),
             manual_urls: HashSet::new(),
             manual: false,
             probed: name.is_some(),

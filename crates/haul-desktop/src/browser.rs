@@ -428,7 +428,9 @@ const HANDOFF: &str = include_str!("handoff.js");
 const LISTS: &str = "window.__haulLists = true;";
 
 /// How long a page opened out of sight gets to pass its check by itself.
-const SHOW_AFTER: Duration = Duration::from_secs(15);
+/// Passes that work take 10 to 15 seconds, more on a slow line; a page that
+/// shows all it has sooner ends its pass then.
+const SHOW_AFTER: Duration = Duration::from_secs(30);
 
 /// Brings a window opened out of sight onto the screen; one already there
 /// stays where it is.
