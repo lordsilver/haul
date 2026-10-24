@@ -436,26 +436,30 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
       <SettingCard
         icon={Wrench}
         title="Diagnostics"
-        description="A report of what Haul is doing, to send along when something goes wrong: every download and wrapper with its links, state, error and last events, the hosts, the settings and the recent log. Account keys, proxy passwords and mega.nz keys are left out."
-        controls={
-          <Button variant="outline" onClick={() => saveDiagnostics(s.desktop)}>
-            Save diagnostics…
-          </Button>
-        }
-      />
-      <SettingCard
-        icon={FileText}
-        title="Detailed log"
-        description="Writes every request, retry and mirror choice to the log (haul.log in the data folder), for reproducing a problem before you save the report. Off, the log keeps notable events. Each download keeps its last events either way."
+        description="A report to send along when something goes wrong: every download and wrapper with its links, state and last events, the hosts, the settings and the recent log. Account keys, proxy passwords and the part of a link after # (where mega.nz keeps its keys) are left out."
         controls={
           <>
             <Button variant="outline" onClick={() => openPlace('log')}>
               Show log
             </Button>
-            <SettingSwitch name="detailed_log" on={d.detailed_log} label="Detailed log" />
+            <Button variant="outline" onClick={() => saveDiagnostics(s.desktop)}>
+              Save diagnostics…
+            </Button>
           </>
         }
-      />
+      >
+        {/* How much the log keeps: only worth more while reproducing. */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-3 pl-9">
+          <div className="min-w-0 flex-[1_1_280px] text-sm">
+            <div className="font-medium">Detailed log</div>
+            <div className="mt-0.5 text-muted-foreground">
+              Every request, retry and mirror choice, while you reproduce a problem before saving the report. Off, the
+              log keeps notable events.
+            </div>
+          </div>
+          <SettingSwitch name="detailed_log" on={d.detailed_log} label="Detailed log" />
+        </div>
+      </SettingCard>
     </div>
   );
 }

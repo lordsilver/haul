@@ -105,7 +105,9 @@ function YourLine({ s, d }: { s: State; d: SettingsView }) {
             {`${r.blocked.charAt(0).toUpperCase()}${r.blocked.slice(1)}.`}
           </Infobar>
         ) : r.note ? (
-          <Infobar kind={r.failed ? 'critical' : 'success'}>{r.note}</Infobar>
+          <Infobar kind={r.failed ? 'critical' : 'success'}>
+            {r.note_at ? `${r.note} · ${at(r.note_at)}` : r.note}
+          </Infobar>
         ) : null}
       </SettingCard>
       <SettingCard
@@ -363,6 +365,15 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
       <NordVpn s={s} d={d} />
     </div>
   );
+}
+
+// When a note from earlier was written: a clock time today, with the date
+// before that, since the note stays until the next attempt.
+function at(secs: number) {
+  const when = new Date(secs * 1000);
+  const today = when.toDateString() === new Date().toDateString();
+  const time = when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return today ? `at ${time}` : `${when.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
 }
 
 export function Connections({ s }: { s: State }) {

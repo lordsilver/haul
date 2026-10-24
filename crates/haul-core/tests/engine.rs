@@ -2905,6 +2905,7 @@ async fn the_router_gets_a_new_address() {
     assert_eq!(t.server.redials.load(Ordering::SeqCst), 1);
     let s = engine.snapshot();
     assert!(!s.reconnect.busy);
+    assert!(s.reconnect.note_at.is_some_and(|t| t > 0));
     assert!(s.reconnect.note.unwrap().contains("Got a new address"));
 }
 

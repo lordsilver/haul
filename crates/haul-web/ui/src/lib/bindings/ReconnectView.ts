@@ -9,6 +9,11 @@ export type ReconnectView = {
  */
 router: string | null, busy: boolean, note: string | null, 
 /**
+ * When the note was written, in seconds since the Unix epoch: it stays
+ * until the next attempt, so the view says how old it is.
+ */
+note_at: number | null, 
+/**
  * Redials on its own when the address holds downloads back.
  */
 auto: boolean, 

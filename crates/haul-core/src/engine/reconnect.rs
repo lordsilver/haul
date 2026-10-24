@@ -33,6 +33,8 @@ pub(super) struct Reconnects {
     last: Option<Instant>,
     /// What the last redial did, for the settings view.
     note: Option<String>,
+    /// When the note was written, in seconds since the Unix epoch.
+    note_at: u64,
     failed: bool,
     /// A redial brought the same address back: automatic ones stop.
     keeps_address: bool,
@@ -48,6 +50,9 @@ pub struct ReconnectView {
     pub router: Option<String>,
     pub busy: bool,
     pub note: Option<String>,
+    /// When the note was written, in seconds since the Unix epoch: it stays
+    /// until the next attempt, so the view says how old it is.
+    pub note_at: Option<u64>,
     /// Redials on its own when the address holds downloads back.
     pub auto: bool,
     /// Why no redial can work as things are set (a FRITZ!Box without its
@@ -70,6 +75,7 @@ impl Engine {
             router: r.router.as_ref().map(|r| r.model.clone()),
             busy: r.busy,
             note: r.note.clone(),
+            note_at: r.note.as_ref().map(|_| r.note_at),
             auto: cfg.reconnect && !r.keeps_address && blocked.is_none(),
             blocked,
             failed: r.failed,
@@ -126,6 +132,7 @@ impl Engine {
             // One that cannot work stops no download.
             if let Some(why_not) = blocker(&self.cfg(), &r) {
                 r.note = Some(format!("No new address: {why_not}"));
+                r.note_at = super::unix_now();
                 r.failed = true;
                 drop(r);
                 self.touch(&mut self.lock());
@@ -144,6 +151,7 @@ impl Engine {
             Ok(address) => {
                 tracing::info!("new address {address}");
                 r.note = Some(format!("Got a new address ({why})"));
+                r.note_at = super::unix_now();
                 r.failed = false;
                 drop(r);
                 let mut st = self.lock();
@@ -159,6 +167,7 @@ impl Engine {
                 tracing::warn!("no new address: {e}");
                 r.keeps_address |= e.contains("same address");
                 r.note = Some(format!("No new address: {e}"));
+                r.note_at = super::unix_now();
                 r.failed = true;
                 // Learned: this router redials only with its login.
                 if e.contains("give Haul its login")
