@@ -77,7 +77,7 @@ pub enum Outcome {
     Listed,
     /// The page still wants someone after its time (its check asks for a
     /// box to tick): the pass ends, and the person opens the page in Haul.
-    WantsPerson,
+    WantsPerson(Look),
     /// The browser went away, or the pass was stopped.
     Closed,
 }
@@ -234,7 +234,7 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
             let _ = cdp.call("Target.closeTarget", json!({ "targetId": other }), None);
         }
         if start.elapsed() >= p.show_after {
-            return Ok(Outcome::WantsPerson);
+            return Ok(Outcome::WantsPerson(look(&mut cdp, s)));
         }
         let answer = match cdp.call(
             "Runtime.evaluate",
@@ -525,4 +525,44 @@ mod taskbar {
 #[cfg(not(windows))]
 mod taskbar {
     pub fn hide(_pid: u32) {}
+}
+
+/// What a page showed when it was given up on, for the log.
+pub struct Look {
+    /// Its title, address, frames, Turnstile answers and buttons, as JSON.
+    pub page: String,
+    /// A PNG of it, when the browser gave one.
+    pub shot: Option<Vec<u8>>,
+}
+
+const LOOK: &str = r#"JSON.stringify({
+  title: document.title,
+  url: location.href,
+  frames: [...document.querySelectorAll('iframe')].map((f) => f.src.slice(0, 100)),
+  turnstile: [...document.querySelectorAll('[name="cf-turnstile-response"]')].map((i) => (i.value ? 'answered' : 'empty')),
+  buttons: [...document.querySelectorAll('button, input[type=submit]')]
+    .filter((b) => b.offsetParent)
+    .map((b) => (b.innerText || b.value || '').trim().slice(0, 40)),
+})"#;
+
+fn look(cdp: &mut Cdp, s: Option<&str>) -> Look {
+    let page = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({ "expression": LOOK, "returnByValue": true }),
+            s,
+        )
+        .ok()
+        .and_then(|a| a["result"]["value"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "(the page did not answer)".into());
+    let shot = cdp
+        .call("Page.captureScreenshot", json!({ "format": "png" }), s)
+        .ok()
+        .and_then(|a| {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(a["data"].as_str()?)
+                .ok()
+        });
+    Look { page, shot }
 }

@@ -134,6 +134,7 @@ impl Browser {
             .join("webview")
             .join("chromium")
             .join(hosts::site_of(&url));
+        let shot = profile.with_file_name(format!("{}-wants-person.png", hosts::site_of(&url)));
         std::thread::spawn(move || {
             // A page that lists links hands them over as they show; Haul
             // keeps those to hosts it knows, which ends the pass.
@@ -192,8 +193,12 @@ impl Browser {
                 Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
                 Ok(chromium::Outcome::Later(reason)) => engine.page_later(&id, &reason),
                 Ok(chromium::Outcome::Listed) => tracing::info!("took the links {url} shows"),
-                Ok(chromium::Outcome::WantsPerson) => {
-                    tracing::info!("{host} wants a person for its check");
+                Ok(chromium::Outcome::WantsPerson(look)) => {
+                    tracing::info!(item = %id, page = %look.page, "{host} wants a person for its check");
+                    // The last such page of each site, to see what it asked.
+                    if let Some(png) = look.shot {
+                        let _ = std::fs::write(&shot, png);
+                    }
                     engine.page_wants_person(&id);
                     if first_ask_in_a_while(&host) {
                         crate::notify_waiting(
