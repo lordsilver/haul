@@ -279,7 +279,7 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
         <SettingCard
           icon={Clipboard}
           title="Watch the clipboard"
-          description="Links you copy anywhere are added, when they point at a supported host or a file."
+          description="Links you copy anywhere are added, when they point at a supported host, a file, a paste or a release's page on a release site."
           controls={<SettingSwitch name="watch_clipboard" on={d.watch_clipboard} label="Watch the clipboard" />}
         />
       ) : null}
