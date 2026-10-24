@@ -45,6 +45,7 @@ fn config(base: &str) -> Config {
             vikingfile: base.into(),
             mega: base.into(),
             rootz: base.into(),
+            mediafire: base.into(),
             mirrored: base.into(),
             router: format!("{base}/igddesc.xml"),
             ip_echo: format!("{base}/ip"),
@@ -1437,6 +1438,130 @@ async fn mega_lists_a_folder_and_downloads_its_files() {
         Some(Probed {
             name: "R.part2.rar".into(),
             size: Some(200),
+            checksum: None,
+        })
+    );
+}
+
+#[tokio::test]
+async fn rootz_looks_a_file_up_with_its_pages_token() {
+    let app = Router::new()
+        .route(
+            "/d/{short}",
+            get(|Path(short): Path<String>| async move {
+                // The token sits escaped in the page's data, as Next.js writes it.
+                format!(r#"<script>self.__next_f.push([1,"5:[\"$\",\"$L1a\",null,{{\"shortId\":\"{short}\",\"pageToken\":\"tok-{short}.sig\"}}]"])</script>"#)
+            }),
+        )
+        .route(
+            "/api/files/download-by-short",
+            get(|Query(q): Query<HashMap<String, String>>, headers: HeaderMap| async move {
+                let short = q["shortId"].clone();
+                if headers.get("x-page-token").and_then(|v| v.to_str().ok()) != Some(&format!("tok-{short}.sig")) {
+                    return Json(json!({"success": false, "error": "Forbidden"}));
+                }
+                let status = if short == "gone1" { "deleted" } else { "active" };
+                Json(json!({"success": true, "data": {
+                    "fileName": "R.part1.rar", "size": 5347737664u64, "fileId": "f-uuid-1",
+                    "status": status, "downloadAllowed": status == "active", "passwordProtected": false
+                }}))
+            }),
+        );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
+    let e = rootz::resolve(&cx, "https://www.rootz.so/d/abc123")
+        .await
+        .unwrap();
+    assert_eq!(
+        e[0].url,
+        format!("{base}/api/files/proxy-download/f-uuid-1")
+    );
+    assert_eq!(e[0].name.as_deref(), Some("R.part1.rar"));
+    assert_eq!(e[0].size, Some(5_347_737_664));
+    assert_eq!(
+        rootz::probe(&cx, "https://www.rootz.so/d/abc123").await,
+        Some(Probed {
+            name: "R.part1.rar".into(),
+            size: Some(5_347_737_664),
+            checksum: None,
+        })
+    );
+    assert_eq!(
+        rootz::resolve(&cx, "https://www.rootz.so/d/gone1").await,
+        Err(ResolveError::failed("rootz: the file was deleted"))
+    );
+}
+
+#[tokio::test]
+async fn transfer_it_lists_with_its_keys_in_clear() {
+    use aes::cipher::{BlockModeEncrypt, KeyIvInit, block_padding::NoPadding};
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    let attributes = |name: &str, key: &[u8]| {
+        let mut a = format!(r#"MEGA{{"n":"{name}"}}"#).into_bytes();
+        a.resize(a.len().div_ceil(16) * 16, 0);
+        let len = a.len();
+        cbc::Encryptor::<aes::Aes128>::new_from_slices(key, &[0; 16])
+            .unwrap()
+            .encrypt_padded::<NoPadding>(&mut a, len)
+            .unwrap();
+        URL_SAFE_NO_PAD.encode(a)
+    };
+    let root_key = b"transfer-root-k!".to_vec();
+    let raw: Vec<u8> = (0..32).map(|i| i ^ 7).collect();
+    let aes_key: Vec<u8> = (0..16).map(|i| raw[i] ^ raw[i + 16]).collect();
+    // A transfer's listing hands each node's key in clear.
+    let nodes = json!({"f": [
+        {"h": "ROOTNODE", "p": "", "t": 1, "k": URL_SAFE_NO_PAD.encode(&root_key), "a": attributes("Transfer", &root_key)},
+        {"h": "FILENODE", "p": "ROOTNODE", "t": 0, "s": 1432207627u64, "k": URL_SAFE_NO_PAD.encode(&raw), "a": attributes("Update.rar", &aes_key)},
+    ]});
+    let app = Router::new().route(
+        "/cs",
+        post(move |Query(q): Query<HashMap<String, String>>, Json(body): Json<Value>| {
+            let nodes = nodes.clone();
+            async move {
+                assert_eq!(q.get("x").map(String::as_str), Some("09mLLl4FWToI"), "asked about the transfer");
+                match body[0]["a"].as_str().unwrap() {
+                    "f" => Json(json!([nodes])),
+                    "g" => {
+                        assert_eq!(body[0]["n"], "FILENODE");
+                        Json(json!([{"s": 1432207627u64, "at": "", "g": "https://gfs.example/dl/x"}]))
+                    }
+                    _ => Json(json!([-2])),
+                }
+            }
+        }),
+    );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
+    // One file: the transfer resolves to it at once, decrypted on the way.
+    let e = mega::resolve(&cx, "https://transfer.it/t/09mLLl4FWToI")
+        .await
+        .unwrap();
+    assert_eq!(e.len(), 1);
+    assert_eq!(e[0].url, "https://gfs.example/dl/x");
+    assert_eq!(e[0].name.as_deref(), Some("Update.rar"));
+    assert_eq!(e[0].size, Some(1_432_207_627));
+    assert!(e[0].decrypt.is_some() && !e[0].deferred);
+    assert_eq!(
+        mega::probe(&cx, "https://transfer.it/t/09mLLl4FWToI/FILENODE").await,
+        Some(Probed {
+            name: "Update.rar".into(),
+            size: Some(1_432_207_627),
             checksum: None,
         })
     );
