@@ -528,6 +528,7 @@ mod taskbar {
 }
 
 /// What a page showed when it was given up on, for the log.
+#[derive(Debug)]
 pub struct Look {
     /// Its title, address, frames, Turnstile answers and buttons, as JSON.
     pub page: String,
