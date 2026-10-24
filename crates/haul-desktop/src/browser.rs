@@ -46,8 +46,7 @@ pub struct Browser {
     /// The local bridge to the proxy, started the first time a page needs it.
     bridge: Mutex<Option<Bridge>>,
     /// Pages being passed in a full browser, by item.
-    /// Pages passed out of sight, with the profile folder each uses.
-    passes: Arc<Mutex<HashMap<String, (chromium::Handle, PathBuf)>>>,
+    passes: Arc<Mutex<HashMap<String, chromium::Handle>>>,
 }
 
 impl Browser {
@@ -125,27 +124,17 @@ impl Browser {
             None => None,
         };
         let handle = chromium::Handle::default();
-        // Profiles per site, kept: a check passed on one of its pages
-        // (Cloudflare's clearance cookie) holds for the next. A browser
-        // keeps its profile to itself, so pages passed at once each take
-        // one no other pass is using.
-        let site = hosts::site_of(url);
-        let folder = self.engine.data_dir().join("webview").join("chromium");
-        let profile = {
-            let mut all = passes(&self.passes);
-            let profile = (1..)
-                .map(|n| match n {
-                    1 => folder.join(&site),
-                    n => folder.join(format!("{site}-{n}")),
-                })
-                .find(|p| !all.values().any(|(_, used)| used == p))
-                .unwrap_or_default();
-            all.insert(id.to_string(), (handle.clone(), profile.clone()));
-            profile
-        };
-        let shot = folder.join(format!("{site}-wants-person.png"));
+        passes(&self.passes).insert(id.to_string(), handle.clone());
         let (app, engine, all) = (self.app.clone(), self.engine.clone(), self.passes.clone());
         let (id, url) = (id.to_string(), url.to_string());
+        // One profile per site, kept: a check passed on one of its pages
+        // (Cloudflare's clearance cookie) holds for the next.
+        let profile = engine
+            .data_dir()
+            .join("webview")
+            .join("chromium")
+            .join(hosts::site_of(&url));
+        let shot = profile.with_file_name(format!("{}-wants-person.png", hosts::site_of(&url)));
         std::thread::spawn(move || {
             // A page that lists links hands them over as they show; Haul
             // keeps those to hosts it knows, which ends the pass.
@@ -345,7 +334,7 @@ impl Desktop for Browser {
     fn browse(&self, id: &str, url: &str, user_agent: Option<String>) -> Result<(), String> {
         // Being passed out of sight: that pass stops (its browser never
         // comes on screen), and the page opens here.
-        if let Some((handle, _)) = passes(&self.passes).get(id) {
+        if let Some(handle) = passes(&self.passes).get(id) {
             handle
                 .stop
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -550,8 +539,8 @@ fn message(url: &Url, path: &str) -> Option<String> {
 }
 
 fn passes(
-    all: &Mutex<HashMap<String, (chromium::Handle, PathBuf)>>,
-) -> MutexGuard<'_, HashMap<String, (chromium::Handle, PathBuf)>> {
+    all: &Mutex<HashMap<String, chromium::Handle>>,
+) -> MutexGuard<'_, HashMap<String, chromium::Handle>> {
     all.lock().unwrap_or_else(|e| e.into_inner())
 }
 

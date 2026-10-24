@@ -1,17 +1,14 @@
 //! Pages Haul passes by itself: a download waiting on a host whose check
 //! passes in a browser without a person ([`Engine::page_passes`]: a host's
-//! page known to, or one behind Cloudflare's check) gets its page opened
-//! out of sight ([`Browser::pass`]), [`AT_ONCE`] at a time and once per
-//! wait, so the user is asked only when the check wants them.
+//! page known to, or one behind Cloudflare's check) gets its
+//! page opened out of sight ([`Browser::pass`]), one page at a time and
+//! once per wait, so the user is asked only when the check wants them.
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use haul_core::Engine;
 
 use crate::browser::Browser;
-
-/// Pages passed out of sight at once: each in a browser of its own.
-const AT_ONCE: usize = 2;
 
 pub fn spawn(engine: Engine, browser: Arc<Browser>) {
     let mut changes = engine.watch();
@@ -41,13 +38,14 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
                 })
                 .collect();
             tried.retain(|id| waiting.iter().any(|(w, ..)| w == id));
-            // A few pages at a time out of sight; one shown to the person
-            // (its check wanted them) holds up no other.
+            // One page at a time out of sight: two at once from one address
+            // made Cloudflare ask for a person on pages that pass one by
+            // one. One shown to the person (its check wanted them) holds up
+            // no other.
             let busy = waiting
                 .iter()
-                .filter(|(id, _, passing)| *passing && tried.contains(id) && browser.is_passing(id))
-                .count();
-            if busy < AT_ONCE
+                .any(|(id, _, passing)| *passing && tried.contains(id) && browser.is_passing(id));
+            if !busy
                 && let Some((id, page, _)) = waiting
                     .iter()
                     .find(|(id, _, passing)| *passing && !tried.contains(id))
