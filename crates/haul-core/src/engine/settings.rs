@@ -800,7 +800,9 @@ impl Engine {
     /// Schedules the next automatic retry of a failed item, if any is left.
     pub(super) fn plan_auto_retry(&self, it: &mut Item, now: Instant) {
         let minutes = self.cfg().retry_failed_minutes;
-        it.retry_at = (minutes > 0 && it.auto_retries < AUTO_RETRIES)
+        // Every link is gone for good: another try would find the same.
+        let gone = it.mirrors.iter().all(|m| it.gone.contains(m));
+        it.retry_at = (minutes > 0 && it.auto_retries < AUTO_RETRIES && !gone)
             .then(|| now + Duration::from_secs(minutes * 60));
     }
 

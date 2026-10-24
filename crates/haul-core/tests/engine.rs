@@ -1049,6 +1049,7 @@ async fn a_deleted_file_fails_when_it_is_looked_up() {
     })
     .await;
     assert!(s.items[0].error.contains("deleted"), "{}", s.items[0].error);
+    assert_eq!(s.items[0].retry_in, 0, "not tried again on a timer");
 }
 
 /// A MEGA download that failed in Haul 0.15.0 for want of megatools goes
@@ -1698,6 +1699,7 @@ async fn a_page_that_lists_nothing_fails_without_asking() {
     })
     .await;
     assert_eq!(s.items[0].error, "the paste on zpaste.net lists no links");
+    assert_eq!(s.items[0].retry_in, 0, "not tried again on a timer");
 }
 
 /// A host that gives nothing without an account is off until one is set:
