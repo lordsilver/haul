@@ -9,33 +9,47 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::{Cx, Entry, Probed, ResolveError};
+use super::{Cx, Entry, Look, Probed, ResolveError};
 
 static NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"class="dk-dl-name"\s+title="([^"]+)""#).unwrap());
 
-/// The file's name, or `None` when the page says it was deleted.
-async fn page(cx: &Cx<'_>, url: &str) -> Result<Option<String>, ResolveError> {
+const DELETED: &str = "ddownload: the file was deleted";
+
+/// What the page says: the file's name (when it gives it), or that it was
+/// deleted (`None`).
+async fn page(cx: &Cx<'_>, url: &str) -> Result<Option<Option<String>>, ResolveError> {
     let page = cx.http.client.get(url).send().await?.text().await?;
     if page.contains("File Not Found") {
         return Ok(None);
     }
-    Ok(NAME.captures(&page).map(|c| c[1].replace("&amp;", "&")))
+    Ok(Some(
+        NAME.captures(&page).map(|c| c[1].replace("&amp;", "&")),
+    ))
 }
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     if page(cx, url).await?.is_none() {
-        return Err(ResolveError::failed("ddownload: the file was deleted"));
+        return Err(ResolveError::failed(DELETED));
     }
     Err(ResolveError::NeedsUser(
         "ddownload wants a 60-second wait and Cloudflare's check passed in a browser: the desktop app does both on its own".into(),
     ))
 }
 
+pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
+    match page(cx, url).await {
+        Ok(Some(Some(name))) => Look::Found(Probed {
+            name,
+            size: None,
+            checksum: None,
+        }),
+        Ok(None) => Look::Gone(DELETED.into()),
+        _ => Look::Unknown,
+    }
+}
+
+#[cfg(test)]
 pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    Some(Probed {
-        name: page(cx, url).await.ok()??,
-        size: None,
-        checksum: None,
-    })
+    look(cx, url).await.found()
 }

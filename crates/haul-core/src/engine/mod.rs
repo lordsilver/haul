@@ -1244,13 +1244,33 @@ impl Engine {
             tokens: &self.0.tokens,
             key_service: &key_service,
         };
-        let found = match &url {
-            Some(url) => tokio::time::timeout(Duration::from_secs(25), hosts::probe(&cx, url))
+        let looked = match &url {
+            Some(url) => tokio::time::timeout(Duration::from_secs(25), hosts::look(&cx, url))
                 .await
-                .ok()
-                .flatten(),
-            None => None,
+                .unwrap_or(hosts::Look::Unknown),
+            None => hosts::Look::Unknown,
         };
+        // The host deleted the file: that link is dead now, as it would be
+        // found on its turn, and the row goes on to its other hosts.
+        if let (hosts::Look::Gone(message), Some(url)) = (&looked, &url) {
+            drop(permit);
+            let mut st = self.lock();
+            let mut event = None;
+            if let Some(it) = st.items.get_mut(&id)
+                && !it.running()
+            {
+                it.probed = true;
+                event = self.fail_mirror(&mut st, &id, url, &hosts::host_of(url), message.clone());
+            }
+            self.touch(&mut st);
+            drop(st);
+            if let Some(e) = event {
+                let _ = self.0.events.send(e);
+            }
+            self.0.wake.notify_one();
+            return;
+        }
+        let found = looked.found();
         // A web page on a host Haul has no code for may list a release's
         // links (a blog's or forum's post): they stand in for it, as if the
         // page's text had been pasted.

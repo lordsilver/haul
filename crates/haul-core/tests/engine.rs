@@ -403,6 +403,19 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/check_links.pl",
+            // 1fichier's link checker: a link with "gone" in it was deleted.
+            post(|body: String| async move {
+                let link = body.split('=').nth(1).unwrap_or_default().to_string();
+                let link = percent_encoding::percent_decode_str(&link).decode_utf8_lossy().into_owned();
+                if link.contains("gone") {
+                    format!("{link};;;NOT FOUND\n")
+                } else {
+                    String::new()
+                }
+            }),
+        )
+        .route(
             "/hidden/{key}",
             get(|State(s): State<Server>, UrlPath(key): UrlPath<String>, headers: HeaderMap| async move {
                 log(&s, &format!("/hidden/{key}"), &headers);
@@ -1021,6 +1034,21 @@ async fn a_file_downloads_from_the_host_picked_for_it() {
             .all(|r| r.contains("/info")),
         "pixeldrain stood by"
     );
+}
+
+/// A link whose host says the file was deleted fails as soon as it is
+/// looked up, with the host's words, rather than on its turn.
+#[tokio::test]
+async fn a_deleted_file_fails_when_it_is_looked_up() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text("https://1fichier.com/?gone123", "");
+    let s = wait_for(&engine, "the deleted file to fail", |s| {
+        s.items.first().is_some_and(|i| i.status == "error")
+    })
+    .await;
+    assert!(s.items[0].error.contains("deleted"), "{}", s.items[0].error);
 }
 
 /// A MEGA download that failed in Haul 0.15.0 for want of megatools goes

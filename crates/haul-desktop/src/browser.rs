@@ -22,7 +22,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, LazyLock, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
@@ -127,21 +127,14 @@ impl Browser {
         passes(&self.passes).insert(id.to_string(), handle.clone());
         let (app, engine, all) = (self.app.clone(), self.engine.clone(), self.passes.clone());
         let (id, url) = (id.to_string(), url.to_string());
-        let profile = engine.data_dir().join("webview").join("chromium").join(&id);
+        // One profile per site, kept: a check passed on one of its pages
+        // (Cloudflare's clearance cookie) holds for the next.
+        let profile = engine
+            .data_dir()
+            .join("webview")
+            .join("chromium")
+            .join(hosts::site_of(&url));
         std::thread::spawn(move || {
-            let shown = {
-                let (app, host, engine, id) =
-                    (app.clone(), host.clone(), engine.clone(), id.clone());
-                move || {
-                    tracing::info!("{host} wants a person for its check");
-                    engine.page_wants_person(&id);
-                    crate::notify_waiting(
-                        &app,
-                        &format!("{host} wants you"),
-                        "Its check did not pass by itself: tick the box on its page and the download starts.",
-                    );
-                }
-            };
             // A page that lists links hands them over as they show; Haul
             // keeps those to hosts it knows, which ends the pass.
             let lists = hosts::may_list_links(&url);
@@ -166,7 +159,7 @@ impl Browser {
                 handle,
                 take_links: if lists { Some(&take) } else { None },
             };
-            let outcome = chromium::pass(pass, shown);
+            let outcome = chromium::pass(pass);
             passes(&all).remove(&id);
             match outcome {
                 Ok(chromium::Outcome::Files { files, agent }) => {
@@ -199,6 +192,17 @@ impl Browser {
                 Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
                 Ok(chromium::Outcome::Later(reason)) => engine.page_later(&id, &reason),
                 Ok(chromium::Outcome::Listed) => tracing::info!("took the links {url} shows"),
+                Ok(chromium::Outcome::WantsPerson) => {
+                    tracing::info!("{host} wants a person for its check");
+                    engine.page_wants_person(&id);
+                    if first_ask_in_a_while(&host) {
+                        crate::notify_waiting(
+                            &app,
+                            &format!("{host} wants you"),
+                            "Its check did not pass by itself: open it in Haul, tick the box, and the download goes on.",
+                        );
+                    }
+                }
                 Ok(chromium::Outcome::Closed) => engine.page_wants_person(&id),
                 Err(e) => {
                     tracing::warn!(item = %id, "passing {url}: {e}");
@@ -319,12 +323,12 @@ impl Browser {
 
 impl Desktop for Browser {
     fn browse(&self, id: &str, url: &str, user_agent: Option<String>) -> Result<(), String> {
-        // Being passed in a full browser: that window comes on screen.
+        // Being passed out of sight: that pass stops (its browser never
+        // comes on screen), and the page opens here.
         if let Some(handle) = passes(&self.passes).get(id) {
             handle
-                .show
+                .stop
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            return Ok(());
         }
         if let Some(window) = self.app.get_webview_window(&format!("browse-{id}")) {
             bring_forward(&window);
@@ -388,6 +392,22 @@ impl Desktop for Browser {
         });
         Ok(())
     }
+}
+
+/// Whether to tell the person that `host`'s check wants them: once a minute
+/// at most, however many of its pages ask (a release's pastes, say).
+fn first_ask_in_a_while(host: &str) -> bool {
+    static LAST: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Mutex::default);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    if last
+        .get(host)
+        .is_some_and(|at| now.duration_since(*at) < Duration::from_secs(60))
+    {
+        return false;
+    }
+    last.insert(host.to_string(), now);
+    true
 }
 
 /// Takes the layers ads lay over a page off it (see the script).
