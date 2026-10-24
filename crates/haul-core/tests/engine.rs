@@ -374,6 +374,35 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/repos/lordsilver/haul/releases/latest",
+            // GitHub's latest release of Haul, far in the future, with its
+            // setup program and checksums.
+            get(|State(s): State<Server>, headers: HeaderMap| async move {
+                log(&s, "/repos/lordsilver/haul/releases/latest", &headers);
+                let host = headers.get(header::HOST).unwrap().to_str().unwrap().to_string();
+                Json(json!({
+                    "tag_name": "v99.0.0",
+                    "body": "### Added\n\n- Everything.",
+                    "html_url": "https://github.com/lordsilver/haul/releases/tag/v99.0.0",
+                    "draft": false,
+                    "prerelease": false,
+                    "assets": [
+                        {"name": "haul-desktop-v99.0.0-x86_64-pc-windows-msvc-setup.exe", "browser_download_url": format!("http://{host}/files/setup.exe")},
+                        {"name": "SHA256SUMS", "browser_download_url": format!("http://{host}/sums")},
+                    ]
+                }))
+            }),
+        )
+        .route(
+            "/sums",
+            get(|| async {
+                format!(
+                    "{}  haul-desktop-v99.0.0-x86_64-pc-windows-msvc-setup.exe\n",
+                    sha256_hex(&content("setup.exe", SIZE))
+                )
+            }),
+        )
+        .route(
             "/hidden/{key}",
             get(|State(s): State<Server>, UrlPath(key): UrlPath<String>, headers: HeaderMap| async move {
                 log(&s, &format!("/hidden/{key}"), &headers);
@@ -728,6 +757,7 @@ impl Setup {
                 mega: self.ip.clone(),
                 rootz: self.ip.clone(),
                 mediafire: self.ip.clone(),
+                github_api: self.ip.clone(),
                 fileguard: self.ip.clone(),
                 filecrypt: self.ip.clone(),
                 dlc_service: format!("{}/dlc", self.ip),
@@ -927,6 +957,28 @@ async fn a_paste_saved_as_a_download_comes_back_a_wrapper() {
     assert!(s.items.is_empty(), "no download row: {:?}", s.items);
     assert_eq!(s.wrappers.len(), 1);
     assert_eq!(s.wrappers[0].url, "https://zpaste.net/p/91f42");
+}
+
+/// A newer Haul on GitHub shows in the state, and its setup program
+/// downloads checked against the release's checksums.
+#[tokio::test]
+async fn a_newer_haul_is_found_and_its_installer_checked() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    assert!(engine.snapshot().update.is_none());
+    engine.check_update().await;
+    let update = engine.snapshot().update.expect("found");
+    assert_eq!(update.version, "99.0.0");
+    assert!(update.notes.contains("Everything"));
+    let installer = engine.download_update().await.unwrap();
+    assert_eq!(
+        installer.file_name().unwrap(),
+        "haul-desktop-v99.0.0-x86_64-pc-windows-msvc-setup.exe"
+    );
+    assert_eq!(
+        std::fs::read(&installer).unwrap(),
+        content("setup.exe", SIZE)
+    );
 }
 
 /// A MEGA download that failed in Haul 0.15.0 for want of megatools goes

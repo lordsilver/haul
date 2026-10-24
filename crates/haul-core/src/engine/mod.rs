@@ -243,6 +243,8 @@ pub struct Snapshot {
     pub reconnect: ReconnectView,
     /// VPN services whose servers join the proxies.
     pub services: ServicesView,
+    /// A newer Haul, when GitHub has one.
+    pub update: Option<crate::update::UpdateView>,
 }
 
 #[derive(Debug, Serialize, ts_rs::TS)]
@@ -854,6 +856,8 @@ struct Inner {
     shutdown: CancellationToken,
     reconnects: Mutex<reconnect::Reconnects>,
     services: Mutex<services::Services>,
+    /// A newer Haul, when GitHub has one.
+    update: Mutex<Option<crate::update::Update>>,
     _lock: File,
 }
 
@@ -959,6 +963,7 @@ impl Engine {
             shutdown: CancellationToken::new(),
             reconnects: Mutex::new(reconnect::Reconnects::default()),
             services: Mutex::new(services::Services::default()),
+            update: Mutex::new(None),
             _lock: lock,
         }));
         {
@@ -981,6 +986,7 @@ impl Engine {
         tokio::spawn(engine.clone().watch_services());
         tokio::spawn(engine.clone().saver());
         tokio::spawn(engine.clone().watch_config());
+        tokio::spawn(engine.clone().watch_updates());
         engine.resume_extractions();
         Ok(engine)
     }
@@ -3427,7 +3433,66 @@ impl Engine {
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
             reconnect,
             services,
+            update: self
+                .0
+                .update
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .map(crate::update::Update::view),
         }
+    }
+
+    /// Looks for a newer Haul shortly after start and every six hours, while
+    /// the settings allow.
+    async fn watch_updates(self) {
+        tokio::select! {
+            () = self.0.shutdown.cancelled() => return,
+            () = tokio::time::sleep(Duration::from_secs(20)) => {}
+        }
+        loop {
+            self.check_update().await;
+            tokio::select! {
+                () = self.0.shutdown.cancelled() => return,
+                () = tokio::time::sleep(Duration::from_secs(6 * 3600)) => {}
+            }
+        }
+    }
+
+    /// Asks GitHub for the latest release once, now.
+    pub async fn check_update(&self) {
+        let cfg = self.cfg();
+        if !cfg.check_updates {
+            return;
+        }
+        let http = self.clients().on(0);
+        match crate::update::latest(&http, &cfg.endpoints.github_api, env!("CARGO_PKG_VERSION"))
+            .await
+        {
+            Ok(found) => {
+                if let Some(u) = &found {
+                    tracing::info!("Haul {} is out", u.version);
+                }
+                *self.0.update.lock().unwrap_or_else(|e| e.into_inner()) = found;
+                let mut st = self.lock();
+                self.touch(&mut st);
+            }
+            Err(e) => tracing::debug!("looking for an update: {e}"),
+        }
+    }
+
+    /// Downloads the newer Haul's setup program into the data folder,
+    /// checked against the release's checksums. Returns where it is.
+    pub async fn download_update(&self) -> Result<PathBuf, String> {
+        let update = self
+            .0
+            .update
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or("no newer Haul is known")?;
+        let http = self.clients().on(0);
+        crate::update::fetch_installer(&http, &update, &self.0.data_dir.join("update")).await
     }
 
     // ---- persistence

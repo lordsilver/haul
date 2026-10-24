@@ -8,6 +8,7 @@ import type { PoolView } from "./PoolView";
 import type { ReconnectView } from "./ReconnectView";
 import type { ServicesView } from "./ServicesView";
 import type { Theme } from "./Theme";
+import type { UpdateView } from "./UpdateView";
 import type { WrapperCard } from "./WrapperCard";
 import type { WrapperView } from "./WrapperView";
 
@@ -71,4 +72,8 @@ reconnect: ReconnectView,
 /**
  * VPN services whose servers join the proxies.
  */
-services: ServicesView, };
+services: ServicesView, 
+/**
+ * A newer Haul, when GitHub has one.
+ */
+update: UpdateView | null, };

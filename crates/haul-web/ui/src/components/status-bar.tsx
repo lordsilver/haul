@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Switch } from '@/components/ui/switch';
+import { UpdateEntry } from '@/components/update';
 import { fetchSettings, report, save } from '@/lib/api';
 import type { PoolSource } from '@/lib/bindings/PoolSource';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
@@ -226,6 +227,7 @@ export function StatusBar({ state: s }: { state: State | null }) {
         </span>
       ) : null}
       <span className="flex-1" />
+      <UpdateEntry s={s} />
       {clipboard ? (
         <Flyout
           title="Clipboard"

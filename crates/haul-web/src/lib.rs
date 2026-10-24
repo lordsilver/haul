@@ -40,6 +40,10 @@ pub trait Desktop: Send + Sync + 'static {
     /// Asks the user where to save `contents`, suggesting `name`, and saves
     /// it there; blocks until they answer. `None` when they cancel.
     fn save_file(&self, name: &str, contents: &[u8]) -> Result<Option<std::path::PathBuf>, String>;
+
+    /// Runs the newer Haul's setup program at `installer`, which installs it
+    /// over this one and starts it again, and closes the app.
+    fn install_update(&self, installer: &std::path::Path) -> Result<(), String>;
 }
 
 #[derive(Clone)]
@@ -121,6 +125,8 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/global/{action}", post(global))
         .route("/api/router", post(find_router))
         .route("/api/reconnect", post(reconnect))
+        .route("/api/update/check", post(check_update))
+        .route("/api/update/install", post(install_update))
         .route("/api/nordvpn/servers", post(nordvpn_servers))
         .route("/api/settings", get(settings).post(update_settings))
         .route("/api/settings/download-dir/pick", post(pick_download_dir))
@@ -492,6 +498,29 @@ async fn nordvpn_servers(State(app): State<App>) -> Response {
 
 /// Gets this machine's line a new public address now. Answers once the line
 /// is back, with the new address, or with why there is none.
+/// Asks GitHub for a newer Haul now; the state says what it found.
+async fn check_update(State(app): State<App>) -> Response {
+    app.engine.check_update().await;
+    ok()
+}
+
+/// Downloads the newer Haul, checks it, and has the desktop app install it.
+async fn install_update(State(app): State<App>) -> Response {
+    let Some(desktop) = app.desktop.clone() else {
+        return error(
+            StatusCode::NOT_IMPLEMENTED,
+            "only the desktop app installs updates; download the new version from its release page",
+        );
+    };
+    match app.engine.download_update().await {
+        Ok(installer) => match desktop.install_update(&installer) {
+            Ok(()) => ok(),
+            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        },
+        Err(e) => error(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
 async fn reconnect(State(app): State<App>) -> Response {
     match app.engine.reconnect("asked in Haul").await {
         Ok(address) => Json(serde_json::json!({ "address": address })).into_response(),

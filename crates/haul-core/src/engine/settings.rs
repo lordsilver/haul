@@ -34,6 +34,7 @@ pub struct SettingsView {
     pub max_active_gb: f64,
     pub theme: Theme,
     pub watch_clipboard: bool,
+    pub check_updates: bool,
     pub recycle_on_remove: bool,
     pub skip_add_dialog: bool,
     pub verify_existing: bool,
@@ -105,6 +106,7 @@ impl Engine {
             max_active_gb: cfg.max_active_gb,
             theme: cfg.theme,
             watch_clipboard: cfg.watch_clipboard,
+            check_updates: cfg.check_updates,
             recycle_on_remove: cfg.recycle_on_remove,
             skip_add_dialog: cfg.skip_add_dialog,
             verify_existing: cfg.verify_existing,
@@ -221,6 +223,11 @@ impl Engine {
                 "watch_clipboard" => {
                     let on = value.as_bool().ok_or("watch_clipboard is true or false")?;
                     cfg.watch_clipboard = on;
+                    writes.push(top(key, Some(on.into())));
+                }
+                "check_updates" => {
+                    let on = value.as_bool().ok_or("check_updates is true or false")?;
+                    cfg.check_updates = on;
                     writes.push(top(key, Some(on.into())));
                 }
                 "recycle_on_remove" => {

@@ -46,6 +46,7 @@ fn config(base: &str) -> Config {
             mega: base.into(),
             rootz: base.into(),
             mediafire: base.into(),
+            github_api: base.into(),
             mirrored: base.into(),
             router: format!("{base}/igddesc.xml"),
             ip_echo: format!("{base}/ip"),
