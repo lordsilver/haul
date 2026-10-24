@@ -6,7 +6,7 @@ members = ["crates/*"]
 default-members = ["crates/haul-core", "crates/haul-web"]
 
 [workspace.package]
-version = "0.15.5"
+version = "0.15.6"
 edition = "2024"
 rust-version = "1.96"
 repository = "https://github.com/lordsilver/haul"
