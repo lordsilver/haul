@@ -10,6 +10,7 @@
 //! timer is waited out.
 
 mod buzzheavier;
+mod ddownload;
 mod filecrypt;
 mod fileguard;
 mod generic;
@@ -329,6 +330,7 @@ enum Kind {
     Vikingfile,
     Rootz,
     Mediafire,
+    Ddownload,
     /// Its links are the files.
     Direct,
     Fileguard,
@@ -496,6 +498,21 @@ static KNOWN: &[Known] = &[
         needs_account: false,
     },
     Known {
+        names: &["ddownload.com", "ddl.to"],
+        kind: Kind::Ddownload,
+        accounts: &[],
+        free: Free {
+            at_once: None,
+            daily_bytes: None,
+            slowed_to: None,
+        },
+        tells_allowance: false,
+        // A 60-second wait and Cloudflare's Turnstile, which a browser
+        // passes out of sight.
+        page_passes: true,
+        needs_account: false,
+    },
+    Known {
         names: &["mediafire.com"],
         kind: Kind::Mediafire,
         accounts: &[],
@@ -601,6 +618,15 @@ pub fn known(host: &str) -> Option<&'static Known> {
 
 /// Whether `url`'s page passes its check by itself (see
 /// [`Known::page_passes`]).
+/// How long a page that passes by itself takes on its own before it could
+/// want a person: ddownload's makes everyone wait a minute first.
+pub fn page_takes(url: &str) -> std::time::Duration {
+    match kind_of(url) {
+        Some(Kind::Ddownload) => std::time::Duration::from_secs(75),
+        _ => std::time::Duration::ZERO,
+    }
+}
+
 pub fn page_passes(url: &str) -> bool {
     known(&host_of(url)).is_some_and(|k| k.page_passes)
 }
@@ -1080,6 +1106,7 @@ pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError>
         Some(Kind::Vikingfile) => vikingfile::resolve(cx, url).await,
         Some(Kind::Rootz) => rootz::resolve(cx, url).await,
         Some(Kind::Mediafire) => mediafire::resolve(cx, url).await,
+        Some(Kind::Ddownload) => ddownload::resolve(cx, url).await,
         Some(Kind::Direct) => Ok(vec![Entry {
             url: url.into(),
             name: guess_name(url),
@@ -1102,6 +1129,7 @@ pub async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
         Some(Kind::Vikingfile) => vikingfile::probe(cx, url).await,
         Some(Kind::Rootz) => rootz::probe(cx, url).await,
         Some(Kind::Mediafire) => mediafire::probe(cx, url).await,
+        Some(Kind::Ddownload) => ddownload::probe(cx, url).await,
         Some(Kind::OneFichier) => onefichier::probe(cx, url).await,
         Some(Kind::Mega) => mega::probe(cx, url).await,
         // No free metadata route; resolve at download time.

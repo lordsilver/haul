@@ -85,7 +85,8 @@ impl Browser {
     /// Opens `url`'s page for item `id` out of sight, for a host whose
     /// check passes by itself ([`hosts::page_passes`]): the link is taken as
     /// usual, and the window comes forward only if the page is still there
-    /// after [`SHOW_AFTER`], its check wanting a person.
+    /// after [`SHOW_AFTER`] (plus the time the host's page takes on its own,
+    /// [`hosts::page_takes`]), its check wanting a person.
     pub fn pass(&self, id: &str, url: &str) -> Result<(), String> {
         let label = format!("browse-{id}");
         if self.is_passing(id) {
@@ -97,9 +98,10 @@ impl Browser {
         self.open(id, url, None, true)?;
         let app = self.app.clone();
         let host = hosts::host_of(url);
+        let wait = SHOW_AFTER + hosts::page_takes(url);
         let (engine, id) = (self.engine.clone(), id.to_string());
         std::thread::spawn(move || {
-            std::thread::sleep(SHOW_AFTER);
+            std::thread::sleep(wait);
             if let Some(window) = app.get_webview_window(&label) {
                 tracing::info!("{host} wants a person for its check");
                 engine.page_wants_person(&id);
@@ -160,7 +162,7 @@ impl Browser {
                 } else {
                     &[OVERLAYS, HANDOFF]
                 },
-                show_after: SHOW_AFTER,
+                show_after: SHOW_AFTER + hosts::page_takes(&url),
                 handle,
                 take_links: if lists { Some(&take) } else { None },
             };

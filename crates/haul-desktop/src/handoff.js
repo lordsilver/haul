@@ -126,6 +126,36 @@
       },
     },
     {
+      // A 60-second countdown and Cloudflare's Turnstile in the download
+      // form; once the button is enabled and the Turnstile has its answer,
+      // the button sends the form. The page that follows links the file.
+      site: /(^|\.)(ddownload\.com|ddl\.to)$/,
+      watch() {
+        let pressed = false;
+        const name = () => document.querySelector(".dk-dl-name")?.getAttribute("title") || undefined;
+        const look = () => {
+          const text = document.body?.innerText ?? "";
+          if (/\bFile Not Found\b/.test(text)) return gone("ddownload: the file was deleted");
+          const button = document.querySelector("#downloadbtn");
+          const answer = document.querySelector('input[name="cf-turnstile-response"]');
+          if (button && !pressed) {
+            if (!button.disabled && !button.classList.contains("dk-btn-disabled") && answer?.value) {
+              pressed = true;
+              button.click();
+            }
+            return;
+          }
+          // The file's link: an address on the host's servers that ends in
+          // a file name, not another page.
+          const link = [...document.querySelectorAll("a[href]")]
+            .map((a) => a.href)
+            .find((h) => /^https?:\/\/[^/]*ddownload\.com\/.+\/[^/?#]+\.[A-Za-z0-9]{2,5}(\?|$)/.test(h) && !/\.(html?|php)(\?|$)/i.test(h));
+          if (link) hand([{ url: link, name: name() }]);
+        };
+        setInterval(look, 1000);
+      },
+    },
+    {
       // A person solves 1fichier's captcha here and the download starts by
       // itself; all the page can say first is that the file was deleted
       // (its own words, French then English, with the 404 it answers).
