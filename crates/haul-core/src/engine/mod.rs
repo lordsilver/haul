@@ -197,6 +197,8 @@ pub struct Added {
     pub invalid: usize,
     /// Wrapper links (fileguard.cc, filecrypt.cc), unwrapped as they come.
     pub wrappers: usize,
+    /// Copied web pages being looked at for links; those that list none go.
+    pub pages: usize,
 }
 
 #[derive(Debug, Serialize, ts_rs::TS)]
@@ -269,6 +271,9 @@ pub struct ItemView {
     pub mirrors: Vec<String>,
     /// The host the user picked to download it from, when they did.
     pub download_from: Option<String>,
+    /// A copied page being looked at for links: in no list until it shows
+    /// some ([`Engine::add_from_clipboard`]).
+    pub tentative: bool,
     /// Seconds until a waiting item may try again.
     pub wait: u64,
     /// Seconds until a failed item is tried again on its own; 0 when never.
@@ -1105,25 +1110,37 @@ impl Engine {
         self.add_links(links)
     }
 
-    /// Adds the links in copied text that point at a known host or a file;
-    /// links to ordinary web pages are left alone.
+    /// Adds the links in copied text that point at a known host or a file.
+    /// A link to any other web page (not a site's front page) is looked at
+    /// for links, as a release's post or a paste lists them, and kept only
+    /// if it has some: an ordinary page goes again quietly.
     pub fn add_from_clipboard(&self, text: &str) -> Added {
-        let links = container::extract_urls(text)
+        let link = |url| Link {
+            url,
+            name: None,
+            package: String::new(),
+        };
+        let (downloads, pages): (Vec<String>, Vec<String>) = container::extract_urls(text)
             .into_iter()
-            .filter(|url| hosts::is_download_link(url))
-            .map(|url| Link {
-                url,
-                name: None,
-                package: String::new(),
-            })
-            .collect::<Vec<_>>();
-        if links.is_empty() {
-            return Added::default();
+            .filter(|url| hosts::is_download_link(url) || hosts::is_web_page(url))
+            .partition(|url| hosts::is_download_link(url));
+        let mut added = Added::default();
+        if !downloads.is_empty() {
+            added = self.add(downloads.into_iter().map(link).collect(), false);
         }
-        self.add_links(links)
+        if !pages.is_empty() {
+            added.pages = self.add(pages.into_iter().map(link).collect(), true).added;
+        }
+        added
     }
 
     pub fn add_links(&self, links: Vec<Link>) -> Added {
+        self.add(links, false)
+    }
+
+    /// Adds `links`; `tentative`: copied pages, kept only if they list
+    /// links ([`Item::tentative`]).
+    fn add(&self, links: Vec<Link>, tentative: bool) -> Added {
         let mut added = Added::default();
         let mut probe = Vec::new();
         {
@@ -1177,7 +1194,8 @@ impl Engine {
                     added.merged += 1;
                     continue;
                 }
-                let it = Item::new(vec![link.url], name, link.package);
+                let mut it = Item::new(vec![link.url], name, link.package);
+                it.tentative = tentative;
                 if !it.probed {
                     probe.push(it.id.clone());
                 }
@@ -1277,13 +1295,19 @@ impl Engine {
         // A web page on a host Haul has no code for may list a release's
         // links (a blog's or forum's post): they stand in for it, as if the
         // page's text had been pasted.
+        // Behind a check the desktop app passes, a page shows its links
+        // only once passed.
+        let mut guarded = false;
         let listed = match (&found, &url) {
             (None, Some(url)) if hosts::may_list_links(url) => {
-                tokio::time::timeout(Duration::from_secs(30), hosts::page(&cx, url))
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .filter(|(_, links)| !links.is_empty())
+                match tokio::time::timeout(Duration::from_secs(30), hosts::page(&cx, url)).await {
+                    Ok(Ok((title, links))) if !links.is_empty() => Some((title, links)),
+                    Ok(Err(ResolveError::NeedsUser(message))) => {
+                        guarded = hosts::is_guarded(&message) && self.pages_pass();
+                        None
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         };
@@ -1299,6 +1323,9 @@ impl Engine {
             }
             return;
         }
+        if found.is_none() && !guarded && self.drop_tentative(&id, "lists no links") {
+            return;
+        }
         let learned = found.is_some();
         {
             let mut st = self.lock();
@@ -1306,6 +1333,8 @@ impl Engine {
                 return;
             };
             if let Some(found) = found {
+                // A copied link that turns out to be a file is a download.
+                it.tentative = false;
                 it.name = Some(hosts::tidy_name(&found.name));
                 if let Some(size) = found.size.filter(|s| *s > 0) {
                     it.size = size;
@@ -2104,6 +2133,7 @@ impl Engine {
             }
         }
         if let Some(row) = st.items.get_mut(id) {
+            row.tentative = false;
             if !row.wrapper {
                 // A row handed a wrapper's link is that wrapper now.
                 row.wrapper = true;
@@ -2830,6 +2860,27 @@ impl Engine {
         n
     }
 
+    /// Whether item `id` is a copied page still on trial, so the desktop
+    /// app ends its pass as soon as the page settles.
+    pub fn is_tentative(&self, id: &str) -> bool {
+        self.lock().items.get(id).is_some_and(|it| it.tentative)
+    }
+
+    /// Takes away item `id` if it is a copied page that did not turn out to
+    /// list links (`why`), telling nobody. Returns whether it went.
+    fn drop_tentative(&self, id: &str, why: &str) -> bool {
+        let mut st = self.lock();
+        let Some(it) = st.items.get(id).filter(|it| it.tentative) else {
+            return false;
+        };
+        tracing::info!(item = %id, "copied page {} {why}: left alone", it.mirrors[0]);
+        st.items.shift_remove(id);
+        self.touch(&mut st);
+        drop(st);
+        self.0.wake.notify_one();
+        true
+    }
+
     /// Item `id`'s links, for tests of what they merge into.
     #[doc(hidden)]
     pub fn debug_links(&self, id: &str) -> Vec<String> {
@@ -2851,6 +2902,9 @@ impl Engine {
     /// The desktop app's page for item `id` wants a person after all: the
     /// item shows as needing one from now on, until it is tried again.
     pub fn page_wants_person(&self, id: &str) {
+        if self.drop_tentative(id, "wants a person") {
+            return;
+        }
         let mut st = self.lock();
         if let Some(it) = st.items.get_mut(id) {
             it.page_wants_person = true;
@@ -2922,6 +2976,9 @@ impl Engine {
     /// mirror failed like any other, and the item goes on to the next one
     /// (or fails with `reason` when none is left), asking nobody.
     pub fn page_gone(&self, id: &str, reason: &str) {
+        if self.drop_tentative(id, reason) {
+            return;
+        }
         let Some(page) = self.page_for(id) else {
             return;
         };
@@ -3335,6 +3392,7 @@ impl Engine {
                 archive: None,
                 source_name: None,
                 download_from: it.prefer.clone(),
+                tentative: it.tentative,
             })
             .collect();
         let route = |name: &str| {

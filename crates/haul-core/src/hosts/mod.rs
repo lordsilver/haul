@@ -734,7 +734,7 @@ pub async fn allowance(cx: &Cx<'_>, host: &str) -> Option<Allowance> {
 /// Whether a link is worth adding when it shows up on the clipboard: a host
 /// Haul knows, or a link to a file rather than to a web page.
 pub fn is_download_link(url: &str) -> bool {
-    if kind_of(url).is_some() || is_paste(url) || is_release_page(url) {
+    if kind_of(url).is_some() || is_paste(url) {
         return true;
     }
     // A page that names a file (`name.rar.html`) is still a page.
@@ -742,15 +742,13 @@ pub fn is_download_link(url: &str) -> bool {
         && guess_name(url).is_some()
 }
 
-/// Sites whose pages are releases' posts, each linking a release's files or
-/// pastes of them: a page copied from one is taken like a download link.
-const RELEASE_SITES: &[&str] = &["elamigosgames.net", "gload.to"];
-
-/// Whether `url` is a release's post on a site of [`RELEASE_SITES`] (not its
-/// front page).
-fn is_release_page(url: &str) -> bool {
-    RELEASE_SITES.contains(&host_of(url).as_str())
-        && url::Url::parse(url).is_ok_and(|u| u.path().trim_matches('/').len() > 1)
+/// Whether `url` is a web page that may list a release's links: on a site
+/// Haul has no code for, and not the site's front page.
+pub fn is_web_page(url: &str) -> bool {
+    may_list_links(url)
+        && url::Url::parse(url).is_ok_and(|u| {
+            matches!(u.scheme(), "http" | "https") && u.path().trim_matches('/').len() > 1
+        })
 }
 
 /// Extensions of web pages, as opposed to files.
@@ -1408,12 +1406,13 @@ mod tests {
         assert!(!is_download_link("https://github.com/garysassano/haul"));
         assert!(is_download_link("https://fileguard.cc/93d9847d92/1fichier"));
         assert!(is_download_link("https://filecrypt.cc/DLC/0007530C13.dlc"));
-        // Pastes and release sites' posts are lists of links to take.
+        // Pastes are lists of links to take.
         assert!(is_download_link("https://zpaste.net/p/pd73y"));
-        assert!(is_download_link(
-            "https://www.elamigosgames.net/games/naruto-x-boruto-ultimate-ninja-storm-pc-espanhol-mega"
-        ));
-        assert!(!is_download_link("https://www.elamigosgames.net/"));
+        // Any other page may list a release's links: looked at, not taken
+        // as is; a site's front page is neither.
+        assert!(is_web_page("https://releases.example/games/some-release"));
+        assert!(!is_web_page("https://releases.example/"));
+        assert!(!is_web_page("https://pixeldrain.com/u/x"));
         assert!(is_download_link(
             "https://filecrypt.cc/Container/0007530C13.html"
         ));
@@ -1520,8 +1519,8 @@ mod tests {
     #[test]
     fn names_are_tidied_and_recognised_across_hosts() {
         assert_eq!(
-            tidy_name("Dra.Awa-ElAmigos.part1 (2).rar"),
-            "Dra.Awa-ElAmigos.part1.rar"
+            tidy_name("Some.Game-Group.part1 (2).rar"),
+            "Some.Game-Group.part1.rar"
         );
         assert_eq!(
             tidy_name("Dra.0.10 .1.1 &amp;#40;15.10.2026&amp;#41;.rar"),

@@ -1702,6 +1702,46 @@ async fn a_page_that_lists_nothing_fails_without_asking() {
     assert_eq!(s.items[0].retry_in, 0, "not tried again on a timer");
 }
 
+/// A web page copied to the clipboard is looked at for links: one that
+/// lists some becomes a wrapper of them, an ordinary page goes quietly, and
+/// a site's front page is not taken at all.
+#[tokio::test]
+async fn a_copied_page_is_kept_only_if_it_lists_links() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let added = engine.add_from_clipboard(&format!("{0}/blog/release {0}/blog/plain {0}/", t.ip));
+    assert_eq!((added.added, added.pages), (0, 2));
+    let s = wait_for(&engine, "the release unwrapped, the plain page gone", |s| {
+        s.wrappers.iter().any(|w| w.status == "done")
+            && s.items.len() == 2
+            && s.items.iter().all(|i| !i.tentative)
+    })
+    .await;
+    assert!(s.items.iter().all(|i| i.mirrors == ["pixeldrain.com"]));
+    assert_eq!(s.counts.all, 2);
+    assert_eq!(s.counts.need_you, 0, "nobody asked about the plain page");
+}
+
+/// A copied page behind a check the desktop app passes waits, out of the
+/// lists, for its pass; if the check wants a person after all, it goes.
+#[tokio::test]
+async fn a_copied_guarded_page_goes_if_it_wants_a_person() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.add_from_clipboard(&format!("{}/blog/guarded", t.ip));
+    let s = wait_for(&engine, "the page waiting for its pass", |s| {
+        s.items.iter().any(|i| i.status == "passing")
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    assert!(s.items[0].tentative && engine.is_tentative(&id));
+    assert_eq!((s.counts.all, s.counts.unwrapping), (0, 1));
+    engine.page_wants_person(&id);
+    let s = engine.snapshot();
+    assert!(s.items.is_empty() && s.counts.need_you == 0);
+}
+
 /// A host that gives nothing without an account is off until one is set:
 /// its links are not tried, it says why, and setting the account tries them.
 #[tokio::test]

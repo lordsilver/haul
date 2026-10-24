@@ -13,6 +13,11 @@ mirrors: Array<string>,
  */
 download_from: string | null, 
 /**
+ * A copied page being looked at for links: in no list until it shows
+ * some ([`Engine::add_from_clipboard`]).
+ */
+tentative: boolean, 
+/**
  * Seconds until a waiting item may try again.
  */
 wait: number, 

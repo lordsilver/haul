@@ -10,7 +10,8 @@ import type { ListKey } from '@/lib/route';
 // whole archive in every view, as the engine sums it (`state.archives`).
 export type Entry = { it: ItemView } | { key: string; archive: ArchiveView; members: ItemView[] };
 
-export const inList = (it: ItemView, view: ListKey) => view === 'all' || it.list === view;
+// A copied page on trial (`tentative`) is in no list, not even All.
+export const inList = (it: ItemView, view: ListKey) => !it.tentative && (view === 'all' || it.list === view);
 
 export function matchesQuery(it: ItemView, query: string): boolean {
   if (!query) return true;

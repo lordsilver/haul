@@ -105,7 +105,8 @@ pub(super) fn items(
     let off = |m: &str| known.get(m).is_some_and(|h| h.disabled || h.needs_account);
     let rank = |m: &str| known.get(m).and_then(|h| h.preferred).unwrap_or(usize::MAX);
     for it in items {
-        it.list = list_of(it.status);
+        // A copied page on trial is in no list until it shows links.
+        it.list = if it.tentative { "" } else { list_of(it.status) };
         it.not_started = it.status == "paused" && it.done == 0;
         it.shown_host = if it.host.is_empty() {
             let mut on: Vec<&String> = it.mirrors.iter().filter(|m| !off(m)).collect();
@@ -538,10 +539,10 @@ pub(super) fn counts(
     cards: usize,
     paused: bool,
 ) -> Counts {
-    let t = tally(items);
+    let t = tally(items.iter().filter(|i| !i.tentative));
     let in_list = |l: &str| items.iter().filter(|i| i.list == l).count();
     Counts {
-        all: items.len(),
+        all: items.iter().filter(|i| !i.tentative).count(),
         active: in_list("active"),
         attention: in_list("attention"),
         failed: in_list("failed"),
@@ -560,7 +561,10 @@ pub(super) fn counts(
             .iter()
             .filter(|w| matches!(w.status, "unwrapping" | "passing"))
             .count()
-            + items.iter().filter(|i| i.status == "passing").count(),
+            + items
+                .iter()
+                .filter(|i| i.status == "passing" || i.tentative)
+                .count(),
         need_you: in_list("attention") + wrappers.iter().filter(|w| w.status == "captcha").count(),
         wrappers_alert: if wrappers.iter().any(|w| w.status == "error") {
             "critical"
@@ -799,6 +803,7 @@ mod tests {
             archive: None,
             source_name: None,
             download_from: None,
+            tentative: false,
         }
     }
 
@@ -954,14 +959,14 @@ mod tests {
 
     #[test]
     fn an_archive_named_after_an_id_takes_the_release_name() {
-        let release = Some("NARUTO.X.BORUTO.Ultimate.Ninja.STORM.CONNECTIONS-ElAmigos");
+        let release = Some("Some.Game.Deluxe.Edition-Group");
         assert_eq!(
             archive_name("186d2b09-9d89-48af-8306-fa3348c01fe6.rar".into(), release),
-            "NARUTO.X.BORUTO.Ultimate.Ninja.STORM.CONNECTIONS-ElAmigos.rar"
+            "Some.Game.Deluxe.Edition-Group.rar"
         );
         assert_eq!(
             archive_name("9f86d081884c7d659a2feaa0c55ad015.7z".into(), release),
-            "NARUTO.X.BORUTO.Ultimate.Ninja.STORM.CONNECTIONS-ElAmigos.7z"
+            "Some.Game.Deluxe.Edition-Group.7z"
         );
         // A name that says something stays, and so does an id with no
         // release to name it.

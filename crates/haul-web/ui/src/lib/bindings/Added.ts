@@ -23,4 +23,8 @@ invalid: number,
 /**
  * Wrapper links (fileguard.cc, filecrypt.cc), unwrapped as they come.
  */
-wrappers: number, };
+wrappers: number, 
+/**
+ * Copied web pages being looked at for links; those that list none go.
+ */
+pages: number, };

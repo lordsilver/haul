@@ -323,8 +323,8 @@ mod tests {
     #[test]
     fn a_page_title_names_the_release_alone() {
         assert_eq!(
-            short_title("Download Naruto X Boruto [PC] | ElAmigos Games").as_deref(),
-            Some("Naruto X Boruto [PC]")
+            short_title("Download Some Game [PC] | Release Site").as_deref(),
+            Some("Some Game [PC]")
         );
         assert_eq!(short_title("Release R").as_deref(), Some("Release R"));
         assert_eq!(short_title(" | Site"), None);
