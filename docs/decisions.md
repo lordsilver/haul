@@ -70,6 +70,8 @@ Tauri's NSIS installer offers both with the standard MultiUser support, which ru
 
 Tauri's installer recommends uninstalling an older version before installing, with that option preselected, so an update ran the old uninstaller first. Haul replaces its program files in place and keeps its data elsewhere, so uninstalling first only costs time. `crates/haul-desktop/windows/installer.nsi` is Tauri's installer template with that page skipped for updates, which install over the older version as **Do not uninstall** did. Reinstalling the same version, going back to an older one and replacing a version installed from the `.msi` still show the page. The template comes from the Tauri CLI version the release workflow uses and changes with it.
 
+Haul looks for its own updates on GitHub (the latest release of `lordsilver/haul`, after start and every six hours, unless `check_updates` is off) rather than with Tauri's updater, which needs its own signing key and an update manifest in every release. The desktop app downloads the new setup program, checks it against the release's `SHA256SUMS`, runs it with `/P /UPDATE /R` (progress only, install over this version, start Haul again) and closes; the installer is the same one a person downloads, so there is one way to install and one to check.
+
 ## The data folder on Windows
 
 The data folder is `%LOCALAPPDATA%\io.github.garysassano.haul`, not `%LOCALAPPDATA%\Haul`: that is where a per-user install puts the program, and the uninstaller's option to delete the app's data removes `%LOCALAPPDATA%\<identifier>`, which is also where WebView2 already keeps the app's browser data. On Linux nothing shares `~/.local/share/haul`, so it stays there.

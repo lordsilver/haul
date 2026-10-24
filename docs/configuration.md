@@ -13,6 +13,7 @@ rate_limit_mbps = 0             # MB/s, 0 = no limit
 max_active_gb = 0               # most GB of files downloading at once (20: four 5 GB files), 0 = no limit
 theme = "system"                # system, light or dark
 watch_clipboard = false         # desktop app
+check_updates = true            # look for a newer Haul on GitHub
 recycle_on_remove = false       # removing a finished download also moves its file to the Recycle Bin
 skip_add_dialog = false         # dropped and opened links are added without the Add dialog
 verify_existing = false         # compare files already there with the host's checksum
