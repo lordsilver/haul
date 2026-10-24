@@ -1566,3 +1566,46 @@ async fn transfer_it_lists_with_its_keys_in_clear() {
         })
     );
 }
+
+#[tokio::test]
+async fn ddownload_names_the_file_and_leaves_its_wait_to_a_browser() {
+    let app = Router::new().route(
+        "/{id}",
+        get(|Path(id): Path<String>| async move {
+            if id == "gone00000000" {
+                "<h1>File Not Found</h1>".to_string()
+            } else {
+                format!(r#"<h2 class="dk-dl-name" title="{id}.part1.rar">{id}.part1.rar</h2>"#)
+            }
+        }),
+    );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
+    assert_eq!(
+        ddownload::probe(&cx, &format!("{base}/b95mf0a361s1")).await,
+        Some(Probed {
+            name: "b95mf0a361s1.part1.rar".into(),
+            size: None,
+            checksum: None,
+        })
+    );
+    assert!(matches!(
+        ddownload::resolve(&cx, &format!("{base}/b95mf0a361s1")).await,
+        Err(ResolveError::NeedsUser(_))
+    ));
+    assert_eq!(
+        ddownload::resolve(&cx, &format!("{base}/gone00000000")).await,
+        Err(ResolveError::failed("ddownload: the file was deleted"))
+    );
+    assert_eq!(
+        ddownload::probe(&cx, &format!("{base}/gone00000000")).await,
+        None
+    );
+}
