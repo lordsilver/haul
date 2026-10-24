@@ -10,7 +10,7 @@ From any page, this bookmarklet opens Haul's Add dialog with the page you are on
 javascript:location.href='http://127.0.0.1:8765/#/add/'+encodeURIComponent(location.href)
 ```
 
-With clipboard watching on (desktop app), links you copy anywhere are added when they point at a supported host, a file, a wrapper, a paste (zpaste.net, paste2.org…) or a release's post on a release site (elamigosgames.net, gload.to): copying a release's page is enough to bring in its files.
+With clipboard watching on (desktop app), links you copy anywhere are added when they point at a supported host, a file, a wrapper or a paste (zpaste.net, paste2.org…). Any other web page you copy (not a site's front page) is looked at quietly, passing its check out of sight if it has one: a page that lists files, hosts, wrappers or pastes becomes a wrapper of them, so copying a release's page is enough to bring in its files, and any other page is left alone without a word. Haul fetches each such page once, as a browser would.
 
 ## Needs you
 

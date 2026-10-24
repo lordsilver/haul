@@ -159,7 +159,9 @@ impl Browser {
                 show_after: SHOW_AFTER + hosts::page_takes(&url),
                 handle,
                 take_links: if lists { Some(&take) } else { None },
-                ends_settled: hosts::is_paste(&url),
+                // A paste, or a copied page on trial, has shown all it
+                // will once it settles.
+                ends_settled: hosts::is_paste(&url) || engine.is_tentative(&id),
             };
             let outcome = chromium::pass(pass);
             passes(&all).remove(&id);

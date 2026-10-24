@@ -150,6 +150,10 @@ pub(crate) struct Item {
     /// The host the user picked to download it from, while it has the file;
     /// the others stand by.
     pub prefer: Option<String>,
+    /// A web page copied to the clipboard, kept only if it turns out to
+    /// list links: one that lists none, or whose check wants a person, goes
+    /// quietly.
+    pub tentative: bool,
     /// A wrapper page's own name for what it holds.
     pub title: Option<String>,
     pub found: Option<Found>,
@@ -219,6 +223,7 @@ impl Item {
             source: None,
             also_from: Vec::new(),
             prefer: None,
+            tentative: false,
             page_wants_person: false,
             title: None,
             found: None,
@@ -272,6 +277,7 @@ impl Item {
             source: self.source.clone(),
             also_from: self.also_from.clone(),
             prefer: self.prefer.clone(),
+            tentative: self.tentative,
             title: self.title.clone(),
             found: self.found,
             found_hosts: self.found_hosts.clone(),
@@ -319,6 +325,7 @@ impl Item {
         it.source = s.source;
         it.also_from = s.also_from;
         it.prefer = s.prefer;
+        it.tentative = s.tentative;
         it.title = s.title;
         it.found = s.found;
         it.found_hosts = s.found_hosts;
@@ -400,6 +407,8 @@ pub(crate) struct Saved {
     pub also_from: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefer: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tentative: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
