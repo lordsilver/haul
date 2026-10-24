@@ -10,12 +10,14 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 
-use super::{Cx, Entry, Probed, ResolveError};
+use super::{Cx, Entry, Look, Probed, ResolveError};
 
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/d/([A-Za-z0-9_-]+)").unwrap());
 /// The token in the page's data, escaped as it is there (`\"pageToken\":\"…\"`).
 static TOKEN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"pageToken\\?"\s*:\s*\\?"([A-Za-z0-9._-]+)"#).unwrap());
+
+const DELETED: &str = "rootz: the file was deleted";
 
 /// A file's name, size and id, from its page's lookup.
 struct File {
@@ -59,7 +61,7 @@ async fn lookup(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
     }
     let d = &answer["data"];
     if d["status"] == "deleted" {
-        return Err(ResolveError::failed("rootz: the file was deleted"));
+        return Err(ResolveError::failed(DELETED));
     }
     if d["passwordProtected"] == true {
         return Err(ResolveError::NeedsUser(
@@ -91,11 +93,19 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     }])
 }
 
+pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
+    match lookup(cx, url).await {
+        Ok(file) => Look::Found(Probed {
+            name: file.name,
+            size: Some(file.size),
+            checksum: None,
+        }),
+        Err(ResolveError::Failed(m)) if m == DELETED => Look::Gone(m),
+        Err(_) => Look::Unknown,
+    }
+}
+
+#[cfg(test)]
 pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    let file = lookup(cx, url).await.ok()?;
-    Some(Probed {
-        name: file.name,
-        size: Some(file.size),
-        checksum: None,
-    })
+    look(cx, url).await.found()
 }

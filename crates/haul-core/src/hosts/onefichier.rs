@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::{Value, json};
 
-use super::{Cx, Entry, Probed, ResolveError};
+use super::{Cx, Entry, Look, Probed, ResolveError};
 use crate::config::secret;
 
 static OK_LINK: LazyLock<[Regex; 2]> = LazyLock::new(|| {
@@ -108,15 +108,21 @@ async fn check(cx: &Cx<'_>, url: &str) -> Option<Checked> {
     parse_check(&r.text().await.ok()?, &id)
 }
 
-pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    match check(cx, url).await? {
-        Checked::Found { name, size } => Some(Probed {
+pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
+    match check(cx, url).await {
+        Some(Checked::Found { name, size }) => Look::Found(Probed {
             name,
             size: Some(size),
             checksum: None,
         }),
-        Checked::Gone | Checked::Private => None,
+        Some(Checked::Gone) => Look::Gone(GONE.into()),
+        Some(Checked::Private) | None => Look::Unknown,
     }
+}
+
+#[cfg(test)]
+pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
+    look(cx, url).await.found()
 }
 
 const GONE: &str = "1fichier: the file was deleted";

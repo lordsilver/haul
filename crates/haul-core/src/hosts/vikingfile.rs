@@ -18,7 +18,7 @@ use std::{
 use regex::Regex;
 use serde::Deserialize;
 
-use super::{Cx, Entry, Probed, ResolveError, retry_after};
+use super::{Cx, Entry, Look, Probed, ResolveError, retry_after};
 
 /// The least time between two `check-file` lookups.
 const SPACING: Duration = Duration::from_millis(400);
@@ -97,11 +97,14 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     ))
 }
 
-pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    let file = check(cx, url).await.ok().filter(|f| f.exist)?;
-    Some(Probed {
-        name: file.name,
-        size: file.size,
-        checksum: None,
-    })
+pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
+    match check(cx, url).await {
+        Ok(file) if file.exist => Look::Found(Probed {
+            name: file.name,
+            size: file.size,
+            checksum: None,
+        }),
+        Ok(_) => Look::Gone("vikingfile: the file was deleted".into()),
+        Err(_) => Look::Unknown,
+    }
 }

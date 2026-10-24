@@ -30,7 +30,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{Cx, Entry, Probed, ResolveError};
+use super::{Cx, Entry, Look, Probed, ResolveError};
 
 /// The key a file's bytes are decrypted with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +220,15 @@ fn node_key(k: &str, folder: &[u8; 16]) -> Option<Vec<u8>> {
     Some(raw)
 }
 
+const NOT_IN_FOLDER: &str = "mega: the file is no longer in the folder";
+
+/// What MEGA says when a file is no more.
+const GONE: [&str; 3] = [
+    "mega: the file was deleted",
+    "mega: the file was taken down",
+    NOT_IN_FOLDER,
+];
+
 /// What MEGA's error numbers mean for a download.
 fn refusal(code: i64) -> ResolveError {
     match code {
@@ -391,7 +400,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             let node = files
                 .into_iter()
                 .find(|f| f.id == wanted)
-                .ok_or_else(|| ResolveError::failed("mega: the file is no longer in the folder"))?;
+                .ok_or_else(|| ResolveError::failed(NOT_IN_FOLDER))?;
             let (size, _, address) = file(cx, &node.id, Some(&space)).await?;
             Ok(vec![Entry {
                 url: address,
@@ -439,29 +448,60 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     }
 }
 
-pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    let (name, size) = match link(url)? {
-        Link::File { id, key } => {
-            let (size, at, _) = file(cx, &id, None).await.ok()?;
-            (name_from(&at, &key.key)?, size)
-        }
-        Link::Folder {
-            space,
-            file: Some(wanted),
-            ..
-        } => {
-            let (_, files) = listing(cx, &space).await.ok()?;
-            let f = files.into_iter().find(|f| f.id == wanted)?;
-            (f.name, f.size)
-        }
-        // A folder is many files: its rows are made when it resolves.
-        Link::Folder { .. } => return None,
+pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
+    let found = async {
+        let (name, size) = match link(url).ok_or(ResolveError::failed(""))? {
+            Link::File { id, key } => {
+                let (size, at, _) = file(cx, &id, None).await?;
+                (
+                    name_from(&at, &key.key).ok_or(ResolveError::failed(""))?,
+                    size,
+                )
+            }
+            Link::Folder {
+                space,
+                file: wanted,
+                sub,
+            } => {
+                let (root, files) = listing(cx, &space).await?;
+                let mut files: Vec<Node> = match (&wanted, sub) {
+                    (Some(w), _) => files.into_iter().filter(|f| &f.id == w).collect(),
+                    (None, sub) => {
+                        let within = sub.unwrap_or(root.id);
+                        files
+                            .into_iter()
+                            .filter(|f| f.within.contains(&within))
+                            .collect()
+                    }
+                };
+                match (files.len(), wanted) {
+                    (0, Some(_)) => return Err(ResolveError::failed(NOT_IN_FOLDER)),
+                    // One file (a transfer of one, often): it, named now.
+                    (1, _) => {
+                        let f = files.remove(0);
+                        (f.name, f.size)
+                    }
+                    // A folder is many files: its rows are made when it resolves.
+                    _ => return Err(ResolveError::Network(String::new())),
+                }
+            }
+        };
+        Ok::<_, ResolveError>(Probed {
+            name,
+            size: Some(size),
+            checksum: None,
+        })
     };
-    Some(Probed {
-        name,
-        size: Some(size),
-        checksum: None,
-    })
+    match found.await {
+        Ok(p) => Look::Found(p),
+        Err(ResolveError::Failed(m)) if GONE.contains(&m.as_str()) => Look::Gone(m),
+        Err(_) => Look::Unknown,
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
+    look(cx, url).await.found()
 }
 
 #[cfg(test)]

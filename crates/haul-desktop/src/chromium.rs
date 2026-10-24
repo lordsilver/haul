@@ -48,10 +48,9 @@ pub fn find() -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Lets the app steer a page being passed: bring it on screen, or stop.
+/// Lets the app stop a page being passed.
 #[derive(Clone, Default)]
 pub struct Handle {
-    pub show: Arc<AtomicBool>,
     pub stop: Arc<AtomicBool>,
 }
 
@@ -76,7 +75,13 @@ pub enum Outcome {
     Later(String),
     /// The page showed links Haul took ([`Pass::take_links`]).
     Listed,
-    /// The person closed the window, or the browser went away.
+    /// The page still wants someone after its time (its check asks for a
+    /// box to tick): the pass ends, and the person opens the page in Haul.
+    WantsPerson(Look),
+    /// The page passed every check and showed nothing Haul took
+    /// ([`Pass::ends_settled`]).
+    Settled,
+    /// The browser went away, or the pass was stopped.
     Closed,
 }
 
@@ -89,13 +94,16 @@ pub struct Pass<'a> {
     pub proxy: Option<SocketAddr>,
     /// Run in every page before its own scripts.
     pub scripts: &'a [&'a str],
-    /// How long the page gets before it comes on screen.
+    /// How long the page gets before it is taken to want a person.
     pub show_after: Duration,
     pub handle: Handle,
     /// For a page that lists links: offered every address the page shows,
     /// and those written out in its text, as more appear; true once it took
     /// some, which ends the pass.
     pub take_links: Option<TakeLinks<'a>>,
+    /// The pass ends as soon as the page settles past its checks without
+    /// links Haul takes: on a paste, nothing more is coming.
+    pub ends_settled: bool,
 }
 
 /// Offered a page's addresses; true once it took some.
@@ -111,9 +119,11 @@ pub struct Shown {
 }
 
 /// Passes the page; blocks until it hands something back, says its file is
-/// gone, or is closed. `on_show` runs when the window comes on screen.
-pub fn pass(p: Pass<'_>, on_show: impl FnOnce()) -> Result<Outcome, String> {
-    let _ = std::fs::remove_dir_all(&p.profile);
+/// gone, wants a person, or is stopped. The browser never comes on screen or
+/// onto the taskbar. Its profile (`p.profile`, one per site) is kept, so a
+/// check passed once (Cloudflare's clearance cookie) holds for the site's
+/// next pages.
+pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
     std::fs::create_dir_all(&p.profile).map_err(|e| format!("{}: {e}", p.profile.display()))?;
     // A port of our own choosing: with `--remote-debugging-port=0` (the
     // browser picks one) Turnstile asked for its box every time, with a
@@ -143,41 +153,38 @@ pub fn pass(p: Pass<'_>, on_show: impl FnOnce()) -> Result<Outcome, String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("{}: {e}", p.exe.display()))?;
-    let mut browser = Browser {
-        child,
-        profile: p.profile.clone(),
-    };
-    let result = drive(&mut browser, port, &p, on_show);
+    let mut browser = Browser { child };
+    // Its windows stay off the taskbar from the first moment, not only once
+    // the page is driven.
+    let hiding = Arc::new(AtomicBool::new(true));
+    {
+        let (hiding, pid) = (hiding.clone(), browser.child.id());
+        std::thread::spawn(move || {
+            while hiding.load(Ordering::Relaxed) {
+                taskbar::hide(pid);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+    }
+    let result = drive(&mut browser, port, &p);
+    hiding.store(false, Ordering::Relaxed);
     drop(browser);
     result
 }
 
-/// The browser process, ended and its profile deleted when dropped.
+/// The browser process, ended when dropped.
 struct Browser {
     child: Child,
-    profile: PathBuf,
 }
 
 impl Drop for Browser {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        // Its files stay locked a moment after it exits.
-        for _ in 0..20 {
-            if std::fs::remove_dir_all(&self.profile).is_ok() || !self.profile.exists() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
     }
 }
 
-fn drive(
-    browser: &mut Browser,
-    port: u16,
-    p: &Pass<'_>,
-    on_show: impl FnOnce(),
-) -> Result<Outcome, String> {
+fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, String> {
     let endpoint = wait_for_endpoint(browser, port)?;
     let mut cdp = Cdp::connect(&endpoint)?;
     let targets = cdp.call("Target.getTargets", json!({}), None)?;
@@ -212,7 +219,6 @@ fn drive(
     }
     cdp.call("Page.navigate", json!({ "url": p.url }), s)?;
     let start = Instant::now();
-    let mut on_show = Some(on_show);
     // How many addresses the page last offered.
     let mut offered = 0;
     loop {
@@ -233,15 +239,8 @@ fn drive(
         for other in open.iter().filter(|t| **t != target) {
             let _ = cdp.call("Target.closeTarget", json!({ "targetId": other }), None);
         }
-        let wants_person = start.elapsed() >= p.show_after || p.handle.show.load(Ordering::Relaxed);
-        if wants_person && let Some(show) = on_show.take() {
-            taskbar::show(browser.child.id());
-            bring_on_screen(&mut cdp, &target, s);
-            show();
-        } else if on_show.is_some() {
-            // Out of sight means out of the taskbar too: the browser's
-            // windows (a new one may appear) get no button there.
-            taskbar::hide(browser.child.id());
+        if start.elapsed() >= p.show_after {
+            return Ok(Outcome::WantsPerson(look(&mut cdp, s)));
         }
         let answer = match cdp.call(
             "Runtime.evaluate",
@@ -285,6 +284,9 @@ fn drive(
                 if take(&shown) {
                     return Ok(Outcome::Listed);
                 }
+            }
+            if p.ends_settled && sent["settled"].as_bool() == Some(true) {
+                return Ok(Outcome::Settled);
             }
             continue;
         }
@@ -377,22 +379,6 @@ fn pages(targets: &Value) -> Vec<String> {
         .filter(|t| t["type"] == "page")
         .filter_map(|t| t["targetId"].as_str().map(str::to_string))
         .collect()
-}
-
-fn bring_on_screen(cdp: &mut Cdp, target: &str, session: Option<&str>) {
-    if let Ok(w) = cdp.call(
-        "Browser.getWindowForTarget",
-        json!({ "targetId": target }),
-        None,
-    ) && let Some(id) = w["windowId"].as_u64()
-    {
-        let _ = cdp.call(
-            "Browser.setWindowBounds",
-            json!({ "windowId": id, "bounds": { "left": 160, "top": 120, "width": 1100, "height": 800, "windowState": "normal" } }),
-            None,
-        );
-    }
-    let _ = cdp.call("Page.bringToFront", json!({}), session);
 }
 
 /// The browser's cookies for `url`, as a `Cookie` header.
@@ -543,16 +529,50 @@ mod taskbar {
             set_tool(hwnd, true);
         }
     }
-
-    pub fn show(pid: u32) {
-        for hwnd in windows_of(pid) {
-            set_tool(hwnd, false);
-        }
-    }
 }
 
 #[cfg(not(windows))]
 mod taskbar {
     pub fn hide(_pid: u32) {}
-    pub fn show(_pid: u32) {}
+}
+
+/// What a page showed when it was given up on, for the log.
+#[derive(Debug)]
+pub struct Look {
+    /// Its title, address, frames, Turnstile answers and buttons, as JSON.
+    pub page: String,
+    /// A PNG of it, when the browser gave one.
+    pub shot: Option<Vec<u8>>,
+}
+
+const LOOK: &str = r#"JSON.stringify({
+  title: document.title,
+  url: location.href,
+  frames: [...document.querySelectorAll('iframe')].map((f) => f.src.slice(0, 100)),
+  turnstile: [...document.querySelectorAll('[name="cf-turnstile-response"]')].map((i) => (i.value ? 'answered' : 'empty')),
+  buttons: [...document.querySelectorAll('button, input[type=submit]')]
+    .filter((b) => b.offsetParent)
+    .map((b) => (b.innerText || b.value || '').trim().slice(0, 40)),
+})"#;
+
+fn look(cdp: &mut Cdp, s: Option<&str>) -> Look {
+    let page = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({ "expression": LOOK, "returnByValue": true }),
+            s,
+        )
+        .ok()
+        .and_then(|a| a["result"]["value"].as_str().map(str::to_string))
+        .unwrap_or_else(|| "(the page did not answer)".into());
+    let shot = cdp
+        .call("Page.captureScreenshot", json!({ "format": "png" }), s)
+        .ok()
+        .and_then(|a| {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(a["data"].as_str()?)
+                .ok()
+        });
+    Look { page, shot }
 }

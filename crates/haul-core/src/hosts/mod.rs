@@ -1135,14 +1135,52 @@ pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError>
 /// already downloaded recognised, before anything is fetched. `None` when the
 /// host will not say.
 pub async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
+    look(cx, url).await.found()
+}
+
+/// What a lookup learns of a file without downloading it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Look {
+    Found(Probed),
+    /// The host says it deleted the file (or took it down), in these words.
+    Gone(String),
+    /// Nothing either way: the host will not say, or did not answer.
+    Unknown,
+}
+
+impl Look {
+    pub fn found(self) -> Option<Probed> {
+        match self {
+            Self::Found(p) => Some(p),
+            _ => None,
+        }
+    }
+}
+
+impl From<Option<Probed>> for Look {
+    fn from(p: Option<Probed>) -> Self {
+        p.map_or(Self::Unknown, Self::Found)
+    }
+}
+
+/// [`probe`], from a host that can also say the file was deleted, so a row
+/// knows before its turn that a link is dead.
+pub async fn look(cx: &Cx<'_>, url: &str) -> Look {
+    match kind_of(url) {
+        Some(Kind::Vikingfile) => vikingfile::look(cx, url).await,
+        Some(Kind::Rootz) => rootz::look(cx, url).await,
+        Some(Kind::Ddownload) => ddownload::look(cx, url).await,
+        Some(Kind::OneFichier) => onefichier::look(cx, url).await,
+        Some(Kind::Mega) => mega::look(cx, url).await,
+        _ => probe_quietly(cx, url).await.into(),
+    }
+}
+
+/// The hosts that say only what a file is, not that it was deleted.
+async fn probe_quietly(cx: &Cx<'_>, url: &str) -> Option<Probed> {
     match kind_of(url) {
         Some(Kind::Pixeldrain) => pixeldrain::probe(cx, url).await,
-        Some(Kind::Vikingfile) => vikingfile::probe(cx, url).await,
-        Some(Kind::Rootz) => rootz::probe(cx, url).await,
         Some(Kind::Mediafire) => mediafire::probe(cx, url).await,
-        Some(Kind::Ddownload) => ddownload::probe(cx, url).await,
-        Some(Kind::OneFichier) => onefichier::probe(cx, url).await,
-        Some(Kind::Mega) => mega::probe(cx, url).await,
         // No free metadata route; resolve at download time.
         Some(Kind::Gofile) => None,
         // A wrapper says nothing useful before its solve; that is the

@@ -403,6 +403,19 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/check_links.pl",
+            // 1fichier's link checker: a link with "gone" in it was deleted.
+            post(|body: String| async move {
+                let link = body.split('=').nth(1).unwrap_or_default().to_string();
+                let link = percent_encoding::percent_decode_str(&link).decode_utf8_lossy().into_owned();
+                if link.contains("gone") {
+                    format!("{link};;;NOT FOUND\n")
+                } else {
+                    String::new()
+                }
+            }),
+        )
+        .route(
             "/hidden/{key}",
             get(|State(s): State<Server>, UrlPath(key): UrlPath<String>, headers: HeaderMap| async move {
                 log(&s, &format!("/hidden/{key}"), &headers);
@@ -1021,6 +1034,21 @@ async fn a_file_downloads_from_the_host_picked_for_it() {
             .all(|r| r.contains("/info")),
         "pixeldrain stood by"
     );
+}
+
+/// A link whose host says the file was deleted fails as soon as it is
+/// looked up, with the host's words, rather than on its turn.
+#[tokio::test]
+async fn a_deleted_file_fails_when_it_is_looked_up() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text("https://1fichier.com/?gone123", "");
+    let s = wait_for(&engine, "the deleted file to fail", |s| {
+        s.items.first().is_some_and(|i| i.status == "error")
+    })
+    .await;
+    assert!(s.items[0].error.contains("deleted"), "{}", s.items[0].error);
 }
 
 /// A MEGA download that failed in Haul 0.15.0 for want of megatools goes
@@ -1649,6 +1677,27 @@ async fn a_guarded_page_takes_the_links_its_window_shows() {
     })
     .await;
     assert!(s.items.iter().all(|i| i.package == "Pkg" && i.id != id));
+}
+
+/// A page passed out of sight that turns out to list nothing (a paste
+/// holding only a host's name) fails saying so, rather than ask a person.
+#[tokio::test]
+async fn a_page_that_lists_nothing_fails_without_asking() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.add_text(&format!("{}/blog/guarded", t.ip), "");
+    let s = wait_for(&engine, "the page passed out of sight", |s| {
+        s.items.iter().any(|i| i.status == "passing")
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    engine.page_gone(&id, "the paste on zpaste.net lists no links");
+    let s = wait_for(&engine, "the page to fail", |s| {
+        s.items.iter().all(|i| i.status == "error")
+    })
+    .await;
+    assert_eq!(s.items[0].error, "the paste on zpaste.net lists no links");
 }
 
 /// A host that gives nothing without an account is off until one is set:
