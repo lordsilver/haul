@@ -56,4 +56,4 @@ An encrypted archive (RAR with its files or its names encrypted, 7-Zip, zip with
 
 ## Status bar
 
-The speed and what is downloading. Click the speed limit to type a new one, the proxy to switch it on or off or change it, and the clipboard watch (desktop app) to stop it. The download folder is in the left bar, above Hosts: one click opens it.
+The speed and what is downloading, how many links Haul is still unwrapping (wrappers, pages and pastes it opens or passes), and how many downloads and wrappers need you: click that to go to them, in place of a toast for each. Click the speed limit to type a new one, the proxy to switch it on or off or change it, and the clipboard watch (desktop app) to stop it. The download folder is in the left bar, above Hosts: one click opens it.

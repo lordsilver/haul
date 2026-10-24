@@ -1,49 +1,16 @@
 import { useEffect, useRef } from 'react';
-import { openHere } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
-import { isWebLink, plural } from '@/lib/format';
+import { plural } from '@/lib/format';
 import { type ViewKey, go } from '@/lib/route';
 import { currentState } from '@/lib/store';
-import { type ToastAction, toast } from '@/lib/toast';
+import { toast } from '@/lib/toast';
 
-type Waiting = { id: string; name: string; open_urls: string[]; wrapper: boolean };
-
-// A wrapper waits for a person like a download does, with its own name and
-// its own section to land on.
-function waitingNow(s: State): Waiting[] {
-  return [
-    ...s.items.filter((it) => it.status === 'captcha').map((it) => ({ ...it, wrapper: false })),
-    ...s.wrappers
-      .filter((w) => w.status === 'captcha')
-      .map((w) => ({ id: w.id, name: w.title || w.url, open_urls: w.open_urls, wrapper: true })),
-  ];
-}
-
-function needsToast(items: Waiting[], desktop: boolean) {
-  const one = items.length === 1 ? items[0] : null;
-  const place: ViewKey = items.every((it) => it.wrapper) ? 'wrappers' : 'attention';
-  let action: ToastAction | null = null;
-  if (one && desktop) {
-    action = { label: 'Open here', onClick: () => openHere(one.id) };
-  } else if (one) {
-    const url = one.open_urls.find(isWebLink);
-    // Opens the page in a tab of its own; Haul lands on the list that waits,
-    // ready for the link the page hands back.
-    if (url) action = { label: 'Open page', href: url, onClick: () => go(place) };
-  }
-  action ??= { label: 'Show', onClick: () => go(place) };
-  const what = place === 'wrappers' ? 'wrappers' : 'downloads';
-  toast(one ? `${one.name} needs you` : `${items.length} ${what} need you`, 'info', action);
-}
-
-// Calls for attention: downloads that entered the "Needs you" state,
-// gathered for a moment so a burst shares one toast, and wrappers just
-// unwrapped, whose files wait for a start. The first state after opening
-// Haul raises nothing: those were already parked where they are.
+// Calls for attention: wrappers just unwrapped, whose files wait for a
+// start. (What needs the user shows in the status bar, and the desktop app
+// notifies when a page wants them.) The first state after opening Haul
+// raises nothing: those were already parked where they are.
 export function useAttention(s: State | null, view: ViewKey) {
   const seen = useRef<Map<string, string> | null>(null);
-  const needs = useRef(new Map<string, Waiting>());
-  const needsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const unwrapped = useRef(new Set<string>());
   const unwrappedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The wrappers the unwrapped toast tells of while it shows: those that
@@ -58,21 +25,6 @@ export function useAttention(s: State | null, view: ViewKey) {
     const before = seen.current;
     seen.current = statuses;
     if (!before) return;
-    for (const it of waitingNow(s)) {
-      if (before.get(it.id) !== 'captcha') needs.current.set(it.id, it);
-    }
-    if (needs.current.size && !needsTimer.current) {
-      needsTimer.current = setTimeout(() => {
-        needsTimer.current = null;
-        // One resolved in the moment since (a pasted link, a try) is not
-        // announced after the fact.
-        const now = currentState();
-        const still = new Set(now ? waitingNow(now).map((it) => it.id) : []);
-        const items = [...needs.current.values()].filter((it) => still.has(it.id));
-        needs.current.clear();
-        if (items.length) needsToast(items, Boolean(now?.desktop));
-      }, 1200);
-    }
     for (const w of s.wrappers) {
       const was = before.get(w.id);
       if (w.status === 'done' && was && was !== 'done') unwrapped.current.add(w.id);
