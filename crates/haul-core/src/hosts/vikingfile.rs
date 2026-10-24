@@ -108,4 +108,3 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
         Err(_) => Look::Unknown,
     }
 }
-
