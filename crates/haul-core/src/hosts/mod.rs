@@ -667,12 +667,23 @@ pub async fn allowance(cx: &Cx<'_>, host: &str) -> Option<Allowance> {
 /// Whether a link is worth adding when it shows up on the clipboard: a host
 /// Haul knows, or a link to a file rather than to a web page.
 pub fn is_download_link(url: &str) -> bool {
-    if kind_of(url).is_some() {
+    if kind_of(url).is_some() || is_paste(url) || is_release_page(url) {
         return true;
     }
     // A page that names a file (`name.rar.html`) is still a page.
     last_segment(url).is_some_and(|last| page_extension(&last).is_none())
         && guess_name(url).is_some()
+}
+
+/// Sites whose pages are releases' posts, each linking a release's files or
+/// pastes of them: a page copied from one is taken like a download link.
+const RELEASE_SITES: &[&str] = &["elamigosgames.net", "gload.to"];
+
+/// Whether `url` is a release's post on a site of [`RELEASE_SITES`] (not its
+/// front page).
+fn is_release_page(url: &str) -> bool {
+    RELEASE_SITES.contains(&host_of(url).as_str())
+        && url::Url::parse(url).is_ok_and(|u| u.path().trim_matches('/').len() > 1)
 }
 
 /// Extensions of web pages, as opposed to files.
@@ -1292,6 +1303,12 @@ mod tests {
         assert!(!is_download_link("https://github.com/garysassano/haul"));
         assert!(is_download_link("https://fileguard.cc/93d9847d92/1fichier"));
         assert!(is_download_link("https://filecrypt.cc/DLC/0007530C13.dlc"));
+        // Pastes and release sites' posts are lists of links to take.
+        assert!(is_download_link("https://zpaste.net/p/pd73y"));
+        assert!(is_download_link(
+            "https://www.elamigosgames.net/games/naruto-x-boruto-ultimate-ninja-storm-pc-espanhol-mega"
+        ));
+        assert!(!is_download_link("https://www.elamigosgames.net/"));
         assert!(is_download_link(
             "https://filecrypt.cc/Container/0007530C13.html"
         ));

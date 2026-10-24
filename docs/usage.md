@@ -10,7 +10,7 @@ From any page, this bookmarklet opens Haul's Add dialog with the page you are on
 javascript:location.href='http://127.0.0.1:8765/#/add/'+encodeURIComponent(location.href)
 ```
 
-With clipboard watching on (desktop app), links you copy anywhere are added when they point at a supported host or a file.
+With clipboard watching on (desktop app), links you copy anywhere are added when they point at a supported host, a file, a wrapper, a paste (zpaste.net, paste2.org…) or a release's post on a release site (elamigosgames.net, gload.to): copying a release's page is enough to bring in its files.
 
 ## Needs you
 
