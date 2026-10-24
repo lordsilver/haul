@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, FileArchive, KeyRound, Pause, Play, RotateCw } from 'lucide-react';
 import { type FormEvent, type ReactNode, useRef, useState } from 'react';
-import { HostPicker } from '@/components/host-picker';
+import { HostPicker, hostLabel } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
 import { SecretInput } from '@/components/secret-input';
@@ -153,7 +153,7 @@ export function ArchiveRow({
   // The host part, which chooses the host for every part when they have
   // several.
   const host = [
-    `${a.download_from ? '★ ' : ''}${a.hosts.join(', ')}`,
+    a.hosts.join(', '),
     a.other_hosts ? `${a.other_hosts} other ${a.other_hosts === 1 ? 'host' : 'hosts'}` : null,
   ]
     .filter(Boolean)
@@ -206,7 +206,12 @@ export function ArchiveRow({
           <div className="truncate text-xs text-muted-foreground" title={sub}>
             {lead}
             {host ? ' · ' : null}
-            <HostPicker ids={ids} hosts={a.all_hosts} chosen={a.download_from} label={host} />
+            <HostPicker
+              ids={ids}
+              hosts={a.all_hosts}
+              chosen={a.download_from}
+              label={hostLabel(host, { picked: Boolean(a.download_from), preferred: false })}
+            />
             {rest ? ` · ${rest}` : null}
           </div>
         </div>

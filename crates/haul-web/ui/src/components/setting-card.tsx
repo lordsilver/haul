@@ -42,6 +42,35 @@ export function SettingCard({
   );
 }
 
+// A part of a card's setting that belongs to it: below a line, under the
+// card's text, with its own name, words and controls.
+export function SettingRow({
+  title,
+  description,
+  controls,
+  children,
+  disabled = false,
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  controls?: ReactNode;
+  children?: ReactNode;
+  disabled?: boolean;
+}) {
+  return (
+    <div className={cn('flex flex-col gap-2 border-t pt-3 pl-9', disabled && 'opacity-60')}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="min-w-0 flex-[1_1_280px] text-sm">
+          <div className="font-medium">{title}</div>
+          {description ? <div className="mt-0.5 text-muted-foreground">{description}</div> : null}
+        </div>
+        {controls ? <div className="flex flex-wrap items-center justify-end gap-2">{controls}</div> : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 // A heading over a group of cards.
 export const Section = ({ children }: { children: ReactNode }) => (
   <h2 className="mt-4 mb-0.5 text-sm font-semibold first:mt-0">{children}</h2>

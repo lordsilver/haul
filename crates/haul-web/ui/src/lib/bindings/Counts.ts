@@ -21,4 +21,13 @@ left: number,
  * Wrapper cards, and whether one failed (`critical`) or waits for a
  * person (`attention`).
  */
-wrappers: number, wrappers_alert: "" | "attention" | "critical", };
+wrappers: number, wrappers_alert: "" | "attention" | "critical", 
+/**
+ * Wrappers being opened and pages being passed out of sight: work on
+ * links before their files show.
+ */
+unwrapping: number, 
+/**
+ * Downloads and wrappers waiting for a person.
+ */
+need_you: number, };

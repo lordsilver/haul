@@ -82,7 +82,7 @@ Haul uses public APIs, guest tokens, the user's own accounts, and the pages them
 
 ## Reaching the user when a host waits
 
-Interactive host steps should be short and waiting downloads visible, so a download entering **Needs you** raises a toast whose button is the step itself, and a click on the notification lands on the waiting list. When exactly one download waits, its page opens right away, since that is what the notification asked for, and a single link pasted then is taken as that page's final link rather than a new row. A burst of waits shares one toast, and the first state after Haul opens raises none, so a queue full of old waits does not shout on every start.
+Interactive host steps should be short and waiting downloads visible, so the status bar counts what needs you and goes there, and a click on the desktop notification lands on the waiting list. A toast for each download entering **Needs you** was tried first; with a release's pastes passed one by one it became a stream of toasts naming addresses, so the steady count replaced it. When exactly one download waits, its page opens right away, since that is what the notification asked for, and a single link pasted then is taken as that page's final link rather than a new row.
 
 ## A default preference for pixeldrain
 

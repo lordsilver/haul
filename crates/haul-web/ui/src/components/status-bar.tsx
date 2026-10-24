@@ -1,4 +1,15 @@
-import { ArrowDown, ClipboardList, Gauge, Globe, Monitor, Moon, Shield, Sun } from 'lucide-react';
+import {
+  ArrowDown,
+  ClipboardList,
+  Gauge,
+  Globe,
+  LoaderCircle,
+  Monitor,
+  Moon,
+  Shield,
+  Sun,
+  TriangleAlert,
+} from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,7 +20,7 @@ import { fetchSettings, report, save } from '@/lib/api';
 import type { PoolSource } from '@/lib/bindings/PoolSource';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
-import { bytes, roughly } from '@/lib/format';
+import { bytes, plural, roughly } from '@/lib/format';
 import { go } from '@/lib/route';
 import { envNote } from '@/lib/settings';
 import { THEMES, setTheme, useTheme } from '@/lib/theme';
@@ -207,7 +218,7 @@ const THEME_ICONS = { system: Monitor, light: Sun, dark: Moon };
 export function StatusBar({ state: s }: { state: State | null }) {
   const theme = useTheme();
   if (!s) return <footer className="h-9 border-t bg-sidebar" />;
-  const { downloading, waiting, left } = s.counts;
+  const { downloading, waiting, left, unwrapping, need_you } = s.counts;
   const clipboard = s.desktop && s.watch_clipboard;
   const pooled = s.pool.proxies + s.pool.vpn > 0;
   const index = THEMES.findIndex((t) => t.value === theme);
@@ -225,6 +236,24 @@ export function StatusBar({ state: s }: { state: State | null }) {
         <span className={cn(item, 'tabular-nums')}>
           {bytes(left)} left{s.speed && !s.paused ? ` · ${roughly(left / s.speed)}` : ''}
         </span>
+      ) : null}
+      {/* Work on links before files show, and who waits for the user:
+          steady entries rather than a toast for each. */}
+      {unwrapping ? (
+        <span className={item}>
+          <LoaderCircle aria-hidden className="size-3.5 animate-spin" />
+          Unwrapping {plural(unwrapping, 'link')}
+        </span>
+      ) : null}
+      {need_you ? (
+        <button
+          type="button"
+          className={cn(item, 'font-medium text-warn-strong hover:bg-accent')}
+          onClick={() => go(s.counts.attention ? 'attention' : 'wrappers')}
+        >
+          <TriangleAlert aria-hidden className="size-3.5" />
+          {need_you} {need_you === 1 ? 'needs' : 'need'} you
+        </button>
       ) : null}
       <span className="flex-1" />
       <UpdateEntry s={s} />

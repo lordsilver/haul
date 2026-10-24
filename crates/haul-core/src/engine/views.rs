@@ -525,6 +525,11 @@ pub struct Counts {
     pub wrappers: usize,
     #[ts(type = "\"\" | \"attention\" | \"critical\"")]
     pub wrappers_alert: &'static str,
+    /// Wrappers being opened and pages being passed out of sight: work on
+    /// links before their files show.
+    pub unwrapping: usize,
+    /// Downloads and wrappers waiting for a person.
+    pub need_you: usize,
 }
 
 pub(super) fn counts(
@@ -551,6 +556,12 @@ pub(super) fn counts(
             .map(|i| i.size.saturating_sub(i.done))
             .sum(),
         wrappers: cards,
+        unwrapping: wrappers
+            .iter()
+            .filter(|w| matches!(w.status, "unwrapping" | "passing"))
+            .count()
+            + items.iter().filter(|i| i.status == "passing").count(),
+        need_you: in_list("attention") + wrappers.iter().filter(|w| w.status == "captcha").count(),
         wrappers_alert: if wrappers.iter().any(|w| w.status == "error") {
             "critical"
         } else if wrappers.iter().any(|w| w.status == "captcha") {
@@ -1076,6 +1087,21 @@ mod tests {
             counts(&items, &wrappers, 3, true).held,
             "a pause that holds one back"
         );
+    }
+
+    #[test]
+    fn counts_the_work_on_links_and_who_needs_you() {
+        let wrappers = [
+            wrapper("open", "unwrapping", None),
+            wrapper("guarded", "passing", None),
+            wrapper("asks", "captcha", None),
+            wrapper("done", "done", None),
+        ];
+        let mut items = vec![item("page", "passing"), item("q", "queued")];
+        super::items(&mut items, &[host("a.example")], &wrappers, false);
+        let c = counts(&items, &wrappers, 4, false);
+        assert_eq!(c.unwrapping, 3, "two wrappers and a download's page");
+        assert_eq!(c.need_you, 1, "the wrapper that asks");
     }
 
     #[test]

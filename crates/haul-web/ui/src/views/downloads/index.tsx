@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
+import { HostPicker } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
 import { Button } from '@/components/ui/button';
@@ -162,6 +163,9 @@ function SelectionCommands({ picked, s }: { picked: ItemView[]; s: State }) {
     );
   };
   const label = `Remove ${picked.length}`;
+  // Every host among the picked rows, to download them from one of.
+  const hosts = [...new Set(picked.flatMap((i) => i.mirrors))].sort();
+  const choices = new Set(picked.map((i) => i.download_from));
   return (
     <>
       <span role="status" className="px-2 text-sm text-muted-foreground">
@@ -192,6 +196,15 @@ function SelectionCommands({ picked, s }: { picked: ItemView[]; s: State }) {
           <Play />
           {resumable.every((i) => i.not_started) ? 'Start' : 'Resume'}
         </Button>
+      ) : null}
+      {hosts.length > 1 ? (
+        <HostPicker
+          bar
+          ids={picked.map((i) => i.id)}
+          hosts={hosts}
+          chosen={choices.size === 1 ? [...choices][0] : undefined}
+          label="Download from"
+        />
       ) : null}
       {losing || recycling ? (
         <ConfirmButton

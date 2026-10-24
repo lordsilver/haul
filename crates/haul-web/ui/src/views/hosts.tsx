@@ -16,16 +16,25 @@ import { type FormEvent, type ReactNode, useEffect, useLayoutEffect, useRef, use
 import { ConfirmButton } from '@/components/confirm-button';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
+import { AccountField, SettingCard } from '@/components/setting-card';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { api, report } from '@/lib/api';
+import type { AccountForm } from '@/lib/bindings/AccountForm';
 import type { HostView } from '@/lib/bindings/HostView';
+import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
 import { bytes, duration, ordinal } from '@/lib/format';
+import { envNote, useSettings } from '@/lib/settings';
 import { cn } from '@/lib/utils';
-import { showAccount } from '@/views/settings';
 
 const host = (name: string, path: string) => `/api/host/${encodeURIComponent(name)}/${path}`;
 
@@ -186,6 +195,68 @@ function FolderForm({ h, dir, close }: { h: HostView; dir: string; close: () => 
   );
 }
 
+// A host's account, typed in its card: each field saved as it is left.
+function AccountPanel({ form, d, close }: { form: AccountForm; d: SettingsView; close?: () => void }) {
+  const env = envNote(d, ...form.fields.map((f) => f.key));
+  return (
+    <div className="flex flex-col gap-2 pl-9">
+      {env || form.note ? <p className="text-xs text-muted-foreground">{env ?? form.note}</p> : null}
+      <div className="flex flex-wrap items-center gap-2">
+        {form.fields.map((f) => (
+          <AccountField key={f.key} d={d} name={f.key} label={f.label} secret={f.secret} />
+        ))}
+        {close ? (
+          <Button variant="ghost" onClick={close}>
+            Done
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// Accounts for hosts the list does not show yet (no links of theirs so
+// far): those set, and a menu to add another.
+function OtherAccounts({ s, d }: { s: State; d: SettingsView | null }) {
+  const [adding, setAdding] = useState<string[]>([]);
+  const extras = s.accounts.filter((a) => !s.hosts.some((h) => h.name === a.host));
+  if (!d || !extras.length) return null;
+  const shown = extras.filter((a) => a.set || adding.includes(a.host));
+  const more = extras.filter((a) => !shown.includes(a));
+  return (
+    <>
+      <div className="mt-3 flex flex-wrap items-baseline gap-x-2">
+        <strong className="text-sm">Accounts</strong>
+        <span className="text-sm text-muted-foreground">For hosts with no links here yet.</span>
+      </div>
+      {shown.map((a) => (
+        <SettingCard key={a.host} icon={KeyRound} title={a.host}>
+          <AccountPanel form={a} d={d} />
+        </SettingCard>
+      ))}
+      {more.length ? (
+        <div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline">
+                <KeyRound />
+                Add an account
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {more.map((a) => (
+                <DropdownMenuItem key={a.host} onSelect={() => setAdding([...adding, a.host])}>
+                  {a.host}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function RouteBar({ h, proxy }: { h: HostView; proxy: boolean }) {
   if (h.blocked && h.route === 'proxy') {
     return (
@@ -234,6 +305,7 @@ const HOST_DRAG = 'application/x-haul-host';
 function HostCard({
   h,
   s,
+  d,
   place,
   count,
   drop,
@@ -244,6 +316,7 @@ function HostCard({
 }: {
   h: HostView;
   s: State;
+  d: SettingsView | null;
   place: number;
   count: number;
   drop: Drop;
@@ -254,7 +327,9 @@ function HostCard({
 }) {
   const [showSlots, setShowSlots] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [draggable, setDraggable] = useState(false);
+  const account = s.accounts.find((a) => a.host === h.name);
   const off = h.group === 'off';
   const preferred = h.preferred !== null;
   // The slot buttons show when a limit is set or learned, or asked for.
@@ -323,7 +398,7 @@ function HostCard({
             </span>
           ) : null}
           {h.needs_account && !h.disabled ? (
-            <Button size="sm" onClick={() => showAccount(h.name)}>
+            <Button size="sm" aria-expanded={accountOpen} onClick={() => setAccountOpen(!accountOpen)}>
               <KeyRound />
               Set account
             </Button>
@@ -361,6 +436,15 @@ function HostCard({
           >
             <Star className={cn(preferred && 'fill-current text-info')} />
           </IconButton>
+          {account && !(h.needs_account && !h.disabled) ? (
+            <IconButton
+              label={account.set ? 'Account: set' : 'Account'}
+              aria-pressed={accountOpen}
+              onClick={() => setAccountOpen(!accountOpen)}
+            >
+              <KeyRound className={cn(account.set && 'text-ok-strong')} />
+            </IconButton>
+          ) : null}
           <IconButton label="Folder for this host's files" onClick={() => setEditing(true)}>
             <Folder />
           </IconButton>
@@ -385,12 +469,14 @@ function HostCard({
         </div>
       </div>
       <RouteBar h={h} proxy={s.proxy} />
+      {accountOpen && account && d ? <AccountPanel form={account} d={d} close={() => setAccountOpen(false)} /> : null}
       {editing ? <FolderForm h={h} dir={s.download_dir} close={() => setEditing(false)} /> : null}
     </div>
   );
 }
 
 export function Hosts({ s }: { s: State }) {
+  const d = useSettings(s.config_version);
   // A drag keeps the cards still until it ends: the order as it began.
   const [drag, setDrag] = useState<{ name: string; frozen: HostView[] } | null>(null);
   const [drop, setDrop] = useState<Drop>(null);
@@ -434,7 +520,7 @@ export function Hosts({ s }: { s: State }) {
           Choose which hosts Haul uses and in what order. A file on several hosts downloads from the first of your
           preferred hosts that has it (star a host to add it; drag it by its grip, or use its arrows, to reorder),
           otherwise from the fastest of the others. A host switched off is never used. The gauge limits how many files
-          download from a host at once, and the folder keeps its files in a subfolder.
+          download from a host at once, the key holds its account, and the folder keeps its files in a subfolder.
         </p>
       </header>
       {hosts.length ? (
@@ -485,6 +571,7 @@ export function Hosts({ s }: { s: State }) {
                   key={h.name}
                   h={h}
                   s={s}
+                  d={d}
                   place={order.indexOf(h.name)}
                   count={order.length}
                   drop={drop}
@@ -495,6 +582,7 @@ export function Hosts({ s }: { s: State }) {
                 />,
               ];
             })}
+            <OtherAccounts s={s} d={d} />
           </div>
         </div>
       ) : (
@@ -506,6 +594,9 @@ export function Hosts({ s }: { s: State }) {
             <EmptyTitle>No host contacted yet</EmptyTitle>
             <EmptyDescription>Hosts appear here once Haul talks to them.</EmptyDescription>
           </EmptyHeader>
+          <div className="flex flex-col items-center gap-2.5">
+            <OtherAccounts s={s} d={d} />
+          </div>
         </Empty>
       )}
     </>

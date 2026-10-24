@@ -405,6 +405,73 @@ impl Known {
 /// pixeldrain's from its own refusal ("maximum number of open download
 /// connections for free/anonymous accounts", past 5) and its
 /// `/api/misc/rate_limits`.
+/// A host's account, as the Hosts view asks for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct AccountForm {
+    pub host: String,
+    /// What the account does for it.
+    pub note: &'static str,
+    pub fields: Vec<AccountField>,
+    /// Every field is set.
+    pub set: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct AccountField {
+    /// Its name in the settings file.
+    pub key: &'static str,
+    pub label: &'static str,
+    /// Hidden as it is typed.
+    pub secret: bool,
+}
+
+/// Each account setting's label, and whether it is a secret.
+const ACCOUNT_FIELDS: &[(&str, &str, bool)] = &[
+    ("1fichier_key", "API key", true),
+    ("pixeldrain_key", "API key", true),
+    ("gofile_token", "Account token", true),
+    ("rapidgator_user", "Username", false),
+    ("rapidgator_pass", "Password", true),
+    ("nitroflare_user", "User", false),
+    ("nitroflare_key", "Premium key", true),
+];
+
+/// The account form of every host that takes one, in the order of
+/// [`KNOWN`].
+pub fn account_forms(cfg: &Config) -> Vec<AccountForm> {
+    KNOWN
+        .iter()
+        .filter(|k| !k.accounts.is_empty())
+        .map(|k| AccountForm {
+            host: k.names[0].to_string(),
+            note: match k.kind {
+                Kind::OneFichier => "Its API key: no free-mode wait or captcha.",
+                Kind::Pixeldrain => "Its API key.",
+                Kind::Gofile => {
+                    "A premium account's token: without one, gofile gives no file to Haul."
+                }
+                _ if k.needs_account => "A premium account: without one, it gives no file to Haul.",
+                _ => "",
+            },
+            fields: k
+                .accounts
+                .iter()
+                .map(|key| {
+                    let (_, label, secret) = ACCOUNT_FIELDS
+                        .iter()
+                        .find(|(k, ..)| k == key)
+                        .copied()
+                        .unwrap_or((key, key, true));
+                    AccountField { key, label, secret }
+                })
+                .collect(),
+            set: k.has_account(cfg),
+        })
+        .collect()
+}
+
 static KNOWN: &[Known] = &[
     Known {
         names: &["pixeldrain.com"],
