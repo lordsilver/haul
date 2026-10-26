@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  # Incremental state is never reused on fresh runners; leaving it out keeps
+  # the cached target lean.
+  CARGO_INCREMENTAL: "0"
+  # Build-script output stays in the target tree, which the cache carries. In
+  # mbx's shared folder it was lost on every restore, so the scripts ran again
+  # and everything depending on them rebuilt.
+  MBX_SHARE_OUT_DIR: "0"
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        id: rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
+          echo "version=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+      - name: Install WebKitGTK
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      # Mr. Boxington target mode: restores the pruned target tree and Cargo
+      # registry, so a change rebuilds only what it touches. Main saves the
+      # cache, and only when the Rust version or the dependencies change:
+      # packing it takes 4 to 30 minutes on Windows, longer than the build it
+      # spares. Pull requests restore it without saving.
+      - uses: jdx/mr-boxington-action@47ce49b32025d93a7a2f4570815afaa2b7092240 # v1.7.2
+        with:
+          version: "1.24.0"
+          cache-key: mbx-target-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: mbx-target-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: runner.os == 'Linux'
+        with:
+          node-version: 26
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+      # The built UI is committed (haul-web embeds it, and a Rust-only build
+      # needs no Node), so it has to match its sources.
+      - name: Check and build the UI
+        if: runner.os == 'Linux'
+        working-directory: crates/haul-web/ui
+        run: |
+          npm install --global pnpm@12.15.0
+          pnpm install --frozen-lockfile
+          pnpm check
+          pnpm build
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            git status --short -- dist
+            echo "::error::ui/dist is out of date: run pnpm build in crates/haul-web/ui and commit it"
+            exit 1
+          fi
+      - name: Clippy
+        run: mbx clippy --locked --workspace --all-targets
+      - name: Test
+        run: mbx test --locked --workspace
+      # `cargo test` writes the UI's TypeScript types from the Rust ones (ts-rs).
+      - name: Check the UI's types
+        if: runner.os == 'Linux'
+        run: |
+          if [ -n "$(git status --porcelain -- crates/haul-web/ui/src/lib/bindings)" ]; then
+            git status --short -- crates/haul-web/ui/src/lib/bindings
+            echo "::error::the UI's bindings are out of date: run cargo test and commit them"
+            exit 1
+          fi
