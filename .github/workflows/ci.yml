@@ -32,9 +32,18 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      # Fails when actions.lock drifts from the workflows or a locked commit no
+      # longer verifies upstream.
+      - name: Verify workflow lockfile
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh extension install github/gh-actions-lock --pin v0.4.0
+          gh actions-lock --verify
       - name: Install Rust
         id: rust
         shell: bash
@@ -51,12 +60,12 @@ jobs:
       # cache, and only when the Rust version or the dependencies change:
       # packing it takes 4 to 30 minutes on Windows, longer than the build it
       # spares. Pull requests restore it without saving.
-      - uses: jdx/mr-boxington-action@47ce49b32025d93a7a2f4570815afaa2b7092240 # v1.7.2
+      - uses: jdx/mr-boxington-action@v1
         with:
           version: "1.24.0"
           cache-key: mbx-target-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
           restore-keys: mbx-target-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7
         if: runner.os == 'Linux'
         with:
           node-version: 26
