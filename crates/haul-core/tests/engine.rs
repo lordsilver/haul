@@ -1835,13 +1835,13 @@ async fn a_pages_card_shows_hosts_once_its_wrappers_unwrap() {
     })
     .await;
     let mut hosts: Vec<String> = s.items.iter().flat_map(|i| i.mirrors.clone()).collect();
+    hosts.sort();
     hosts.dedup();
     assert!(!hosts.is_empty());
     assert_eq!(s.wrapper_cards.len(), 1);
-    assert_eq!(
-        (s.wrapper_cards[0].files, &s.wrapper_cards[0].hosts),
-        (2, &hosts)
-    );
+    let mut shown = s.wrapper_cards[0].hosts.clone();
+    shown.sort();
+    assert_eq!((s.wrapper_cards[0].files, shown), (2, hosts));
 }
 
 /// A page whose address reads like a file's name is read for its links

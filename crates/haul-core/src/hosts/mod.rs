@@ -894,27 +894,30 @@ impl Http {
         let Ok(url) = url::Url::parse(page) else {
             return;
         };
+        // The clients first: cookies sent without the user agent they hold
+        // with would only be turned away.
+        let as_browser = match user_agent.filter(|a| !a.is_empty() && *a != self.user_agent) {
+            Some(agent) => match clients(self.proxy.as_deref(), agent, self.fresh, &self.jar) {
+                Ok((client, no_redirect)) => Some(AsBrowser {
+                    client,
+                    no_redirect,
+                    user_agent: agent.to_string(),
+                }),
+                Err(e) => {
+                    tracing::warn!("clients with the browser's user agent: {e}");
+                    return;
+                }
+            },
+            None => None,
+        };
         for cookie in cookies {
             self.jar.add_cookie_str(cookie, &url);
         }
-        let Some(agent) = user_agent.filter(|a| !a.is_empty() && *a != self.user_agent) else {
-            return;
-        };
-        match clients(self.proxy.as_deref(), agent, self.fresh, &self.jar) {
-            Ok((client, no_redirect)) => {
-                self.as_browser
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(
-                        site_of(page),
-                        AsBrowser {
-                            client,
-                            no_redirect,
-                            user_agent: agent.to_string(),
-                        },
-                    );
-            }
-            Err(e) => tracing::warn!("clients with the browser's user agent: {e}"),
+        if let Some(b) = as_browser {
+            self.as_browser
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(site_of(page), b);
         }
     }
 
