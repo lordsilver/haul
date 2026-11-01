@@ -910,14 +910,14 @@ impl Http {
             },
             None => None,
         };
-        for cookie in cookies {
-            self.jar.add_cookie_str(cookie, &url);
-        }
         if let Some(b) = as_browser {
             self.as_browser
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(site_of(page), b);
+        }
+        for cookie in cookies {
+            self.jar.add_cookie_str(cookie, &url);
         }
     }
 
