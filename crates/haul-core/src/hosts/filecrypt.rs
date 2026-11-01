@@ -382,7 +382,7 @@ async fn solved(cx: &Cx<'_>, html: &str) -> Result<Unwrapped, ResolveError> {
         // same ones elsewhere before anything downloads.
         let names = row_names(html);
         let names = if names.len() == urls.len() {
-            names.into_iter().map(Some).collect()
+            names
         } else {
             vec![None; urls.len()]
         };
@@ -409,11 +409,19 @@ async fn solved(cx: &Cx<'_>, html: &str) -> Result<Unwrapped, ResolveError> {
     })
 }
 
-/// The file name of each row of a solved page's link table, in order.
-fn row_names(html: &str) -> Vec<String> {
+/// The file name of each row of a solved page's link table, in order;
+/// `None` where the row says it does not know it ("n/a"): taken as a name,
+/// it would merge every such link into one row.
+fn row_names(html: &str) -> Vec<Option<String>> {
     ROW_NAME
         .captures_iter(html)
         .filter_map(|c| page_text(&c[1]))
+        .map(|name| {
+            let unknown = ["n/a", "n.a.", "n.a"]
+                .iter()
+                .any(|u| name.eq_ignore_ascii_case(u));
+            (!unknown).then_some(name)
+        })
         .collect()
 }
 
@@ -695,11 +703,20 @@ mod tests {
             )
         };
         let html = format!(
-            "<table><tr><th>Status</th><th>Name</th></tr>{}{}</table>",
+            "<table><tr><th>Status</th><th>Name</th></tr>{}{}{}</table>",
             row("R.part01.rar", "998E063144"),
-            row("R &amp; Co.part02.rar", "11AA")
+            row("R &amp; Co.part02.rar", "11AA"),
+            row("n/a", "22BB")
         );
-        assert_eq!(row_names(&html), ["R.part01.rar", "R & Co.part02.rar"]);
+        assert_eq!(
+            row_names(&html),
+            [
+                Some("R.part01.rar".to_string()),
+                Some("R & Co.part02.rar".to_string()),
+                None
+            ],
+            "a row that does not know its file's name gives none"
+        );
     }
 
     #[test]

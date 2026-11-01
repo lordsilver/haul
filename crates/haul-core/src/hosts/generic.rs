@@ -584,6 +584,7 @@ https://unknown.example/f/x?y=1&amp;z=2</pre></body></html>"#;
               <source src='https://cdn.example/trailer.mp4'>
               <a href="https://cdn.example/files/video.mkv">Download the video</a></video>
             <img src="https://img.example/cover.png"><audio src="https://cdn.example/theme.mp3"></audio>
+            <VIDEO><SOURCE SRC=https://cdn.example/clip.mp4></VIDEO>
             <a href="https://unknown.example/x/Archive.part01.rar">Part 1</a>
             <a href="https://ff.example/abc#Archive.part02.rar">Part 2</a>
             <a href="/files/site.rar">This site's</a>
@@ -597,7 +598,7 @@ https://unknown.example/f/x?y=1&amp;z=2</pre></body></html>"#;
                 "https://unknown.example/x/Archive.part01.rar",
                 "https://ff.example/abc#Archive.part02.rar",
             ],
-            "what the page plays or shows is not a link it lists"
+            "an address in a media tag's attributes is not a link the page lists"
         );
     }
 
