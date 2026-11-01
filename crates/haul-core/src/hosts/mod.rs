@@ -847,6 +847,20 @@ pub struct Http {
     pub user_agent: String,
     /// The cookie jar both clients share.
     pub jar: Arc<reqwest::cookie::Jar>,
+    proxy: Option<String>,
+    fresh: bool,
+    /// Clients that send a browser's user agent to the site (by
+    /// [`site_of`]) whose check that browser passed: Cloudflare's clearance
+    /// holds only with the user agent it was given to.
+    as_browser: Arc<Mutex<HashMap<String, AsBrowser>>>,
+}
+
+/// [`Http`]'s clients with a browser's user agent, on the same cookie jar.
+#[derive(Clone)]
+struct AsBrowser {
+    client: reqwest::Client,
+    no_redirect: reqwest::Client,
+    user_agent: String,
 }
 
 impl Http {
@@ -858,43 +872,98 @@ impl Http {
     /// that gives each connection another address gives each download one.
     pub fn with(proxy: Option<&str>, user_agent: &str, fresh: bool) -> Result<Self, String> {
         let jar = Arc::new(reqwest::cookie::Jar::default());
-        let build = |follow: bool| {
-            let mut b = reqwest::Client::builder()
-                .no_proxy()
-                .user_agent(user_agent)
-                .cookie_provider(jar.clone())
-                .connect_timeout(Duration::from_secs(if proxy.is_some() { 30 } else { 20 }))
-                .read_timeout(Duration::from_secs(60));
-            if !follow {
-                b = b.redirect(reqwest::redirect::Policy::none());
-            }
-            if fresh {
-                b = b.pool_max_idle_per_host(0);
-            }
-            if let Some(p) = proxy {
-                b = b.proxy(reqwest::Proxy::all(remote_dns(p)).map_err(|e| format!("proxy: {e}"))?);
-            }
-            b.build().map_err(|e| e.to_string())
-        };
+        let (client, no_redirect) = clients(proxy, user_agent, fresh, &jar)?;
         Ok(Self {
-            client: build(true)?,
-            no_redirect: build(false)?,
+            client,
+            no_redirect,
             via_proxy: proxy.is_some(),
             user_agent: user_agent.to_string(),
             jar,
+            proxy: proxy.map(str::to_string),
+            fresh,
+            as_browser: Arc::default(),
         })
     }
 
-    /// Takes the cookies a browser got for `page` (`Set-Cookie` lines),
-    /// as the browser's own session would send them.
-    pub fn add_cookies(&self, page: &str, cookies: &[String]) {
-        let Ok(page) = url::Url::parse(page) else {
+    /// Takes the clearance a browser with `user_agent` got past the check
+    /// in front of `page`'s site (its cookies, `Set-Cookie` lines): requests
+    /// to that site carry them and send that user agent from now on
+    /// ([`Http::for_page`]), as Cloudflare lets the clearance through only
+    /// with the user agent it was given to.
+    pub fn add_clearance(&self, page: &str, cookies: &[String], user_agent: Option<&str>) {
+        let Ok(url) = url::Url::parse(page) else {
             return;
         };
         for cookie in cookies {
-            self.jar.add_cookie_str(cookie, &page);
+            self.jar.add_cookie_str(cookie, &url);
+        }
+        let Some(agent) = user_agent.filter(|a| !a.is_empty() && *a != self.user_agent) else {
+            return;
+        };
+        match clients(self.proxy.as_deref(), agent, self.fresh, &self.jar) {
+            Ok((client, no_redirect)) => {
+                self.as_browser
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(
+                        site_of(page),
+                        AsBrowser {
+                            client,
+                            no_redirect,
+                            user_agent: agent.to_string(),
+                        },
+                    );
+            }
+            Err(e) => tracing::warn!("clients with the browser's user agent: {e}"),
         }
     }
+
+    /// These clients for requests to `url`'s site: with the user agent of
+    /// the browser whose clearance they carry there ([`Http::add_clearance`]),
+    /// else as they are.
+    pub fn for_page(&self, url: &str) -> Http {
+        let as_browser = self.as_browser.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(b) = (!as_browser.is_empty())
+            .then(|| as_browser.get(&site_of(url)))
+            .flatten()
+        else {
+            return self.clone();
+        };
+        Http {
+            client: b.client.clone(),
+            no_redirect: b.no_redirect.clone(),
+            user_agent: b.user_agent.clone(),
+            ..self.clone()
+        }
+    }
+}
+
+/// A route's two clients, following redirects and not, on cookie jar `jar`.
+fn clients(
+    proxy: Option<&str>,
+    user_agent: &str,
+    fresh: bool,
+    jar: &Arc<reqwest::cookie::Jar>,
+) -> Result<(reqwest::Client, reqwest::Client), String> {
+    let build = |follow: bool| {
+        let mut b = reqwest::Client::builder()
+            .no_proxy()
+            .user_agent(user_agent)
+            .cookie_provider(jar.clone())
+            .connect_timeout(Duration::from_secs(if proxy.is_some() { 30 } else { 20 }))
+            .read_timeout(Duration::from_secs(60));
+        if !follow {
+            b = b.redirect(reqwest::redirect::Policy::none());
+        }
+        if fresh {
+            b = b.pool_max_idle_per_host(0);
+        }
+        if let Some(p) = proxy {
+            b = b.proxy(reqwest::Proxy::all(remote_dns(p)).map_err(|e| format!("proxy: {e}"))?);
+        }
+        b.build().map_err(|e| e.to_string())
+    };
+    Ok((build(true)?, build(false)?))
 }
 
 /// Resolve host names on the proxy, so DNS does not leak around it.

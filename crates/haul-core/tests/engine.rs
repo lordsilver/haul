@@ -2568,7 +2568,11 @@ async fn a_clearance_lets_haul_read_the_sites_waiting_containers() {
         .unwrap()
         .id
         .clone();
-    engine.page_cleared(&id, &["cf_clearance=ok; Path=/".to_string()]);
+    engine.page_cleared(
+        &id,
+        &["cf_clearance=ok; Path=/".to_string()],
+        Some("Browser/1.0"),
+    );
     let s = wait_for(&engine, "the cleared container unpacked", |s| {
         s.wrappers
             .iter()

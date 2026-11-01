@@ -127,9 +127,12 @@ pub enum Outcome {
     /// The page could not hand out its link this time.
     Later(String),
     /// The browser is past the check in front of the page's site and got
-    /// these cookies for it (`Set-Cookie` lines): Haul reads the page itself
-    /// with them ([`Pass::hand_clearance`]).
-    Cleared(Vec<String>),
+    /// these cookies for it (`Set-Cookie` lines) as user agent `agent`:
+    /// Haul reads the page itself with both ([`Pass::hand_clearance`]).
+    Cleared {
+        cookies: Vec<String>,
+        agent: Option<String>,
+    },
     /// The page showed links Haul took ([`Pass::take_links`]).
     Listed,
     /// The page still wants someone after its time (its check asks for a
@@ -260,8 +263,9 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
             Ok(Outcome::Gone(why)) => json!({ "gone": why }),
             Ok(Outcome::Later(why)) => json!({ "later": why }),
             // Their names only, not what they hold.
-            Ok(Outcome::Cleared(cookies)) => json!({
-                "cleared": cookies.iter().filter_map(|c| c.split('=').next()).collect::<Vec<_>>()
+            Ok(Outcome::Cleared { cookies, agent }) => json!({
+                "cleared": cookies.iter().filter_map(|c| c.split('=').next()).collect::<Vec<_>>(),
+                "agent": agent,
             }),
             Ok(Outcome::Listed) => json!("listed"),
             Ok(Outcome::WantsPerson(look)) => {
@@ -386,7 +390,17 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         if p.hand_clearance
             && let Some(cookies) = clearance(&mut cdp, p.url, s)
         {
-            return Ok(Outcome::Cleared(cookies));
+            // Cloudflare lets the clearance through only with the user agent
+            // it was given to.
+            let agent = cdp
+                .call(
+                    "Runtime.evaluate",
+                    json!({ "expression": "navigator.userAgent", "returnByValue": true }),
+                    s,
+                )
+                .ok()
+                .and_then(|a| a["result"]["value"].as_str().map(str::to_string));
+            return Ok(Outcome::Cleared { cookies, agent });
         }
         if start.elapsed() >= p.show_after {
             return Ok(Outcome::WantsPerson(look(&mut cdp, s)));

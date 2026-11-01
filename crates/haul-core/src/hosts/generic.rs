@@ -291,16 +291,12 @@ pub(super) fn page_title(page: &str) -> Option<String> {
     let raw = [&OG_TITLE, &TITLE]
         .into_iter()
         .find_map(|re| re.captures(page).map(|c| c[1].to_string()))?;
-    short_title(
-        &raw.replace("&amp;", "&")
-            .replace("&#039;", "'")
-            .replace("&quot;", "\""),
-    )
+    short_title(&super::decode_entities(&raw))
 }
 
 /// A page's title without the site's name after a separator.
 pub(super) fn short_title(raw: &str) -> Option<String> {
-    let name = [" | ", " – ", " — ", " - "]
+    let name = [" | ", " – ", " — ", " - ", " » "]
         .iter()
         .fold(raw, |name, sep| name.split(sep).next().unwrap_or(name))
         .trim();
@@ -494,6 +490,14 @@ mod tests {
         );
         assert_eq!(short_title("Example R").as_deref(), Some("Example R"));
         assert_eq!(short_title(" | Site"), None);
+        // The separator written as a character reference, as blogs do.
+        assert_eq!(
+            page_title(
+                r#"<meta property="og:title" content="Example Set-GRP &#187; SITE.example" />"#
+            )
+            .as_deref(),
+            Some("Example Set-GRP")
+        );
     }
 
     #[test]

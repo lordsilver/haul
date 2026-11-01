@@ -225,11 +225,13 @@ impl Browser {
                 }
                 Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
                 Ok(chromium::Outcome::Later(reason)) => engine.page_later(&id, &reason),
-                Ok(chromium::Outcome::Cleared(cookies)) => {
+                Ok(chromium::Outcome::Cleared { cookies, agent }) => {
                     tracing::info!(item = %id, "{host} let the browser past its check: Haul reads {url} itself");
                     // Unwrapping again starts tasks, which need the async
                     // runtime this thread is outside of.
-                    tauri::async_runtime::block_on(async { engine.page_cleared(&id, &cookies) });
+                    tauri::async_runtime::block_on(async {
+                        engine.page_cleared(&id, &cookies, agent.as_deref())
+                    });
                 }
                 Ok(chromium::Outcome::Listed) => tracing::info!("took the links {url} shows"),
                 // A paste, or a copied page on trial, has nothing more to

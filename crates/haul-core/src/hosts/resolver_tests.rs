@@ -564,9 +564,7 @@ async fn generic_links_and_probes() {
     let quick = Http {
         no_redirect: client.clone(),
         client,
-        via_proxy: false,
-        user_agent: String::new(),
-        jar: Default::default(),
+        ..Http::new(None, "").unwrap()
     };
     let stall_cx = Cx {
         http: &quick,
@@ -1612,30 +1610,40 @@ async fn ddownload_names_the_file_and_leaves_its_wait_to_a_browser() {
 }
 
 /// Cookies a browser got past a site's check go with Haul's own requests
-/// to that site, and to no other.
+/// to that site, and to no other, under the browser's user agent, which
+/// Cloudflare's clearance holds only with.
 #[tokio::test]
 async fn a_handed_clearance_goes_with_the_sites_requests() {
     let app = Router::new().route(
         "/page",
         get(|headers: HeaderMap| async move {
-            headers
-                .get("cookie")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_string()
+            let header = |name: &str| {
+                headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            format!("{} as {}", header("cookie"), header("user-agent"))
         }),
     );
     let base = serve(app).await;
     let http = http();
-    http.add_cookies(
+    let own = http.user_agent.clone();
+    http.add_clearance(
         &format!("{base}/Container/x.html"),
         &["cf_clearance=ok; Path=/; HttpOnly".to_string()],
+        Some("Browser/1.0"),
     );
     let sent = |url: String| {
-        let client = http.client.clone();
+        let client = http.for_page(&url).client;
         async move { client.get(url).send().await.unwrap().text().await.unwrap() }
     };
-    assert_eq!(sent(format!("{base}/page")).await, "cf_clearance=ok");
+    assert_eq!(
+        sent(format!("{base}/page")).await,
+        "cf_clearance=ok as Browser/1.0"
+    );
+    assert_eq!(http.for_page(&base).user_agent, "Browser/1.0");
     let other = base.replace("127.0.0.1", "localhost");
-    assert_eq!(sent(format!("{other}/page")).await, "");
+    assert_eq!(sent(format!("{other}/page")).await, format!(" as {own}"));
 }

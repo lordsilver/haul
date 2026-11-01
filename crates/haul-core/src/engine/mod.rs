@@ -1278,6 +1278,10 @@ impl Engine {
                 .find(|m| !cfg.is_off(&hosts::host_of(m), self.pages_pass()))
                 .cloned();
             let http = self.http_for(&hosts::host_of(url.as_deref().unwrap_or_default()), &st);
+            let http = match url.as_deref() {
+                Some(u) => http.for_page(u),
+                None => http,
+            };
             (url, http, self.key_service(&st))
         };
         let cfg = self.cfg();
@@ -1428,7 +1432,7 @@ impl Engine {
                 self.0.wake.notify_one();
                 return;
             }
-            let http = self.http_for(&hosts::host_of(&url), &st);
+            let http = self.http_for(&hosts::host_of(&url), &st).for_page(&url);
             (url, http, self.key_service(&st))
         };
         let cfg = self.cfg();
@@ -1967,7 +1971,12 @@ impl Engine {
                 .clone()
                 .filter(|_| it.pre_for.as_deref().is_none_or(|p| p == url));
             let name = it.name.clone();
-            (pre, name, self.clients().on(exit), self.key_service(&st))
+            (
+                pre,
+                name,
+                self.clients().on(exit).for_page(url),
+                self.key_service(&st),
+            )
         };
         let entry = match pre {
             Some(entry) if !entry.deferred => entry,
@@ -3040,18 +3049,19 @@ impl Engine {
 
     /// The browser passed the check in front of item `id`'s page (its
     /// site's Cloudflare check) and got `cookies` (`Set-Cookie` lines) for
-    /// it: Haul's own requests carry them from now on, so that page and the
-    /// site's other pages waiting for a pass are read by Haul again, as
-    /// before the site put the check in front of them. Called within the
-    /// async runtime: a wrapper's unwrapping starts as a task.
-    pub fn page_cleared(&self, id: &str, cookies: &[String]) {
+    /// it as `user_agent`: Haul's own requests to the site carry them, and
+    /// that user agent, from now on, so that page and the site's other pages
+    /// waiting for a pass are read by Haul again, as before the site put the
+    /// check in front of them. Called within the async runtime: a wrapper's
+    /// unwrapping starts as a task.
+    pub fn page_cleared(&self, id: &str, cookies: &[String], user_agent: Option<&str>) {
         let Some(page) = self.page_for(id) else {
             return;
         };
         let site = hosts::site_of(&page);
         let mut st = self.lock();
         self.http_for(&hosts::host_of(&page), &st)
-            .add_cookies(&page, cookies);
+            .add_clearance(&page, cookies, user_agent);
         let waiting: Vec<String> = st
             .guarded
             .iter()
