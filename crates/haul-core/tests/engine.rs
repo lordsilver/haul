@@ -1793,10 +1793,11 @@ async fn a_page_linking_files_elsewhere_is_a_wrapper_of_them() {
     assert!(!t.server.requests("/files/r.part1.rar").is_empty());
 }
 
-/// A page's card shows no host until a wrapper it links is unwrapped: the
-/// video the page plays from another site is no file of its.
+/// A page's card shows no host until a wrapper it links is unwrapped, then
+/// the hosts of the files that wrapper found: the video the page plays
+/// from another site is no file of its.
 #[tokio::test]
-async fn a_pages_card_shows_no_host_before_its_wrappers_unwrap() {
+async fn a_pages_card_shows_hosts_once_its_wrappers_unwrap() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     engine.add_text(&format!("{}/blog/trailer", t.ip), "");
@@ -1807,11 +1808,39 @@ async fn a_pages_card_shows_no_host_before_its_wrappers_unwrap() {
     })
     .await;
     assert!(s.items.is_empty(), "{:?}", s.items);
+    assert_eq!(
+        s.wrapper_cards.len(),
+        1,
+        "the container is on the page's card"
+    );
     let card = &s.wrapper_cards[0];
     assert_eq!(
         (card.files, card.hosts.as_slice()),
         (0, &[][..]),
         "{card:?}"
+    );
+    // The container unwrapped (its link handed back, as by the in-app
+    // browser): its files' hosts show on the card.
+    let container = s.wrappers.iter().find(|w| w.status == "captcha").unwrap();
+    engine
+        .set_direct(
+            &container.id,
+            "https://filecrypt.cc/DLC/abc123.dlc",
+            BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+    let s = wait_for(&engine, "the container's files", |s| {
+        s.items.len() == 2 && s.wrappers.iter().all(|w| w.status == "done")
+    })
+    .await;
+    let mut hosts: Vec<String> = s.items.iter().flat_map(|i| i.mirrors.clone()).collect();
+    hosts.dedup();
+    assert!(!hosts.is_empty());
+    assert_eq!(s.wrapper_cards.len(), 1);
+    assert_eq!(
+        (s.wrapper_cards[0].files, &s.wrapper_cards[0].hosts),
+        (2, &hosts)
     );
 }
 
