@@ -232,6 +232,12 @@ static HREF: LazyLock<Regex> =
 static BARE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>()\[\]{}]+"#).unwrap());
 
+/// The tags of what a page embeds (videos, sounds, pictures): their
+/// addresses are what the page plays or shows, not links it lists.
+static EMBEDDED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)<(?:video|audio|source|track|img|embed|picture)\b[^>]*>").unwrap()
+});
+
 /// The links of a web page to files on hosts Haul knows, to wrappers and to
 /// files on other sites, each once, in the page's order. Links elsewhere (the site's own pages,
 /// ads) are left out; a page with none waits for a person as before.
@@ -379,8 +385,10 @@ static FILE_EXTENSION: LazyLock<Regex> =
 /// The links in `page` to known hosts, wrappers and pastes, and to files
 /// on other sites ([`names_file`]), absolute, each once. Also those written escaped (`https:\/\/…`, `https&#58;//…`), and
 /// those a link carries to a redirector or dereferer (`/?https://…`,
-/// `?url=https%3A…`, or in base64).
+/// `?url=https%3A…`, or in base64). What the page embeds ([`EMBEDDED`]) is
+/// left out.
 pub(super) fn links_in(page: &str, base: &url::Url, own: &str) -> Vec<String> {
+    let page = &EMBEDDED.replace_all(page, " ");
     let plain = super::decode_entities(
         &page
             .replace("\\/", "/")
@@ -572,7 +580,11 @@ https://unknown.example/f/x?y=1&amp;z=2</pre></body></html>"#;
 
     #[test]
     fn a_page_gives_its_links_to_files_on_other_sites() {
-        let page = r#"<a href="https://unknown.example/x/Archive.part01.rar">Part 1</a>
+        let page = r#"<video poster="https://cdn.example/trailer.jpg"><source src="https://cdn.example/trailer.webm" type="video/webm">
+              <source src='https://cdn.example/trailer.mp4'>
+              <a href="https://cdn.example/files/video.mkv">Download the video</a></video>
+            <img src="https://img.example/cover.png"><audio src="https://cdn.example/theme.mp3"></audio>
+            <a href="https://unknown.example/x/Archive.part01.rar">Part 1</a>
             <a href="https://ff.example/abc#Archive.part02.rar">Part 2</a>
             <a href="/files/site.rar">This site's</a>
             <a href="https://cdn.blog.example/files/also-site.rar">This site's, too</a>
@@ -581,9 +593,11 @@ https://unknown.example/f/x?y=1&amp;z=2</pre></body></html>"#;
         assert_eq!(
             links_in(page, &base, "https://blog.example/post/1"),
             [
+                "https://cdn.example/files/video.mkv",
                 "https://unknown.example/x/Archive.part01.rar",
                 "https://ff.example/abc#Archive.part02.rar",
-            ]
+            ],
+            "what the page plays or shows is not a link it lists"
         );
     }
 

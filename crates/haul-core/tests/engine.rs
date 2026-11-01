@@ -789,6 +789,22 @@ async fn start_server() -> (Server, u16) {
                         );
                         return (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response();
                     }
+                    // A container still to be unwrapped, and a trailer the
+                    // page plays from another site.
+                    "trailer" => {
+                        let other = headers
+                            .get(header::HOST)
+                            .and_then(|h| h.to_str().ok())
+                            .unwrap_or_default()
+                            .replace("127.0.0.1", "localhost");
+                        let body = format!(
+                            r#"<html><head><title>Example T</title></head><body>
+                        <video autoplay muted><source src="http://{other}/files/trailer.mp4" type="video/mp4"></video>
+                        <a href="https://filecrypt.cc/Container/abc.html">Mirror 1</a>
+                        </body></html>"#
+                        );
+                        return (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response();
+                    }
                     _ => "<html><head><title>Nothing here</title></head><body><a href=\"/\">Home</a></body></html>",
                 };
 (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response()
@@ -1775,6 +1791,28 @@ async fn a_page_linking_files_elsewhere_is_a_wrapper_of_them() {
     wait_for(&engine, "both downloaded", all_done).await;
     assert!(t.server.requests("/files/site.rar").is_empty());
     assert!(!t.server.requests("/files/r.part1.rar").is_empty());
+}
+
+/// A page's card shows no host until a wrapper it links is unwrapped: the
+/// video the page plays from another site is no file of its.
+#[tokio::test]
+async fn a_pages_card_shows_no_host_before_its_wrappers_unwrap() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/blog/trailer", t.ip), "");
+    let s = wait_for(&engine, "the page read, its container waiting", |s| {
+        s.wrappers.len() == 2
+            && s.wrappers.iter().any(|w| w.status == "done")
+            && s.wrappers.iter().any(|w| w.status == "captcha")
+    })
+    .await;
+    assert!(s.items.is_empty(), "{:?}", s.items);
+    let card = &s.wrapper_cards[0];
+    assert_eq!(
+        (card.files, card.hosts.as_slice()),
+        (0, &[][..]),
+        "{card:?}"
+    );
 }
 
 /// A page whose address reads like a file's name is read for its links
