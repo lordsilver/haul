@@ -26,8 +26,11 @@ export function offForAccount(s: State): Set<string> {
 export function HostName({ host, off }: { host: string; off: boolean }) {
   if (!off) return <>{host}</>;
   return (
-    <span title="Off: needs an account (Sites)" className="inline-flex items-center gap-0.5 text-muted-foreground/70">
-      <KeyRound aria-label="Off: needs an account" className="size-3 shrink-0" />
+    <span
+      title="Off until you set its account or switch it on in Sites"
+      className="inline-flex items-center gap-0.5 text-muted-foreground/70"
+    >
+      <KeyRound aria-label="Off without an account" className="size-3 shrink-0" />
       {host}
     </span>
   );

@@ -129,12 +129,12 @@ function Pills({ h, proxy }: { h: HostView; proxy: boolean }) {
           tone="caution"
           title={
             h.needs_account
-              ? 'Without an account it gives no decent download, so its links are left out until you set one or switch it on'
-              : 'On without an account: each file waits for a captcha or for its page, so names come late'
+              ? 'Off by default: without an account each file asks for a captcha, or gofile names its files late. Set the account under the wrench, or switch it on to use it free.'
+              : 'On without an account: each file waits for a captcha, or for its page, so names come late'
           }
         >
           <KeyRound />
-          Needs an account
+          Best with an account
         </Pill>
       ) : null}
       {h.exits > 1 ? (
@@ -346,11 +346,10 @@ function HostCard({
   // no order, account or folder.
   const fileHost = h.kind === 'host';
   const off = h.disabled || h.needs_account;
-  const noAccount = (h.needs_account || h.without_account) && !h.disabled;
   const Icon = KIND_ICONS[h.kind];
   const preferred = h.preferred !== null;
-  // Its settings: a host's slots, account and folder, and any site's route
-  // when there is a proxy to go around.
+  // Its settings: a host's account and folder, and any site's route when
+  // there is a proxy to go around.
   const settings = fileHost || s.proxy;
   const starTitle = preferred ? 'Preferred: click to stop preferring it' : 'Prefer this host';
   return (
@@ -409,12 +408,6 @@ function HostCard({
           <Pills h={h} proxy={s.proxy} />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1">
-          {noAccount ? (
-            <Button size="sm" aria-expanded={open} onClick={() => setOpen(!open)}>
-              <KeyRound />
-              Set account
-            </Button>
-          ) : null}
           {fileHost ? (
             <IconButton
               label={starTitle}
@@ -435,7 +428,7 @@ function HostCard({
               h.disabled
                 ? 'Off: its links are never tried. Click to use it again.'
                 : h.needs_account
-                  ? 'Off until you set an account. Click to use it without one.'
+                  ? 'Off until you set an account. Click to use it free, without one.'
                   : 'On: click to never use this host'
             }
           >

@@ -21,7 +21,7 @@ It comes as a Windows desktop app and as `haul`, a headless server with the same
 
 ## Install
 
-**Windows**: download `haul-desktop-v<version>-x86_64-pc-windows-msvc-setup.exe` from the [latest release](https://github.com/lordsilver/haul/releases/latest) and run it. The installer is not code-signed yet, so SmartScreen asks once: **More info**, then **Run anyway**. Haul tells you when a new version is out and installs it with one click.
+**Windows**: download `haul-desktop-v<version>-windows-x64-setup.exe` from the [latest release](https://github.com/lordsilver/haul/releases/latest) and run it. The installer is not code-signed yet, so SmartScreen asks once: **More info**, then **Run anyway**. Haul tells you when a new version is out and installs it with one click.
 
 **Headless server**: download the `haul` archive for Windows or Linux from the same release, or build it with Rust 1.96 or later:
 

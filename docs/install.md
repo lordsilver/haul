@@ -2,7 +2,7 @@
 
 ## Windows desktop app
 
-Download the installer from the [latest release](https://github.com/lordsilver/haul/releases/latest) (`haul-desktop-v<version>-x86_64-pc-windows-msvc-setup.exe`). It asks whether to install for you alone, in `%LOCALAPPDATA%\Haul` without administrator rights, or for everyone on the computer, in Program Files; on an administrator account Windows asks for permission as it starts. For a silent install, pass `/S` with `/CurrentUser` or `/AllUsers`. The `.msi` always installs for everyone.
+Download the installer from the [latest release](https://github.com/lordsilver/haul/releases/latest) (`haul-desktop-v<version>-windows-x64-setup.exe`). It asks whether to install for you alone, in `%LOCALAPPDATA%\Haul` without administrator rights, or for everyone on the computer, in Program Files; on an administrator account Windows asks for permission as it starts. For a silent install, pass `/S` with `/CurrentUser` or `/AllUsers`. The `.msi` always installs for everyone.
 
 The installer is not code-signed yet, so SmartScreen asks once: **More info**, then **Run anyway**. Windows 10 and 11 ship the WebView2 runtime the app needs.
 
@@ -10,7 +10,7 @@ Haul tells you in its status bar when a new version is out and installs it with 
 
 ## Headless server
 
-The release has `haul` for Windows (`haul-v<version>-x86_64-pc-windows-msvc.zip`) and Linux (`haul-v<version>-x86_64-unknown-linux-gnu.tar.gz`). Or build it with Rust 1.96 or later; the web UI is built in, so no Node is needed:
+The release has `haul` for Windows (`haul-v<version>-windows-x64.zip`) and Linux (`haul-v<version>-linux-x64.tar.gz`, for glibc systems). Or build it with Rust 1.96 or later; the web UI is built in, so no Node is needed:
 
 ```sh
 cargo install --locked --git https://github.com/lordsilver/haul haul-web

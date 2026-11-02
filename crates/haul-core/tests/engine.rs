@@ -398,7 +398,7 @@ async fn start_server() -> (Server, u16) {
                     "draft": false,
                     "prerelease": false,
                     "assets": [
-                        {"name": "haul-desktop-v99.0.0-x86_64-pc-windows-msvc-setup.exe", "browser_download_url": format!("http://{host}/files/setup.exe")},
+                        {"name": "haul-desktop-v99.0.0-windows-x64-setup.exe", "browser_download_url": format!("http://{host}/files/setup.exe")},
                         {"name": "SHA256SUMS", "browser_download_url": format!("http://{host}/sums")},
                     ]
                 }))
@@ -408,7 +408,7 @@ async fn start_server() -> (Server, u16) {
             "/sums",
             get(|| async {
                 format!(
-                    "{}  haul-desktop-v99.0.0-x86_64-pc-windows-msvc-setup.exe\n",
+                    "{}  haul-desktop-v99.0.0-windows-x64-setup.exe\n",
                     sha256_hex(&content("setup.exe", SIZE))
                 )
             }),
@@ -1105,7 +1105,7 @@ async fn a_newer_haul_is_found_and_its_installer_checked() {
     let installer = engine.download_update().await.unwrap();
     assert_eq!(
         installer.file_name().unwrap(),
-        "haul-desktop-v99.0.0-x86_64-pc-windows-msvc-setup.exe"
+        "haul-desktop-v99.0.0-windows-x64-setup.exe"
     );
     assert_eq!(
         std::fs::read(&installer).unwrap(),

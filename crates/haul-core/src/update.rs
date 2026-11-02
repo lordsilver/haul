@@ -187,12 +187,9 @@ mod tests {
 
     #[test]
     fn reads_sha256sums() {
-        let sums = "aa11  haul-v0.15.4-x86_64-unknown-linux-gnu.tar.gz\nbb22 *haul-desktop-v0.15.4-x86_64-pc-windows-msvc-setup.exe\n";
+        let sums = "aa11  haul-v0.15.4-linux-x64.tar.gz\nbb22 *haul-desktop-v0.15.4-windows-x64-setup.exe\n";
         assert_eq!(
-            sum_for(
-                sums,
-                "haul-desktop-v0.15.4-x86_64-pc-windows-msvc-setup.exe"
-            ),
+            sum_for(sums, "haul-desktop-v0.15.4-windows-x64-setup.exe"),
             Some("bb22")
         );
         assert_eq!(sum_for(sums, "missing.exe"), None);

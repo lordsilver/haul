@@ -49,10 +49,11 @@ jobs:
         env:
           VERSION: ${{ env.TAG || github.sha }}
         # Tauri names the installers after the product, the version and the
-        # MSI's language; the release names them like the server archives.
+        # MSI's language; the release names them like the server archives,
+        # after the OS and CPU they run on (see `platform` below).
         run: |
           set -euo pipefail
-          name="haul-desktop-${VERSION}-x86_64-pc-windows-msvc"
+          name="haul-desktop-${VERSION}-windows-x64"
           mkdir dist
           exe=(target/release/bundle/nsis/*-setup.exe)
           msi=(target/release/bundle/msi/*.msi)
@@ -75,9 +76,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `platform` names the files: the OS and CPU, which is all a person
+        # picking a download needs and what mise's github backend reads to
+        # pick the archive for the system it installs on. The Rust target's
+        # vendor and toolchain (`pc`, `msvc`, `gnu`) tell nothing apart, as
+        # each platform has one build.
         include:
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, platform: linux-x64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, platform: windows-x64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -92,10 +98,11 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ env.TAG || github.sha }}
         run: |
           set -euo pipefail
-          name="haul-${VERSION}-${TARGET}"
+          name="haul-${VERSION}-${PLATFORM}"
           mkdir -p "dist/$name"
           ext=""
           [[ "$TARGET" == *windows* ]] && ext=".exe"
@@ -169,10 +176,10 @@ jobs:
             echo
             echo "| File | What it is |"
             echo "| --- | --- |"
-            echo "| \`haul-desktop-$TAG-x86_64-pc-windows-msvc-setup.exe\` | Windows desktop app, setup program |"
-            echo "| \`haul-desktop-$TAG-x86_64-pc-windows-msvc.msi\` | Windows desktop app, MSI package |"
-            echo "| \`haul-$TAG-x86_64-pc-windows-msvc.zip\` | Headless server \`haul\` for Windows |"
-            echo "| \`haul-$TAG-x86_64-unknown-linux-gnu.tar.gz\` | Headless server \`haul\` for Linux |"
+            echo "| \`haul-desktop-$TAG-windows-x64-setup.exe\` | Windows desktop app, setup program |"
+            echo "| \`haul-desktop-$TAG-windows-x64.msi\` | Windows desktop app, MSI package |"
+            echo "| \`haul-$TAG-windows-x64.zip\` | Headless server \`haul\` for Windows |"
+            echo "| \`haul-$TAG-linux-x64.tar.gz\` | Headless server \`haul\` for Linux |"
             echo "| \`SHA256SUMS\` | SHA-256 checksums of the files above |"
             echo
             echo "Check a download with \`sha256sum --check --ignore-missing SHA256SUMS\`."
