@@ -12,7 +12,7 @@ It comes as a Windows desktop app and as `haul`, a headless server with the same
 ## Features
 
 - **Mirrors**: the same file on several hosts is one row, downloaded from your preferred hosts in your order, or the fastest, with failover to the next.
-- **Reliable downloads**: resume after pauses and restarts, automatic retries, one shared speed limit, parallel downloads and per-host slots.
+- **Reliable downloads**: resume after pauses and restarts, automatic retries, one shared speed limit, parallel downloads.
 - **Connections**: a SOCKS5 or HTTP proxy, VPN servers, and router reconnects.
 - **Adding links**: paste them, watch the clipboard, or drop a `.dlc`, `.txt` or `.crawljob` file; pages that hold links for many hosts become one row per file.
 - **Archives**: split RAR, 7-Zip and zip archives are held back until every part is there, then extracted.

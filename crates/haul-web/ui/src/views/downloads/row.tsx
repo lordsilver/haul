@@ -1,7 +1,7 @@
 import { FolderOpen, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
-import { HostPicker, hostLabel } from '@/components/host-picker';
+import { HostName, HostPicker, hostLabel, offForAccount } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { StatusGlyph } from '@/components/status-glyph';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -16,12 +16,18 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { NeedsYou, PasteLink } from '@/views/downloads/needs-you';
 
-// The columns every row and the list's heading share.
+// A row's line: its columns side by side while the list (an `@container`)
+// is wide enough, wrapping title above progress when it is not.
+export const ROW = 'flex flex-wrap items-center gap-x-4 gap-y-2 @2xl:flex-nowrap';
+
+// The columns every row and the list's heading share. The speed column goes
+// first as the list narrows, its figure moving beside the caption
+// ([`InlineRate`]).
 export const COLUMNS = {
   lead: 'flex w-[60px] shrink-0 items-center gap-3',
   title: 'min-w-0 flex-[1_1_260px]',
   progress: 'min-w-[140px] flex-[0_1_240px]',
-  rate: 'w-[110px] shrink-0 text-right text-xs tabular-nums text-muted-foreground',
+  rate: 'w-[110px] shrink-0 text-right text-xs tabular-nums text-muted-foreground @max-4xl:hidden',
   actions: 'flex min-w-[72px] shrink-0 justify-end gap-0.5',
 };
 
@@ -53,6 +59,11 @@ export function Rate({ speed, size, done }: { speed: number; size: number; done:
       {size > done ? <div>{duration((size - done) / speed)} left</div> : null}
     </>
   );
+}
+
+// The speed beside a row's caption, where the speed column is hidden.
+export function InlineRate({ speed }: { speed: number }) {
+  return speed ? <span className="@4xl:hidden"> · {bytes(speed)}/s</span> : null;
 }
 
 // The row's lead: its state's glyph, which gives way to a checkbox while
@@ -164,12 +175,20 @@ function RowActions({ it, s }: { it: ItemView; s: State }) {
 // The host it comes from, starred when it is a preferred one and pinned
 // when the user picked it, how many other
 // hosts that are on could take over, and where it belongs; then why it
-// failed or waits, or what the host wants of the user.
-function Subtitle({ it }: { it: ItemView }) {
+// failed or waits, or what the host wants of the user. A host off for want
+// of an account is marked, here and among the hosts to choose from.
+function Subtitle({ it, s }: { it: ItemView; s: State }) {
+  const off = offForAccount(s);
   // The host part, which chooses the host when the file has several.
   const others = it.other_hosts ? ` · ${it.other_hosts} other ${it.other_hosts === 1 ? 'host' : 'hosts'}` : '';
   const host = `${it.shown_host}${others}`;
-  const label = hostLabel(host, { picked: Boolean(it.download_from), preferred: it.preferred_host });
+  const label = hostLabel(
+    <>
+      <HostName host={it.shown_host} off={off.has(it.shown_host)} />
+      {others}
+    </>,
+    { picked: Boolean(it.download_from), preferred: it.preferred_host },
+  );
   const rest: string[] = [];
   if (it.package) rest.push(it.package);
   if (it.source_name) rest.push(`from ${it.source_name}`);
@@ -177,7 +196,7 @@ function Subtitle({ it }: { it: ItemView }) {
   const tone = it.status === 'error' ? 'text-destructive' : it.status === 'captcha' ? 'text-warn-strong' : '';
   return (
     <div className="truncate text-xs text-muted-foreground" title={[host, ...rest, reason].filter(Boolean).join('\n')}>
-      <HostPicker ids={[it.id]} hosts={it.mirrors} chosen={it.download_from} label={label} />
+      <HostPicker ids={[it.id]} hosts={it.mirrors} off={off} chosen={it.download_from} label={label} />
       {rest.length ? ` · ${rest.join(' · ')}` : null}
       {reason ? <span className={tone}> · {reason}</span> : null}
     </div>
@@ -222,7 +241,7 @@ export function ItemRow({
         if (picking(e)) pickMany([it.id], order, { toggle: true, range: e.shiftKey });
       }}
     >
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className={ROW}>
         <Lead
           status={it.status}
           checked={picked}
@@ -234,7 +253,7 @@ export function ItemRow({
           <div className="truncate font-medium" title={it.name}>
             {it.name}
           </div>
-          <Subtitle it={it} />
+          <Subtitle it={it} s={s} />
         </div>
         <div className={COLUMNS.progress}>
           {needs ? (
@@ -242,7 +261,10 @@ export function ItemRow({
           ) : (
             <>
               <Bar value={percent(it)} status={it.status} />
-              <div className="mt-1.5 truncate text-xs text-muted-foreground tabular-nums">{caption(it, s.paused)}</div>
+              <div className="mt-1.5 truncate text-xs text-muted-foreground tabular-nums">
+                {caption(it, s.paused)}
+                <InlineRate speed={it.speed} />
+              </div>
             </>
           )}
         </div>

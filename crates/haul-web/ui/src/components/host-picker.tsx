@@ -1,5 +1,5 @@
-import { ChevronDown, Pin, Server } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { ChevronDown, KeyRound, Pin, Server } from 'lucide-react';
+import { Fragment, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -11,12 +11,45 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { api, report } from '@/lib/api';
+import type { State } from '@/lib/bindings/State';
 
 const AUTOMATIC = '';
 
+// The hosts that are off until the user sets their account or switches
+// them on in Sites, which rows mark.
+export function offForAccount(s: State): Set<string> {
+  return new Set(s.hosts.filter((h) => h.needs_account && !h.disabled).map((h) => h.name));
+}
+
+// A host's name as a row lists it: muted, with a key, while it is off for
+// want of an account.
+export function HostName({ host, off }: { host: string; off: boolean }) {
+  if (!off) return <>{host}</>;
+  return (
+    <span title="Off: needs an account (Sites)" className="inline-flex items-center gap-0.5 text-muted-foreground/70">
+      <KeyRound aria-label="Off: needs an account" className="size-3 shrink-0" />
+      {host}
+    </span>
+  );
+}
+
+// Hosts as a row lists them, one after the other.
+export function HostNames({ hosts, off }: { hosts: string[]; off: Set<string> }) {
+  return (
+    <>
+      {hosts.map((h, i) => (
+        <Fragment key={h}>
+          {i ? ', ' : null}
+          <HostName host={h} off={off.has(h)} />
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
 // A host's name as a row shows it: pinned when the user picked it for the
 // file, starred when it is one of their preferred hosts.
-export function hostLabel(text: string, { picked, preferred }: { picked: boolean; preferred: boolean }): ReactNode {
+export function hostLabel(text: ReactNode, { picked, preferred }: { picked: boolean; preferred: boolean }): ReactNode {
   if (picked) {
     return (
       <>
@@ -24,7 +57,7 @@ export function hostLabel(text: string, { picked, preferred }: { picked: boolean
       </>
     );
   }
-  return preferred ? `★ ${text}` : text;
+  return preferred ? <>★ {text}</> : text;
 }
 
 const MIXED = '\u0000mixed';
@@ -32,16 +65,19 @@ const MIXED = '\u0000mixed';
 // Where a file comes from, and on a file several hosts have, the choice of
 // which: Automatic (the preferred hosts, else the fastest) or one of them,
 // the others standing by. For an archive, `ids` are its parts; for rows
-// picked together (`bar`), each takes the host if it has it.
+// picked together (`bar`), each takes the host if it has it. `off` are the
+// hosts off for want of an account (offForAccount).
 export function HostPicker({
   ids,
   hosts,
+  off,
   chosen,
   label,
   bar = false,
 }: {
   ids: string[];
   hosts: string[];
+  off: Set<string>;
   chosen: string | null | undefined;
   label: ReactNode;
   bar?: boolean;
@@ -76,7 +112,7 @@ export function HostPicker({
           <DropdownMenuSeparator />
           {hosts.map((h) => (
             <DropdownMenuRadioItem key={h} value={h}>
-              {h}
+              <HostName host={h} off={off.has(h)} />
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>

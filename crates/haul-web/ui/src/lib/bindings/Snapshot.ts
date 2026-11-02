@@ -37,11 +37,7 @@ pool: PoolView,
 /**
  * The pool in words, and each source of addresses.
  */
-pool_summary: PoolSummary, 
-/**
- * The most downloads a host can be set to run at once.
- */
-slots_max: number, theme: Theme, watch_clipboard: boolean, 
+pool_summary: PoolSummary, theme: Theme, watch_clipboard: boolean, 
 /**
  * Removing a finished download moves its file to the [`BIN`].
  */

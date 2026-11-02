@@ -241,7 +241,6 @@ async fn adds_imports_and_controls_items() {
         json!({"max_total": 3, "rate_limit_mbps": 2.5}),
     )
     .await;
-    s.post("/api/host/a.example/limit/0", json!({})).await;
     let state = s.state().await;
     assert_eq!(
         (state["max_total"].as_u64(), state["rate"].as_f64()),
@@ -561,7 +560,6 @@ async fn every_error_is_json() {
             .await
             .unwrap(),
         s.post("/api/add", json!({"txt": "no text field"})).await,
-        s.post("/api/host/a.example/limit/many", json!({})).await,
         s.http.get(url("/api/no-such-route")).send().await.unwrap(),
         s.http.get(url("/api/add")).send().await.unwrap(),
         s.http

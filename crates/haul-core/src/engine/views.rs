@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use super::{HostView, ItemView, WrapperView, unpack::ArchiveSet};
 use crate::{
-    config::{Config, FALLBACK_LIMIT},
+    config::Config,
     hosts,
     item::{Extract, Found},
 };
@@ -644,10 +644,9 @@ pub(super) fn site_kind(name: &str) -> &'static str {
     }
 }
 
-/// Where each host stands in the Hosts view: its group, the downloads it
-/// runs at once, and whether it can be moved in the preferred order.
-/// Wrappers, pastes and sites are grouped by their kind, and have no order
-/// or slots that matter.
+/// Where each host stands in the Hosts view: its group, and whether it can
+/// be moved in the preferred order. Wrappers, pastes and sites are grouped
+/// by their kind, and have no order that matters.
 pub(super) fn hosts(hosts: &mut [HostView]) {
     let preferred = hosts
         .iter()
@@ -661,8 +660,6 @@ pub(super) fn hosts(hosts: &mut [HostView]) {
         } else {
             "other"
         };
-        h.slots = h.cap.map_or(h.limit, |cap| cap.min(h.limit));
-        h.limited = h.limit < FALLBACK_LIMIT || h.cap.is_some();
         h.movable = h.kind == "host" && h.preferred.is_some() && preferred > 1;
     }
 }
@@ -873,7 +870,6 @@ mod tests {
     fn host(name: &str) -> HostView {
         HostView {
             name: name.into(),
-            limit: FALLBACK_LIMIT,
             active: 0,
             speed: 0.0,
             fails: 0,
@@ -886,6 +882,7 @@ mod tests {
             preferred: None,
             disabled: false,
             needs_account: false,
+            without_account: false,
             exits: 1,
             quota: None,
             free: None,
@@ -894,8 +891,6 @@ mod tests {
             kind: "host",
             listed: true,
             group: "",
-            slots: 0,
-            limited: false,
             movable: false,
         }
     }
@@ -1268,28 +1263,16 @@ mod tests {
 
     #[test]
     fn hosts_group_and_rank() {
-        let mut hs = vec![
-            host("p1"),
-            host("p2"),
-            host("fast"),
-            host("off"),
-            host("capped"),
-        ];
+        let mut hs = vec![host("p1"), host("p2"), host("fast"), host("off")];
         hs[0].preferred = Some(0);
         hs[1].preferred = Some(1);
         hs[2].speed = 9.0;
         hs[0].speed = 3.0;
         hs[3].needs_account = true;
-        hs[4].cap = Some(2);
         hosts(&mut hs);
         let groups: Vec<&str> = hs.iter().map(|h| h.group).collect();
-        assert_eq!(
-            groups,
-            ["preferred", "preferred", "other", "other", "other"]
-        );
+        assert_eq!(groups, ["preferred", "preferred", "other", "other"]);
         assert!(hs[0].movable && hs[1].movable && !hs[2].movable);
-        assert_eq!((hs[4].slots, hs[4].limited), (2, true));
-        assert_eq!((hs[2].slots, hs[2].limited), (FALLBACK_LIMIT, false));
     }
 
     #[test]

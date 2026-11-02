@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
-import { HostPicker } from '@/components/host-picker';
+import { HostPicker, offForAccount } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
 import { Button } from '@/components/ui/button';
@@ -217,6 +217,7 @@ function SelectionCommands({ picked, s }: { picked: ItemView[]; s: State }) {
           bar
           ids={picked.map((i) => i.id)}
           hosts={hosts}
+          off={offForAccount(s)}
           chosen={choices.size === 1 ? [...choices][0] : undefined}
           label="Download from"
         />
@@ -384,12 +385,12 @@ export function Downloads({
         // biome-ignore lint/a11y/useKeyWithClickEvents: Escape does the same from the keyboard
         <section
           aria-label={TITLES[view]}
-          className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-xl border bg-background shadow-xs"
+          className="@container min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-xl border bg-background shadow-xs"
           onClick={(e) => {
             if (!(e.target as HTMLElement).closest('li, button, input, a')) clearSelection();
           }}
         >
-          <div className="sticky top-0 z-10 flex items-center gap-x-4 bg-background px-4 py-2.5 text-xs font-medium text-muted-foreground max-lg:hidden">
+          <div className="sticky top-0 z-10 flex items-center gap-x-4 bg-background px-4 py-2.5 text-xs font-medium text-muted-foreground @max-2xl:hidden">
             <span className={COLUMNS.lead} />
             <span className={COLUMNS.title}>Name</span>
             <span className={COLUMNS.progress}>Progress</span>

@@ -16,11 +16,14 @@
     window.__haulHandoff = message;
     if (!window.__haulDevTools) location.href = address;
   };
-  const hand = (files) => {
+  // `page`: on a wrapper's page Haul's own code reads, the parts of it that
+  // code reads, which stand in for the files when Haul finds what it holds.
+  const hand = (files, page) => {
     if (handed || !files.length) return;
     handed = true;
     const absolute = files.map((f) => ({ ...f, url: new URL(f.url, location.href).href }));
-    send({ files: absolute, agent: navigator.userAgent }, "https://haul.invalid/take?" + new URLSearchParams({ files: JSON.stringify(absolute), agent: navigator.userAgent }));
+    const message = { files: absolute, agent: navigator.userAgent, ...(page ? { page } : {}) };
+    send(message, "https://haul.invalid/take?" + new URLSearchParams({ ...message, files: JSON.stringify(absolute) }));
   };
 
   // The page passed its check but could not give the link this time (a
@@ -167,6 +170,39 @@
         };
         if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", look);
         else look();
+      },
+    },
+    {
+      // Past its gate (a picture puzzle a person solves here, or none when
+      // the browser is let through), the container's page shows its links:
+      // as Click'n'Load data, which Haul decrypts and names after the rows
+      // of the page's table (hosts/filecrypt.rs reads the heading, the rows
+      // and that data, handed here as they show), and as a `.dlc`, whose
+      // button names the attribute holding its id
+      // (`DownloadDLC(this.getAttribute('data-…'))`). That link is not
+      // gated, and stands in when Haul finds nothing in the page.
+      site: /(^|\.)filecrypt\.cc$/,
+      watch() {
+        const look = () => {
+          // The link table comes after the buttons: read the page once it
+          // is all there, not as it is parsed.
+          if (handed || document.readyState === "loading") return;
+          const button = document.querySelector('[onclick*="DownloadDLC"]');
+          const attribute = button?.getAttribute("onclick").match(/getAttribute\(\s*['"]([\w-]+)['"]\s*\)/)?.[1];
+          const id = attribute && button.getAttribute(attribute);
+          if (!id || !/^[\w-]+$/.test(id)) return;
+          const read = [document.querySelector("h2"), ...document.querySelectorAll('tr, [onclick*="CNLPOP"], [onsubmit*="CNLPOP"]')].filter(Boolean);
+          // Each once: a part inside another (the Click'n'Load button in a
+          // row) comes with it.
+          const page = read
+            .filter((e) => !read.some((o) => o !== e && o.contains(e)))
+            .map((e) => e.outerHTML)
+            .join("\n");
+          hand([{ url: `/DLC/${id}.dlc` }], page);
+        };
+        new MutationObserver(look).observe(document, { subtree: true, childList: true });
+        document.addEventListener("DOMContentLoaded", look);
+        look();
       },
     },
   ];

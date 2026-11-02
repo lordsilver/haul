@@ -65,6 +65,9 @@ const BUSY_PAUSE: u64 = 5;
 /// one waits this long, so the host has counted the finished one out.
 const SETTLE: Duration = Duration::from_secs(2);
 
+/// The most downloads Haul runs at once from one host, per exit.
+const AT_ONCE: usize = 32;
+
 /// What the system calls the place deleted files go.
 pub const BIN: &str = if cfg!(windows) {
     "Recycle Bin"
@@ -224,8 +227,6 @@ pub struct Snapshot {
     pub pool: PoolView,
     /// The pool in words, and each source of addresses.
     pub pool_summary: PoolSummary,
-    /// The most downloads a host can be set to run at once.
-    pub slots_max: usize,
     pub theme: Theme,
     pub watch_clipboard: bool,
     /// Removing a finished download moves its file to the [`BIN`].
@@ -375,7 +376,6 @@ pub struct QuotaView {
 #[ts(export)]
 pub struct HostView {
     pub name: String,
-    pub limit: usize,
     pub active: usize,
     pub speed: f64,
     pub fails: u32,
@@ -391,8 +391,12 @@ pub struct HostView {
     pub preferred: Option<usize>,
     /// Turned off by the user: its links are never tried.
     pub disabled: bool,
-    /// It needs an account that is not set, so its links are left out too.
+    /// It needs an account that is not set and the user did not switch it
+    /// on without one, so its links are left out too.
     pub needs_account: bool,
+    /// It needs an account that is not set, and the user switched it on
+    /// without one: every file asks for a captcha, or for its page.
+    pub without_account: bool,
     /// Addresses it may be reached from: its slots and its learned limit
     /// count for each.
     pub exits: usize,
@@ -416,10 +420,6 @@ pub struct HostView {
     /// `other` (on or off alike), or its kind for the others.
     #[ts(type = "\"preferred\" | \"other\" | \"wrapper\" | \"paste\" | \"site\"")]
     pub group: &'static str,
-    /// Downloads it runs at once: `limit`, or `cap` when lower.
-    pub slots: usize,
-    /// A limit is set or was learned, so its slot buttons show.
-    pub limited: bool,
     /// It can trade places with another preferred host.
     pub movable: bool,
 }
@@ -438,8 +438,7 @@ struct Lane {
     serving: usize,
     /// No new download from it before this; see [`SETTLE`].
     settle_until: Option<Instant>,
-    /// See [`HostView::cap`]. Kept until a restart or until the user sets the
-    /// host's slots.
+    /// See [`HostView::cap`]. Kept until a restart.
     cap: Option<usize>,
     /// When `cap` last changed: one more is allowed after [`CAP_RELAX`]
     /// without a refusal.
@@ -453,7 +452,7 @@ struct Lane {
 
 impl Lane {
     /// A limit the host showed is tried one higher after [`CAP_RELAX`]
-    /// without a refusal, and dropped once it reaches the user's: a refusal
+    /// without a refusal, and dropped once it reaches `limit`: a refusal
     /// can be a moment's crowding, and a host can loosen up.
     fn relax(&mut self, limit: usize, now: Instant) {
         if let (Some(cap), Some(since)) = (self.cap, self.cap_since)
@@ -486,8 +485,8 @@ impl Lane {
         self.cooldown.is_some_and(|c| now < c)
     }
 
-    /// Downloads that may run at once: the user's limit, or fewer when the
-    /// host showed it takes fewer.
+    /// Downloads that may run at once: `limit`, or fewer when the host
+    /// showed it takes fewer.
     fn slots(&self, limit: usize) -> usize {
         self.cap.map_or(limit, |cap| cap.min(limit))
     }
@@ -500,8 +499,6 @@ impl Lane {
 }
 
 struct HostStats {
-    /// The user's limit of downloads at once, per exit.
-    limit: usize,
     /// Smoothed bytes per second of one stream.
     ema: f64,
     /// When `ema` last changed, in seconds since 1970.
@@ -553,9 +550,8 @@ impl HostStats {
         speed / (1.0 + self.penalty(now) * 0.5)
     }
 
-    fn new(limit: usize) -> Self {
+    fn new() -> Self {
         Self {
-            limit,
             ema: 0.0,
             measured: 0,
             fails: 0,
@@ -568,7 +564,7 @@ impl HostStats {
     }
 
     /// What was learned in an earlier run.
-    fn restore(limit: usize, saved: &store::SavedHost, now: u64) -> Self {
+    fn restore(saved: &store::SavedHost, now: u64) -> Self {
         let fresh = now.saturating_sub(saved.measured) < SPEED_MEMORY;
         Self {
             ema: if fresh { saved.speed as f64 } else { 0.0 },
@@ -576,7 +572,7 @@ impl HostStats {
             ok: saved.ok,
             fails: saved.fails,
             bytes: saved.bytes,
-            ..Self::new(limit)
+            ..Self::new()
         }
     }
 
@@ -621,10 +617,10 @@ impl State {
         hosts::page_passes(url) || self.guarded.contains(url)
     }
 
-    fn host(&mut self, name: &str, cfg: &Config) -> &mut HostStats {
+    fn host(&mut self, name: &str) -> &mut HostStats {
         self.hosts
             .entry(name.to_string())
-            .or_insert_with(|| HostStats::new(cfg.limit_for(name)))
+            .or_insert_with(HostStats::new)
     }
 
     fn lane(&mut self, host: &str, exit: Exit) -> &mut Lane {
@@ -649,10 +645,9 @@ impl State {
         now: Instant,
     ) -> Option<Exit> {
         // What a free user gets, where it is known, holds from the start.
-        let limit = match hosts::known(host).and_then(|k| k.at_once(cfg)) {
-            Some(at_once) => self.host(host, cfg).limit.min(at_once),
-            None => self.host(host, cfg).limit,
-        };
+        let limit = hosts::known(host)
+            .and_then(|k| k.at_once(cfg))
+            .map_or(AT_ONCE, |at_once| at_once.min(AT_ONCE));
         // An address the host has slowed for the day comes last.
         let mut best: Option<(Exit, (bool, usize))> = None;
         for &exit in exits {
@@ -927,7 +922,7 @@ impl Engine {
         let hosts: IndexMap<String, HostStats> = store::load_hosts(&data_dir)
             .iter()
             .map(|(name, saved)| {
-                let stats = HostStats::restore(cfg.limit_for(name), saved, now);
+                let stats = HostStats::restore(saved, now);
                 (name.clone(), stats)
             })
             .collect();
@@ -1275,7 +1270,7 @@ impl Engine {
             let url = it
                 .mirrors
                 .iter()
-                .find(|m| !cfg.is_off(&hosts::host_of(m), self.pages_pass()))
+                .find(|m| !cfg.is_off(&hosts::host_of(m)))
                 .cloned();
             let http = self.http_for(&hosts::host_of(url.as_deref().unwrap_or_default()), &st);
             let http = match url.as_deref() {
@@ -1425,7 +1420,7 @@ impl Engine {
             let url = it.mirrors[0].clone();
             // A site the user turned off is not asked: the queue's turn
             // says so, as for a download whose hosts are all off.
-            if self.cfg().is_off(&hosts::host_of(&url), self.pages_pass()) {
+            if self.cfg().is_off(&hosts::host_of(&url)) {
                 it.probed = true;
                 self.touch(&mut st);
                 drop(st);
@@ -1646,7 +1641,7 @@ impl Engine {
                 let due = checked
                     .get(&host)
                     .is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
-                if !due || cfg.is_off(&host, self.pages_pass()) {
+                if !due || cfg.is_off(&host) {
                     continue;
                 }
                 checked.insert(host.clone(), Instant::now());
@@ -1816,7 +1811,7 @@ impl Engine {
     fn pick(&self, st: &mut State, id: &str, now: Instant) -> Option<(String, Exit)> {
         let cfg = self.cfg();
         let pages = self.pages_pass();
-        let off = |m: &String| cfg.is_off(&hosts::host_of(m), pages);
+        let off = |m: &String| cfg.is_off(&hosts::host_of(m));
         let it = &st.items[id];
         // A mirror whose page the desktop app passes by itself, waiting its
         // turn in the browser: the file waits for it rather than go to a
@@ -1851,7 +1846,7 @@ impl Engine {
                 let mut names: Vec<String> = only_off
                     .into_iter()
                     .map(|h| match hosts::known(&h) {
-                        Some(k) if k.lacks_account(&cfg, pages) && !cfg.is_disabled(&h) => {
+                        Some(k) if k.off_for_account(&cfg) && !cfg.is_disabled(&h) => {
                             format!("{h} (needs an account)")
                         }
                         _ => h,
@@ -1908,7 +1903,7 @@ impl Engine {
         }
         let pass_speed = pass_host
             .as_ref()
-            .map(|h| st.host(h, &cfg).ema)
+            .map(|h| st.host(h).ema)
             .unwrap_or_default();
         let mut best: Option<(String, Exit, f64)> = None;
         let mut held = false;
@@ -1916,7 +1911,7 @@ impl Engine {
             let name = hosts::host_of(&m);
             if pass_host.is_some() {
                 let known = hosts::known(&name).is_some();
-                let ema = st.host(&name, &cfg).ema;
+                let ema = st.host(&name).ema;
                 if !known || ema < pass_speed {
                     held = true;
                     continue;
@@ -1926,7 +1921,7 @@ impl Engine {
             let Some(exit) = st.open_exit(&name, &exits, &cfg, now) else {
                 continue;
             };
-            let score = st.host(&name, &cfg).score(now);
+            let score = st.host(&name).score(now);
             if best.as_ref().is_none_or(|(_, _, s)| score > *s) {
                 best = Some((m, exit, score));
             }
@@ -2280,7 +2275,7 @@ impl Engine {
                     removed.push(id.to_string());
                 }
                 Ok(Outcome::Done) => {
-                    st.host(host, &self.cfg()).ok += 1;
+                    st.host(host).ok += 1;
                     if let Some(it) = st.items.get_mut(id) {
                         it.status = Status::Done;
                         it.retries = 0;
@@ -2354,7 +2349,7 @@ impl Engine {
                         .get(id)
                         .is_some_and(|it| it.retries < self.cfg().resume_attempts) =>
                 {
-                    st.host(host, &self.cfg()).penalize(now);
+                    st.host(host).penalize(now);
                     let it = st.items.get_mut(id).expect("checked by the guard");
                     it.retries += 1;
                     let wait = (2u64 << (it.retries - 1).min(5)).min(60);
@@ -2417,7 +2412,7 @@ impl Engine {
         host: &str,
         message: String,
     ) -> Option<Event> {
-        st.host(host, &self.cfg()).penalize(Instant::now());
+        st.host(host).penalize(Instant::now());
         let it = st.items.get_mut(id)?;
         it.error = format!("{host}: {message}");
         // The next mirror gets its own retries.
@@ -2593,7 +2588,7 @@ impl Engine {
             let mut note = "";
             if matches!(status, 403 | 451) && http.via_proxy && others == 0 {
                 // Flag only: never switch to a direct connection on our own.
-                self.lock().host(host, &self.cfg()).blocked = true;
+                self.lock().host(host).blocked = true;
                 note = " (host may block VPN IPs)";
             }
             let message = match hosts::refusal_reason(resp).await {
@@ -2735,7 +2730,7 @@ impl Engine {
                         }
                         (mark, mark_bytes) = (Instant::now(), done);
                     }
-                    let h = st.host(host, &cfg);
+                    let h = st.host(host);
                     h.bytes += chunk.len() as u64;
                     if let Some(speed) = speed {
                         h.ema = if h.ema == 0.0 {
@@ -2903,8 +2898,7 @@ impl Engine {
     }
 
     /// Says the desktop app passes the pages of hosts that allow it out of
-    /// sight ([`hosts::Known::page_passes`]), so such a host needs no
-    /// account here.
+    /// sight ([`hosts::Known::page_passes`]).
     pub fn set_pages_pass(&self, on: bool) {
         self.0.pages_pass.store(on, Ordering::Relaxed);
         self.touch(&mut self.lock());
@@ -3136,6 +3130,27 @@ impl Engine {
         tracing::info!(item = %id, "{page} links {count} files and wrappers, in its window");
         let title = title.and_then(hosts::short_title);
         for id in self.unwrapped(id, &page, hosts::listed(title, known)) {
+            self.spawn_probe(id);
+        }
+        count
+    }
+
+    /// Wrapper `id`'s page as the desktop app's browser shows it (`html`,
+    /// the parts of it Haul reads), past a gate Haul cannot answer itself
+    /// (filecrypt.cc's picture puzzle): the row unwraps to what it holds, as
+    /// when Haul reads the page itself ([`hosts::shown`]). Returns how many
+    /// files it took; with none the row stays as it is. Called within the
+    /// async runtime: the files' lookups start as tasks.
+    pub fn page_shown(&self, id: &str, html: &str) -> usize {
+        let Some(page) = self.page_for(id) else {
+            return 0;
+        };
+        let Some(found) = hosts::shown(&page, html) else {
+            return 0;
+        };
+        let count = found.files.len();
+        tracing::info!(item = %id, "{page} shows {count} files, in its window");
+        for id in self.unwrapped(id, &page, found) {
             self.spawn_probe(id);
         }
         count
@@ -3665,7 +3680,6 @@ impl Engine {
                     .unwrap_or(0);
                 HostView {
                     name: name.clone(),
-                    limit: h.limit,
                     active: st.lanes_of(name).map(|l| l.active).sum(),
                     speed: h.ema,
                     fails: h.fails,
@@ -3677,8 +3691,9 @@ impl Engine {
                     folder: cfg.folder_for(name).display().to_string(),
                     preferred: cfg.preference(name),
                     disabled: cfg.is_disabled(name),
-                    needs_account: hosts::known(name)
-                        .is_some_and(|k| k.lacks_account(&cfg, self.pages_pass())),
+                    needs_account: hosts::known(name).is_some_and(|k| k.off_for_account(&cfg)),
+                    without_account: hosts::known(name)
+                        .is_some_and(|k| k.lacks_account(&cfg) && !k.off_for_account(&cfg)),
                     cap: st.lanes_of(name).filter_map(|l| l.cap).min(),
                     quota: quota_view(exits.iter().filter_map(|e| lane(e).and_then(|l| l.quota))),
                     free: hosts::known(name)
@@ -3689,8 +3704,6 @@ impl Engine {
                     kind: "",
                     listed: true,
                     group: "",
-                    slots: 0,
-                    limited: false,
                     movable: false,
                 }
             })
@@ -3715,7 +3728,6 @@ impl Engine {
                 continue;
             }
             hosts.push(HostView {
-                limit: cfg.limit_for(&name),
                 active: 0,
                 speed: 0.0,
                 fails: 0,
@@ -3727,8 +3739,9 @@ impl Engine {
                 folder: cfg.folder_for(&name).display().to_string(),
                 preferred: cfg.preference(&name),
                 disabled: cfg.is_disabled(&name),
-                needs_account: hosts::known(&name)
-                    .is_some_and(|k| k.lacks_account(&cfg, self.pages_pass())),
+                needs_account: hosts::known(&name).is_some_and(|k| k.off_for_account(&cfg)),
+                without_account: hosts::known(&name)
+                    .is_some_and(|k| k.lacks_account(&cfg) && !k.off_for_account(&cfg)),
                 cap: None,
                 exits: self.exits_for(&name, &st).len(),
                 free: hosts::known(&name)
@@ -3744,8 +3757,6 @@ impl Engine {
                 kind: "",
                 listed: true,
                 group: "",
-                slots: 0,
-                limited: false,
                 movable: false,
             });
         }
@@ -3754,13 +3765,9 @@ impl Engine {
         }
         // Any other site (a page, or a host Haul has no code for) is used
         // without a setting of its own, so the Sites view does not list it:
-        // only one the user gave one (a star, the switch, a limit, a folder,
+        // only one the user gave one (a star, the switch, a folder,
         // a route) shows, to be changed back.
-        let set = |name: &str| {
-            cfg.limits.contains_key(name)
-                || cfg.folders.contains_key(name)
-                || st.routes.contains_key(name)
-        };
+        let set = |name: &str| cfg.folders.contains_key(name) || st.routes.contains_key(name);
         for h in &mut hosts {
             h.listed = h.kind != "site" || h.disabled || h.preferred.is_some() || set(&h.name);
         }
@@ -3794,7 +3801,6 @@ impl Engine {
             proxy: has_proxy,
             pool,
             pool_summary,
-            slots_max: config::FALLBACK_LIMIT,
             theme: cfg.theme,
             watch_clipboard: cfg.watch_clipboard,
             recycle_on_remove: cfg.recycle_on_remove,
@@ -4120,9 +4126,9 @@ mod tests {
             bytes: 9,
         };
         let now = 10 * SPEED_MEMORY;
-        let fresh = HostStats::restore(4, &saved(now - 60), now);
-        assert_eq!((fresh.ema, fresh.ok, fresh.limit), (5e6, 3, 4));
-        let stale = HostStats::restore(4, &saved(now - SPEED_MEMORY - 1), now);
+        let fresh = HostStats::restore(&saved(now - 60), now);
+        assert_eq!((fresh.ema, fresh.ok), (5e6, 3));
+        let stale = HostStats::restore(&saved(now - SPEED_MEMORY - 1), now);
         assert_eq!(
             (stale.ema, stale.measured, stale.ok, stale.fails),
             (0.0, 0, 3, 1)

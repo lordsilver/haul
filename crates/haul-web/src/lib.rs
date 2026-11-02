@@ -132,7 +132,6 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/item/{id}/{action}", post(item))
         .route("/api/wrapper/{id}/{action}", post(wrapper))
         .route("/api/wrappers/drop-host", post(drop_wrapper_host))
-        .route("/api/host/{name}/limit/{n}", post(host_limit))
         .route("/api/host/{name}/folder", post(host_folder))
         .route("/api/host/{name}/preferred", post(host_preferred))
         .route("/api/host/{name}/disabled", post(host_disabled))
@@ -482,13 +481,6 @@ struct DropHost {
 async fn drop_wrapper_host(State(app): State<App>, Json(body): Json<DropHost>) -> Response {
     let dropped = app.engine.drop_wrapper_host(&body.ids, &body.host);
     Json(json!({ "dropped": dropped })).into_response()
-}
-
-async fn host_limit(State(app): State<App>, Path((name, n)): Path<(String, usize)>) -> Response {
-    match app.engine.set_host_limit(&name, n) {
-        Ok(()) => ok(),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-    }
 }
 
 #[derive(Deserialize)]

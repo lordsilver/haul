@@ -121,6 +121,10 @@ pub enum Outcome {
     Files {
         files: Vec<File>,
         agent: Option<String>,
+        /// On a wrapper's page Haul's own code reads, the parts of it that
+        /// code reads, which stand in for the files when Haul finds what
+        /// the page holds.
+        page: Option<String>,
     },
     /// The page said its file is gone.
     Gone(String),
@@ -480,7 +484,11 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         }
         if !files.is_empty() {
             let agent = sent["agent"].as_str().map(str::to_string);
-            return Ok(Outcome::Files { files, agent });
+            let page = sent["page"]
+                .as_str()
+                .filter(|p| !p.is_empty())
+                .map(str::to_string);
+            return Ok(Outcome::Files { files, agent, page });
         }
     }
 }

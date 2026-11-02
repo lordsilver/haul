@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, FileArchive, KeyRound, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
 import { type FormEvent, type ReactNode, useRef, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
-import { HostPicker, hostLabel } from '@/components/host-picker';
+import { HostNames, HostPicker, hostLabel, offForAccount } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
 import { SecretInput } from '@/components/secret-input';
@@ -16,7 +16,7 @@ import { bytes } from '@/lib/format';
 import { pickMany, picking } from '@/lib/selection';
 import { cn } from '@/lib/utils';
 import { toggleArchive } from '@/views/downloads/entries';
-import { Bar, COLUMNS, Lead, Rate } from '@/views/downloads/row';
+import { Bar, COLUMNS, InlineRate, Lead, ROW, Rate } from '@/views/downloads/row';
 
 // The password of an encrypted archive, typed in: Haul keeps it with the
 // archive and extracts with it.
@@ -178,13 +178,10 @@ export function ArchiveRow({
   const checked = count === 0 ? false : count === ids.length ? true : 'indeterminate';
   const lead = [`${a.ids.length} parts`, a.size ? bytes(a.size) : null].filter(Boolean).join(' · ');
   // The host part, which chooses the host for every part when they have
-  // several.
-  const host = [
-    a.hosts.join(', '),
-    a.other_hosts ? `${a.other_hosts} other ${a.other_hosts === 1 ? 'host' : 'hosts'}` : null,
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  // several; a host off for want of an account is marked.
+  const off = offForAccount(s);
+  const others = a.other_hosts ? `${a.other_hosts} other ${a.other_hosts === 1 ? 'host' : 'hosts'}` : null;
+  const host = [a.hosts.join(', '), others].filter(Boolean).join(' · ');
   const rest = [a.package || null, a.source_name ? `from ${a.source_name}` : null].filter(Boolean).join(' · ');
   const sub = [lead, host, rest].filter(Boolean).join(' · ');
   // Once every part is done, the bar and its caption are the unpacking's.
@@ -204,7 +201,7 @@ export function ArchiveRow({
         if (picking(e)) pickMany(ids, order, { toggle: true, range: e.shiftKey });
       }}
     >
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className={ROW}>
         <Lead
           status={a.status}
           archive
@@ -236,8 +233,16 @@ export function ArchiveRow({
             <HostPicker
               ids={ids}
               hosts={a.all_hosts}
+              off={off}
               chosen={a.download_from}
-              label={hostLabel(host, { picked: Boolean(a.download_from), preferred: false })}
+              label={hostLabel(
+                <>
+                  <HostNames hosts={a.hosts} off={off} />
+                  {a.hosts.length && others ? ' · ' : null}
+                  {others}
+                </>,
+                { picked: Boolean(a.download_from), preferred: false },
+              )}
             />
             {rest ? ` · ${rest}` : null}
           </div>
@@ -254,6 +259,7 @@ export function ArchiveRow({
             }
           >
             {archiveCaption(a)}
+            <InlineRate speed={a.speed} />
           </div>
         </div>
         <div className={COLUMNS.rate}>

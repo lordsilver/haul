@@ -366,8 +366,10 @@ pub struct Known {
     /// so the desktop app opens the page on its own, out of sight, and
     /// shows it only when the check wants a person after all.
     pub page_passes: bool,
-    /// Without its account it gives Haul no file, so for now Haul counts it
-    /// as off until one is set ([`Known::lacks_account`]).
+    /// Without its account it gives no decent download: a captcha for
+    /// every file, or names only once a page is passed. So it is off
+    /// until the user sets one or switches it on without one
+    /// ([`Known::off_for_account`]).
     pub needs_account: bool,
 }
 
@@ -389,11 +391,15 @@ impl Known {
             })
     }
 
-    /// It needs an account the user has not set, and no page passed out of
-    /// sight stands in for one (`pages`: the desktop app passes pages):
-    /// its links are left out.
-    pub fn lacks_account(&self, cfg: &Config, pages: bool) -> bool {
-        self.needs_account && !self.has_account(cfg) && !(pages && self.page_passes)
+    /// It needs an account the user has not set.
+    pub fn lacks_account(&self, cfg: &Config) -> bool {
+        self.needs_account && !self.has_account(cfg)
+    }
+
+    /// It lacks its account and the user did not switch it on without one
+    /// ([`Config::accountless_hosts`]): its links are left out.
+    pub fn off_for_account(&self, cfg: &Config) -> bool {
+        self.lacks_account(cfg) && !cfg.is_accountless(self.names[0])
     }
 
     /// The downloads at once it allows one address, unless an account
@@ -448,9 +454,9 @@ pub fn account_forms(cfg: &Config) -> Vec<AccountForm> {
                 Kind::OneFichier => "Its API key: no free-mode wait or captcha.",
                 Kind::Pixeldrain => "Its API key.",
                 Kind::Gofile => {
-                    "A premium account's token: without one, gofile gives no file to Haul."
+                    "A premium account's token: without one, gofile's files come only through its page."
                 }
-                _ if k.needs_account => "A premium account: without one, it gives no file to Haul.",
+                _ if k.needs_account => "A premium account: without one, every file asks for a captcha.",
                 _ => "",
             },
             fields: k
@@ -538,7 +544,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
-        needs_account: false,
+        needs_account: true,
     },
     Known {
         names: &["nitroflare.com"],
@@ -551,7 +557,7 @@ static KNOWN: &[Known] = &[
         },
         tells_allowance: false,
         page_passes: false,
-        needs_account: false,
+        needs_account: true,
     },
     Known {
         names: &["mega.nz", "mega.co.nz", "transfer.it"],
@@ -1312,6 +1318,16 @@ pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
             Ok(listed(title, links))
         }
         _ => Err(ResolveError::failed("not a wrapper link")),
+    }
+}
+
+/// What a wrapper's page holds, read off the page as the desktop app's
+/// browser shows it past a gate Haul cannot answer itself; `None` when it
+/// shows nothing Haul reads there.
+pub fn shown(url: &str, html: &str) -> Option<Unwrapped> {
+    match kind_of(url) {
+        Some(Kind::Filecrypt) => filecrypt::shown(html),
+        _ => None,
     }
 }
 

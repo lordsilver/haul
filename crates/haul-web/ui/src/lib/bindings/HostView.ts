@@ -3,7 +3,7 @@ import type { Free } from "./Free";
 import type { QuotaView } from "./QuotaView";
 import type { Route } from "./Route";
 
-export type HostView = { name: string, limit: number, active: number, speed: number, fails: number, ok: number, bytes: number, 
+export type HostView = { name: string, active: number, speed: number, fails: number, ok: number, bytes: number, 
 /**
  * Answered 403/451 through the proxy, so it may block VPN addresses.
  */
@@ -21,9 +21,15 @@ preferred: number | null,
  */
 disabled: boolean, 
 /**
- * It needs an account that is not set, so its links are left out too.
+ * It needs an account that is not set and the user did not switch it
+ * on without one, so its links are left out too.
  */
 needs_account: boolean, 
+/**
+ * It needs an account that is not set, and the user switched it on
+ * without one: every file asks for a captcha, or for its page.
+ */
+without_account: boolean, 
 /**
  * Addresses it may be reached from: its slots and its learned limit
  * count for each.
@@ -61,14 +67,6 @@ listed: boolean,
  * `other` (on or off alike), or its kind for the others.
  */
 group: "preferred" | "other" | "wrapper" | "paste" | "site", 
-/**
- * Downloads it runs at once: `limit`, or `cap` when lower.
- */
-slots: number, 
-/**
- * A limit is set or was learned, so its slot buttons show.
- */
-limited: boolean, 
 /**
  * It can trade places with another preferred host.
  */

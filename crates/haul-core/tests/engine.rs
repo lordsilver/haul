@@ -1426,7 +1426,6 @@ async fn queue_and_settings_survive_restart_and_a_second_instance_is_refused() {
     engine.item_action(&id, ItemAction::Pause);
     engine.set_route("127.0.0.1", Route::Direct).unwrap();
     engine.set_max_total(3);
-    engine.set_host_limit("127.0.0.1", 2).unwrap();
     engine.shutdown().await;
     drop(engine);
 
@@ -1449,7 +1448,6 @@ async fn queue_and_settings_survive_restart_and_a_second_instance_is_refused() {
         Some(&Route::Direct),
         "migrated"
     );
-    assert_eq!(cfg.limit_for("127.0.0.1"), 2);
     assert!(!t.root.join("data/routes.json").exists());
     let file = std::fs::read_to_string(t.root.join("data/config.toml")).unwrap();
     assert!(file.starts_with("# Haul settings"), "{file}");
@@ -2137,11 +2135,13 @@ async fn a_copied_page_that_hands_back_a_file_is_a_download() {
     assert_eq!((s.counts.all, s.counts.unwrapping), (1, 0));
 }
 
-/// A host whose free download is its page's (rapidgator's wait and captcha)
-/// is on without an account: the file asks the person for the page, and
-/// setting the account downloads it through the host's API instead.
+/// A host that gives no decent download without an account (rapidgator: a
+/// wait and a captcha for every file) is off until its account is set: its
+/// links are left out. Switched on without one, the file asks the person
+/// for its page; switched off, it is back to that default; with the
+/// account, it downloads through the host's API.
 #[tokio::test]
-async fn a_host_with_a_free_page_asks_for_it_without_an_account() {
+async fn a_host_that_needs_an_account_is_off_until_switched_on() {
     let t = Setup::new().await;
     let mut cfg = t.config();
     cfg.endpoints.rapidgator = t.ip.clone();
@@ -2151,7 +2151,23 @@ async fn a_host_with_a_free_page_asks_for_it_without_an_account() {
     })
     .await
     .unwrap();
+    // Its account flags as the Sites view shows them: off for want of an
+    // account, and on without one.
+    let flags = |s: &Snapshot| {
+        let h = s.hosts.iter().find(|h| h.name == "rapidgator.net").unwrap();
+        assert!(!h.disabled);
+        (h.needs_account, h.without_account)
+    };
     engine.add_text("https://rapidgator.net/file/abc/x.rar.html", "");
+    let s = wait_for(&engine, "the link left out", |s| {
+        s.items
+            .iter()
+            .any(|i| i.error.contains("rapidgator.net (needs an account)"))
+    })
+    .await;
+    assert_eq!(flags(&s), (true, false));
+
+    engine.set_disabled("rapidgator.net", false).unwrap();
     let s = wait_for(&engine, "the file to ask for its page", |s| {
         s.items.iter().any(|i| i.status == "captcha")
     })
@@ -2161,17 +2177,26 @@ async fn a_host_with_a_free_page_asks_for_it_without_an_account() {
         "{}",
         s.items[0].error
     );
-    let host = s.hosts.iter().find(|h| h.name == "rapidgator.net").unwrap();
-    assert!(!host.needs_account && !host.disabled);
+    assert_eq!(flags(&s), (false, true));
+    assert_eq!(engine.cfg().accountless_hosts, ["rapidgator.net"]);
     assert!(
         t.server.requests("/api/v2/user/login").is_empty(),
         "no account to log in with"
+    );
+
+    engine.set_disabled("rapidgator.net", true).unwrap();
+    assert_eq!(flags(&engine.snapshot()), (true, false));
+    assert!(engine.cfg().accountless_hosts.is_empty());
+    assert!(
+        engine.cfg().disabled_hosts.is_empty(),
+        "off by default, not by the user"
     );
 
     let account = json!({"rapidgator_user": "u", "rapidgator_pass": "p"});
     engine
         .update_settings(account.as_object().unwrap())
         .unwrap();
+    assert_eq!(flags(&engine.snapshot()), (false, false));
     engine.item_action(&s.items[0].id, ItemAction::RetryManual);
     // Through the API now, which checks the link (this one names no file).
     wait_for(&engine, "the file tried with the account", |s| {
@@ -2180,21 +2205,30 @@ async fn a_host_with_a_free_page_asks_for_it_without_an_account() {
     .await;
 }
 
-/// Where the desktop app passes pages, a host whose page passes needs no
-/// account: its link waits for the page, and the folder the page hands
-/// back becomes one row per file.
+/// Where the desktop app passes pages, a host whose page passes and that
+/// the user switched on without an account has its link wait for the page,
+/// and the folder the page hands back becomes one row per file. Until it
+/// is switched on, its links are left out there too.
 #[tokio::test]
-async fn a_page_the_desktop_passes_stands_in_for_an_account() {
+async fn a_page_the_desktop_passes_stands_in_for_an_account_once_switched_on() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     engine.set_pages_pass(true);
     engine.add_text("https://gofile.io/d/folder", "");
+    wait_for(&engine, "the link left out", |s| {
+        s.items
+            .iter()
+            .any(|i| i.error.contains("gofile.io (needs an account)"))
+    })
+    .await;
+    engine.set_disabled("gofile.io", false).unwrap();
     // Waiting for the desktop app to pass its page: nothing for the person.
     let s = wait_for(&engine, "the page to wait its turn", |s| {
         s.items.iter().any(|i| i.status == "passing")
     })
     .await;
-    assert!(!s.hosts.iter().any(|h| h.needs_account));
+    let gofile = s.hosts.iter().find(|h| h.name == "gofile.io").unwrap();
+    assert!(!gofile.needs_account && gofile.without_account);
     let id = s.items[0].id.clone();
     // Its window came forward: now it needs the person.
     assert!(engine.page_wants_person(&id), "the download stays");
@@ -2215,20 +2249,13 @@ async fn a_page_the_desktop_passes_stands_in_for_an_account() {
     names.sort();
     assert_eq!(names, ["one.bin", "two.bin"]);
 
-    // Without the desktop app, the same host needs its account.
+    // Without the desktop app, the same host asks the person for its page.
     engine.set_pages_pass(false);
     engine.add_text("https://gofile.io/d/other", "");
-    let s = wait_for(&engine, "the account asked for", |s| {
-        s.items
-            .iter()
-            .any(|i| i.error.contains("gofile.io (needs an account)"))
+    wait_for(&engine, "the person asked", |s| {
+        s.items.iter().any(|i| i.status == "captcha")
     })
     .await;
-    assert!(
-        s.hosts
-            .iter()
-            .any(|h| h.name == "gofile.io" && h.needs_account)
-    );
 }
 
 /// Two wrappers listing the same file share its row: each counts it, either
@@ -2283,6 +2310,7 @@ async fn a_file_waits_for_its_page_before_an_unknown_host() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     engine.set_pages_pass(true);
+    engine.set_disabled("gofile.io", false).unwrap();
     engine.add_text("https://fileguard.cc/vault/held", "");
     let w = wrapper_settled(&engine, "done").await.wrappers[0]
         .id
@@ -2314,6 +2342,7 @@ async fn a_page_without_its_link_is_passed_again_later() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     engine.set_pages_pass(true);
+    engine.set_disabled("gofile.io", false).unwrap();
     engine.add_text("https://fileguard.cc/vault/held", "");
     let w = wrapper_settled(&engine, "done").await.wrappers[0]
         .id
@@ -2583,6 +2612,38 @@ async fn a_dlc_link_is_a_wrapper_that_unpacks_its_container() {
     assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 2 }));
     let s = wait_for(&engine, "the container's files", |s| s.items.len() == 2).await;
     assert!(s.items.iter().all(|i| i.status == "paused"));
+}
+
+/// A container whose gate Haul cannot answer waits for a person; the page
+/// the browser then shows (the parts of it Haul reads) unpacks it as Haul's
+/// own read of the page would, while a page still at its gate changes
+/// nothing.
+#[tokio::test]
+async fn a_container_page_the_browser_shows_unpacks() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://filecrypt.cc/Container/abc.html", "");
+    let s = wrapper_settled(&engine, "captcha").await;
+    let id = s.wrappers[0].id.clone();
+    assert_eq!(engine.page_shown(&id, FC_GATE), 0);
+    assert_eq!(engine.snapshot().wrappers[0].status, "captcha");
+
+    let host = t.ip.trim_start_matches("http://");
+    let shown = fc_solved_with(
+        "Example.Set",
+        &[
+            format!("http://{host}/files/one.bin"),
+            format!("http://{host}/files/two.bin"),
+        ],
+    );
+    assert_eq!(engine.page_shown(&id, &shown), 2);
+    let s = wrapper_settled(&engine, "done").await;
+    assert_eq!(s.wrappers[0].title.as_deref(), Some("Example.Set"));
+    assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 2 }));
+    wait_for(&engine, "the container's files", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.status == "paused")
+    })
+    .await;
 }
 
 /// A container whose checkbox Haul answers itself unpacks as soon as it is
@@ -2869,7 +2930,7 @@ async fn host_folders_and_the_recycle_bin() {
 }
 
 #[tokio::test]
-async fn preferred_hosts_go_first_and_are_waited_for() {
+async fn preferred_hosts_go_first() {
     let t = Setup::new().await;
     // The mechanism itself, without the shipped default preference.
     let engine = Engine::start(Options {
@@ -2882,7 +2943,6 @@ async fn preferred_hosts_go_first_and_are_waited_for() {
     .await
     .unwrap();
     engine.set_preferred("localhost", true).unwrap();
-    engine.set_host_limit("localhost", 1).unwrap();
     let both = |name: &str| format!("{}/slow/{name} {}/slow/{name}", t.ip, t.name);
     engine.add_text(&format!("{} {}", both("q1.bin"), both("q2.bin")), "");
     let s = wait_for(&engine, "done", |s| s.items.len() == 2 && all_done(s)).await;
@@ -2890,7 +2950,7 @@ async fn preferred_hosts_go_first_and_are_waited_for() {
     assert_eq!(
         (ok("localhost"), ok("127.0.0.1")),
         (2, 0),
-        "the second file waited for the preferred host's only slot: {:#?}",
+        "both files came from the preferred host: {:#?}",
         s.hosts
     );
     let local = s.hosts.iter().find(|h| h.name == "localhost").unwrap();
@@ -3231,16 +3291,6 @@ async fn a_busy_host_is_capped_instead_of_failing() {
         (Some(2), 0),
         "never below what it sent at once"
     );
-
-    // The user's own limit replaces what was learned.
-    engine.set_host_limit("127.0.0.1", 6).unwrap();
-    let h = engine
-        .snapshot()
-        .hosts
-        .into_iter()
-        .find(|h| h.name == "127.0.0.1")
-        .unwrap();
-    assert_eq!((h.limit, h.cap), (6, None));
 }
 
 #[tokio::test]

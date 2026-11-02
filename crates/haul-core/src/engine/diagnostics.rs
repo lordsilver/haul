@@ -60,7 +60,6 @@ impl Engine {
             "settings": settings,
             "preferred_hosts": cfg.preferred_hosts,
             "routes": cfg.routes,
-            "limits": cfg.limits,
             "folders": cfg.folders,
             "queue": queue,
             "hosts": snapshot.hosts,

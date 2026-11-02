@@ -25,9 +25,6 @@ pub const DEFAULT_PREFERRED: [&str; 3] = ["pixeldrain.com", "vikingfile.com", "m
 
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0";
 
-/// Per-host parallel downloads when `limits` does not name the host.
-pub const FALLBACK_LIMIT: usize = 32;
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -99,8 +96,11 @@ pub struct Config {
     /// Off: NordVPN's settings stay, but its servers are not used.
     pub nordvpn_on: bool,
     pub user_agent: String,
-    /// Parallel downloads per host; unlisted hosts get [`FALLBACK_LIMIT`].
-    pub limits: BTreeMap<String, usize>,
+    /// The per-host limits table of older versions: read, and ignored.
+    /// Public only so struct updates (`..Config::default()`) work outside
+    /// this module.
+    #[serde(rename = "limits")]
+    pub old_limits: serde::de::IgnoredAny,
     /// The user's route choice per host when a proxy is configured.
     pub routes: BTreeMap<String, Route>,
     /// Subfolder of the download folder for the files from a host.
@@ -110,6 +110,10 @@ pub struct Config {
     pub preferred_hosts: Vec<String>,
     /// Hosts never downloaded from: their links are left alone.
     pub disabled_hosts: Vec<String>,
+    /// Hosts that need an account ([`crate::hosts::Known::needs_account`]),
+    /// switched on by the user without one. The others stay off until
+    /// their account is set.
+    pub accountless_hosts: Vec<String>,
     #[serde(rename = "1fichier_key")]
     pub onefichier_key: Option<String>,
     pub pixeldrain_key: Option<String>,
@@ -176,11 +180,12 @@ impl Default for Config {
             proxies_on: true,
             nordvpn_on: true,
             user_agent: DEFAULT_USER_AGENT.into(),
-            limits: BTreeMap::new(),
+            old_limits: serde::de::IgnoredAny,
             routes: BTreeMap::new(),
             folders: BTreeMap::new(),
             preferred_hosts: DEFAULT_PREFERRED.iter().map(|h| h.to_string()).collect(),
             disabled_hosts: Vec::new(),
+            accountless_hosts: Vec::new(),
             onefichier_key: None,
             pixeldrain_key: None,
             rapidgator_user: None,
@@ -257,13 +262,13 @@ impl Config {
         };
         list(&mut self.preferred_hosts);
         list(&mut self.disabled_hosts);
+        list(&mut self.accountless_hosts);
         fn keys<V>(map: &mut BTreeMap<String, V>) {
             let old = std::mem::take(map);
             for (host, value) in old {
                 map.entry(crate::hosts::main_name(&host)).or_insert(value);
             }
         }
-        keys(&mut self.limits);
         keys(&mut self.routes);
         keys(&mut self.folders);
     }
@@ -320,15 +325,6 @@ impl Config {
         })
     }
 
-    /// Parallel downloads allowed for `host`.
-    pub fn limit_for(&self, host: &str) -> usize {
-        self.limits
-            .get(host)
-            .copied()
-            .unwrap_or(FALLBACK_LIMIT)
-            .clamp(1, FALLBACK_LIMIT)
-    }
-
     /// The first proxy in use: configured, and not switched off.
     pub fn proxy(&self) -> Option<&str> {
         self.proxy_pool().first().copied()
@@ -365,11 +361,18 @@ impl Config {
             .any(|h| h.eq_ignore_ascii_case(host))
     }
 
+    /// Whether the user switched `host` on without the account it needs.
+    pub fn is_accountless(&self, host: &str) -> bool {
+        self.accountless_hosts
+            .iter()
+            .any(|h| h.eq_ignore_ascii_case(host))
+    }
+
     /// Whether `host`'s links are left out: the user turned it off, or it
-    /// needs an account that is not set (see [`crate::hosts::Known::lacks_account`]).
-    pub fn is_off(&self, host: &str, pages: bool) -> bool {
-        self.is_disabled(host)
-            || crate::hosts::known(host).is_some_and(|k| k.lacks_account(self, pages))
+    /// needs an account that is not set and the user did not switch it on
+    /// without one (see [`crate::hosts::Known::off_for_account`]).
+    pub fn is_off(&self, host: &str) -> bool {
+        self.is_disabled(host) || crate::hosts::known(host).is_some_and(|k| k.off_for_account(self))
     }
 
     /// The subfolder for files from `host`, relative to the download folder;
@@ -695,14 +698,16 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 
 # Hosts never downloaded from: their links are left alone, and a file whose
 # links are all on these hosts fails until one of them is turned back on.
-# disabled_hosts = ["gofile.io"]
+# disabled_hosts = ["mediafire.com"]
+
+# Hosts that give no decent download without an account (gofile.io,
+# rapidgator.net, nitroflare.com) are off until their account is set, or
+# until you switch them on here without one: then every file asks you for a
+# captcha, or, for gofile, comes only through its page.
+# accountless_hosts = ["rapidgator.net"]
 
 # Sent to hosts with every request.
 # user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0"
-
-# Files downloaded from one host at the same time; unlisted hosts get 32.
-# [limits]
-# "1fichier.com" = 1
 
 # Hosts allowed to bypass the proxy ("direct"), or kept on it ("proxy").
 # [routes]
@@ -795,6 +800,7 @@ mod tests {
             proxy = "socks5://u:p@host:1080"
             1fichier_key = "k1"
             preferred_hosts = ["B.example", "a.example"]
+            # Older versions had a limits table; it still loads.
             [limits]
             "1fichier.com" = 1
             [routes]
@@ -809,8 +815,6 @@ mod tests {
             (4, true, 0)
         );
         assert_eq!(cfg.onefichier_key.as_deref(), Some("k1"));
-        assert_eq!(cfg.limit_for("1fichier.com"), 1);
-        assert_eq!(cfg.limit_for("other.example"), FALLBACK_LIMIT);
         assert_eq!(cfg.routes.get("a.example"), Some(&Route::Direct));
         assert!(cfg.recycle_on_remove && cfg.skip_add_dialog && cfg.verify_existing);
         assert!(cfg.auto_extract && cfg.delete_after_extract);
@@ -833,12 +837,12 @@ mod tests {
         let cfg = Config::parse(
             "preferred_hosts = [\"mega.nz\", \"vik1ngfile.site\", \"vikingfile.com\"]\n\
              disabled_hosts = [\"DDL.to\"]\n\
-             [limits]\n\"vik1ngfile.site\" = 2\n",
+             [routes]\n\"vik1ngfile.site\" = \"direct\"\n",
         )
         .unwrap();
         assert_eq!(cfg.preferred_hosts, ["mega.nz", "vikingfile.com"]);
         assert_eq!(cfg.disabled_hosts, ["ddownload.com"]);
-        assert_eq!(cfg.limit_for("vikingfile.com"), 2);
+        assert_eq!(cfg.routes.get("vikingfile.com"), Some(&Route::Direct));
     }
 
     #[test]
@@ -894,13 +898,12 @@ mod tests {
         let path = dir.path().join(FILE);
         std::fs::write(
             &path,
-            "# mine\nproxy = \"socks5://h:1\" # keep\nmax_total = 2\n[limits]\n\"a.example\" = 2\n",
+            "# mine\nproxy = \"socks5://h:1\" # keep\nmax_total = 2\n[routes]\n\"a.example\" = \"proxy\"\n",
         )
         .unwrap();
         write_key(&path, &["max_total"], Some(3.into())).unwrap();
         write_key(&path, &["rate_limit_mbps"], Some(1.5.into())).unwrap();
         write_key(&path, &["theme"], Some("dark".into())).unwrap();
-        write_key(&path, &["limits", "b.example"], Some(1.into())).unwrap();
         write_key(&path, &["routes", "c.example"], Some("direct".into())).unwrap();
         write_key(&path, &["proxy"], None).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -917,14 +920,16 @@ mod tests {
             (cfg.max_total, cfg.rate_limit_mbps, cfg.theme),
             (3, 1.5, Theme::Dark)
         );
-        assert_eq!(
-            (cfg.limit_for("a.example"), cfg.limit_for("b.example")),
-            (2, 1)
-        );
+        assert_eq!(cfg.routes.get("a.example"), Some(&Route::Proxy));
         assert_eq!(cfg.routes.get("c.example"), Some(&Route::Direct));
         assert_eq!(cfg.proxy, None);
         write_key(&path, &["routes", "c.example"], None).unwrap();
-        assert!(Config::load(&path).unwrap().routes.is_empty());
+        let routes = Config::load(&path).unwrap().routes;
+        assert_eq!(
+            routes.into_iter().collect::<Vec<_>>(),
+            [("a.example".to_string(), Route::Proxy)],
+            "only the cleared key goes"
+        );
 
         // A new file starts from the template; values land under their comments.
         let fresh = dir.path().join("fresh.toml");

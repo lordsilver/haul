@@ -14,9 +14,10 @@
 //! a client without them must. The solved page holds the container's links
 //! twice: as Click'n'Load data, encrypted with a key beside it, which Haul
 //! decrypts itself, and as a `.dlc`, unpacked through JDownloader's key
-//! service, the fallback. A solve turned away waits for a person, whose
-//! browser hands back the `.dlc` link the solved page offers; that link is
-//! not gated.
+//! service, the fallback. A solve turned away, or a gate Haul cannot answer
+//! (a picture puzzle), waits for a person; the desktop app's browser hands
+//! back what the solved page shows (`handoff.js`): the parts of it read
+//! here ([`shown`]), and its `.dlc` link, which is not gated.
 
 use std::{
     collections::HashSet,
@@ -370,32 +371,8 @@ fn dlc_on(html: &str) -> Option<String> {
 /// The links of a solved page: its Click'n'Load data, decrypted here, or
 /// else its `.dlc`.
 async fn solved(cx: &Cx<'_>, html: &str) -> Result<Unwrapped, ResolveError> {
-    let title = HEADING.captures(html).and_then(|h| page_text(&h[1]));
-    let urls: Vec<String> = CNL
-        .captures_iter(html)
-        .filter_map(|cnl| container::parse_cnl(&cnl[1], &cnl[2]).ok())
-        .flatten()
-        .collect();
-    if !urls.is_empty() {
-        // The table above lists each link's file in the same order: names
-        // for hosts whose links carry none, so their files merge with the
-        // same ones elsewhere before anything downloads.
-        let names = row_names(html);
-        let names = if names.len() == urls.len() {
-            names.into_iter().map(Some).collect()
-        } else {
-            vec![None; urls.len()]
-        };
-        let mut seen = HashSet::new();
-        let links = urls
-            .into_iter()
-            .zip(names)
-            .filter(|(url, _)| seen.insert(url.clone()))
-            .collect();
-        return Ok(Unwrapped {
-            title,
-            files: group_named(links),
-        });
+    if let Some(found) = shown(html) {
+        return Ok(found);
     }
     let Some(id) = dlc_on(html) else {
         return Err(ResolveError::failed(
@@ -404,9 +381,46 @@ async fn solved(cx: &Cx<'_>, html: &str) -> Result<Unwrapped, ResolveError> {
     };
     let found = from_dlc(cx, &id).await?;
     Ok(Unwrapped {
-        title: title.or(found.title),
+        title: heading(html).or(found.title),
         files: found.files,
     })
+}
+
+/// The links a solved page holds as Click'n'Load data, decrypted here and
+/// named after the rows of its table; `None` when it holds none.
+pub(super) fn shown(html: &str) -> Option<Unwrapped> {
+    let urls: Vec<String> = CNL
+        .captures_iter(html)
+        .filter_map(|cnl| container::parse_cnl(&cnl[1], &cnl[2]).ok())
+        .flatten()
+        .collect();
+    if urls.is_empty() {
+        return None;
+    }
+    // The table above lists each link's file in the same order: names for
+    // hosts whose links carry none, so their files merge with the same ones
+    // elsewhere before anything downloads.
+    let names = row_names(html);
+    let names = if names.len() == urls.len() {
+        names.into_iter().map(Some).collect()
+    } else {
+        vec![None; urls.len()]
+    };
+    let mut seen = HashSet::new();
+    let links = urls
+        .into_iter()
+        .zip(names)
+        .filter(|(url, _)| seen.insert(url.clone()))
+        .collect();
+    Some(Unwrapped {
+        title: heading(html),
+        files: group_named(links),
+    })
+}
+
+/// The container's name, from the page's heading.
+fn heading(html: &str) -> Option<String> {
+    HEADING.captures(html).and_then(|h| page_text(&h[1]))
 }
 
 /// The file name of each row of a solved page's link table, in order.

@@ -7,8 +7,6 @@ import {
   Info,
   KeyRound,
   Link2,
-  Minus,
-  Plus,
   Server,
   Shield,
   Star,
@@ -126,8 +124,15 @@ function Pills({ h, proxy }: { h: HostView; proxy: boolean }) {
           {ordinal(h.preferred + 1)} choice
         </Pill>
       ) : null}
-      {h.needs_account && !h.disabled ? (
-        <Pill tone="caution" title="It gives no file without an account, so its links are left out until you set one">
+      {(h.needs_account || h.without_account) && !h.disabled ? (
+        <Pill
+          tone="caution"
+          title={
+            h.needs_account
+              ? 'Without an account it gives no decent download, so its links are left out until you set one or switch it on'
+              : 'On without an account: each file waits for a captcha or for its page, so names come late'
+          }
+        >
           <KeyRound />
           Needs an account
         </Pill>
@@ -155,8 +160,8 @@ function Pills({ h, proxy }: { h: HostView; proxy: boolean }) {
           {h.folder}
         </Pill>
       ) : null}
-      {h.cap !== null && h.cap < h.limit ? (
-        <Pill title="It refused one more download while these ran, so Haul runs no more than this, and tries one more after ten quiet minutes. The slot buttons set your own limit.">
+      {h.cap !== null ? (
+        <Pill title="It refused one more download while these ran, so Haul runs no more than this, and tries one more after ten quiet minutes.">
           <Info />
           Takes {h.cap} at a time
         </Pill>
@@ -338,9 +343,10 @@ function HostCard({
   const [draggable, setDraggable] = useState(false);
   const account = s.accounts.find((a) => a.host === h.name);
   // Files download from a host; the others only lead to links, so they have
-  // no slots, order, account or folder.
+  // no order, account or folder.
   const fileHost = h.kind === 'host';
   const off = h.disabled || h.needs_account;
+  const noAccount = (h.needs_account || h.without_account) && !h.disabled;
   const Icon = KIND_ICONS[h.kind];
   const preferred = h.preferred !== null;
   // Its settings: a host's slots, account and folder, and any site's route
@@ -403,7 +409,7 @@ function HostCard({
           <Pills h={h} proxy={s.proxy} />
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1">
-          {h.needs_account && !h.disabled ? (
+          {noAccount ? (
             <Button size="sm" aria-expanded={open} onClick={() => setOpen(!open)}>
               <KeyRound />
               Set account
@@ -423,24 +429,23 @@ function HostCard({
               <Wrench className={cn(open && 'text-foreground')} />
             </IconButton>
           ) : null}
-          {/* Waiting for an account, it is off whatever the switch says. */}
-          {h.needs_account && !h.disabled ? null : (
-            <span
-              className="ml-1 flex items-center gap-2 text-sm text-muted-foreground"
-              title={
-                h.disabled
-                  ? 'Off: its links are never tried. Click to use it again.'
+          <span
+            className="ml-1 flex items-center gap-2 text-sm text-muted-foreground"
+            title={
+              h.disabled
+                ? 'Off: its links are never tried. Click to use it again.'
+                : h.needs_account
+                  ? 'Off until you set an account. Click to use it without one.'
                   : 'On: click to never use this host'
-              }
-            >
-              {h.disabled ? 'Off' : 'On'}
-              <Switch
-                checked={!h.disabled}
-                aria-label={h.disabled ? `Use ${h.name}` : `Never use ${h.name}`}
-                onCheckedChange={(on) => api(host(h.name, 'disabled'), { disabled: !on }).catch(report)}
-              />
-            </span>
-          )}
+            }
+          >
+            {off ? 'Off' : 'On'}
+            <Switch
+              checked={!off}
+              aria-label={off ? `Use ${h.name}` : `Never use ${h.name}`}
+              onCheckedChange={(on) => api(host(h.name, 'disabled'), { disabled: !on }).catch(report)}
+            />
+          </span>
         </div>
       </div>
       <RouteBar h={h} proxy={s.proxy} />
@@ -449,9 +454,8 @@ function HostCard({
   );
 }
 
-// A site's own settings, opened from its card: for a host, the files it
-// downloads at once, its account and its folder; for any site, the way it
-// is reached when there is a proxy.
+// A site's own settings, opened from its card: for a host, its account and
+// its folder; for any site, the way it is reached when there is a proxy.
 function HostSettings({
   h,
   s,
@@ -464,33 +468,8 @@ function HostSettings({
   account: AccountForm | undefined;
 }) {
   const fileHost = h.kind === 'host';
-  const setLimit = (delta: number) => api(host(h.name, `limit/${Math.max(1, h.slots + delta)}`)).catch(report);
   return (
     <>
-      {fileHost ? (
-        <SettingRow
-          title="Downloads at once"
-          description={
-            h.cap
-              ? `It refused more than ${h.cap} at a time, so Haul keeps to that.`
-              : 'Files downloaded from this host at the same time.'
-          }
-          controls={
-            <span className="flex items-center gap-1">
-              <IconButton label="Fewer at once" disabled={h.slots <= 1} onClick={() => setLimit(-1)}>
-                <Minus />
-              </IconButton>
-              <output className="min-w-20 text-center text-sm tabular-nums">
-                {h.active} / {h.slots}
-                {h.exits > 1 ? ` × ${h.exits}` : ''}
-              </output>
-              <IconButton label="More at once" disabled={h.slots >= s.slots_max} onClick={() => setLimit(1)}>
-                <Plus />
-              </IconButton>
-            </span>
-          }
-        />
-      ) : null}
       {fileHost && account && d ? (
         <SettingRow title="Account" description={account.set ? 'Set.' : 'Optional: it may lift the free limits.'}>
           <AccountPanel form={account} d={d} />
@@ -574,8 +553,7 @@ export function Hosts({ s }: { s: State }) {
           The file hosts your downloads are on, and the wrappers and pastebins that lead to them. Choose which hosts
           Haul uses and in what order. A file on several hosts downloads from the first of your preferred hosts that has
           it (star a host to add it; drag it by its grip to reorder), otherwise from the fastest of the others. A host
-          switched off is never used. The wrench opens a site's settings: how many files download from it at once, its
-          account, its folder and its route.
+          switched off is never used. The wrench opens a site's settings: its account, its folder and its route.
         </p>
       </header>
       {hosts.length ? (

@@ -63,7 +63,6 @@ impl Engine {
             .map(|(name, h)| {
                 json!({
                     "name": name,
-                    "limit": h.limit,
                     "speed": h.ema,
                     "fails": h.fails,
                     "penalty": h.penalty(now),

@@ -3,8 +3,9 @@
 //! the app stops it and hands the link (with the page's cookies) to the
 //! engine, which downloads it with resume and the usual limits. On a page
 //! whose links Haul knows where to find (`handoff.js` has a recipe per host:
-//! vikingfile's button, gofile's folder listing), the window takes them as
-//! soon as the page has them, without the download button.
+//! vikingfile's button, gofile's folder listing, filecrypt's solved page),
+//! the window takes them as soon as the page has them, without the download
+//! button.
 //!
 //! With a proxy configured, the window goes through it too, by way of the
 //! local bridge, because browser engines cannot pass proxy credentials.
@@ -196,7 +197,16 @@ impl Browser {
             let outcome = chromium::pass(pass);
             passes(&all).remove(&id);
             match outcome {
-                Ok(chromium::Outcome::Files { files, agent }) => {
+                Ok(chromium::Outcome::Files { files, agent, page }) => {
+                    // A wrapper's page Haul finds what it holds in unwraps
+                    // to that, which starts lookups: tasks, which need the
+                    // async runtime this thread is outside of.
+                    if let Some(html) = &page
+                        && tauri::async_runtime::block_on(async { engine.page_shown(&id, html) })
+                            > 0
+                    {
+                        return;
+                    }
                     let entries = files
                         .into_iter()
                         .map(|f| {
@@ -330,8 +340,8 @@ impl Browser {
             .on_download(move |_, event| on_download.on_download(event))
             .on_new_window(move |url, _| capture.on_popup(url))
             .on_navigation(move |url| match handed_off(url) {
-                Some(Handoff { files, agent }) => {
-                    on_handoff.take_files(files, agent);
+                Some(Handoff { files, agent, page }) => {
+                    on_handoff.take_files(files, agent, page);
                     false
                 }
                 None if let Some(reason) = gone(url) => {
@@ -564,11 +574,13 @@ struct Handed {
 }
 
 /// What the hand-off script sends: a host's files (one, or a folder's) and
-/// the window's user agent, which the downloads then use too.
+/// the window's user agent, which the downloads then use too; on a
+/// wrapper's page Haul's own code reads, the parts of it that code reads.
 #[derive(Debug, PartialEq)]
 struct Handoff {
     files: Vec<(Url, Handed)>,
     agent: Option<String>,
+    page: Option<String>,
 }
 
 /// The hand-off script's message, when `url` is one. Only http(s) links
@@ -593,6 +605,7 @@ fn handed_off(url: &Url) -> Option<Handoff> {
     (!files.is_empty()).then(|| Handoff {
         files,
         agent: pair("agent").filter(|a| !a.is_empty()),
+        page: pair("page").filter(|p| !p.is_empty()),
     })
 }
 
@@ -733,7 +746,7 @@ impl Capture {
             name,
             size: None,
         };
-        self.take_files(vec![(url, file)], None);
+        self.take_files(vec![(url, file)], None, None);
     }
 
     /// The page shows links to hosts Haul knows, or wrappers: they stand in
@@ -785,8 +798,9 @@ impl Capture {
     /// Hands what the page gave (a file, or a folder's files) to the engine,
     /// each link with the page's cookies for it, then closes the window. The
     /// user agent the page reports stands in when the window was opened
-    /// without one.
-    fn take_files(&self, files: Vec<(Url, Handed)>, agent: Option<String>) {
+    /// without one. A wrapper's page Haul finds what it holds in (`shown`,
+    /// the parts of it Haul reads) unwraps to that instead.
+    fn take_files(&self, files: Vec<(Url, Handed)>, agent: Option<String>, shown: Option<String>) {
         let mut this = self.clone();
         if this.user_agent.is_none() {
             this.user_agent = agent;
@@ -794,6 +808,17 @@ impl Capture {
         // Reading cookies needs the main thread, which is running this handler.
         std::thread::spawn(move || {
             let window = this.app.get_webview_window(&this.label);
+            // Unwrapping starts the files' lookups, which need the async
+            // runtime this thread is outside of.
+            if let Some(html) = &shown
+                && tauri::async_runtime::block_on(async { this.engine.page_shown(&this.id, html) })
+                    > 0
+            {
+                if let Some(window) = window {
+                    let _ = window.close();
+                }
+                return;
+            }
             let page = window.as_ref().and_then(|w| w.url().ok());
             let entries: Vec<hosts::Entry> = files
                 .into_iter()

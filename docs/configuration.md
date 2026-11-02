@@ -38,7 +38,8 @@ proxy = "socks5://user:pass@host:1080" # every host goes through it unless allow
 use_proxy = true                # false keeps proxies and VPN servers but connects directly
 proxies_on = true               # false leaves the proxies of proxy and proxies out
 preferred_hosts = ["rapidgator.net"]   # downloaded from first, in this order (default: ["pixeldrain.com"])
-disabled_hosts = ["gofile.io"]         # never downloaded from: their links are left alone
+disabled_hosts = ["mediafire.com"]     # never downloaded from: their links are left alone
+accountless_hosts = ["rapidgator.net"] # used without the account they need (gofile.io, rapidgator.net, nitroflare.com are off until it is set)
 proxies = ["socks5://u:p@nl.example:1080"]  # more proxies; downloads spread over them
 proxy_with_direct = false       # your own connection as one more of them
 proxy_fresh_connections = false # a new connection per download, for rotating endpoints
@@ -52,9 +53,6 @@ rapidgator_pass = ""
 nitroflare_user = ""
 nitroflare_key = ""
 gofile_token = ""
-
-[limits]            # files at once per host (default 32)
-"1fichier.com" = 1
 
 [routes]            # hosts allowed off the proxy
 "example.com" = "direct"

@@ -1,6 +1,7 @@
 import { Link, Play, RotateCw, X } from 'lucide-react';
 import { useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
+import { HostName, offForAccount } from '@/components/host-picker';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { act, api, report } from '@/lib/api';
@@ -32,13 +33,15 @@ const dropHost = (card: WrapperCard, host: string) =>
     toast(`Dropped ${host} from ${plural(r.dropped, 'file')}`, 'success');
   });
 
-// The hosts the card's files are on, each with a button that drops it.
-function Hosts({ card }: { card: WrapperCard }) {
+// The hosts the card's files are on, each with a button that drops it; a
+// host off for want of an account is marked.
+function Hosts({ card, s }: { card: WrapperCard; s: State }) {
+  const off = offForAccount(s);
   return (
     <div className="mt-1.5 flex flex-wrap gap-1.5">
       {card.hosts.map((host) => (
         <span key={host} className="inline-flex items-center gap-0.5 rounded-full border bg-background pl-2.5 text-xs">
-          {host}
+          <HostName host={host} off={off.has(host)} />
           <ConfirmButton
             label={`Drop ${host}: its links go from these files`}
             confirm="Drop its links?"
@@ -141,7 +144,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
             </div>
           ) : null}
           {/* The hosts its files are on: the same files often have one wrapper per host. */}
-          {card.hosts.length ? <Hosts card={card} /> : null}
+          {card.hosts.length ? <Hosts card={card} s={s} /> : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {needs ? (
