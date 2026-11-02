@@ -1,7 +1,7 @@
 import { Link, Play, RotateCw, X } from 'lucide-react';
 import { useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
-import { HostName, offForAccount } from '@/components/host-picker';
+import { HostName, offHosts } from '@/components/host-picker';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { act, api, report } from '@/lib/api';
@@ -34,9 +34,9 @@ const dropHost = (card: WrapperCard, host: string) =>
   });
 
 // The hosts the card's files are on, each with a button that drops it; a
-// host off for want of an account is marked.
+// host that is off is greyed out.
 function Hosts({ card, s }: { card: WrapperCard; s: State }) {
-  const off = offForAccount(s);
+  const off = offHosts(s);
   return (
     <div className="mt-1.5 flex flex-wrap gap-1.5">
       {card.hosts.map((host) => (

@@ -2151,21 +2151,21 @@ async fn a_host_that_needs_an_account_is_off_until_switched_on() {
     })
     .await
     .unwrap();
-    // Its account flags as the Sites view shows them: off for want of an
-    // account, and on without one.
-    let flags = |s: &Snapshot| {
+    // Off for want of an account, as the Sites view shows it.
+    let off = |s: &Snapshot| {
         let h = s.hosts.iter().find(|h| h.name == "rapidgator.net").unwrap();
         assert!(!h.disabled);
-        (h.needs_account, h.without_account)
+        h.needs_account
     };
     engine.add_text("https://rapidgator.net/file/abc/x.rar.html", "");
     let s = wait_for(&engine, "the link left out", |s| {
-        s.items
-            .iter()
-            .any(|i| i.error.contains("rapidgator.net (needs an account)"))
+        s.items.iter().any(|i| {
+            i.error
+                .contains("only on hosts that are off: rapidgator.net")
+        })
     })
     .await;
-    assert_eq!(flags(&s), (true, false));
+    assert!(off(&s));
 
     engine.set_disabled("rapidgator.net", false).unwrap();
     let s = wait_for(&engine, "the file to ask for its page", |s| {
@@ -2177,7 +2177,7 @@ async fn a_host_that_needs_an_account_is_off_until_switched_on() {
         "{}",
         s.items[0].error
     );
-    assert_eq!(flags(&s), (false, true));
+    assert!(!off(&s));
     assert_eq!(engine.cfg().accountless_hosts, ["rapidgator.net"]);
     assert!(
         t.server.requests("/api/v2/user/login").is_empty(),
@@ -2185,7 +2185,7 @@ async fn a_host_that_needs_an_account_is_off_until_switched_on() {
     );
 
     engine.set_disabled("rapidgator.net", true).unwrap();
-    assert_eq!(flags(&engine.snapshot()), (true, false));
+    assert!(off(&engine.snapshot()));
     assert!(engine.cfg().accountless_hosts.is_empty());
     assert!(
         engine.cfg().disabled_hosts.is_empty(),
@@ -2196,7 +2196,7 @@ async fn a_host_that_needs_an_account_is_off_until_switched_on() {
     engine
         .update_settings(account.as_object().unwrap())
         .unwrap();
-    assert_eq!(flags(&engine.snapshot()), (false, false));
+    assert!(!off(&engine.snapshot()));
     engine.item_action(&s.items[0].id, ItemAction::RetryManual);
     // Through the API now, which checks the link (this one names no file).
     wait_for(&engine, "the file tried with the account", |s| {
@@ -2218,7 +2218,7 @@ async fn a_page_the_desktop_passes_stands_in_for_an_account_once_switched_on() {
     wait_for(&engine, "the link left out", |s| {
         s.items
             .iter()
-            .any(|i| i.error.contains("gofile.io (needs an account)"))
+            .any(|i| i.error.contains("only on hosts that are off: gofile.io"))
     })
     .await;
     engine.set_disabled("gofile.io", false).unwrap();
@@ -2228,7 +2228,7 @@ async fn a_page_the_desktop_passes_stands_in_for_an_account_once_switched_on() {
     })
     .await;
     let gofile = s.hosts.iter().find(|h| h.name == "gofile.io").unwrap();
-    assert!(!gofile.needs_account && gofile.without_account);
+    assert!(!gofile.needs_account);
     let id = s.items[0].id.clone();
     // Its window came forward: now it needs the person.
     assert!(engine.page_wants_person(&id), "the download stays");

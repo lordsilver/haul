@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
-import { HostPicker, offForAccount } from '@/components/host-picker';
+import { HostPicker, offHosts } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
 import { Button } from '@/components/ui/button';
@@ -217,7 +217,7 @@ function SelectionCommands({ picked, s }: { picked: ItemView[]; s: State }) {
           bar
           ids={picked.map((i) => i.id)}
           hosts={hosts}
-          off={offForAccount(s)}
+          off={offHosts(s)}
           chosen={choices.size === 1 ? [...choices][0] : undefined}
           label="Download from"
         />

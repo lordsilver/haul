@@ -1,4 +1,4 @@
-import { ChevronDown, KeyRound, Pin, Server } from 'lucide-react';
+import { ChevronDown, Pin, Server } from 'lucide-react';
 import { Fragment, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import {
@@ -15,22 +15,17 @@ import type { State } from '@/lib/bindings/State';
 
 const AUTOMATIC = '';
 
-// The hosts that are off until the user sets their account or switches
-// them on in Sites, which rows mark.
-export function offForAccount(s: State): Set<string> {
-  return new Set(s.hosts.filter((h) => h.needs_account && !h.disabled).map((h) => h.name));
+// The hosts that are off: switched off, or off until their account is set
+// or they are switched on in Sites. Rows grey them out.
+export function offHosts(s: State): Set<string> {
+  return new Set(s.hosts.filter((h) => h.disabled || h.needs_account).map((h) => h.name));
 }
 
-// A host's name as a row lists it: muted, with a key, while it is off for
-// want of an account.
+// A host's name as a row lists it: greyed out while it is off.
 export function HostName({ host, off }: { host: string; off: boolean }) {
   if (!off) return <>{host}</>;
   return (
-    <span
-      title="Off until you set its account or switch it on in Sites"
-      className="inline-flex items-center gap-0.5 text-muted-foreground/70"
-    >
-      <KeyRound aria-label="Off without an account" className="size-3 shrink-0" />
+    <span title={`${host} is off (Sites)`} className="text-muted-foreground/70">
       {host}
     </span>
   );
@@ -69,7 +64,7 @@ const MIXED = '\u0000mixed';
 // which: Automatic (the preferred hosts, else the fastest) or one of them,
 // the others standing by. For an archive, `ids` are its parts; for rows
 // picked together (`bar`), each takes the host if it has it. `off` are the
-// hosts off for want of an account (offForAccount).
+// hosts that are off (offHosts).
 export function HostPicker({
   ids,
   hosts,

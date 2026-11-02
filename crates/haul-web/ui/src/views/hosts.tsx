@@ -108,6 +108,7 @@ function stats(h: HostView): string {
       free.push(
         `${bytes(h.free.daily_bytes)} a day at full speed${h.free.slowed_to ? `, then ${bytes(h.free.slowed_to)}/s` : ''}`,
       );
+    if (h.free.per_file) free.push(h.free.per_file);
     if (free.length) out.push(`free: ${free.join(', ')}`);
   }
   // Its own word on what an address may fetch at full speed today.
@@ -122,19 +123,6 @@ function Pills({ h, proxy }: { h: HostView; proxy: boolean }) {
         <Pill tone="star">
           <Star className="fill-current" />
           {ordinal(h.preferred + 1)} choice
-        </Pill>
-      ) : null}
-      {(h.needs_account || h.without_account) && !h.disabled ? (
-        <Pill
-          tone="caution"
-          title={
-            h.needs_account
-              ? 'Off by default: without an account each file asks for a captcha, or gofile names its files late. Set the account under the wrench, or switch it on to use it free.'
-              : 'On without an account: each file waits for a captcha, or for its page, so names come late'
-          }
-        >
-          <KeyRound />
-          Best with an account
         </Pill>
       ) : null}
       {h.exits > 1 ? (
@@ -428,7 +416,7 @@ function HostCard({
               h.disabled
                 ? 'Off: its links are never tried. Click to use it again.'
                 : h.needs_account
-                  ? 'Off until you set an account. Click to use it free, without one.'
+                  ? 'Off by default, as its free download is slow going. Click to use it free, or set its account under the wrench.'
                   : 'On: click to never use this host'
             }
           >

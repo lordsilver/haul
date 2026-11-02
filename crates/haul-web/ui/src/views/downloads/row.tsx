@@ -1,7 +1,7 @@
 import { FolderOpen, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
-import { HostName, HostPicker, hostLabel, offForAccount } from '@/components/host-picker';
+import { HostName, HostPicker, hostLabel, offHosts } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { StatusGlyph } from '@/components/status-glyph';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -175,10 +175,10 @@ function RowActions({ it, s }: { it: ItemView; s: State }) {
 // The host it comes from, starred when it is a preferred one and pinned
 // when the user picked it, how many other
 // hosts that are on could take over, and where it belongs; then why it
-// failed or waits, or what the host wants of the user. A host off for want
-// of an account is marked, here and among the hosts to choose from.
+// failed or waits, or what the host wants of the user. A host that is off
+// is greyed out, here and among the hosts to choose from.
 function Subtitle({ it, s }: { it: ItemView; s: State }) {
-  const off = offForAccount(s);
+  const off = offHosts(s);
   // The host part, which chooses the host when the file has several.
   const others = it.other_hosts ? ` · ${it.other_hosts} other ${it.other_hosts === 1 ? 'host' : 'hosts'}` : '';
   const host = `${it.shown_host}${others}`;

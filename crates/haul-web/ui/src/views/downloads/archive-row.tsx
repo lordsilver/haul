@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, FileArchive, KeyRound, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
 import { type FormEvent, type ReactNode, useRef, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
-import { HostNames, HostPicker, hostLabel, offForAccount } from '@/components/host-picker';
+import { HostNames, HostPicker, hostLabel, offHosts } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
 import { SecretInput } from '@/components/secret-input';
@@ -178,8 +178,8 @@ export function ArchiveRow({
   const checked = count === 0 ? false : count === ids.length ? true : 'indeterminate';
   const lead = [`${a.ids.length} parts`, a.size ? bytes(a.size) : null].filter(Boolean).join(' · ');
   // The host part, which chooses the host for every part when they have
-  // several; a host off for want of an account is marked.
-  const off = offForAccount(s);
+  // several; a host that is off is greyed out.
+  const off = offHosts(s);
   const others = a.other_hosts ? `${a.other_hosts} other ${a.other_hosts === 1 ? 'host' : 'hosts'}` : null;
   const host = [a.hosts.join(', '), others].filter(Boolean).join(' · ');
   const rest = [a.package || null, a.source_name ? `from ${a.source_name}` : null].filter(Boolean).join(' · ');

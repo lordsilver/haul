@@ -21,15 +21,10 @@ preferred: number | null,
  */
 disabled: boolean, 
 /**
- * It needs an account that is not set and the user did not switch it
- * on without one, so its links are left out too.
+ * Off until its account is set or the user switches it on without
+ * one ([`hosts::Known::off_for_account`]): its links are left out.
  */
 needs_account: boolean, 
-/**
- * It needs an account that is not set, and the user switched it on
- * without one: every file asks for a captcha, or for its page.
- */
-without_account: boolean, 
 /**
  * Addresses it may be reached from: its slots and its learned limit
  * count for each.

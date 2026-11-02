@@ -391,12 +391,9 @@ pub struct HostView {
     pub preferred: Option<usize>,
     /// Turned off by the user: its links are never tried.
     pub disabled: bool,
-    /// It needs an account that is not set and the user did not switch it
-    /// on without one, so its links are left out too.
+    /// Off until its account is set or the user switches it on without
+    /// one ([`hosts::Known::off_for_account`]): its links are left out.
     pub needs_account: bool,
-    /// It needs an account that is not set, and the user switched it on
-    /// without one: every file asks for a captcha, or for its page.
-    pub without_account: bool,
     /// Addresses it may be reached from: its slots and its learned limit
     /// count for each.
     pub exits: usize,
@@ -1843,15 +1840,7 @@ impl Engine {
                 it.status = Status::Captcha;
             } else if !only_off.is_empty() {
                 // Nothing to retry until the user turns a host back on.
-                let mut names: Vec<String> = only_off
-                    .into_iter()
-                    .map(|h| match hosts::known(&h) {
-                        Some(k) if k.off_for_account(&cfg) && !cfg.is_disabled(&h) => {
-                            format!("{h} (needs an account)")
-                        }
-                        _ => h,
-                    })
-                    .collect();
+                let mut names = only_off;
                 names.dedup();
                 it.status = Status::Error;
                 it.error = format!("{OFF_ONLY}{}", names.join(", "));
@@ -3692,8 +3681,6 @@ impl Engine {
                     preferred: cfg.preference(name),
                     disabled: cfg.is_disabled(name),
                     needs_account: hosts::known(name).is_some_and(|k| k.off_for_account(&cfg)),
-                    without_account: hosts::known(name)
-                        .is_some_and(|k| k.lacks_account(&cfg) && !k.off_for_account(&cfg)),
                     cap: st.lanes_of(name).filter_map(|l| l.cap).min(),
                     quota: quota_view(exits.iter().filter_map(|e| lane(e).and_then(|l| l.quota))),
                     free: hosts::known(name)
@@ -3740,8 +3727,6 @@ impl Engine {
                 preferred: cfg.preference(&name),
                 disabled: cfg.is_disabled(&name),
                 needs_account: hosts::known(&name).is_some_and(|k| k.off_for_account(&cfg)),
-                without_account: hosts::known(&name)
-                    .is_some_and(|k| k.lacks_account(&cfg) && !k.off_for_account(&cfg)),
                 cap: None,
                 exits: self.exits_for(&name, &st).len(),
                 free: hosts::known(&name)

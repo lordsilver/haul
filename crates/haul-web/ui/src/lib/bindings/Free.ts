@@ -16,4 +16,9 @@ daily_bytes: number | null,
 /**
  * Bytes per second past them.
  */
-slowed_to: number | null, };
+slowed_to: number | null, 
+/**
+ * What each file asks of a free user, said as the Sites view lists it
+ * ("a captcha per file").
+ */
+per_file: string | null, };
