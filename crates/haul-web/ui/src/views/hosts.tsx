@@ -88,17 +88,17 @@ function Pill({
   );
 }
 
-// What it has done and what a free user gets there, where Haul knows.
+// What it has done and what a free user gets there, where Haul knows: only
+// what there is to tell, so a host nothing came from yet says nothing.
 function stats(h: HostView): string {
   // Only links are read from a wrapper, a paste or a site: no speed, files
   // or allowance to tell.
   if (h.kind !== 'host') return h.cooldown ? `Waiting ${duration(h.cooldown)}` : '';
-  const out = [
-    h.speed ? `${bytes(h.speed)}/s per file` : 'Speed not measured yet',
-    `${h.ok} done`,
-    `${h.fails} failed`,
-    `${bytes(h.bytes)} total`,
-  ];
+  const out: string[] = [];
+  if (h.speed) out.push(`${bytes(h.speed)}/s per file`);
+  if (h.ok) out.push(`${h.ok} done`);
+  if (h.fails) out.push(`${h.fails} failed`);
+  if (h.bytes) out.push(`${bytes(h.bytes)} total`);
   if (h.cooldown) out.push(`cooling down ${duration(h.cooldown)}`);
   if (h.account) out.push('account set');
   else if (h.free) {
