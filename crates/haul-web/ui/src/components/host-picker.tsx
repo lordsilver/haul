@@ -16,7 +16,7 @@ import type { State } from '@/lib/bindings/State';
 const AUTOMATIC = '';
 
 // The hosts that are off: switched off, or off until their account is set
-// or they are switched on in Sites. Rows grey them out.
+// or they are switched on in Hosts. Rows grey them out.
 export function offHosts(s: State): Set<string> {
   return new Set(s.hosts.filter((h) => h.disabled || h.needs_account).map((h) => h.name));
 }
@@ -25,7 +25,7 @@ export function offHosts(s: State): Set<string> {
 export function HostName({ host, off }: { host: string; off: boolean }) {
   if (!off) return <>{host}</>;
   return (
-    <span title={`${host} is off (Sites)`} className="text-muted-foreground/70">
+    <span title={`${host} is off (Hosts)`} className="text-muted-foreground/70">
       {host}
     </span>
   );

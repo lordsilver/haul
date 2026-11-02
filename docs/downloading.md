@@ -8,7 +8,7 @@ A link whose path names a file joins any row with the same file name as another 
 
 ## Choosing a mirror
 
-A file with mirrors downloads from the hosts you star (`preferred_hosts`, with pixeldrain.com, vikingfile.com and mega.nz preferred from the start), in that order, which **Sites** changes when you drag a preferred host or use its arrows. A preferred host that is only busy is waited for; one that is cooling down or has failed for the file is passed over. Otherwise, among the mirrors whose host has a free slot and no cooldown, the host with the best measured speed per file wins; recent failures count against a host, and a host never tried scores high, so each gets a turn. Speeds come from earlier downloads and are remembered in `hosts.json` for a week.
+A file with mirrors downloads from the hosts you star (`preferred_hosts`, with pixeldrain.com, vikingfile.com and mega.nz preferred from the start), in that order, which **Hosts** changes when you drag a preferred host or use its arrows. A preferred host that is only busy is waited for; one that is cooling down or has failed for the file is passed over. Otherwise, among the mirrors whose host has a free slot and no cooldown, the host with the best measured speed per file wins; recent failures count against a host, and a host never tried scores high, so each gets a turn. Speeds come from earlier downloads and are remembered in `hosts.json` for a week.
 
 A file can also be sent to one host of its own: the host named under a row, or under an archive for all its parts, opens **Download from**, where you pick one of the file's hosts, or **Automatic** for the order above. The host you pick goes first for that file, waited for when it is only busy and passed over while it cools down or once its link has failed, the other hosts standing by. The row pins the host you picked. Selected rows take a host together from **Download from** in the selection bar, each row that has it.
 
@@ -32,7 +32,7 @@ A row that found its file never sends it to the Recycle Bin on removal, since it
 
 ## Proxy
 
-With a proxy configured, every host goes through it until you allow a direct route for that host under **Sites**. A 403 or 451 through the proxy flags the host; Haul never leaves the proxy on its own. `use_proxy = false` switches the proxy off without forgetting it. The in-app browser goes through the same proxy.
+With a proxy configured, every host goes through it until you allow a direct route for that host under **Hosts**. A 403 or 451 through the proxy flags the host; Haul never leaves the proxy on its own. `use_proxy = false` switches the proxy off without forgetting it. The in-app browser goes through the same proxy.
 
 ## Needs you
 

@@ -110,7 +110,7 @@ export function Sidebar({ state, view }: { state: State | null; view: ViewKey })
         onClick={() => openPlace('downloads')}
       />
       <Separator className="mx-1 my-1.5 data-horizontal:w-auto" />
-      <NavItem icon={Server} label="Sites" current={view === 'hosts'} onClick={open('hosts')} />
+      <NavItem icon={Server} label="Hosts" current={view === 'hosts'} onClick={open('hosts')} />
       <NavItem icon={Globe} label="Connections" current={view === 'connections'} onClick={open('connections')} />
       <NavItem icon={Settings} label="Settings" current={view === 'settings'} onClick={open('settings')} />
     </nav>

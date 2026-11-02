@@ -54,11 +54,11 @@ cap: number | null,
  */
 kind: "host" | "wrapper" | "paste" | "site", 
 /**
- * The Sites view lists it: any but a `site` the user gave no setting.
+ * The Hosts view lists it: any but a `site` the user gave no setting.
  */
 listed: boolean, 
 /**
- * The group the Sites view shows it in: a host's `preferred` or
+ * The group the Hosts view shows it in: a host's `preferred` or
  * `other` (on or off alike), or its kind for the others.
  */
 group: "preferred" | "other" | "wrapper" | "paste" | "site", 

@@ -350,7 +350,7 @@ pub struct Free {
     pub daily_bytes: Option<u64>,
     /// Bytes per second past them.
     pub slowed_to: Option<u64>,
-    /// What each file asks of a free user, said as the Sites view lists it
+    /// What each file asks of a free user, said as the Hosts view lists it
     /// ("a captcha per file").
     pub per_file: Option<&'static str>,
 }
@@ -1046,7 +1046,7 @@ const ALIASES: &[(&str, &str)] = &[
 ];
 
 /// Every site Haul has code for, a host's other domains left out: its file
-/// hosts, wrappers and pastebins, which the Sites view lists whether a link
+/// hosts, wrappers and pastebins, which the Hosts view lists whether a link
 /// is on them yet or not.
 pub fn known_sites() -> Vec<String> {
     let alias = |name: &&str| ALIASES.iter().any(|(a, _)| a == name);

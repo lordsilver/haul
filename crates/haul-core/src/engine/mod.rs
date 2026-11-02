@@ -411,9 +411,9 @@ pub struct HostView {
     /// (anything else, listed only when the user starred or switched it off).
     #[ts(type = "\"host\" | \"wrapper\" | \"paste\" | \"site\"")]
     pub kind: &'static str,
-    /// The Sites view lists it: any but a `site` the user gave no setting.
+    /// The Hosts view lists it: any but a `site` the user gave no setting.
     pub listed: bool,
-    /// The group the Sites view shows it in: a host's `preferred` or
+    /// The group the Hosts view shows it in: a host's `preferred` or
     /// `other` (on or off alike), or its kind for the others.
     #[ts(type = "\"preferred\" | \"other\" | \"wrapper\" | \"paste\" | \"site\"")]
     pub group: &'static str,
@@ -3749,7 +3749,7 @@ impl Engine {
             h.kind = views::site_kind(&h.name);
         }
         // Any other site (a page, or a host Haul has no code for) is used
-        // without a setting of its own, so the Sites view does not list it:
+        // without a setting of its own, so the Hosts view does not list it:
         // only one the user gave one (a star, the switch, a folder,
         // a route) shows, to be changed back.
         let set = |name: &str| cfg.folders.contains_key(name) || st.routes.contains_key(name);

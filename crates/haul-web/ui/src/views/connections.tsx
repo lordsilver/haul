@@ -341,7 +341,7 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
         title="Proxy"
         description={
           envNote(d, 'proxy') ??
-          'Every host goes through the proxies unless you allow it direct under Sites. Leave empty to connect directly.'
+          'Every host goes through the proxies unless you allow it direct under Hosts. Leave empty to connect directly.'
         }
       >
         <TextField

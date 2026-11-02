@@ -39,7 +39,7 @@ The server listens on 127.0.0.1 only. [Installing](https://github.com/lordsilver
 - [Configuration](https://github.com/lordsilver/haul/blob/main/docs/configuration.md): `config.toml`, environment variables and the data folder.
 - [How downloads behave](https://github.com/lordsilver/haul/blob/main/docs/downloading.md): mirrors, files already there, retries, cooldowns, the proxy.
 - [Containers and wrappers](https://github.com/lordsilver/haul/blob/main/docs/containers.md): `.dlc` and text files, and the pages that hold one file's links on many hosts.
-- [Sites](https://github.com/lordsilver/haul/blob/main/docs/hosts.md): how each site is handled.
+- [Hosts](https://github.com/lordsilver/haul/blob/main/docs/hosts.md): how each site is handled.
 - [HTTP API](https://github.com/lordsilver/haul/blob/main/docs/api.md): the local API the UI, the bookmarklet and scripts use.
 - [Debug mode](https://github.com/lordsilver/haul/blob/main/docs/debugging.md) and [development](https://github.com/lordsilver/haul/blob/main/docs/development.md): for diagnosing Haul and working on it.
 - [Decisions](https://github.com/lordsilver/haul/blob/main/docs/decisions.md): design decisions and why they were made.

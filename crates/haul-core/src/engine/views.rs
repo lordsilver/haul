@@ -623,7 +623,7 @@ pub(super) fn counts(
     }
 }
 
-/// The kinds of site the Sites view groups, in its order ([`site_kind`]):
+/// The kinds of site the Hosts view groups, in its order ([`site_kind`]):
 /// the hosts, then the rest by their groups' names (Other sites,
 /// Pastebins, Wrappers).
 pub(super) const SITE_KINDS: [&str; 4] = ["host", "site", "paste", "wrapper"];

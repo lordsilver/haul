@@ -49,7 +49,7 @@ const setPreferredOrder = (hosts: string[]) => api('/api/preferred-hosts', { hos
 
 const HEADINGS: Record<HostView['group'], [string, string]> = {
   preferred: ['Preferred hosts, in order', 'A file downloads from the first of these that has it.'],
-  other: ['Hosts', 'Used when no preferred host has the file, the fastest first; one switched off never.'],
+  other: ['Other hosts', 'Used when no preferred host has the file, the fastest first; one switched off never.'],
   wrapper: ['Wrappers', 'Sites that hold download links on file hosts (containers, link protectors).'],
   paste: ['Pastebins', 'Paste sites whose pages list links.'],
   site: ['Other sites', 'Sites Haul has no code for that you gave a setting; the rest are used without one.'],
@@ -533,7 +533,7 @@ export function Hosts({ s }: { s: State }) {
   return (
     <>
       <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Sites</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Hosts</h1>
         <p className="max-w-3xl text-sm text-muted-foreground">
           The file hosts your downloads are on, and the wrappers and pastebins that lead to them. Choose which hosts
           Haul uses and in what order. A file on several hosts downloads from the first of your preferred hosts that has

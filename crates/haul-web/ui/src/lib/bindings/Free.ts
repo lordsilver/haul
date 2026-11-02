@@ -18,7 +18,7 @@ daily_bytes: number | null,
  */
 slowed_to: number | null, 
 /**
- * What each file asks of a free user, said as the Sites view lists it
+ * What each file asks of a free user, said as the Hosts view lists it
  * ("a captcha per file").
  */
 per_file: string | null, };
