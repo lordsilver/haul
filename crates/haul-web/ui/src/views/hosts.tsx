@@ -410,23 +410,27 @@ function HostCard({
               <Wrench className={cn(open && 'text-foreground')} />
             </IconButton>
           ) : null}
-          <span
-            className="ml-1 flex items-center gap-2 text-sm text-muted-foreground"
-            title={
-              h.disabled
-                ? 'Off: its links are never tried. Click to use it again.'
-                : h.needs_account
-                  ? 'Off by default, as its free download is slow going. Click to use it free, or set its account under the wrench.'
-                  : 'On: click to never use this host'
-            }
-          >
-            {off ? 'Off' : 'On'}
-            <Switch
-              checked={!off}
-              aria-label={off ? `Use ${h.name}` : `Never use ${h.name}`}
-              onCheckedChange={(on) => api(host(h.name, 'disabled'), { disabled: !on }).catch(report)}
-            />
-          </span>
+          {/* Wrappers and pastebins are listed to look up, not to turn off;
+              one switched off before keeps its switch, to turn it back on. */}
+          {fileHost || h.disabled ? (
+            <span
+              className="ml-1 flex items-center gap-2 text-sm text-muted-foreground"
+              title={
+                h.disabled
+                  ? 'Off: its links are never tried. Click to use it again.'
+                  : h.needs_account
+                    ? 'Off by default, as its free download is slow going. Click to use it free, or set its account under the wrench.'
+                    : 'On: click to never use this host'
+              }
+            >
+              {off ? 'Off' : 'On'}
+              <Switch
+                checked={!off}
+                aria-label={off ? `Use ${h.name}` : `Never use ${h.name}`}
+                onCheckedChange={(on) => api(host(h.name, 'disabled'), { disabled: !on }).catch(report)}
+              />
+            </span>
+          ) : null}
         </div>
       </div>
       <RouteBar h={h} proxy={s.proxy} />
