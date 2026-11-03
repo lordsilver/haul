@@ -159,6 +159,28 @@
       },
     },
     {
+      // Past Cloudflare's check (`?action=check`), the file's page has the
+      // download address on its button: base64 in `data-scrambled-url` on
+      // newer pages, else its `href` (as hosts/mediafire.rs reads it). A
+      // file mediafire took down sends the page to `error.php`.
+      site: /(^|\.)mediafire\.com$/,
+      watch() {
+        if (/\/error\.php$/.test(location.pathname)) return gone("mediafire: the file is not available");
+        const look = () => {
+          const button = document.getElementById("downloadButton");
+          if (!button) return;
+          let url = null;
+          try {
+            const scrambled = button.getAttribute("data-scrambled-url");
+            url = scrambled ? atob(scrambled) : button.getAttribute("href");
+          } catch {}
+          if (url && /^https?:\/\//.test(url)) hand([{ url }]);
+        };
+        new MutationObserver(look).observe(document, { subtree: true, childList: true, attributes: true });
+        look();
+      },
+    },
+    {
       // A person solves 1fichier's captcha here and the download starts by
       // itself; all the page can say first is that the file was deleted
       // (its own words, French then English, with the 404 it answers).

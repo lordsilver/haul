@@ -1210,6 +1210,10 @@ impl Engine {
                 it.tentative = tentative;
                 if tentative || page {
                     it.probed = false;
+                } else if it.probed && hosts::tells_size(&it.mirrors[0]) {
+                    // Looked up for its size; the name it came with stays.
+                    it.probed = false;
+                    it.named = true;
                 }
                 if !it.probed {
                     probe.push(it.id.clone());
@@ -2183,6 +2187,12 @@ impl Engine {
                 // Nothing a wrapper lists starts on its own: the user picks.
                 it.status = Status::Paused;
                 it.size = e.size.unwrap_or(0);
+                // Its size from its host, when the wrapper gave none; the
+                // name the wrapper gave stays.
+                if it.probed && it.size == 0 && hosts::tells_size(&it.mirrors[0]) {
+                    it.probed = false;
+                    it.named = true;
+                }
                 it
             };
             it.source = Some(id.to_string());

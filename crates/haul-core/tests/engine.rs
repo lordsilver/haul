@@ -725,6 +725,15 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/api/1.5/file/get_info.php",
+            // mediafire's: what a file is, by its key.
+            get(|State(s): State<Server>, Query(q): Query<HashMap<String, String>>, headers: HeaderMap| async move {
+                log(&s, "/api/1.5/file/get_info.php", &headers);
+                let key = q.get("quick_key").cloned().unwrap_or_default();
+                Json(json!({"response": {"file_info": {"filename": format!("{key}.bin"), "size": SIZE.to_string()}}}))
+            }),
+        )
+        .route(
             "/api/file/{id}/info",
             // Publishes the SHA-256 of what /api/file/{id} serves.
             get(|State(s): State<Server>, UrlPath(id): UrlPath<String>, headers: HeaderMap| async move {
@@ -1152,6 +1161,27 @@ async fn a_file_downloads_from_the_host_picked_for_it() {
             .iter()
             .all(|r| r.contains("/info")),
         "pixeldrain stood by"
+    );
+}
+
+/// A link that names its file is still looked up when its host says what a
+/// file is through an API: its size counts before it downloads.
+#[tokio::test]
+async fn a_named_link_learns_its_size_from_its_hosts_api() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text(
+        "https://www.mediafire.com/file/abc12345/archive.part1.rar/file",
+        "",
+    );
+    wait_for(&engine, "its size", |s| {
+        s.items.len() == 1 && s.items[0].size == SIZE as u64
+    })
+    .await;
+    assert!(
+        t.server.requests("/api/1.5/file/get_info.php").len() == 1,
+        "asked once, while downloads are paused"
     );
 }
 
@@ -1679,8 +1709,12 @@ async fn a_wrapper_unwraps_into_files_that_wait_to_be_started() {
     hosts.sort();
     assert_eq!(hosts, ["127.0.0.1", "localhost", "pixeldrain.com"]);
     tokio::time::sleep(Duration::from_millis(300)).await;
+    // pixeldrain was only asked what the file is.
     assert!(
-        t.server.requests("/api/file/kept").is_empty(),
+        t.server
+            .requests("/api/file/kept")
+            .iter()
+            .all(|r| r.contains("/info")),
         "not started"
     );
     // With a file still to go, Clear completed leaves the wrapper alone.
@@ -2513,7 +2547,11 @@ async fn removing_a_wrapper_takes_its_files_that_never_started() {
     engine.add_text("https://fileguard.cc/vault/parts", "");
     let s = wrapper_settled(&engine, "done").await;
     let w = s.wrappers[0].id.clone();
-    let s = wait_for(&engine, "the parts", |s| s.items.len() == 2).await;
+    // Each looked up at its host.
+    let s = wait_for(&engine, "the parts", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.size > 0)
+    })
+    .await;
     assert!(engine.item_action(&s.items[0].id, ItemAction::Resume));
     assert!(engine.remove_wrapper(&w));
     let s = engine.snapshot();

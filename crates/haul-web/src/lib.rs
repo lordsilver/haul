@@ -547,12 +547,23 @@ async fn install_update(State(app): State<App>) -> Response {
             "only the desktop app installs updates; download the new version from its release page",
         );
     };
-    match app.engine.download_update().await {
-        Ok(installer) => match desktop.install_update(&installer) {
-            Ok(()) => ok(),
-            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-        },
-        Err(e) => error(StatusCode::BAD_GATEWAY, e),
+    let installer = match app.engine.download_update().await {
+        Ok(installer) => installer,
+        Err(e) => {
+            tracing::warn!("downloading the update: {e}");
+            return error(StatusCode::BAD_GATEWAY, e);
+        }
+    };
+    // Windows' permission prompt may wait for the person a while.
+    let started = tokio::task::spawn_blocking(move || desktop.install_update(&installer))
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+    match started {
+        Ok(()) => ok(),
+        Err(e) => {
+            tracing::warn!("installing the update: {e}");
+            error(StatusCode::INTERNAL_SERVER_ERROR, e)
+        }
     }
 }
 

@@ -16,8 +16,10 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
     tauri::async_runtime::spawn(async move {
         // Downloads and the page of theirs opened during their current wait:
         // when that page fails (a deleted folder), the next one it waits for
-        // is opened in turn.
-        let mut tried: HashSet<(String, String)> = HashSet::new();
+        // is opened in turn. A pass that handed Haul the clearance for a page
+        // counts for that only: when Haul is turned away all the same, the
+        // page is opened once more, for what it shows past the check.
+        let mut tried: HashSet<(String, String, bool)> = HashSet::new();
         loop {
             let snapshot = engine.snapshot();
             // Downloads and wrappers (pages and pastes) alike.
@@ -31,20 +33,30 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
                         .into_iter()
                         .map(|w| (w.id, w.status, w.open_urls)),
                 );
-            let waiting: Vec<(String, String, bool)> = rows
+            let waiting: Vec<(String, String, bool, bool)> = rows
                 // Waiting their turn ("passing"), or shown to the person after
                 // their turn ("captcha"): kept, so the tried set stays theirs.
                 .filter(|(_, status, _)| *status == "passing" || *status == "captcha")
                 .filter_map(|(id, status, open)| {
                     let page = open.iter().find(|u| engine.page_passes(u))?;
-                    Some((id, page.clone(), status == "passing"))
+                    let clearance = engine.takes_clearance(page);
+                    Some((id, page.clone(), status == "passing", clearance))
                 })
                 .collect();
-            tried.retain(|(id, page)| waiting.iter().any(|(w, p, _)| w == id && p == page));
+            let key =
+                |id: &String, page: &String, clearance: bool| (id.clone(), page.clone(), clearance);
+            tried.retain(|(id, page, c)| {
+                waiting
+                    .iter()
+                    .any(|(w, p, _, wc)| w == id && p == page && wc == c)
+            });
             // A pass whose row went or stopped waiting (removed, paused,
             // started by hand) stops, so it holds up no other.
             for id in browser.passing_out_of_sight() {
-                if !waiting.iter().any(|(w, _, passing)| *w == id && *passing) {
+                if !waiting
+                    .iter()
+                    .any(|(w, _, passing, _)| *w == id && *passing)
+                {
                     browser.abandon(&id);
                 }
             }
@@ -55,17 +67,15 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
             // closes; one shown to the person (its check wanted them) holds
             // up no other.
             let busy = !browser.passing_out_of_sight().is_empty()
-                || waiting.iter().any(|(id, page, passing)| {
-                    *passing
-                        && tried.contains(&(id.clone(), page.clone()))
-                        && browser.is_passing(id)
+                || waiting.iter().any(|(id, page, passing, c)| {
+                    *passing && tried.contains(&key(id, page, *c)) && browser.is_passing(id)
                 });
             if !busy
-                && let Some((id, page, _)) = waiting.iter().find(|(id, page, passing)| {
-                    *passing && !tried.contains(&(id.clone(), page.clone()))
-                })
+                && let Some((id, page, _, c)) = waiting
+                    .iter()
+                    .find(|(id, page, passing, c)| *passing && !tried.contains(&key(id, page, *c)))
             {
-                tried.insert((id.clone(), page.clone()));
+                tried.insert(key(id, page, *c));
                 // A pass that cannot start asks the person rather than
                 // leaving the row passing for good.
                 if let Err(e) = browser.pass(id, page) {

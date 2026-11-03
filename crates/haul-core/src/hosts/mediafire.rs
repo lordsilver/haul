@@ -2,7 +2,10 @@
 //! exact name, size and SHA-256; the file's page holds the download address
 //! on its download button (`href`, or base64 in `data-scrambled-url` on
 //! newer pages). A file mediafire took down or deleted sends its page to
-//! `error.php?errno=…`.
+//! `error.php?errno=…`. Some files' pages (big ones, often) send Haul to
+//! `?action=check`, Cloudflare's browser check: the desktop app passes it
+//! out of sight and takes the address on the page's download button
+//! (`handoff.js`), as the clearance alone does not let Haul's requests in.
 
 use std::sync::LazyLock;
 
@@ -86,6 +89,9 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         .get(format!("{base}/file/{key}"))
         .send()
         .await?;
+    if super::generic::challenged(page.headers()) {
+        return Err(super::generic::guarded(url));
+    }
     // A file mediafire took down still has its info; its page says why.
     if page.url().path().contains("error.php") {
         let errno = page

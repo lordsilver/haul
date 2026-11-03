@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, FileArchive, KeyRound, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
 import { type FormEvent, type ReactNode, useRef, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
+import { FileName } from '@/components/file-name';
 import { HostNames, HostPicker, hostLabel, offHosts } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
@@ -224,9 +225,7 @@ export function ArchiveRow({
           }
         />
         <div className={COLUMNS.title}>
-          <div className="truncate font-medium" title={a.name}>
-            {a.name}
-          </div>
+          <FileName name={a.name} />
           <div className="truncate text-xs text-muted-foreground" title={sub}>
             {lead}
             {host ? ' · ' : null}

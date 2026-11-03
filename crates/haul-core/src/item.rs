@@ -167,8 +167,9 @@ pub(crate) struct Item {
     /// The password for its archive: the one the user gave, or the one that
     /// opened it.
     pub extract_password: Option<String>,
-    /// Named for its archive, as its parts on other hosts are: a host's own
-    /// name for the file, when it is looked up, does not replace it.
+    /// Named for its archive, as its parts on other hosts are, or by the
+    /// link or list it came from and looked up only for its size: a host's
+    /// own name for the file, when it is looked up, does not replace it.
     pub named: bool,
 }
 
