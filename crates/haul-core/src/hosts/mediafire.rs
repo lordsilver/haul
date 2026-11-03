@@ -4,7 +4,8 @@
 //! newer pages). A file mediafire took down or deleted sends its page to
 //! `error.php?errno=…`. Some files' pages (big ones, often) send Haul to
 //! `?action=check`, Cloudflare's browser check: the desktop app passes it
-//! out of sight and hands Haul the clearance, and Haul reads the page again.
+//! out of sight and takes the address on the page's download button
+//! (`handoff.js`), as the clearance alone does not let Haul's requests in.
 
 use std::sync::LazyLock;
 

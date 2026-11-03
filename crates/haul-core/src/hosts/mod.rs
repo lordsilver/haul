@@ -609,7 +609,10 @@ static KNOWN: &[Known] = &[
             per_file: None,
         },
         tells_allowance: false,
-        page_passes: false,
+        // Some files' pages are behind Cloudflare's check, whose clearance
+        // does not let Haul's own requests through: the browser that passes
+        // it takes the address on the page's download button.
+        page_passes: true,
         needs_account: false,
     },
     Known {
