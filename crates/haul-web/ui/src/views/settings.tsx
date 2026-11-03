@@ -165,40 +165,43 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
       />
       <Section>Downloads</Section>
       <SettingCard
-        icon={ArrowDownToLine}
-        title="Parallel downloads"
-        description="Files downloaded at the same time."
-        controls={<NumberField name="max_total" value={d.max_total} min={1} max={64} label="Parallel downloads" />}
-      />
-      <SettingCard
-        icon={FileText}
-        title="Size downloading at once"
-        description="The most gigabytes of files downloading at the same time, by their full size: 20 lets four 5 GB files run, or ten of 2 GB. A bigger file still downloads on its own. 0 means no limit."
-        controls={
-          <NumberField
-            name="max_active_gb"
-            value={d.max_active_gb}
-            min={0}
-            label="Size downloading at once"
-            unit="GB"
-          />
-        }
-      />
-      <SettingCard
         icon={Gauge}
-        title="Speed limit"
-        description={note('rate_limit_mbps') ?? 'Shared by every transfer. 0 means no limit.'}
-        controls={
-          <NumberField
-            name="rate_limit_mbps"
-            value={d.rate_limit_mbps}
-            min={0}
-            step={0.5}
-            label="Speed limit"
-            unit="MB/s"
-          />
-        }
-      />
+        title="Limits"
+        description="Use any one of them, or combine them: each applies on top of the others."
+      >
+        <SettingRow
+          title="Speed"
+          description={note('rate_limit_mbps') ?? 'Shared by every transfer in Haul. 0 means no limit.'}
+          controls={
+            <NumberField
+              name="rate_limit_mbps"
+              value={d.rate_limit_mbps}
+              min={0}
+              step={0.5}
+              label="Speed limit"
+              unit="MB/s"
+            />
+          }
+        />
+        <SettingRow
+          title="Size downloading at once"
+          description="The most gigabytes of files downloading at the same time, by their full size: 20 lets four 5 GB files run, or ten of 2 GB. A bigger file still downloads on its own. 0 means no limit."
+          controls={
+            <NumberField
+              name="max_active_gb"
+              value={d.max_active_gb}
+              min={0}
+              label="Size downloading at once"
+              unit="GB"
+            />
+          }
+        />
+        <SettingRow
+          title="Parallel downloads"
+          description="Files downloaded at the same time."
+          controls={<NumberField name="max_total" value={d.max_total} min={1} max={64} label="Parallel downloads" />}
+        />
+      </SettingCard>
       <FolderCard s={s} d={d} />
       <SettingCard
         icon={Trash2}
