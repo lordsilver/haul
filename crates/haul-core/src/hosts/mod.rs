@@ -1507,6 +1507,24 @@ impl From<Option<Probed>> for Look {
     }
 }
 
+/// Whether `url`'s host says what a file is (its size, whether it is still
+/// there) through an API, without a download or its page: such a link is
+/// looked up as it is added even when it names its file, so its size counts
+/// in its archive's total before it downloads.
+pub fn tells_size(url: &str) -> bool {
+    matches!(
+        kind_of(url),
+        Some(
+            Kind::Vikingfile
+                | Kind::Rootz
+                | Kind::OneFichier
+                | Kind::Mega
+                | Kind::Pixeldrain
+                | Kind::Mediafire
+        )
+    )
+}
+
 /// [`probe`], from a host that can also say the file was deleted, so a row
 /// knows before its turn that a link is dead.
 pub async fn look(cx: &Cx<'_>, url: &str) -> Look {

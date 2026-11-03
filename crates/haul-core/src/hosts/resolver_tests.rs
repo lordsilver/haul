@@ -1647,3 +1647,75 @@ async fn a_handed_clearance_goes_with_the_sites_requests() {
     let other = base.replace("127.0.0.1", "localhost");
     assert_eq!(sent(format!("{other}/page")).await, format!(" as {own}"));
 }
+
+#[tokio::test]
+async fn mediafire_sends_a_page_behind_cloudflares_check_to_a_browser() {
+    let app = Router::new()
+        .route(
+            "/api/1.5/file/get_info.php",
+            get(|Query(q): Query<HashMap<String, String>>| async move {
+                Json(json!({"response": {"file_info": {
+                    "filename": format!("archive.{}.rar", q["quick_key"]),
+                    "size": "2147483648",
+                    "hash": "ab".repeat(32),
+                }}}))
+            }),
+        )
+        .route(
+            "/file/{key}",
+            get(|Path(key): Path<String>, Query(q): Query<HashMap<String, String>>| async move {
+                // A big file's page goes to `?action=check`, Cloudflare's.
+                match (key.as_str(), q.get("action").map(String::as_str)) {
+                    ("checked111", None) => {
+                        (StatusCode::FOUND, [("location", "/file/checked111?action=check")]).into_response()
+                    }
+                    ("checked111", Some(_)) => (
+                        StatusCode::FORBIDDEN,
+                        [("cf-mitigated", "challenge")],
+                        "<title>Just a moment...</title>",
+                    )
+                        .into_response(),
+                    _ => r#"<a aria-label="Download file" href="https://download.example/x/archive.rar" id="downloadButton">"#
+                        .into_response(),
+                }
+            }),
+        );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = Cx {
+        http: &http,
+        cfg: &cfg,
+        tokens: &tokens,
+        key_service: &http,
+    };
+    let e = mediafire::resolve(
+        &cx,
+        "https://www.mediafire.com/file/plain1111/archive.part1.rar/file",
+    )
+    .await
+    .unwrap();
+    assert_eq!(e[0].url, "https://download.example/x/archive.rar");
+    assert_eq!(e[0].size, Some(2_147_483_648));
+    match mediafire::resolve(
+        &cx,
+        "https://www.mediafire.com/file/checked111/archive.part2.rar/file",
+    )
+    .await
+    {
+        Err(ResolveError::NeedsUser(m)) => {
+            assert!(is_guarded(&m), "{m}");
+            assert!(m.starts_with("mediafire.com "), "{m}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn hosts_with_an_api_for_files_tell_their_size_up_front() {
+    assert!(tells_size(
+        "https://www.mediafire.com/file/abc12345/archive.part1.rar/file"
+    ));
+    assert!(tells_size("https://mega.nz/file/AAAAAAAA#abc"));
+    assert!(!tells_size("https://site.example/archive.part1.rar"));
+}

@@ -505,13 +505,7 @@ impl Desktop for Browser {
     /// anything (`/P`), and starts Haul again when done (`/R`). Haul closes
     /// first, as its files are being replaced.
     fn install_update(&self, installer: &std::path::Path) -> Result<(), String> {
-        if !cfg!(windows) {
-            return Err("only the Windows app installs updates itself".into());
-        }
-        std::process::Command::new(installer)
-            .args(["/P", "/UPDATE", "/R"])
-            .spawn()
-            .map_err(|e| format!("{}: {e}", installer.display()))?;
+        run_installer(installer, "/P /UPDATE /R")?;
         let app = self.app.clone();
         std::thread::spawn(move || {
             // Long enough for the answer to reach the page.
@@ -520,6 +514,53 @@ impl Desktop for Browser {
         });
         Ok(())
     }
+}
+
+/// Starts setup program `installer` with `args` the way Explorer does: one
+/// that asks for administrator rights (as Haul's does on an administrator's
+/// account) gets Windows' permission prompt, where starting it as a plain
+/// process fails with "The requested operation requires elevation" (error
+/// 740). Returns once it has started, or once the person declined.
+#[cfg(windows)]
+fn run_installer(installer: &std::path::Path, args: &str) -> Result<(), String> {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+
+    use windows_sys::Win32::UI::{
+        Shell::{SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW},
+        WindowsAndMessaging::SW_SHOWNORMAL,
+    };
+
+    /// ERROR_CANCELLED: the person said no to the permission prompt.
+    const DECLINED: i32 = 1223;
+    let wide = |s: &OsStr| s.encode_wide().chain([0]).collect::<Vec<u16>>();
+    let (verb, file, params) = (
+        wide(OsStr::new("open")),
+        wide(installer.as_os_str()),
+        wide(OsStr::new(args)),
+    );
+    // SAFETY: a plain C struct, all zeroes being its documented empty value;
+    // the strings it points at outlive the call.
+    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    info.fMask = SEE_MASK_NOASYNC;
+    info.lpVerb = verb.as_ptr();
+    info.lpFile = file.as_ptr();
+    info.lpParameters = params.as_ptr();
+    info.nShow = SW_SHOWNORMAL;
+    // SAFETY: `info` is filled in as the call expects.
+    if unsafe { ShellExecuteExW(&mut info) } != 0 {
+        return Ok(());
+    }
+    let e = std::io::Error::last_os_error();
+    if e.raw_os_error() == Some(DECLINED) {
+        return Err("the update was not installed: Windows' permission prompt was declined".into());
+    }
+    Err(format!("{}: {e}", installer.display()))
+}
+
+#[cfg(not(windows))]
+fn run_installer(_installer: &std::path::Path, _args: &str) -> Result<(), String> {
+    Err("only the Windows app installs updates itself".into())
 }
 
 /// Whether to tell the person that `host`'s check wants them: once a minute

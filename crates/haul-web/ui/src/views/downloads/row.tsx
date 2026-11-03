@@ -1,6 +1,7 @@
 import { FolderOpen, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
+import { FileName } from '@/components/file-name';
 import { HostName, HostPicker, hostLabel, offHosts } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { StatusGlyph } from '@/components/status-glyph';
@@ -250,9 +251,7 @@ export function ItemRow({
           onCheck={(e) => pickMany([it.id], order, { toggle: true, range: e.shiftKey })}
         />
         <div className={COLUMNS.title}>
-          <div className="truncate font-medium" title={it.name}>
-            {it.name}
-          </div>
+          <FileName name={it.name} />
           <Subtitle it={it} s={s} />
         </div>
         <div className={COLUMNS.progress}>
