@@ -2108,14 +2108,34 @@ impl Engine {
         let cfg = self.cfg();
         // An archive's parts a sibling wrapper brought already, each host
         // naming them its own way: its links join those rows by number, and
-        // every part takes one name, the shared one where it can be a file's,
-        // so they unpack as one archive.
+        // every part takes the name that says most of the ones the files
+        // have, so they unpack as one archive. Never the wrappers' title,
+        // which unrelated files can share.
         let by_part = sibling_parts(&st, id, found.title.as_deref(), &found.files);
         if let Some(rows) = &by_part {
-            let base = found.title.as_deref().filter(|t| file_like(t));
+            let names = rows
+                .values()
+                .filter_map(|row| st.items.get(row)?.key_name())
+                .chain(
+                    found
+                        .files
+                        .iter()
+                        .filter(|e| !hosts::lists(&e.url))
+                        .filter_map(|e| {
+                            e.name
+                                .as_deref()
+                                .map(hosts::tidy_name)
+                                .or_else(|| hosts::guess_name(&e.url))
+                        }),
+                );
+            let base = best_archive_name(names);
             for row in rows.values() {
                 if let Some(it) = st.items.get_mut(row) {
-                    if let Some(name) = base.and_then(|b| parts::rebased(&it.key_name()?, b)) {
+                    let own = it.key_name();
+                    let shared = own
+                        .zip(base.as_deref())
+                        .and_then(|(n, b)| parts::rebased(&n, b));
+                    if let Some(name) = shared {
                         it.name = Some(name);
                     } else if it.name.is_none() {
                         it.name = it.key_name();
@@ -3972,14 +3992,24 @@ fn drop_tentative_row(st: &mut State, id: &str, why: &str) -> bool {
     true
 }
 
-/// Forgets a resolved link once an attempt with it failed: a user's link is
-/// asked for again, a folder's link is resolved afresh.
-/// A wrapper title that can be a file's name: no spaces or path signs
-/// (`Example.Set`, not `Example set, updated`).
-fn file_like(title: &str) -> bool {
-    !title.is_empty()
-        && !title.chars().any(|c| {
-            c.is_whitespace() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+/// Of the names of an archive's parts, what the archive is best called: a
+/// name over an id, then the one with more words, then the longer one (a
+/// host's shortened name loses to the full one); the earlier of equals.
+fn best_archive_name(names: impl Iterator<Item = String>) -> Option<String> {
+    let says = |base: &str| {
+        let words = base
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty());
+        (!views::says_nothing(base), words.count(), base.len())
+    };
+    names
+        .filter_map(|name| parts::archive_base(&name).map(str::to_string))
+        .reduce(|best, base| {
+            if says(&base) > says(&best) {
+                base
+            } else {
+                best
+            }
         })
 }
 
@@ -3994,7 +4024,7 @@ fn sibling_parts(
     id: &str,
     title: Option<&str>,
     entries: &[Entry],
-) -> Option<HashMap<u32, String>> {
+) -> Option<std::collections::BTreeMap<u32, String>> {
     let title = hosts::name_key(title?);
     let source = st.items.get(id)?.source.clone();
     // Its own parts: every entry one, of one archive, each number once.

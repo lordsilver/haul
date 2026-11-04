@@ -206,19 +206,24 @@ impl PartName {
     }
 }
 
-/// Part `name` of an archive under the archive name `base` instead of its
-/// own: `a.part01.rar` with `b` is `b.part01.rar`. `None` when `name`
-/// names no part.
-pub fn rebased(name: &str, base: &str) -> Option<String> {
+/// The archive's own name in part `name`: `a` of `a.part01.rar`, `X` of
+/// `X.7z.002`. `None` when `name` names no part.
+pub fn archive_base(name: &str) -> Option<&str> {
     let part = PartName::parse(name)?;
     let own = part
         .archive
         .rsplit_once('.')
         .map_or(part.archive.as_str(), |(stem, _)| stem);
     let head = name.get(..own.len())?;
-    let rest = name.get(own.len()..)?;
-    head.eq_ignore_ascii_case(own)
-        .then(|| format!("{base}{rest}"))
+    head.eq_ignore_ascii_case(own).then_some(head)
+}
+
+/// Part `name` of an archive under the archive name `base` instead of its
+/// own: `a.part01.rar` with `b` is `b.part01.rar`. `None` when `name`
+/// names no part.
+pub fn rebased(name: &str, base: &str) -> Option<String> {
+    let rest = name.get(archive_base(name)?.len()..)?;
+    Some(format!("{base}{rest}"))
 }
 
 /// The names of the parts missing from a set whose names are `parts` (one
@@ -261,6 +266,9 @@ mod tests {
         );
         assert_eq!(rebased("X.7z.002", "Y").as_deref(), Some("Y.7z.002"));
         assert_eq!(rebased("notes.txt", "Y"), None);
+        assert_eq!(archive_base("Example.Set.part01.rar"), Some("Example.Set"));
+        assert_eq!(archive_base("X.7z.002"), Some("X"));
+        assert_eq!(archive_base("notes.txt"), None);
     }
 
     fn read(name: &str) -> Option<(String, Form, u32)> {
