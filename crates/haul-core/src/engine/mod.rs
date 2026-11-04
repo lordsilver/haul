@@ -2204,6 +2204,7 @@ impl Engine {
                 it
             } else {
                 let mut it = Item::new(urls, e.name, package);
+                it.listed_size = e.listed_size;
                 // Nothing a wrapper lists starts on its own: the user picks.
                 it.status = Status::Paused;
                 it.size = e.size.unwrap_or(0);
@@ -4013,12 +4014,19 @@ fn best_archive_name(names: impl Iterator<Item = String>) -> Option<String> {
         })
 }
 
+/// Whether two sizes a page rounded can be one file's: within 2%.
+fn about_the_same(a: u64, b: u64) -> bool {
+    a.abs_diff(b).saturating_mul(50) <= a.max(b)
+}
+
 /// The rows another wrapper of the same page added under the same title
 /// for the parts `entries` hold, by part number. A set of files a page links
 /// once per host (a container per host) is one archive: part n of each is
 /// the same file, though each host names it its own way. `None` unless
 /// `entries` are an archive's parts and that wrapper's files are parts of
-/// one archive with the very same numbers.
+/// one archive with the very same numbers, none of a clearly other size than
+/// the page shows for its counterpart: a shared title and count alone can be
+/// two sets of files.
 fn sibling_parts(
     st: &State,
     id: &str,
@@ -4045,6 +4053,14 @@ fn sibling_parts(
             .filter(|e| !hosts::lists(&e.url))
             .map(|e| e.name.clone().or_else(|| hosts::guess_name(&e.url))),
     )?;
+    // What the page shows for each of its parts.
+    let listed: HashMap<u32, u64> = entries
+        .iter()
+        .filter_map(|e| {
+            let name = e.name.clone().or_else(|| hosts::guess_name(&e.url))?;
+            Some((parts::PartName::parse(&name)?.number, e.listed_size?))
+        })
+        .collect();
     st.items.values().find_map(|w| {
         let sibling = w.wrapper
             && w.id != id
@@ -4061,6 +4077,16 @@ fn sibling_parts(
             .filter(|i| !i.wrapper && i.listed_by(&w.id))
             .collect();
         if numbers(&mut rows.iter().map(|i| i.key_name()))? != own {
+            return None;
+        }
+        let other_size = rows.iter().any(|i| {
+            let number = i.key_name().and_then(|n| parts::PartName::parse(&n));
+            let shown = number.and_then(|p| listed.get(&p.number).copied());
+            shown
+                .zip(i.listed_size)
+                .is_some_and(|(a, b)| !about_the_same(a, b))
+        });
+        if other_size {
             return None;
         }
         Some(

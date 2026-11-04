@@ -20,7 +20,7 @@
 //! here ([`shown`]), and its `.dlc` link, which is not gated.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
@@ -54,6 +54,9 @@ static DATA: LazyLock<Regex> =
 static ROW_NAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<tr\b[^>]*>\s*<td class="status">.*?</td>\s*<td title="([^"]*)""#).unwrap()
 });
+/// A cell of a solved page's link table that holds a size.
+static SIZE_CELL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)<td\b[^>]*>\s*([\d.,]+)\s*([KMGT]?)I?B\s*</td>").unwrap());
 /// A solved page's Click'n'Load data: `CNLPOP(id, key, links, package)`.
 static CNL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"CNLPOP\(\s*'[^']*'\s*,\s*'([0-9A-Fa-f]+)'\s*,\s*'([^']+)'").unwrap()
@@ -406,15 +409,29 @@ pub(super) fn shown(html: &str) -> Option<Unwrapped> {
     } else {
         vec![None; urls.len()]
     };
+    let sizes = row_sizes(html);
+    let sizes: HashMap<String, u64> = if sizes.len() == urls.len() {
+        urls.iter()
+            .cloned()
+            .zip(sizes)
+            .filter_map(|(url, size)| Some((url, size?)))
+            .collect()
+    } else {
+        HashMap::new()
+    };
     let mut seen = HashSet::new();
     let links = urls
         .into_iter()
         .zip(names)
         .filter(|(url, _)| seen.insert(url.clone()))
         .collect();
+    let mut files = group_named(links);
+    for file in &mut files {
+        file.listed_size = sizes.get(&file.url).copied();
+    }
     Some(Unwrapped {
         title: heading(html),
-        files: group_named(links),
+        files,
     })
 }
 
@@ -429,6 +446,34 @@ fn row_names(html: &str) -> Vec<String> {
         .captures_iter(html)
         .filter_map(|c| page_text(&c[1]))
         .collect()
+}
+
+/// The size each row of a solved page's link table shows, in order; `None`
+/// for a row that shows none (`n/a`).
+fn row_sizes(html: &str) -> Vec<Option<u64>> {
+    ROW_NAME
+        .find_iter(html)
+        .map(|row| {
+            let rest = &html[row.end()..];
+            let cells = rest.split("</tr>").next().unwrap_or_default();
+            let cell = SIZE_CELL.captures(cells)?;
+            shown_size(&cell[1], &cell[2])
+        })
+        .collect()
+}
+
+/// `2.00` `G` in bytes. The page counts in 1024s, whatever it calls them
+/// (2147483648 bytes show as `2.00 GB`).
+fn shown_size(number: &str, unit: &str) -> Option<u64> {
+    let number: f64 = number.replace(',', ".").parse().ok()?;
+    let power = match unit.to_ascii_uppercase().as_str() {
+        "" => 0,
+        "K" => 1,
+        "M" => 2,
+        "G" => 3,
+        _ => 4,
+    };
+    Some((number * 1024f64.powi(power)) as u64).filter(|size| *size > 0)
 }
 
 /// Whether a page shows the container's links rather than its gate.
@@ -714,6 +759,33 @@ mod tests {
             row("R &amp; Co.part02.rar", "11AA")
         );
         assert_eq!(row_names(&html), ["R.part01.rar", "R & Co.part02.rar"]);
+    }
+
+    #[test]
+    fn a_solved_page_sizes_its_rows() {
+        let row = |size: &str| {
+            format!(
+                r#"<tr class="kwj3"><td class="status"><i class="online small"></i></td><td title="a.part1.rar">a.part1.rar<span><a href="http://host.example" class="external_link">host.example</a></span></td><td>{size}</td><td><a href="/Link/abc.html" class="button download"></a></td></tr>"#
+            )
+        };
+        let html = format!(
+            "<table>{}{}{}{}{}</table>",
+            row("2.00 GB"),
+            row("922,5 mb"),
+            row("n/a"),
+            row(""),
+            row("0 B"),
+        );
+        assert_eq!(
+            row_sizes(&html),
+            [
+                Some(2 * 1024 * 1024 * 1024),
+                Some(922 * 1024 * 1024 + 512 * 1024),
+                None,
+                None,
+                None
+            ]
+        );
     }
 
     #[test]

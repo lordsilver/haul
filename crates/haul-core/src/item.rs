@@ -160,6 +160,9 @@ pub(crate) struct Item {
     /// The hosts a wrapper's links are on, in its order: what tells apart
     /// wrappers of one set of files, one per host.
     pub found_hosts: Vec<String>,
+    /// The rounded size the wrapper's page showed for this file, to tell its
+    /// files from another wrapper's.
+    pub listed_size: Option<u64>,
     /// Unpacking the archive this row is a part of.
     pub extract: Extract,
     /// Why unpacking it failed.
@@ -232,6 +235,7 @@ impl Item {
             title: None,
             found: None,
             found_hosts: Vec::new(),
+            listed_size: None,
             extract: Extract::No,
             extract_error: String::new(),
             extract_password: None,
@@ -286,6 +290,7 @@ impl Item {
             title: self.title.clone(),
             found: self.found,
             found_hosts: self.found_hosts.clone(),
+            listed_size: self.listed_size,
             extract: self.extract,
             extract_error: self.extract_error.clone(),
             extract_password: self.extract_password.clone(),
@@ -339,6 +344,7 @@ impl Item {
         it.title = s.title;
         it.found = s.found;
         it.found_hosts = s.found_hosts;
+        it.listed_size = s.listed_size;
         // An archive Haul stopped in the middle of is unpacked again.
         it.extract = match s.extract {
             Extract::Extracting => Extract::Waiting,
@@ -426,6 +432,8 @@ pub(crate) struct Saved {
     pub found: Option<Found>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub found_hosts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed_size: Option<u64>,
     #[serde(default, skip_serializing_if = "Extract::is_no")]
     pub extract: Extract,
     #[serde(default, skip_serializing_if = "String::is_empty")]
