@@ -85,6 +85,26 @@ fn fc_solved_with(title: &str, links: &[String]) -> String {
     )
 }
 
+/// A solved container with its link table: two parts of `name` on `host`,
+/// showing `sizes`.
+fn fc_sized(host: &str, name: &str, sizes: [&str; 2]) -> String {
+    let file = |n: usize| format!("{name}.part{n}.rar");
+    let links: Vec<String> = (1..=2)
+        .map(|n| format!("http://{host}/files/{}", file(n)))
+        .collect();
+    let rows: String = sizes
+        .iter()
+        .enumerate()
+        .map(|(i, size)| {
+            let file = file(i + 1);
+            format!(
+                r#"<tr class="kwj3"><td class="status"><i class="online small"></i></td><td title="{file}">{file}<span><a href="http://{host}" class="external_link">{host}</a></span></td><td>{size}</td><td><a href="/Link/abc.html" class="button download"></a></td></tr>"#
+            )
+        })
+        .collect();
+    format!("{}<table>{rows}</table>", fc_solved_with("Folder", &links))
+}
+
 /// The `.dlc` the test server hands out and the key service's answer for it,
 /// the way JDownloader builds one: two of the server's own files.
 fn dlc_fixture(host: &str) -> (Vec<u8>, String) {
@@ -590,7 +610,8 @@ async fn start_server() -> (Server, u16) {
                 }
                 match page.as_str() {
                     "abc.html" | "open.html" | "cf-once.html" | "host-a.html" | "host-b.html"
-                    | "ids-a.html" | "ids-b.html" => FC_GATE.into_response(),
+                    | "ids-a.html" | "ids-b.html" | "same-a.html" | "same-b.html"
+                    | "other-a.html" | "other-b.html" => FC_GATE.into_response(),
                     _ => StatusCode::NOT_FOUND.into_response(),
                 }
             })
@@ -618,6 +639,14 @@ async fn start_server() -> (Server, u16) {
                             format!("http://{other}/files/Example.Archive.part2.rar"),
                         ],
                     )
+                } else if page == "same-a.html" {
+                    fc_sized(host, "Archive.One", ["2.00 GB", "880.00 MB"])
+                } else if page == "same-b.html" {
+                    fc_sized(&other, "Archive.Two", ["2.00 GB", "880.00 MB"])
+                } else if page == "other-a.html" {
+                    fc_sized(host, "Archive.Three", ["2.00 GB", "880.00 MB"])
+                } else if page == "other-b.html" {
+                    fc_sized(&other, "Archive.Four", ["2.00 GB", "500.00 MB"])
                 } else if page == "ids-a.html" || page == "ids-b.html" {
                     // Named after nothing but ids on both hosts, under a
                     // title that says nothing either.
@@ -778,6 +807,14 @@ async fn start_server() -> (Server, u16) {
                     "per-host" => r#"<html><head><title>Example P</title></head><body>
                         <a href="https://filecrypt.cc/Container/host-a.html">Mirror A</a>
                         <a href="https://filecrypt.cc/Container/host-b.html">Mirror B</a>
+                        </body></html>"#,
+                    "per-host-same" => r#"<html><head><title>Example S</title></head><body>
+                        <a href="https://filecrypt.cc/Container/same-a.html">Mirror A</a>
+                        <a href="https://filecrypt.cc/Container/same-b.html">Mirror B</a>
+                        </body></html>"#,
+                    "two-sets" => r#"<html><head><title>Example T</title></head><body>
+                        <a href="https://filecrypt.cc/Container/other-a.html">Set A</a>
+                        <a href="https://filecrypt.cc/Container/other-b.html">Set B</a>
                         </body></html>"#,
                     "per-host-ids" => r#"<html><head><title>Example I</title></head><body>
                         <a href="https://filecrypt.cc/Container/ids-a.html">Mirror A</a>
@@ -2908,6 +2945,65 @@ async fn containers_per_host_merge_their_parts_by_number() {
         s.items
     );
     assert_eq!(s.archives.len(), 1);
+}
+
+/// Containers under one title with the same part numbers are told apart by
+/// the sizes their pages show. The same sizes are one archive.
+#[tokio::test]
+async fn containers_of_the_same_sizes_merge() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/blog/per-host-same", t.ip), "");
+    let s = wait_for(&engine, "both containers unwrapped", |s| {
+        s.wrappers
+            .iter()
+            .filter(|w| w.host == "filecrypt.cc" && w.status == "done")
+            .count()
+            == 2
+    })
+    .await;
+    assert_eq!(s.archives.len(), 1, "{:?}", s.archives);
+    assert_eq!(s.items.len(), 2, "{:?}", s.items);
+    assert!(
+        s.items.iter().all(|i| i.mirrors.len() == 2),
+        "{:?}",
+        s.items
+    );
+}
+
+/// A clearly other size, even of the last part alone as sets split alike
+/// show, is another set of files: both stay whole, each under its own name.
+#[tokio::test]
+async fn containers_of_other_sizes_stay_apart() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/blog/two-sets", t.ip), "");
+    let s = wait_for(&engine, "both containers unwrapped", |s| {
+        s.wrappers
+            .iter()
+            .filter(|w| w.host == "filecrypt.cc" && w.status == "done")
+            .count()
+            == 2
+    })
+    .await;
+    let mut files: Vec<(String, usize)> = s
+        .items
+        .iter()
+        .map(|i| (i.name.clone(), i.mirrors.len()))
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        [
+            ("Archive.Four.part1.rar".to_string(), 1),
+            ("Archive.Four.part2.rar".to_string(), 1),
+            ("Archive.Three.part1.rar".to_string(), 1),
+            ("Archive.Three.part2.rar".to_string(), 1),
+        ],
+        "{:?}",
+        s.items
+    );
+    assert_eq!(s.archives.len(), 2, "{:?}", s.archives);
 }
 
 /// With only ids to choose from the parts keep one, which unrelated files

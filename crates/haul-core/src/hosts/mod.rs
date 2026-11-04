@@ -60,6 +60,11 @@ pub struct Entry {
     pub package: Option<String>,
     #[serde(default)]
     pub size: Option<u64>,
+    /// The rounded size a wrapper's page shows for the file, to tell its
+    /// files from another wrapper's. Never the file's size: that is
+    /// [`Entry::size`], from its host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed_size: Option<u64>,
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     /// The file's checksum, when the host publishes one.
