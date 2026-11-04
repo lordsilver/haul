@@ -1404,6 +1404,13 @@ pub fn is_guarded(message: &str) -> bool {
     generic::is_guarded(message)
 }
 
+/// Whether a resolver's request for a person is for a gate past the check in
+/// front of the site: the browser has to read the page, as a clearance
+/// handed to Haul would only bring it back to the same gate.
+pub fn is_gated(message: &str) -> bool {
+    generic::is_gated(message)
+}
+
 /// What a host whose free download is its page's (a wait, then a captcha)
 /// asks of a person without its account.
 pub(super) const FREE_ON_PAGE: &str =

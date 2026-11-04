@@ -612,6 +612,9 @@ async fn start_server() -> (Server, u16) {
                     "abc.html" | "open.html" | "cf-once.html" | "host-a.html" | "host-b.html"
                     | "ids-a.html" | "ids-b.html" | "same-a.html" | "same-b.html"
                     | "other-a.html" | "other-b.html" => FC_GATE.into_response(),
+                    // Another gate than the checkbox, past the check in front
+                    // of the site.
+                    "other-gate.html" => "<h2>Security Check</h2><div class=\"other\"></div>".into_response(),
                     _ => StatusCode::NOT_FOUND.into_response(),
                 }
             })
@@ -2835,6 +2838,58 @@ async fn a_wrapper_that_wants_a_person_says_so_while_paused() {
     assert!(engine.page_wants_person(&s.wrappers[0].id));
     let s = wrapper_settled(&engine, "captcha").await;
     assert_eq!(s.wrapper_cards[0].need_you, 1);
+}
+
+/// A gate Haul has no code for goes to the browser, which may be let through,
+/// even with the site's clearance held: no clearance is taken from that pass,
+/// which would only bring Haul back to the same gate.
+#[tokio::test]
+async fn a_container_behind_another_gate_is_passed_in_the_browser() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    let page = "https://filecrypt.cc/Container/other-gate.html";
+    engine.add_text(page, "");
+    let s = wrapper_settled(&engine, "passing").await;
+    assert!(!engine.takes_clearance(page));
+    let said = &s.wrappers[0].error;
+    assert!(said.contains("gate Haul cannot answer"), "{said}");
+
+    // What the browser then shows unpacks it, as for any page handed over.
+    let host = t.ip.trim_start_matches("http://");
+    let shown = fc_solved_with("Example.Set", &[format!("http://{host}/files/one.bin")]);
+    assert_eq!(engine.page_shown(&s.wrappers[0].id, &shown), 1);
+    wrapper_settled(&engine, "done").await;
+}
+
+/// Without a browser to pass it, the same gate waits for a person.
+#[tokio::test]
+async fn a_container_behind_another_gate_waits_for_a_person_without_a_browser() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://filecrypt.cc/Container/other-gate.html", "");
+    wrapper_settled(&engine, "captcha").await;
+}
+
+/// A page passed out of sight that fails for now says why and stays due for
+/// its retries, unlike one that says its file is gone.
+#[tokio::test]
+async fn a_page_that_fails_for_now_is_not_gone_for_good() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.add_text(&format!("{}/blog/guarded", t.ip), "");
+    let s = wait_for(&engine, "the page passed out of sight", |s| {
+        s.items.iter().any(|i| i.status == "passing")
+    })
+    .await;
+    engine.page_failed(&s.items[0].id, "answered Not Found");
+    let s = wait_for(&engine, "the download to fail", |s| {
+        s.items.iter().all(|i| i.status == "error")
+    })
+    .await;
+    assert!(s.items[0].error.contains("answered Not Found"));
+    assert!(s.items[0].retry_in > 0, "tried again on its timer");
 }
 
 /// A wrapper's site shows under Wrappers, not among the hosts, and one the

@@ -973,6 +973,7 @@ async fn filecrypt_answers_its_checkbox() {
     let app = {
         let (solved, sessions) = (solved.clone(), sessions.clone());
         Router::new()
+            .route("/404.html", get(|| async { "<h2>Not Found</h2>" }))
             .route(
                 "/Container/{page}",
                 get({
@@ -987,6 +988,10 @@ async fn filecrypt_answers_its_checkbox() {
                                 "seen.html" => solved,
                                 "locked.html" => r#"<input type="password" name="password">"#.into(),
                                 "plain.html" => "<p>Maintenance</p>".into(),
+                                // How it may turn away a client it refuses.
+                                "sent-away.html" => {
+                                    return axum::response::Redirect::to("/404.html").into_response();
+                                }
                                 _ => return StatusCode::NOT_FOUND.into_response(),
                             }
                             .into_response()
@@ -1083,7 +1088,7 @@ async fn filecrypt_answers_its_checkbox() {
     for (page, says) in [
         ("refuse.html", "turned Haul's answer"),
         ("locked.html", "password"),
-        ("plain.html", "without its checkbox"),
+        ("plain.html", "gate Haul cannot answer"),
     ] {
         let err = filecrypt::unwrap(&cx, &format!("https://filecrypt.cc/Container/{page}"))
             .await
@@ -1096,7 +1101,17 @@ async fn filecrypt_answers_its_checkbox() {
     let err = filecrypt::unwrap(&cx, "https://filecrypt.cc/Container/gone.html")
         .await
         .unwrap_err();
-    assert_eq!(err, ResolveError::Failed("HTTP 404".into()));
+    assert!(
+        matches!(&err, ResolveError::Failed(m) if m.contains("Not Found") && m.contains("refusing")),
+        "{err:?}"
+    );
+    let err = filecrypt::unwrap(&cx, "https://filecrypt.cc/Container/sent-away.html")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, ResolveError::Failed(m) if m.contains("Not Found")),
+        "sent to its 404 page: {err:?}"
+    );
 }
 
 /// Pages may come compressed; a file's size and bytes are asked for as

@@ -15,7 +15,8 @@
 //! twice: as Click'n'Load data, encrypted with a key beside it, which Haul
 //! decrypts itself, and as a `.dlc`, unpacked through JDownloader's key
 //! service, the fallback. A solve turned away, or a gate Haul cannot answer
-//! (a picture puzzle), waits for a person; the desktop app's browser hands
+//! (a picture puzzle, a captcha of another kind), waits for a person, or for
+//! the desktop app's browser, out of sight; the desktop app's browser hands
 //! back what the solved page shows (`handoff.js`): the parts of it read
 //! here ([`shown`]), and its `.dlc` link, which is not gated.
 
@@ -339,6 +340,12 @@ fn visit(user_agent: &str, tz: &str, page: &str) -> String {
     signals(&serde_json::to_string(&report).unwrap_or_default())
 }
 
+/// What a container that answers "Not Found" may be. filecrypt.cc says the
+/// same of a container that was deleted and to an address it refuses: every
+/// container, on a fresh browser profile, for hours on end.
+const NOT_FOUND: &str =
+    "answered Not Found: the container was deleted, or the site is refusing this address for now";
+
 /// An answer that is not the page to read: a rate limit to wait out, a
 /// container that is gone, or a refusal a person may get past.
 fn refusal(r: &reqwest::Response, what: &str) -> Option<ResolveError> {
@@ -354,7 +361,11 @@ fn refusal(r: &reqwest::Response, what: &str) -> Option<ResolveError> {
             message: format!("{status} rate limited"),
         });
     }
-    if matches!(status, 404 | 410) || status >= 500 {
+    // Past the clearance it may send a client it refuses to its 404 page.
+    if matches!(status, 404 | 410) || r.url().path().eq_ignore_ascii_case("/404.html") {
+        return Some(ResolveError::Failed(NOT_FOUND.into()));
+    }
+    if status >= 500 {
         return Some(ResolveError::Failed(format!("HTTP {status}")));
     }
     (status >= 400).then(|| {
@@ -508,10 +519,10 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
             "filecrypt.cc asks for this container's password; open the page".into(),
         ));
     }
+    // Another gate than the checkbox (a captcha of another kind): a browser
+    // is often let through it, and hands back the page it shows.
     let Some(widget) = WIDGET.find(&html) else {
-        return Err(ResolveError::NeedsUser(
-            "filecrypt.cc answered without its checkbox; open the page".into(),
-        ));
+        return Err(super::generic::gated(&page));
     };
     let data: Vec<(String, String)> = DATA
         .captures_iter(widget.as_str())
