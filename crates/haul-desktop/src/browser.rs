@@ -234,6 +234,7 @@ impl Browser {
                     }
                 }
                 Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
+                Ok(chromium::Outcome::Failed(reason)) => engine.page_failed(&id, &reason),
                 Ok(chromium::Outcome::Later(reason)) => engine.page_later(&id, &reason),
                 Ok(chromium::Outcome::Cleared { cookies, agent }) => {
                     tracing::info!(item = %id, "{host} let the browser past its check: Haul reads {url} itself");

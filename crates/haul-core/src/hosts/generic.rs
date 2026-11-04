@@ -94,10 +94,24 @@ pub(super) fn guarded(url: &str) -> ResolveError {
 
 const GUARD: &str = "is behind a browser check (Cloudflare's)";
 
-/// Whether a resolver's request for a person is [`guarded`]'s: a page whose
-/// check a browser usually passes by itself.
+/// What a page needs when it answers with a gate Haul has no code for, past
+/// any check in front of its site: a browser, which may be let through.
+pub(super) fn gated(url: &str) -> ResolveError {
+    ResolveError::NeedsUser(format!("{} {GATE}", host_of(url)))
+}
+
+const GATE: &str = "shows a gate Haul cannot answer; open the page";
+
+/// Whether a resolver's request for a person is [`guarded`]'s or [`gated`]'s:
+/// a page whose check a browser usually passes by itself.
 pub(super) fn is_guarded(message: &str) -> bool {
-    message.ends_with(GUARD)
+    message.ends_with(GUARD) || is_gated(message)
+}
+
+/// Whether a resolver's request for a person is [`gated`]'s: a clearance
+/// would change nothing, since the gate is past it.
+pub(super) fn is_gated(message: &str) -> bool {
+    message.ends_with(GATE)
 }
 
 const PEEK: usize = 64 * 1024;

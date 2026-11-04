@@ -205,6 +205,23 @@
       // gated, and stands in when Haul finds nothing in the page.
       site: /(^|\.)filecrypt\.cc$/,
       watch() {
+        // Out of sight, "Not Found" ends the pass instead of waiting out its
+        // time for nobody. The site says it of a deleted container and to an
+        // address it refuses alike, so the row fails for now, not for good;
+        // a person's window just shows the page. Cloudflare's check in front
+        // of the page answers 403, and this runs again on the page after it.
+        const notFound = () => {
+          if (handed || !window.__haulDevTools) return;
+          const answered = performance.getEntriesByType("navigation")[0]?.responseStatus;
+          if (answered !== 404 && location.pathname.toLowerCase() !== "/404.html") return;
+          handed = true;
+          window.__haulHandoff = {
+            failed: "filecrypt.cc: answered Not Found: the container was deleted, or the site is refusing this address for now",
+          };
+        };
+        // The status may not be there yet as the document starts.
+        notFound();
+        document.addEventListener("DOMContentLoaded", notFound);
         const look = () => {
           // The link table comes after the buttons: read the page once it
           // is all there, not as it is parsed.

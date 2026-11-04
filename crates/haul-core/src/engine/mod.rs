@@ -614,6 +614,18 @@ impl State {
         hosts::page_passes(url) || self.guarded.contains(url)
     }
 
+    /// A resolver asked for a person with `message`: page `url` goes to the
+    /// desktop app's browser when a browser usually passes it. A gate past
+    /// the site's check takes no clearance: Haul would only read it again.
+    fn note_check(&mut self, url: &str, message: &str) {
+        if hosts::is_guarded(message) {
+            self.guarded.insert(url.to_string());
+        }
+        if hosts::is_gated(message) {
+            self.cleared.insert(url.to_string());
+        }
+    }
+
     fn host(&mut self, name: &str) -> &mut HostStats {
         self.hosts
             .entry(name.to_string())
@@ -1449,9 +1461,7 @@ impl Engine {
             // while downloads are paused.
             Ok(Err(ResolveError::NeedsUser(message))) => {
                 let mut st = self.lock();
-                if hosts::is_guarded(&message) {
-                    st.guarded.insert(url.clone());
-                }
+                st.note_check(&url, &message);
                 let mut event = None;
                 if let Some(it) = st.items.get_mut(&id)
                     && !it.running()
@@ -2339,9 +2349,7 @@ impl Engine {
                     }
                 }
                 Err(Fail::NeedsUser(message)) => {
-                    if hosts::is_guarded(&message) {
-                        st.guarded.insert(url.to_string());
-                    }
+                    st.note_check(url, &message);
                     // A copied page nobody passes for it asks no one: it goes.
                     if !(self.pages_pass() && st.passes(url)) {
                         drop_tentative_row(&mut st, id, "wants a person");
@@ -3180,6 +3188,18 @@ impl Engine {
     /// mirror failed like any other, and the item goes on to the next one
     /// (or fails with `reason` when none is left), asking nobody.
     pub fn page_gone(&self, id: &str, reason: &str) {
+        self.page_ended(id, reason, true);
+    }
+
+    /// A page passed out of sight says something that may not last (a site
+    /// answering "Not Found" to an address it refuses): that mirror failed
+    /// as with [`Engine::page_gone`], asking nobody, but the item stays due
+    /// for its automatic retries.
+    pub fn page_failed(&self, id: &str, reason: &str) {
+        self.page_ended(id, reason, false);
+    }
+
+    fn page_ended(&self, id: &str, reason: &str, for_good: bool) {
         if self.drop_tentative(id, reason) {
             return;
         }
@@ -3190,7 +3210,9 @@ impl Engine {
         if let Some(it) = st.items.get_mut(id) {
             tracing::info!(item = %id, "{page}: {reason}");
             it.manual_urls.remove(&page);
-            it.gone.insert(page.clone());
+            if for_good {
+                it.gone.insert(page.clone());
+            }
             it.failed.insert(page);
             it.error = reason.to_string();
             if it.status == Status::Captcha {

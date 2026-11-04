@@ -128,6 +128,9 @@ pub enum Outcome {
     },
     /// The page said its file is gone.
     Gone(String),
+    /// The page says something that may not last: the mirror failed for now,
+    /// nobody is asked.
+    Failed(String),
     /// The page could not hand out its link this time.
     Later(String),
     /// The browser is past the check in front of the page's site and got
@@ -265,6 +268,7 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
                 json!({ "files": files.iter().map(|f| &f.url).collect::<Vec<_>>() })
             }
             Ok(Outcome::Gone(why)) => json!({ "gone": why }),
+            Ok(Outcome::Failed(why)) => json!({ "failed": why }),
             Ok(Outcome::Later(why)) => json!({ "later": why }),
             // Their names only, not what they hold.
             Ok(Outcome::Cleared { cookies, agent }) => json!({
@@ -437,6 +441,9 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         }
         if let Some(reason) = sent["gone"].as_str() {
             return Ok(Outcome::Gone(reason.to_string()));
+        }
+        if let Some(reason) = sent["failed"].as_str() {
+            return Ok(Outcome::Failed(reason.to_string()));
         }
         if let Some(reason) = sent["later"].as_str() {
             return Ok(Outcome::Later(reason.to_string()));
