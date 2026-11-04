@@ -5,6 +5,8 @@
 //!   message and fields such as `item`, `url`, `host`), the file a person
 //!   can send. It is started afresh at 10 MB, keeping the 5 files before it
 //!   (`haul.1.log` the newest of them).
+//! - Neither it nor the console keeps the part of a link after `#`, which
+//!   holds mega.nz's keys: a log can be read and sent as it is.
 //! - Notable events are logged; with the detailed log on (a setting that
 //!   applies at once) Haul's own debug events are too. `RUST_LOG`, when
 //!   set, decides instead.
@@ -21,6 +23,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use regex::Regex;
 use serde::Serialize;
 use tracing::{
     Event, Subscriber,
@@ -288,6 +291,40 @@ impl Write for Rotating {
     }
 }
 
+/// A link's `#…` part, up to the end of the word or of the JSON string it is
+/// in. An escaped quote ends it too, whole, so the line stays JSON.
+static LINK_FRAGMENT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r##"(://[^\s"#]*)#(?:[^\s"\\]|\\[^"])*"##).unwrap());
+
+/// `line` with the `#…` part of every link in it left out.
+fn without_keys(line: &str) -> std::borrow::Cow<'_, str> {
+    LINK_FRAGMENT.replace_all(line, "$1")
+}
+
+/// Writes through `W` what [`without_keys`] leaves of each line; the layers
+/// hand over one whole event per write.
+struct KeepKeysOut<W>(W);
+
+impl<W: Write> Write for KeepKeysOut<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .write_all(without_keys(&String::from_utf8_lossy(buf)).as_bytes())?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl<'a, M: MakeWriter<'a>> MakeWriter<'a> for KeepKeysOut<M> {
+    type Writer = KeepKeysOut<M::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        KeepKeysOut(self.0.make_writer())
+    }
+}
+
 struct LogFile(Mutex<Rotating>);
 
 struct Guard<'a>(std::sync::MutexGuard<'a, Rotating>);
@@ -345,9 +382,13 @@ pub fn init(data_dir: &Path, console: bool, debug: bool) {
                 .flatten_event(true)
                 .with_current_span(false)
                 .with_span_list(false)
-                .with_writer(LogFile(Mutex::new(r)))
+                .with_writer(KeepKeysOut(LogFile(Mutex::new(r))))
         });
-    let console = console.then(|| tracing_subscriber::fmt::layer().with_ansi(false));
+    let console = console.then(|| {
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(KeepKeysOut(io::stdout))
+    });
     let history = HistoryLayer.with_filter(
         EnvFilter::new("haul_core=debug,haul_web=debug,haul_desktop=debug")
             .add_directive(LevelFilter::INFO.into()),
@@ -409,6 +450,38 @@ mod tests {
         assert!(history("nobody").is_empty());
         let at = now_utc();
         assert_eq!(at.len(), "2026-10-16T12:00:00.000Z".len(), "{at}");
+    }
+
+    #[test]
+    fn the_log_keeps_no_keys() {
+        for (line, kept) in [
+            // As `haul.log` writes it: the field and the message.
+            (
+                r#"{"message":"https://mega.nz/file/abc#KEY links 2 files","url":"https://mega.nz/folder/abc#KEY/file/def","item":"i"}"#,
+                r#"{"message":"https://mega.nz/file/abc links 2 files","url":"https://mega.nz/folder/abc","item":"i"}"#,
+            ),
+            // The older form, as the console writes it.
+            (
+                "INFO downloaded url=https://mega.nz/#!abc!KEY item=i",
+                "INFO downloaded url=https://mega.nz/ item=i",
+            ),
+            // A quote the JSON escapes ends the link and stays escaped.
+            (
+                r#"{"message":"passing \"https://mega.nz/file/abc#KEY\": no"}"#,
+                r#"{"message":"passing \"https://mega.nz/file/abc\": no"}"#,
+            ),
+            // No link, or none with a `#` part: as it is.
+            (
+                "part #2 of https://site.example/a.rar",
+                "part #2 of https://site.example/a.rar",
+            ),
+        ] {
+            assert_eq!(without_keys(line), kept);
+        }
+        let mut out = KeepKeysOut(Vec::new());
+        let line = "url=https://mega.nz/file/abc#KEY\n";
+        out.write_all(line.as_bytes()).unwrap();
+        assert_eq!(out.0, b"url=https://mega.nz/file/abc\n");
     }
 
     #[test]

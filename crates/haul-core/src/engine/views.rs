@@ -236,7 +236,7 @@ pub struct ArchiveView {
 
 /// Whether a file's name is only an id an uploader gave it (a UUID, or a
 /// long run of hex), which says nothing of what it holds.
-fn says_nothing(stem: &str) -> bool {
+pub(super) fn says_nothing(stem: &str) -> bool {
     let hex = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit());
     let groups: Vec<&str> = stem.split('-').collect();
     let uuid = groups.iter().map(|g| g.len()).eq([8, 4, 4, 4, 12]) && groups.iter().all(|g| hex(g));

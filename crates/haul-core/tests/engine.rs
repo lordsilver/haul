@@ -589,9 +589,8 @@ async fn start_server() -> (Server, u16) {
                         .into_response();
                 }
                 match page.as_str() {
-                    "abc.html" | "open.html" | "cf-once.html" | "host-a.html" | "host-b.html" => {
-                        FC_GATE.into_response()
-                    }
+                    "abc.html" | "open.html" | "cf-once.html" | "host-a.html" | "host-b.html"
+                    | "ids-a.html" | "ids-b.html" => FC_GATE.into_response(),
                     _ => StatusCode::NOT_FOUND.into_response(),
                 }
             })
@@ -615,8 +614,23 @@ async fn start_server() -> (Server, u16) {
                     fc_solved_with(
                         "Example.Set",
                         &[
-                            format!("http://{other}/files/Some.Rel-GRP.part1.rar"),
-                            format!("http://{other}/files/Some.Rel-GRP.part2.rar"),
+                            format!("http://{other}/files/Example.Archive.part1.rar"),
+                            format!("http://{other}/files/Example.Archive.part2.rar"),
+                        ],
+                    )
+                } else if page == "ids-a.html" || page == "ids-b.html" {
+                    // Named after nothing but ids on both hosts, under a
+                    // title that says nothing either.
+                    let (at, id) = if page == "ids-a.html" {
+                        (host.to_string(), "0123456789abcdef")
+                    } else {
+                        (other, "0123456789abcdef0000")
+                    };
+                    fc_solved_with(
+                        "Folder",
+                        &[
+                            format!("http://{at}/files/{id}.part1.rar"),
+                            format!("http://{at}/files/{id}.part2.rar"),
                         ],
                     )
                 } else if page == "open.html" || page == "cf-once.html" {
@@ -764,6 +778,10 @@ async fn start_server() -> (Server, u16) {
                     "per-host" => r#"<html><head><title>Example P</title></head><body>
                         <a href="https://filecrypt.cc/Container/host-a.html">Mirror A</a>
                         <a href="https://filecrypt.cc/Container/host-b.html">Mirror B</a>
+                        </body></html>"#,
+                    "per-host-ids" => r#"<html><head><title>Example I</title></head><body>
+                        <a href="https://filecrypt.cc/Container/ids-a.html">Mirror A</a>
+                        <a href="https://filecrypt.cc/Container/ids-b.html">Mirror B</a>
                         </body></html>"#,
                     // Kept behind a check a browser passes (Cloudflare's).
                     "guarded" => {
@@ -2858,7 +2876,9 @@ async fn a_page_site_is_listed_only_when_switched_off() {
 
 /// A page that links a container per host, each host naming the
 /// parts its own way, is one archive: each part has every host's link, and
-/// all parts take the page's name, so they unpack together.
+/// all parts take the name that says most of the files', so they unpack
+/// together. The containers' title, which unrelated files can share, is not
+/// it.
 #[tokio::test]
 async fn containers_per_host_merge_their_parts_by_number() {
     let t = Setup::new().await;
@@ -2881,13 +2901,47 @@ async fn containers_per_host_merge_their_parts_by_number() {
     assert_eq!(
         files,
         [
-            ("Example.Set.part1.rar".to_string(), 2),
-            ("Example.Set.part2.rar".to_string(), 2)
+            ("Example.Archive.part1.rar".to_string(), 2),
+            ("Example.Archive.part2.rar".to_string(), 2)
         ],
         "{:?}",
         s.items
     );
     assert_eq!(s.archives.len(), 1);
+}
+
+/// With only ids to choose from the parts keep one, which unrelated files
+/// won't share, and only their card shows the title.
+#[tokio::test]
+async fn containers_per_host_named_by_ids_keep_one_on_disk() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/blog/per-host-ids", t.ip), "");
+    let s = wait_for(&engine, "both containers unwrapped", |s| {
+        s.wrappers
+            .iter()
+            .filter(|w| w.host == "filecrypt.cc" && w.status == "done")
+            .count()
+            == 2
+    })
+    .await;
+    let mut files: Vec<(String, usize)> = s
+        .items
+        .iter()
+        .map(|i| (i.name.clone(), i.mirrors.len()))
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        [
+            ("0123456789abcdef0000.part1.rar".to_string(), 2),
+            ("0123456789abcdef0000.part2.rar".to_string(), 2)
+        ],
+        "{:?}",
+        s.items
+    );
+    assert_eq!(s.archives.len(), 1);
+    assert_eq!(s.archives[0].name, "Folder.rar");
 }
 
 /// Every site Haul knows is listed before any link is on it, so it can be
