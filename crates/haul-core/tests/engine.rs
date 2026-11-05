@@ -4465,9 +4465,15 @@ async fn holding_for_a_new_address_has_a_limit() {
     engine.add_text(&format!("{}/unsized/200/h.bin", t.name), "");
     wait_for(&engine, "the hold", |s| s.reconnect.draining.is_some()).await;
     engine.add_text(&format!("{}/files/new.bin", t.name), "");
-    let s = wait_for(&engine, "the limit", |s| s.reconnect.draining.is_none()).await;
-    let note = s.reconnect.note.clone().unwrap();
-    assert!(note.contains("Put off"), "{note}");
+    // A hold can also end by itself and come up again, when a moment's reading
+    // no longer points at the host: what counts is how it ends at the limit.
+    let s = wait_for(&engine, "the limit", |s| {
+        s.reconnect
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("Put off"))
+    })
+    .await;
     assert!(!s.reconnect.failed);
     wait_for(&engine, "what was held back", |s| {
         row(s, "new.bin").status == "done"
@@ -4864,4 +4870,27 @@ async fn an_older_or_damaged_hosts_file_does_not_stop_haul() {
     let engine = start_when_free(|| t.options()).await;
     let s = engine.snapshot();
     assert!(s.hosts.iter().all(|h| h.name != "site.example"));
+}
+
+/// Time the whole process stood still (a stalled machine, a computer asleep)
+/// says nothing about a host: a transfer running well isn't blamed for it.
+#[tokio::test]
+async fn a_frozen_process_is_not_a_slow_host() {
+    let t = Setup::new().await;
+    let engine = t.engine_with(quick_to_judge(&t)).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/200/x.bin {}/files/x.bin", t.ip, t.name),
+        "",
+    );
+    wait_for(&engine, "progress", |s| row(s, "x.bin").done > 0).await;
+    for _ in 0..3 {
+        // Holds this test's one thread, which everything here runs on.
+        std::thread::sleep(Duration::from_millis(800));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let s = engine.snapshot();
+    assert_eq!(row(&s, "x.bin").shown_host, "127.0.0.1");
+    assert_eq!(cooldown(&s, "127.0.0.1"), 0);
+    assert!(t.server.requests("/files/x.bin").is_empty());
 }

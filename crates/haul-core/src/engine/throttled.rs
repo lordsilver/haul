@@ -11,8 +11,12 @@ use crate::{
     config::Config,
     hosts,
     item::{Item, Slowed},
-    throttle::{self, Around, OwnLimit, Reading, Throttling, Verdict},
+    throttle::{self, Around, OwnLimit, Pace, Reading, Throttling, Verdict},
 };
+
+/// Ticks late past which the watcher itself was held up, so what its readings
+/// span isn't the transfers' doing.
+const FROZEN_TICKS: u32 = 5;
 
 /// One running transfer, read for the others to be compared with.
 struct Run {
@@ -39,17 +43,22 @@ fn mb(bytes: u64) -> String {
 impl Engine {
     /// Looks at the running transfers every tick.
     pub(super) async fn watch_speeds(self) {
+        let mut last = Instant::now();
         loop {
             let tick = self.cfg().throttling.tick;
             tokio::select! {
                 _ = self.0.shutdown.cancelled() => return,
                 _ = tokio::time::sleep(tick) => {}
             }
-            self.judge_speeds();
+            // Far later than asked: the process stood still (a stalled machine,
+            // a computer asleep), and that time says nothing about any host.
+            let frozen = last.elapsed() > tick * FROZEN_TICKS;
+            last = Instant::now();
+            self.judge_speeds(frozen);
         }
     }
 
-    fn judge_speeds(&self) {
+    fn judge_speeds(&self, frozen: bool) {
         let cfg = self.cfg();
         let t = &cfg.throttling;
         // Before the state's lock: the two are always taken in this order.
@@ -71,6 +80,9 @@ impl Engine {
             let (Some(exit), Some(pace)) = (it.exit, it.pace.as_mut()) else {
                 continue;
             };
+            if frozen {
+                *pace = Pace::new(now, it.done);
+            }
             pace.sample(now, it.done, t);
             total += it.speed;
             runs.push(Run {
