@@ -292,7 +292,9 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
         icon={Shuffle}
         title="Leave hosts that slow you down"
         description="A host holding a big download far below what it or your line can do is taken to be limiting your address: the download goes on from another host or, with a new IP on its own switched on, a new address once other downloads have finished. With neither, it keeps going and says why."
-        controls={<SettingSwitch name="leave_slow_hosts" on={d.leave_slow_hosts} label="Leave hosts that slow you down" />}
+        controls={
+          <SettingSwitch name="leave_slow_hosts" on={d.leave_slow_hosts} label="Leave hosts that slow you down" />
+        }
       />
       <SettingCard
         icon={RotateCw}

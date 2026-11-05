@@ -37,10 +37,10 @@ curl -N -H "X-Haul-Debug: $TOKEN" "http://127.0.0.1:$PORT/api/debug/stream?repla
 
 - `state`: what `/api/state` answers.
 - `engine`: what the UI does not show.
-  - `items`: each row's links (`mirrors`), the ones that failed, are gone or want a person, `page_wants_person`, `page_retrying` (its page is passed again on its own, telling nobody), `tentative`, `probed`, `running`, the exit it downloads through, retries, and the seconds until its next retry (`retry_in`) or try (`not_before_in`).
-  - `hosts`: each host's limit, measured speed, failures and current penalty.
-  - `lanes`: each host from each exit, with the downloads it serves, the limit it showed (`cap`), and the seconds left of its cooldown and settling.
-  - `guarded` (pages behind Cloudflare's check), `cleared` (those whose clearance a pass handed Haul), `pages_pass`, `paused`, `moving`, `reconnecting`.
+  - `items`: each row's links (`mirrors`), the ones that failed, are gone or want a person, `page_wants_person`, `page_retrying` (its page is passed again on its own, telling nobody), `tentative`, `probed`, `running`, the exit it downloads through, the mirror its attempt goes to (`url`), what its speed says (`speed_verdict`), `slowed`, the mirrors that slowed it (`slow_on`), the host its partial file's bytes came from (`part_host`), retries, and the seconds until its next retry (`retry_in`) or try (`not_before_in`).
+  - `hosts`: each host's limit, measured speed, what it gives when it isn't limiting the address (`normal`), whether a redial made for it didn't help (`redial_useless`), failures and current penalty.
+  - `lanes`: each host from each exit, with the downloads it serves, the limit it showed (`cap`), the seconds left of its cooldown and settling, whether that cooldown is for slowing the address (`slowing`), and how many times in a row it did (`strikes`).
+  - `guarded` (pages behind Cloudflare's check), `cleared` (those whose clearance a pass handed Haul), `pages_pass`, `paused`, `moving`, `reconnecting`, `draining` (why a redial waits for downloads to finish).
 - `desktop` (desktop app only): `passes_out_of_sight`, each with its page, profile, browser `pid`, start, limit and the page's last message, and whether it is stopping or abandoned; the in-app browser windows open; the Edge or Chrome Haul found.
 
 ## Waiting
