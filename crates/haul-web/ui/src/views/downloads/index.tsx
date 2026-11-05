@@ -5,6 +5,7 @@ import {
   CircleX,
   Download,
   Eraser,
+  FolderOpen,
   type LucideIcon,
   Pause,
   Play,
@@ -22,7 +23,7 @@ import { Infobar } from '@/components/infobar';
 import { EmptyState, PageHeader, SearchBox } from '@/components/page';
 import { Button } from '@/components/ui/button';
 import { addOpen } from '@/lib/add';
-import { api, bulk, report } from '@/lib/api';
+import { api, bulk, openPlace, report } from '@/lib/api';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import type { State } from '@/lib/bindings/State';
 import { plural } from '@/lib/format';
@@ -276,6 +277,10 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
           Clear completed
         </Button>
       )}
+      <Button variant="ghost" title={`Open ${s.download_dir}`} onClick={() => openPlace('downloads')}>
+        <FolderOpen />
+        Open folder
+      </Button>
     </>
   );
 }

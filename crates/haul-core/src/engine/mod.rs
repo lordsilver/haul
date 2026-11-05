@@ -311,9 +311,11 @@ struct HostStats {
     /// well since.
     redialed_for: bool,
     /// It was as slow on the new address as on the old: it doesn't limit by
-    /// address, so another redial would cut the line for nothing. Until a
-    /// restart, or it runs well again.
+    /// address, so another redial would cut the line for nothing. For a week,
+    /// across restarts, or until it runs well again.
     redial_useless: bool,
+    /// When that was found, in seconds since 1970; 0 while it isn't.
+    redial_useless_at: u64,
     fails: u32,
     /// Failures weighed by age: each halves every [`PENALTY_HALF_LIFE`].
     penalty: f64,
@@ -376,6 +378,7 @@ impl HostStats {
             normal: 0.0,
             redialed_for: false,
             redial_useless: false,
+            redial_useless_at: 0,
             fails: 0,
             penalty: 0.0,
             penalty_at: Instant::now(),
@@ -392,6 +395,9 @@ impl HostStats {
             ema: if fresh { saved.speed as f64 } else { 0.0 },
             measured: if fresh { saved.measured } else { 0 },
             normal: if fresh { saved.normal as f64 } else { 0.0 },
+            redial_useless: saved.redial_useless_at > 0
+                && now.saturating_sub(saved.redial_useless_at) < SPEED_MEMORY,
+            redial_useless_at: saved.redial_useless_at,
             ok: saved.ok,
             fails: saved.fails,
             bytes: saved.bytes,
@@ -404,6 +410,11 @@ impl HostStats {
             speed: self.ema.round() as u64,
             measured: self.measured,
             normal: self.normal.round() as u64,
+            redial_useless_at: if self.redial_useless {
+                self.redial_useless_at
+            } else {
+                0
+            },
             ok: self.ok,
             fails: self.fails,
             bytes: self.bytes,
@@ -874,6 +885,12 @@ impl Engine {
 
     /// Adds every link found in `text`.
     pub fn add_text(&self, text: &str, package: &str) -> Added {
+        self.add_text_with(text, package, None)
+    }
+
+    /// Adds every link found in `text`, its archives opened with `password`
+    /// first, and the files of its wrappers too.
+    pub fn add_text_with(&self, text: &str, package: &str, password: Option<&str>) -> Added {
         let links = container::extract_urls(text)
             .into_iter()
             .map(|url| Link {
@@ -882,7 +899,7 @@ impl Engine {
                 package: package.to_string(),
             })
             .collect();
-        self.add_links(links)
+        self.add(links, false, password.filter(|p| !p.is_empty()))
     }
 
     /// Adds the links in copied text that point at a known host or a file.
@@ -901,21 +918,24 @@ impl Engine {
             .partition(|url| hosts::is_download_link(url));
         let mut added = Added::default();
         if !downloads.is_empty() {
-            added = self.add(downloads.into_iter().map(link).collect(), false);
+            added = self.add(downloads.into_iter().map(link).collect(), false, None);
         }
         if !pages.is_empty() {
-            added.pages = self.add(pages.into_iter().map(link).collect(), true).added;
+            added.pages = self
+                .add(pages.into_iter().map(link).collect(), true, None)
+                .added;
         }
         added
     }
 
     pub fn add_links(&self, links: Vec<Link>) -> Added {
-        self.add(links, false)
+        self.add(links, false, None)
     }
 
     /// Adds `links`; `tentative`: copied pages, kept only if they list
-    /// links ([`Item::tentative`]).
-    fn add(&self, links: Vec<Link>, tentative: bool) -> Added {
+    /// links ([`Item::tentative`]). `password`: the one the person gave with
+    /// them, tried first on their archives.
+    fn add(&self, links: Vec<Link>, tentative: bool, password: Option<&str>) -> Added {
         let mut added = Added::default();
         let mut probe = Vec::new();
         {
@@ -944,6 +964,7 @@ impl Engine {
                     }
                     let mut it = Item::new(vec![link.url], None, link.package);
                     it.wrapper = true;
+                    it.extract_password = password.map(str::to_string);
                     // Unwrapped right away, as a name is looked up.
                     probe.push(it.id.clone());
                     tracing::debug!(item = %it.id, url = %it.mirrors[0], "added as a wrapper");
@@ -966,6 +987,9 @@ impl Engine {
                 {
                     tracing::debug!(item = %it.id, url = %link.url, "another host for {name}");
                     it.mirrors.push(link.url);
+                    if let Some(password) = password {
+                        it.extract_password = Some(password.to_string());
+                    }
                     added.merged += 1;
                     continue;
                 }
@@ -976,6 +1000,7 @@ impl Engine {
                 let page = hosts::is_web_page(&link.url) && !hosts::is_download_link(&link.url);
                 let mut it = Item::new(vec![link.url], name, link.package);
                 it.tentative = tentative;
+                it.extract_password = password.map(str::to_string);
                 if tentative || page {
                     it.probed = false;
                 } else if it.probed && hosts::tells_size(&it.mirrors[0]) {
@@ -1384,9 +1409,11 @@ impl Engine {
             return;
         };
         let package = st.items[at].package.clone();
+        let password = st.items[at].extract_password.clone();
         st.items.shift_remove_index(at);
         for e in entries {
             let mut it = Item::new(vec![url.to_string()], e.name.clone(), package.clone());
+            it.extract_password.clone_from(&password);
             it.size = e.size.unwrap_or(0);
             it.probed = true;
             it.pre = Some(e);
@@ -1415,6 +1442,7 @@ impl Engine {
             return probe;
         };
         let package = row.package.clone();
+        let password = row.extract_password.clone();
         let mut known: HashSet<String> = st
             .items
             .iter()
@@ -1539,6 +1567,7 @@ impl Engine {
                 it
             };
             it.source = Some(id.to_string());
+            it.extract_password.clone_from(&password);
             let new_id = it.id.clone();
             let unprobed = !it.probed;
             let at = st
@@ -1633,6 +1662,9 @@ impl Engine {
             it.merge_wrappers(o.source.as_ref(), &o.also_from);
             if it.checksum.is_none() {
                 it.checksum = o.checksum;
+            }
+            if it.extract_password.is_none() {
+                it.extract_password = o.extract_password;
             }
             let (from, to) = (self.part_path(&other), self.part_path(id));
             if from.exists() {
@@ -2360,10 +2392,19 @@ mod tests {
             fails: 1,
             bytes: 9,
             normal: 7_000_000,
+            redial_useless_at: measured,
         };
         let now = 10 * SPEED_MEMORY;
         let fresh = HostStats::restore(&saved(now - 60), now);
         assert_eq!((fresh.ema, fresh.normal, fresh.ok), (5e6, 7e6, 3));
+        assert!(
+            fresh.redial_useless,
+            "a redial that didn't help is remembered"
+        );
+        assert_eq!(
+            HostStats::restore(&fresh.saved(), now).redial_useless_at,
+            now - 60
+        );
         let stale = HostStats::restore(&saved(now - SPEED_MEMORY - 1), now);
         assert_eq!(
             (
@@ -2375,6 +2416,7 @@ mod tests {
             ),
             (0.0, 0.0, 0, 3, 1)
         );
+        assert!(!stale.redial_useless, "for a week");
     }
 
     /// The system's own bin, on the platforms that can list it: the file

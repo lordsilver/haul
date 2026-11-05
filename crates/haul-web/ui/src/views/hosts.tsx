@@ -19,6 +19,7 @@ import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
 import { EmptyState, PageHeader, PageScroll, SearchBox } from '@/components/page';
 import { AccountField, SettingCard, SettingRow } from '@/components/setting-card';
+import { SettingsTabs } from '@/components/settings-tabs';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -663,18 +664,19 @@ export function Hosts({ s }: { s: State }) {
   return (
     <>
       <PageHeader
-        title="Hosts"
+        title="Settings"
         actions={
-          <>
-            {linkSites.map(({ group, sites }) => (
-              <LinkSitesButton key={group} group={group} sites={sites} s={s} d={d} />
-            ))}
-            <SearchBox value={typed} label="Search hosts" placeholder="Search hosts" onChange={setTyped} />
-          </>
+          <div className="flex w-full flex-col gap-3">
+            <SettingsTabs current="hosts" />
+            <div className="flex flex-wrap items-center gap-2">
+              {linkSites.map(({ group, sites }) => (
+                <LinkSitesButton key={group} group={group} sites={sites} s={s} d={d} />
+              ))}
+              <SearchBox value={typed} label="Search hosts" placeholder="Search hosts" onChange={setTyped} />
+            </div>
+          </div>
         }
-      >
-        Star the hosts you prefer and drag them into order. A host switched off is never used.
-      </PageHeader>
+      />
       {hosts.length ? (
         // Where a dragged host lands; the arrows reorder from the keyboard.
         <PageScroll

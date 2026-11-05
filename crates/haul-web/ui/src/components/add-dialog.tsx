@@ -24,7 +24,7 @@ export function AddDialog() {
   }, [form.open, form.focus]);
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
-    if (await addText(form.text, form.pkg.trim())) closeAdd();
+    if (await addText(form.text, form.pkg.trim(), form.password)) closeAdd();
   };
   return (
     <Dialog open={form.open} onOpenChange={(open) => !open && closeAdd()}>
@@ -56,16 +56,30 @@ export function AddDialog() {
               }}
             />
           </div>
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="add-package">
-              Package <span className="font-normal text-muted-foreground">optional subfolder</span>
-            </Label>
-            <Input
-              id="add-package"
-              autoComplete="off"
-              value={form.pkg}
-              onChange={(e) => editAdd({ pkg: e.target.value })}
-            />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="add-package">
+                Package <span className="font-normal text-muted-foreground">optional subfolder</span>
+              </Label>
+              <Input
+                id="add-package"
+                autoComplete="off"
+                value={form.pkg}
+                onChange={(e) => editAdd({ pkg: e.target.value })}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="add-password">
+                Archive password <span className="font-normal text-muted-foreground">optional</span>
+              </Label>
+              <Input
+                id="add-password"
+                autoComplete="off"
+                spellCheck={false}
+                value={form.password}
+                onChange={(e) => editAdd({ password: e.target.value })}
+              />
+            </div>
           </div>
           <DialogFooter className="sm:justify-between">
             <Button type="button" variant="outline" onClick={() => file.current?.click()}>

@@ -1,35 +1,21 @@
 import {
   ArrowDownToLine,
   CircleCheck,
-  Clipboard,
-  Clock,
   FileArchive,
-  FileText,
   FolderOpen,
   Gauge,
-  Globe,
   Info,
-  KeyRound,
   LoaderCircle,
   Palette,
   RotateCw,
   Shuffle,
-  Trash2,
   Wrench,
 } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 import { Infobar } from '@/components/infobar';
 import { PageHeader, PageScroll } from '@/components/page';
-import {
-  LinesField,
-  NumberField,
-  Section,
-  SettingCard,
-  SettingRow,
-  SettingSwitch,
-  SwitchCard,
-  TextField,
-} from '@/components/setting-card';
+import { LinesField, NumberField, SettingCard, SettingRow, SettingSwitch } from '@/components/setting-card';
+import { type OwnTab, SettingsTabs, savedTab } from '@/components/settings-tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -123,7 +109,8 @@ function FolderCard({ s, d }: { s: State; d: SettingsView }) {
   );
 }
 
-// The desktop app asks where to save the report; a browser downloads it.
+// The desktop app saves the report to Downloads and shows it; a browser
+// downloads it.
 async function saveDiagnostics(desktop: boolean) {
   if (!desktop) {
     const link = document.createElement('a');
@@ -134,15 +121,38 @@ async function saveDiagnostics(desktop: boolean) {
   }
   try {
     const r = await api<{ saved?: string }>('/api/diagnostics/save');
-    if (r.saved) toast(`Saved the report to ${r.saved}`, 'success');
+    if (r.saved) toast(`Saved ${r.saved}`, 'success');
   } catch (error) {
     report(error);
   }
 }
 
-function Page({ s, d }: { s: State; d: SettingsView }) {
+function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
   const theme = useTheme();
   const note = (...keys: string[]) => envNote(d, ...keys);
+  const archivesCard = (
+    <SettingCard icon={FileArchive} title="Archives">
+      <SettingRow
+        title="Extract when the last part is done"
+        description="RAR, 7‑Zip and zip. Off: use the button in the list."
+        controls={<SettingSwitch name="auto_extract" on={d.auto_extract} label="Extract when the last part is done" />}
+      />
+      <SettingRow
+        title={`Then move the parts to the ${s.bin}`}
+        description="Only when unpacking worked."
+        controls={
+          <SettingSwitch
+            name="delete_after_extract"
+            on={d.delete_after_extract}
+            label={`Move extracted parts to the ${s.bin}`}
+          />
+        }
+      />
+      <SettingRow title="Passwords to try" description="One per line, after the one typed for the archive.">
+        <LinesField name="archive_passwords" lines={d.archive_passwords} label="Archive passwords, one per line" />
+      </SettingRow>
+    </SettingCard>
+  );
   return (
     <>
       {s.config_error ? (
@@ -158,245 +168,235 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
           The previous settings stay in effect until it is fixed. {s.config_error}
         </Infobar>
       ) : null}
-      <Section>Appearance</Section>
-      <SettingCard
-        icon={Palette}
-        title="App theme"
-        description="Follow Windows, or pick one."
-        controls={
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            value={theme}
-            aria-label="App theme"
-            onValueChange={(value) => value && setTheme(value as typeof theme)}
+      {tab === 'general' ? (
+        <>
+          <SettingCard
+            icon={Palette}
+            title="App theme"
+            description="Follow Windows, or pick one."
+            controls={
+              <ToggleGroup
+                type="single"
+                variant="outline"
+                value={theme}
+                aria-label="App theme"
+                onValueChange={(value) => value && setTheme(value as typeof theme)}
+              >
+                {THEMES.map(({ value, label, icon: Icon }) => (
+                  <ToggleGroupItem key={value} value={value} className="px-3">
+                    <Icon />
+                    {label}
+                  </ToggleGroupItem>
+                ))}
+              </ToggleGroup>
+            }
+          />
+          <SettingCard icon={ArrowDownToLine} title="Adding links">
+            <SettingRow
+              title="Add dropped links right away"
+              description="Off: dropped links and files fill the Add dialog first."
+              controls={
+                <SettingSwitch name="skip_add_dialog" on={d.skip_add_dialog} label="Add dropped links right away" />
+              }
+            />
+            {s.desktop ? (
+              <SettingRow
+                title="Watch the clipboard"
+                description="Copied links to hosts, files and pastes are added."
+                controls={<SettingSwitch name="watch_clipboard" on={d.watch_clipboard} label="Watch the clipboard" />}
+              />
+            ) : null}
+          </SettingCard>
+        </>
+      ) : null}
+      {tab === 'downloads' ? (
+        <>
+          <FolderCard s={s} d={d} />
+          <SettingCard icon={Gauge} title="Limits" description="Each applies on top of the others. 0 means no limit.">
+            <SettingRow
+              title="Speed"
+              description={note('rate_limit_mbps') ?? 'Shared by every download.'}
+              controls={
+                <NumberField
+                  name="rate_limit_mbps"
+                  value={d.rate_limit_mbps}
+                  min={0}
+                  step={0.5}
+                  label="Speed limit"
+                  unit="MB/s"
+                />
+              }
+            />
+            <SettingRow
+              title="Size downloading at once"
+              description="By full size: 20 GB lets four 5 GB files run. A bigger file still runs alone."
+              controls={
+                <NumberField
+                  name="max_active_gb"
+                  value={d.max_active_gb}
+                  min={0}
+                  label="Size downloading at once"
+                  unit="GB"
+                />
+              }
+            />
+            <SettingRow
+              title="Parallel downloads"
+              controls={
+                <NumberField
+                  name="max_total"
+                  value={d.max_total}
+                  min={1}
+                  max={64}
+                  label="Parallel downloads"
+                  unit="files"
+                />
+              }
+            />
+          </SettingCard>
+          <SettingCard icon={CircleCheck} title="Finished files">
+            <SettingRow
+              title="Compare checksums of files already there"
+              description="A file with the same name and size counts as downloaded. On: it's also read in full and checked. Slow on big files."
+              controls={
+                <SettingSwitch
+                  name="verify_existing"
+                  on={d.verify_existing}
+                  label="Compare checksums of files already there"
+                />
+              }
+            />
+            <SettingRow
+              title={`Move removed files to the ${s.bin}`}
+              description="When you remove a finished download from the list."
+              controls={
+                <SettingSwitch
+                  name="recycle_on_remove"
+                  on={d.recycle_on_remove}
+                  label={`Move removed files to the ${s.bin}`}
+                />
+              }
+            />
+          </SettingCard>
+        </>
+      ) : null}
+      {tab === 'archives' ? archivesCard : null}
+      {tab === 'retries' ? (
+        <>
+          <SettingCard icon={Shuffle} title="Slow downloads">
+            <SettingRow
+              title="Leave hosts that slow you down"
+              description="Go on from another host, or a new IP, when a host holds a download far back."
+              controls={
+                <SettingSwitch name="leave_slow_hosts" on={d.leave_slow_hosts} label="Leave hosts that slow you down" />
+              }
+            />
+            <SettingRow
+              title="Give up below"
+              description={`For ${d.min_speed_seconds === 60 ? 'a minute' : `${d.min_speed_seconds} seconds`}: the next host takes over, or it fails. 0 is off.`}
+              controls={
+                <NumberField
+                  name="min_speed_kbps"
+                  value={d.min_speed_kbps}
+                  min={0}
+                  max={1048576}
+                  label="Minimum speed"
+                  unit="KB/s"
+                />
+              }
+            />
+          </SettingCard>
+          <SettingCard icon={RotateCw} title="Retries">
+            <SettingRow
+              title="After network trouble"
+              description="Per host, before the next one takes over."
+              controls={
+                <NumberField
+                  name="resume_attempts"
+                  value={d.resume_attempts}
+                  min={0}
+                  max={20}
+                  label="Retries"
+                  unit="times"
+                />
+              }
+            />
+            <SettingRow
+              title="Failed downloads, after"
+              description="Up to three times. 0 is off."
+              controls={
+                <NumberField
+                  name="retry_failed_minutes"
+                  value={d.retry_failed_minutes}
+                  min={0}
+                  max={1440}
+                  label="Minutes"
+                  unit="min"
+                />
+              }
+            />
+          </SettingCard>
+        </>
+      ) : null}
+      {tab === 'about' ? (
+        <>
+          <SettingCard
+            icon={Info}
+            title={`Haul ${s.version}`}
+            description={s.desktop ? 'Desktop app.' : 'Web UI.'}
+            controls={<CheckNow />}
           >
-            {THEMES.map(({ value, label, icon: Icon }) => (
-              <ToggleGroupItem key={value} value={value} className="px-3">
-                <Icon />
-                {label}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-        }
-      />
-      <Section>Downloads</Section>
-      <SettingCard
-        icon={Gauge}
-        title="Limits"
-        description="Use any one of them, or combine them: each applies on top of the others."
-      >
-        <SettingRow
-          title="Speed"
-          description={note('rate_limit_mbps') ?? 'Shared by every transfer in Haul. 0 means no limit.'}
-          controls={
-            <NumberField
-              name="rate_limit_mbps"
-              value={d.rate_limit_mbps}
-              min={0}
-              step={0.5}
-              label="Speed limit"
-              unit="MB/s"
+            <SettingRow
+              title="Look for updates"
+              description="After Haul starts, then every hour."
+              controls={<SettingSwitch name="check_updates" on={d.check_updates} label="Look for updates" />}
             />
-          }
-        />
-        <SettingRow
-          title="Size downloading at once"
-          description="The most gigabytes of files downloading at the same time, by their full size: 20 lets four 5 GB files run, or ten of 2 GB. A bigger file still downloads on its own. 0 means no limit."
-          controls={
-            <NumberField
-              name="max_active_gb"
-              value={d.max_active_gb}
-              min={0}
-              label="Size downloading at once"
-              unit="GB"
+          </SettingCard>
+          <SettingCard
+            icon={Wrench}
+            title="Report a problem"
+            description="One file with your downloads, hosts, settings and log, without keys or passwords."
+            controls={
+              <Button variant="outline" onClick={() => saveDiagnostics(s.desktop)}>
+                Save report…
+              </Button>
+            }
+          />
+          <SettingCard icon={FolderOpen} title="Haul's files">
+            {d.config_file ? (
+              <SettingRow
+                title="Settings file"
+                description={<span className="font-mono text-xs">{d.config_file}</span>}
+                controls={
+                  <Button variant="outline" onClick={() => openPlace('config')}>
+                    Open
+                  </Button>
+                }
+              />
+            ) : null}
+            <SettingRow
+              title="Data folder"
+              description={<span className="font-mono text-xs">{s.data_dir}</span>}
+              controls={
+                <Button variant="outline" onClick={() => openPlace('data')}>
+                  Open folder
+                </Button>
+              }
             />
-          }
-        />
-        <SettingRow
-          title="Parallel downloads"
-          description="Files downloaded at the same time."
-          controls={<NumberField name="max_total" value={d.max_total} min={1} max={64} label="Parallel downloads" />}
-        />
-      </SettingCard>
-      <FolderCard s={s} d={d} />
-      <SwitchCard
-        icon={Trash2}
-        title={`Move removed files to the ${s.bin}`}
-        description="When you remove a finished download from the list, its file goes too. Clear completed only tidies the list."
-        name="recycle_on_remove"
-        on={d.recycle_on_remove}
-      />
-      <SwitchCard
-        icon={ArrowDownToLine}
-        title="Add dropped links and files right away"
-        description="Off: links and .dlc / .txt files you drop on the window, or open with Haul, fill the Add dialog first, so you can check them before anything downloads."
-        name="skip_add_dialog"
-        on={d.skip_add_dialog}
-      />
-      <SwitchCard
-        icon={CircleCheck}
-        title="Compare checksums of files already there"
-        description="A file in the download folder with the same name and size counts as downloaded. With this on, Haul also reads it in full and compares it with the checksum its host publishes, one file at a time and never while downloads are paused: thorough, but slow on big files and spinning disks."
-        name="verify_existing"
-        on={d.verify_existing}
-      />
-      <SwitchCard
-        icon={FileArchive}
-        title="Extract archives when their parts are done"
-        description="An archive in parts (name.part1.rar, name.7z.001 and so on) is unpacked beside its parts once the last one is downloaded, one archive at a time: RAR, 7‑Zip and zip. Off: extract one with its button in the list."
-        name="auto_extract"
-        on={d.auto_extract}
-      />
-      <SettingCard
-        icon={KeyRound}
-        title="Archive passwords"
-        description="Tried in order on an encrypted archive, after the one typed for it. One per line."
-      >
-        <LinesField name="archive_passwords" lines={d.archive_passwords} label="Archive passwords, one per line" />
-      </SettingCard>
-      <SwitchCard
-        icon={Trash2}
-        title={`Move extracted parts to the ${s.bin}`}
-        description="Once an archive is unpacked without error, its parts go. Nothing goes when unpacking fails."
-        name="delete_after_extract"
-        on={d.delete_after_extract}
-      />
-      {s.desktop ? (
-        <SwitchCard
-          icon={Clipboard}
-          title="Watch the clipboard"
-          description="Links you copy anywhere to a supported host, a file or a paste are added. Any other page you copy is looked at for links, and kept only if it has some."
-          name="watch_clipboard"
-          on={d.watch_clipboard}
-        />
+          </SettingCard>
+        </>
       ) : null}
-      <Section>When something fails</Section>
-      <SettingCard
-        icon={Shuffle}
-        title="Leave hosts that slow you down"
-        description="A host holding a big download far below what it or your line can do is taken to be limiting your address: the download goes on from another host or, with a new IP on its own switched on, a new address once other downloads have finished. With neither, it keeps going and says why."
-        controls={
-          <SettingSwitch name="leave_slow_hosts" on={d.leave_slow_hosts} label="Leave hosts that slow you down" />
-        }
-      />
-      <SettingCard
-        icon={RotateCw}
-        title="Retries after network trouble"
-        description="Per mirror, after a dropped connection or an unreachable host; then the next mirror takes over."
-        controls={
-          <NumberField name="resume_attempts" value={d.resume_attempts} min={0} max={20} label="Retries" unit="times" />
-        }
-      />
-      <SettingCard
-        icon={Gauge}
-        title="Give up on slow downloads"
-        description={`Below this speed for ${d.min_speed_seconds === 60 ? 'a minute' : `${d.min_speed_seconds} seconds`}, the next mirror takes over, or the download fails until it is tried again. 0 turns it off; so does a speed limit.`}
-        controls={
-          <NumberField
-            name="min_speed_kbps"
-            value={d.min_speed_kbps}
-            min={0}
-            max={1048576}
-            label="Minimum speed"
-            unit="KB/s"
-          />
-        }
-      />
-      <SettingCard
-        icon={Clock}
-        title="Retry failed downloads"
-        description="Tries a failed download again after this many minutes, up to three times, and a page Haul passes by itself that wanted you. 0 turns it off."
-        controls={
-          <NumberField
-            name="retry_failed_minutes"
-            value={d.retry_failed_minutes}
-            min={0}
-            max={1440}
-            label="Minutes"
-            unit="min"
-          />
-        }
-      />
-      <Section>Advanced</Section>
-      <SettingCard icon={Globe} title="User agent" description="Sent to hosts. Leave empty for Haul's default.">
-        <TextField
-          d={d}
-          name="user_agent"
-          value={d.user_agent === d.default_user_agent ? '' : d.user_agent}
-          label="User agent"
-          placeholder={d.default_user_agent}
-          wide
-        />
-      </SettingCard>
-      <Section>Files</Section>
-      {d.config_file ? (
-        <SettingCard
-          icon={FileText}
-          title="Settings file"
-          description={
-            <>
-              <span className="block font-mono text-xs">{d.config_file}</span>
-              Every setting on this page is stored here. Edits saved in a text editor apply within a second.
-            </>
-          }
-          controls={
-            <Button variant="outline" onClick={() => openPlace('config')}>
-              Open
-            </Button>
-          }
-        />
-      ) : null}
-      <SettingCard
-        icon={FolderOpen}
-        title="Data folder"
-        description={<span className="font-mono text-xs">{s.data_dir}</span>}
-        controls={
-          <Button variant="outline" onClick={() => openPlace('data')}>
-            Open folder
-          </Button>
-        }
-      />
-      <Section>Troubleshooting</Section>
-      <SettingCard
-        icon={Wrench}
-        title="Report"
-        description="Saves one file to send when something goes wrong: your downloads and their links, the hosts, the settings and the recent log. Keys and passwords are left out."
-        controls={
-          <Button variant="outline" onClick={() => saveDiagnostics(s.desktop)}>
-            Save report…
-          </Button>
-        }
-      />
-      <Section>About</Section>
-      <SettingCard
-        icon={Info}
-        title={`Haul ${s.version}`}
-        description={
-          s.desktop ? 'Download manager for file hosts, desktop app.' : 'Download manager for file hosts, web UI.'
-        }
-        controls={<CheckNow />}
-      >
-        <SettingRow
-          title="Look for updates"
-          description={
-            s.desktop
-              ? 'Asks GitHub after Haul starts and every hour, and offers a newer version in the status bar.'
-              : 'Asks GitHub after Haul starts and every hour, and shows a newer version in the status bar.'
-          }
-          controls={<SettingSwitch name="check_updates" on={d.check_updates} label="Look for updates" />}
-        />
-      </SettingCard>
     </>
   );
 }
 
 export function Settings({ s }: { s: State }) {
   const d = useSettings(s.config_version);
+  const [tab, setTab] = useState<OwnTab>(savedTab);
   return (
     <>
-      <PageHeader title="Settings" />
-      <PageScroll>{d ? <Page s={s} d={d} /> : null}</PageScroll>
+      <PageHeader title="Settings" actions={<SettingsTabs current={tab} pick={setTab} />} />
+      <PageScroll>{d ? <Page s={s} d={d} tab={tab} /> : null}</PageScroll>
     </>
   );
 }

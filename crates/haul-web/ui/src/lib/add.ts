@@ -6,9 +6,9 @@ import { toast } from '@/lib/toast';
 // The Add dialog: open or not, and what it holds. Each time it opens it
 // starts empty: a package left over from a dropped container would otherwise
 // quietly put the next links in its folder.
-export type AddForm = { open: boolean; text: string; pkg: string; focus: number };
+export type AddForm = { open: boolean; text: string; pkg: string; password: string; focus: number };
 
-let form: AddForm = { open: false, text: '', pkg: '', focus: 0 };
+let form: AddForm = { open: false, text: '', pkg: '', password: '', focus: 0 };
 const store = externalStore(() => form);
 
 function publish(next: AddForm) {
@@ -19,27 +19,30 @@ function publish(next: AddForm) {
 // Opens the dialog, or adds `text` to it when it is open already; `pkg`
 // fills in the package unless one is typed in.
 export function openAdd(text = '', pkg = '') {
-  const base = form.open ? form : { open: true, text: '', pkg: '', focus: form.focus };
+  const base = form.open ? form : { open: true, text: '', pkg: '', password: '', focus: form.focus };
   const current = base.text.trim();
   publish({
     open: true,
     text: text ? (current ? `${current}\n${text}` : text) : base.text,
     pkg: pkg && !base.pkg.trim() ? pkg : base.pkg,
+    password: base.password,
     focus: base.focus + 1,
   });
 }
 
-export const editAdd = (changes: Partial<Pick<AddForm, 'text' | 'pkg'>>) => publish({ ...form, ...changes });
+export const editAdd = (changes: Partial<Pick<AddForm, 'text' | 'pkg' | 'password'>>) =>
+  publish({ ...form, ...changes });
 export const closeAdd = () => publish({ ...form, open: false });
 
 export const useAddForm = store.use;
 export const addOpen = () => form.open;
 
-// Adds the links in `text`; answers whether any of them did something.
-export async function addText(text: string, pkg = ''): Promise<boolean> {
+// Adds the links in `text`, their archives opened with `password` first;
+// answers whether any of them did something.
+export async function addText(text: string, pkg = '', password = ''): Promise<boolean> {
   if (!text.trim()) return false;
   try {
-    const r = await api<Added>('/api/add', { text, package: pkg });
+    const r = await api<Added>('/api/add', { text, package: pkg, password });
     toast(addedMessage(r), r.added + r.merged + r.wrappers ? 'success' : 'info');
     return r.added + r.merged + r.duplicates + r.wrappers > 0;
   } catch (error) {

@@ -90,7 +90,7 @@ export function SettingSwitch({
 }) {
   return (
     <span className="flex items-center gap-2 text-sm text-muted-foreground">
-      {on ? 'On' : 'Off'}
+      <span className="w-6 text-right">{on ? 'On' : 'Off'}</span>
       <Switch
         checked={on}
         disabled={disabled}
@@ -166,7 +166,8 @@ export function NumberField({
         onBlur={commit}
         onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
       />
-      {unit ? <span className="text-sm text-muted-foreground">{unit}</span> : null}
+      {/* The same room with a unit or without, so fields line up down a card. */}
+      <span className="w-10 text-sm text-muted-foreground">{unit}</span>
     </span>
   );
 }

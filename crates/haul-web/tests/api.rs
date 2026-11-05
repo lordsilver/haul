@@ -570,10 +570,16 @@ async fn diagnostics_tell_what_happened_without_secrets() {
         .unwrap()
         .to_string();
     assert!(
-        disposition.starts_with("attachment; filename=\"haul-diagnostics-"),
+        disposition.starts_with("attachment; filename=\"haul-report-")
+            && disposition.ends_with(".zip\""),
         "{disposition}"
     );
-    let text = r.text().await.unwrap();
+    let bytes = r.bytes().await.unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+    let names: Vec<String> = zip.file_names().map(|n| n.unwrap().to_string()).collect();
+    assert!(names.contains(&"report.json".to_string()), "{names:?}");
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("report.json").unwrap(), &mut text).unwrap();
     assert!(!text.contains("s3cret"), "{text}");
     let report: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(report["haul"], env!("CARGO_PKG_VERSION"));

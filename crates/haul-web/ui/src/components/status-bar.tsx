@@ -1,4 +1,4 @@
-import { ArrowDown, ClipboardList, Gauge, Globe, LoaderCircle, Play, Shield, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ChevronRight, ClipboardList, Gauge, LoaderCircle, Play, Shield, TriangleAlert } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,7 +6,6 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Switch } from '@/components/ui/switch';
 import { UpdateEntry } from '@/components/update';
 import { fetchSettings, report, save } from '@/lib/api';
-import type { PoolSource } from '@/lib/bindings/PoolSource';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
 import { bytes, plural, roughly } from '@/lib/format';
@@ -23,11 +22,14 @@ function Flyout({
   title,
   trigger,
   on = false,
+  action,
   children,
 }: {
   title: string;
   trigger: ReactNode;
   on?: boolean;
+  // Beside the title, such as the way to the page that sets this up.
+  action?: (close: () => void) => ReactNode;
   children: (d: SettingsView, close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -59,7 +61,10 @@ function Flyout({
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" align="start" className="w-80" aria-label={title}>
-        <div className="mb-2 font-medium">{title}</div>
+        <div className="mb-2 flex min-h-8 items-center justify-between gap-2 font-medium">
+          {title}
+          {action?.(() => setOpen(false))}
+        </div>
         {settings ? children(settings, () => setOpen(false)) : null}
       </PopoverContent>
     </Popover>
@@ -141,63 +146,84 @@ function SpeedLimit({ d, close }: { d: SettingsView; close: () => void }) {
   );
 }
 
-// One source of addresses: its name and state, and its own switch.
-function Source({ x }: { x: PoolSource }) {
+// One way downloads can go out: its name, how it stands, and its switch
+// when it has one.
+function Way({
+  name,
+  status,
+  problem = false,
+  on,
+  disabled = false,
+  change,
+}: {
+  name: string;
+  status: string;
+  problem?: boolean;
+  on?: boolean;
+  disabled?: boolean;
+  change?: (on: boolean) => Promise<boolean>;
+}) {
+  const [value, setValue] = useState(on ?? false);
+  useEffect(() => setValue(on ?? false), [on]);
   return (
-    <div className="flex items-center gap-3 py-1.5">
+    <div className="flex items-center gap-3 py-2">
       <div className="min-w-0 flex-1">
-        <div className="text-sm">{x.name}</div>
-        <div className={cn('text-xs', x.problem ? 'text-destructive' : 'text-muted-foreground')}>{x.status}</div>
+        <div className="text-sm font-medium">{name}</div>
+        <div className={cn('text-xs', problem ? 'text-warn-strong' : 'text-muted-foreground')}>{status}</div>
       </div>
-      {x.key ? (
+      {change ? (
         <Switch
-          defaultChecked={x.on}
-          aria-label={x.label ?? x.name}
-          onCheckedChange={(on) => save({ [x.key as string]: on }, null)}
+          checked={value}
+          disabled={disabled}
+          aria-label={name}
+          onCheckedChange={async (next) => {
+            setValue(next);
+            if (!(await change(next))) setValue(!next);
+          }}
         />
       ) : null}
     </div>
   );
 }
 
-// What downloads go out through, the switch for proxies and VPN together,
-// each source with its own, and the way to the page that sets them up. It
-// follows the pool while open.
-function Pool({ s, close }: { s: State; close: () => void }) {
-  const { sources, configured, why, label } = s.pool_summary;
+// The ways downloads go out beside the line, as the Connections page groups
+// them: a new IP from the router, proxies, and a VPN service (NordVPN today),
+// each with its own switch. It follows the pool while open.
+function Pool({ s }: { s: State }) {
+  const { sources, why } = s.pool_summary;
+  const r = s.reconnect;
+  const router =
+    r.blocked ?? (r.router ? `${r.router}, when a host holds this address back` : 'Looking for the router');
+  const proxies = sources.find((x) => x.name === 'Proxies');
+  const vpn = sources.find((x) => x.name === 'NordVPN');
   return (
     <div className="flex flex-col gap-2">
-      <div>
-        <div className="text-xs text-muted-foreground">In use</div>
-        <div className="font-medium">{label}</div>
+      <div className="-mt-1 divide-y">
+        <Way
+          name="New IP from the router"
+          status={router}
+          problem={Boolean(r.blocked)}
+          on={r.auto}
+          disabled={Boolean(r.blocked)}
+          change={(on) => save({ reconnect: on }, null)}
+        />
+        <Way
+          name="Proxies"
+          status={proxies?.status ?? 'None set up yet'}
+          on={proxies?.on ?? false}
+          disabled={!proxies}
+          change={(on) => save({ proxies_on: on }, null)}
+        />
+        <Way
+          name="VPN"
+          status={vpn ? `${vpn.name} · ${vpn.status}` : 'None set up yet'}
+          problem={vpn?.problem}
+          on={vpn?.on ?? false}
+          disabled={!vpn}
+          change={(on) => save({ nordvpn_on: on }, null)}
+        />
       </div>
-      <FlyoutSwitch
-        label="Use proxies and VPN"
-        on={configured && s.pool.on}
-        disabled={!configured}
-        change={(on) => save({ use_proxy: on }, null)}
-      />
       {why ? <p className="text-sm text-warn-strong">{why}</p> : null}
-      {configured ? (
-        <div className="divide-y rounded-lg border px-3">
-          {sources.map((x) => (
-            <Source key={x.name} x={x} />
-          ))}
-        </div>
-      ) : (
-        <p className="text-sm text-muted-foreground">No proxies or VPN set up yet: downloads use your line.</p>
-      )}
-      <Button
-        variant="outline"
-        className="mt-1 self-start"
-        onClick={() => {
-          close();
-          go('connections');
-        }}
-      >
-        <Globe />
-        Open Connections
-      </Button>
     </div>
   );
 }
@@ -295,9 +321,22 @@ export function StatusBar({ state: s }: { state: State | null }) {
       <Flyout
         title="Connections"
         on={pooled}
+        action={(close) => (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              close();
+              go('connections');
+            }}
+          >
+            Settings
+            <ChevronRight />
+          </Button>
+        )}
         trigger={[<Shield key="i" aria-hidden className="size-3.5" />, s.pool_summary.label]}
       >
-        {(_, close) => <Pool s={s} close={close} />}
+        {() => <Pool s={s} />}
       </Flyout>
       <button
         type="button"

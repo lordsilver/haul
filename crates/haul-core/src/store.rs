@@ -83,6 +83,9 @@ pub(crate) struct SavedHost {
     pub bytes: u64,
     /// What it gives when it isn't limiting the address, in bytes per second.
     pub normal: u64,
+    /// When a redial was found not to help with it, in seconds since 1970; 0
+    /// when none was.
+    pub redial_useless_at: u64,
 }
 
 /// The hosts file is only a head start, so a damaged one is set aside.
