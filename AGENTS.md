@@ -12,7 +12,7 @@ Descriptions of current implementation behavior are not permanent prohibitions a
 
 ## Breaking changes
 
-Haul has one user and is before 1.0, so anything can change. Don't add migrations, fallbacks or compatibility code for older versions' config, saved state, data folders or API, and remove such code when you find it. Name each break in the release notes, so the user knows what to expect. Removing a feature is still a blocking decision: this section is about old formats, not about what Haul can do.
+Haul has one user, and until 1.0 anything can change. Break things whenever a change is worth it, without asking first, even if that invalidates existing config, saved state or data folders, the user's own included. Don't add migrations, fallbacks or compatibility code for older versions' formats or API, and remove such code when you find it. Name each break in the release notes, so the user knows what to expect. Removing a feature is still a blocking decision: this section is about old formats, not about what Haul can do.
 
 ## Example data
 
