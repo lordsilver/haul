@@ -17,7 +17,9 @@ use reqwest::header::REFERER;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 
-use super::{Cx, ResolveError, StopOnDrop, Unwrapped, group_mirrors, page_text, retry_after};
+use super::{
+    Cx, ResolveError, StopOnDrop, Unwrapped, gone_or_broken, group_mirrors, page_text, rate_limited,
+};
 
 /// One vault at a time: a burst of solves from one address is refused, and
 /// a session that has passed a vault's gate is shown its links straight away.
@@ -134,17 +136,9 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     let page = format!("{base}{path}");
     let _one_at_a_time = SOLVING.lock().await;
     let r = cx.http.client.get(&page).send().await?;
+    rate_limited(&r)?;
+    gone_or_broken(&r)?;
     let status = r.status().as_u16();
-    if matches!(status, 429 | 503) {
-        let seconds = retry_after(r.headers(), 90);
-        return Err(ResolveError::Wait {
-            seconds,
-            message: format!("{status} rate limited"),
-        });
-    }
-    if matches!(status, 404 | 410) || status >= 500 {
-        return Err(ResolveError::Failed(format!("HTTP {status}")));
-    }
     if status >= 400 {
         return Err(ResolveError::NeedsUser(format!(
             "fileguard.cc answered HTTP {status}; open the page"
@@ -179,17 +173,9 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         .header(REFERER, &page)
         .send()
         .await?;
+    rate_limited(&r)?;
+    gone_or_broken(&r)?;
     let status = r.status().as_u16();
-    if matches!(status, 429 | 503) {
-        let seconds = retry_after(r.headers(), 90);
-        return Err(ResolveError::Wait {
-            seconds,
-            message: format!("{status} rate limited"),
-        });
-    }
-    if matches!(status, 404 | 410) || status >= 500 {
-        return Err(ResolveError::Failed(format!("HTTP {status}")));
-    }
     if status >= 400 {
         return Err(ResolveError::NeedsUser(format!(
             "fileguard.cc challenge answered HTTP {status}; open the page"
@@ -247,17 +233,9 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         .form(&[("csrf_token", csrf), ("altcha", payload)])
         .send()
         .await?;
+    rate_limited(&r)?;
+    gone_or_broken(&r)?;
     let status = r.status().as_u16();
-    if matches!(status, 429 | 503) {
-        let seconds = retry_after(r.headers(), 90);
-        return Err(ResolveError::Wait {
-            seconds,
-            message: format!("{status} rate limited"),
-        });
-    }
-    if matches!(status, 404 | 410) || status >= 500 {
-        return Err(ResolveError::Failed(format!("HTTP {status}")));
-    }
     if status >= 400 {
         // Seen as 403 when many solves came at once: worth another try later,
         // not a page for a person.
