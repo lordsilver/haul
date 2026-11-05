@@ -3694,7 +3694,7 @@ impl Engine {
                 archive: None,
                 source_name: None,
                 download_from: it.prefer.clone(),
-                tentative: it.tentative,
+                tentative: it.tentative || being_read(it),
             })
             .collect();
         let route = |name: &str| {
@@ -4165,6 +4165,19 @@ fn recycle(file: &Path, bin: Option<&Path>) -> Result<bool, String> {
         None => trash::delete(file).map_err(|e| e.to_string())?,
     }
     Ok(true)
+}
+
+/// Whether `it` is a pasted web page not read yet: it may turn out a wrapper
+/// or a file, so it waits in no list, or it would flash through the downloads
+/// on its way to the wrappers.
+fn being_read(it: &Item) -> bool {
+    it.status == Status::Queued
+        && !it.probed
+        && !it.wrapper
+        && it
+            .mirrors
+            .first()
+            .is_some_and(|url| hosts::is_web_page(url) && !hosts::is_download_link(url))
 }
 
 fn display_name(it: &Item) -> String {

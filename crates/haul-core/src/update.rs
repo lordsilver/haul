@@ -16,7 +16,7 @@ pub const REPOSITORY: &str = "lordsilver/haul";
 #[derive(Debug, Clone, PartialEq)]
 pub struct Update {
     pub version: String,
-    /// The release notes, as written (Markdown).
+    /// What the release changed (Markdown), from its notes.
     pub notes: String,
     /// The release's page.
     pub page: String,
@@ -108,11 +108,21 @@ pub async fn latest(http: &Http, api: &str, current: &str) -> Result<Option<Upda
     };
     Ok(Some(Update {
         version: release.tag_name.trim_start_matches('v').to_string(),
-        notes: release.body.clone(),
+        notes: what_changed(&release.body).to_string(),
         page: release.html_url.clone(),
         installer: asset(&|n| n.ends_with("-setup.exe") && n.contains("windows")),
         sums: asset(&|n| n == "SHA256SUMS"),
     }))
+}
+
+/// A release's notes without the list of its files and how to check them,
+/// which the release workflow adds under this heading: the release page's
+/// business, not the app's.
+fn what_changed(notes: &str) -> &str {
+    notes
+        .split_once("### Downloads")
+        .map_or(notes, |(changes, _)| changes)
+        .trim_end()
 }
 
 /// The SHA-256 `SHA256SUMS` gives for file `name` (`<hex>  <name>` lines).
@@ -183,6 +193,14 @@ mod tests {
         assert!(!newer("v0.15.2", "0.15.3"));
         assert!(!newer("nightly", "0.15.3"));
         assert!(newer("v0.16", "0.15.9"));
+    }
+
+    #[test]
+    fn notes_leave_out_the_files() {
+        let notes = "### Fixed\n\n- A fix.\n\n### Downloads\n\n| File |\n";
+        assert_eq!(what_changed(notes), "### Fixed\n\n- A fix.");
+        assert_eq!(what_changed("### Downloads\n\n| File |\n"), "");
+        assert_eq!(what_changed("- A fix.\n"), "- A fix.");
     }
 
     #[test]

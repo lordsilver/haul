@@ -1,5 +1,6 @@
-import { ArrowUpCircle, ExternalLink } from 'lucide-react';
+import { ArrowUpCircle, ExternalLink, LoaderCircle } from 'lucide-react';
 import { useState } from 'react';
+import Markdown, { type Components } from 'react-markdown';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -11,6 +12,22 @@ import {
 } from '@/components/ui/dialog';
 import { api, report } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
+
+// Release notes, in the dialog's own type.
+const NOTES: Components = {
+  h1: ({ children }) => <h3 className="mt-3 mb-1 font-semibold first:mt-0">{children}</h3>,
+  h2: ({ children }) => <h3 className="mt-3 mb-1 font-semibold first:mt-0">{children}</h3>,
+  h3: ({ children }) => <h3 className="mt-3 mb-1 font-semibold first:mt-0">{children}</h3>,
+  p: ({ children }) => <p className="my-1.5">{children}</p>,
+  ul: ({ children }) => <ul className="my-1.5 list-disc space-y-1 pl-5">{children}</ul>,
+  ol: ({ children }) => <ol className="my-1.5 list-decimal space-y-1 pl-5">{children}</ol>,
+  code: ({ children }) => <code className="rounded bg-muted px-1 font-mono text-[0.9em]">{children}</code>,
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noreferrer" className="underline underline-offset-2">
+      {children}
+    </a>
+  ),
+};
 
 // A newer Haul, in the status bar: its release notes, and in the desktop app
 // one button that downloads it, checks it and installs it over this one.
@@ -51,8 +68,8 @@ export function UpdateEntry({ s }: { s: State }) {
             </DialogDescription>
           </DialogHeader>
           {u.notes ? (
-            <div className="max-h-80 overflow-y-auto rounded-md border bg-muted/40 p-3 text-sm whitespace-pre-wrap">
-              {u.notes.trim()}
+            <div className="max-h-80 overflow-y-auto rounded-md border bg-muted/40 p-3 text-sm">
+              <Markdown components={NOTES}>{u.notes}</Markdown>
             </div>
           ) : null}
           <DialogFooter>
@@ -64,8 +81,8 @@ export function UpdateEntry({ s }: { s: State }) {
             </Button>
             {s.desktop && u.installable ? (
               <Button onClick={install} disabled={installing}>
-                <ArrowUpCircle aria-hidden />
-                {installing ? 'Downloading…' : 'Install and restart'}
+                {installing ? <LoaderCircle aria-hidden className="animate-spin" /> : <ArrowUpCircle aria-hidden />}
+                {installing ? 'Installing…' : 'Install and restart'}
               </Button>
             ) : null}
           </DialogFooter>
