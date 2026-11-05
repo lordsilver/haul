@@ -334,14 +334,21 @@ async fn onefichier_api_key_and_free_mode() {
         gone
     );
     assert_eq!(
-        onefichier::probe(&cx, &format!("{base}/?named&af=1")).await,
+        onefichier::look(&cx, &format!("{base}/?named&af=1"))
+            .await
+            .found(),
         Some(Probed {
             name: "Archive.part1.rar".into(),
             size: Some(4_294_967_296),
             checksum: None,
         })
     );
-    assert_eq!(onefichier::probe(&cx, &format!("{base}/?gone")).await, None);
+    assert_eq!(
+        onefichier::look(&cx, &format!("{base}/?gone"))
+            .await
+            .found(),
+        None
+    );
 
     cfg.onefichier_key = Some("key".into());
     let cx = Cx {
@@ -1322,7 +1329,9 @@ async fn mega_names_and_decrypts_a_file_without_megatools() {
     assert_eq!(e[0].size, Some(4096));
     assert!(e[0].decrypt.is_some());
     assert_eq!(
-        mega::probe(&cx, &format!("https://mega.nz/#!AAAAAAAA!{link_key}")).await,
+        mega::look(&cx, &format!("https://mega.nz/#!AAAAAAAA!{link_key}"))
+            .await
+            .found(),
         Some(Probed {
             name: "Archive.part1.rar".into(),
             size: Some(4096),
@@ -1448,7 +1457,9 @@ async fn mega_lists_a_folder_and_downloads_its_files() {
     assert_eq!(file[0].name.as_deref(), Some("R.part1.rar"));
     assert!(file[0].decrypt.is_some() && !file[0].deferred);
     assert_eq!(
-        mega::probe(&cx, &format!("{folder}/file/FILETWO2")).await,
+        mega::look(&cx, &format!("{folder}/file/FILETWO2"))
+            .await
+            .found(),
         Some(Probed {
             name: "R.part2.rar".into(),
             size: Some(200),
@@ -1500,7 +1511,9 @@ async fn rootz_looks_a_file_up_with_its_pages_token() {
     assert_eq!(e[0].name.as_deref(), Some("R.part1.rar"));
     assert_eq!(e[0].size, Some(5_347_737_664));
     assert_eq!(
-        rootz::probe(&cx, "https://www.rootz.so/d/abc123").await,
+        rootz::look(&cx, "https://www.rootz.so/d/abc123")
+            .await
+            .found(),
         Some(Probed {
             name: "R.part1.rar".into(),
             size: Some(5_347_737_664),
@@ -1572,7 +1585,9 @@ async fn transfer_it_lists_with_its_keys_in_clear() {
     assert_eq!(e[0].size, Some(1_500_000_000));
     assert!(e[0].decrypt.is_some() && !e[0].deferred);
     assert_eq!(
-        mega::probe(&cx, "https://transfer.it/t/AbCdEf123456/FILENODE").await,
+        mega::look(&cx, "https://transfer.it/t/AbCdEf123456/FILENODE")
+            .await
+            .found(),
         Some(Probed {
             name: "Update.rar".into(),
             size: Some(1_500_000_000),
@@ -1603,7 +1618,9 @@ async fn ddownload_names_the_file_and_leaves_its_wait_to_a_browser() {
         key_service: &http,
     };
     assert_eq!(
-        ddownload::probe(&cx, &format!("{base}/b95mf0a361s1")).await,
+        ddownload::look(&cx, &format!("{base}/b95mf0a361s1"))
+            .await
+            .found(),
         Some(Probed {
             name: "b95mf0a361s1.part1.rar".into(),
             size: None,
@@ -1619,7 +1636,9 @@ async fn ddownload_names_the_file_and_leaves_its_wait_to_a_browser() {
         Err(ResolveError::failed("ddownload: the file was deleted"))
     );
     assert_eq!(
-        ddownload::probe(&cx, &format!("{base}/gone00000000")).await,
+        ddownload::look(&cx, &format!("{base}/gone00000000"))
+            .await
+            .found(),
         None
     );
 }

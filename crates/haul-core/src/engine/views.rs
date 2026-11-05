@@ -844,7 +844,6 @@ mod tests {
             size: 100,
             done: if status == "done" { 100 } else { 0 },
             speed: 0.0,
-            percent: None,
             host: String::new(),
             mirrors: vec!["a.example".into()],
             wait: 0,

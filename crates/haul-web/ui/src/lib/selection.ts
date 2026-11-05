@@ -56,7 +56,6 @@ const subscribe = (listener: () => void) => {
 };
 
 export const useSelection = () => useSyncExternalStore(subscribe, () => picked);
-export const currentSelection = () => picked;
 
 // Whether a click on a row picks it. A selection starts at a checkbox (or
 // with Ctrl or Shift), so a stray click on a row picks nothing; once one has

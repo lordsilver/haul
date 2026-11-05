@@ -3,7 +3,7 @@ import type { Command } from "./Command";
 import type { Extract } from "./Extract";
 import type { Verifying } from "./Verifying";
 
-export type ItemView = { id: string, name: string, package: string, status: "queued" | "resolving" | "checking" | "downloading" | "waiting" | "passing" | "paused" | "captcha" | "done" | "error", error: string, size: number, done: number, speed: number, percent: number | null, host: string, 
+export type ItemView = { id: string, name: string, package: string, status: "queued" | "resolving" | "checking" | "downloading" | "waiting" | "passing" | "paused" | "captcha" | "done" | "error", error: string, size: number, done: number, speed: number, host: string, 
 /**
  * Host of every mirror.
  */

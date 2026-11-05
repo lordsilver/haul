@@ -41,4 +41,3 @@ zip = { version = "9.0.5", default-features = false, features = ["aes-crypto", "
 axum = "0.8.9"
 futures-util = "0.3.34"
 tempfile = "3.27.0"
-tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }

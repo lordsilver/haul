@@ -205,6 +205,17 @@ pub struct Added {
     pub pages: usize,
 }
 
+impl std::ops::AddAssign for Added {
+    fn add_assign(&mut self, other: Self) {
+        self.added += other.added;
+        self.merged += other.merged;
+        self.duplicates += other.duplicates;
+        self.invalid += other.invalid;
+        self.wrappers += other.wrappers;
+        self.pages += other.pages;
+    }
+}
+
 #[derive(Debug, Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct Snapshot {
@@ -267,7 +278,6 @@ pub struct ItemView {
     pub size: u64,
     pub done: u64,
     pub speed: f64,
-    pub percent: Option<f32>,
     pub host: String,
     /// Host of every mirror.
     pub mirrors: Vec<String>,
@@ -2312,7 +2322,6 @@ impl Engine {
                         it.auto_retries = 0;
                         it.retry_at = None;
                         it.error.clear();
-                        it.percent = None;
                         if it.size == 0 {
                             it.size = it.done;
                         }
@@ -3675,7 +3684,6 @@ impl Engine {
                 size: it.size,
                 done: it.done,
                 speed: it.speed,
-                percent: it.percent,
                 host: it.host.clone(),
                 mirrors: it.mirrors.iter().map(|m| hosts::host_of(m)).collect(),
                 wait: wait(it),

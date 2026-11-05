@@ -314,12 +314,7 @@ async fn container(State(app): State<App>, form: Multipart) -> Response {
     let mut total = Added::default();
     for (name, bytes) in files {
         match app.engine.import(&name, &bytes).await {
-            Ok(a) => {
-                total.added += a.added;
-                total.merged += a.merged;
-                total.duplicates += a.duplicates;
-                total.invalid += a.invalid;
-            }
+            Ok(a) => total += a,
             Err(e) => return error(StatusCode::BAD_REQUEST, format!("{name}: {e}")),
         }
     }
@@ -531,8 +526,6 @@ async fn nordvpn_servers(State(app): State<App>) -> Response {
     }
 }
 
-/// Gets this machine's line a new public address now. Answers once the line
-/// is back, with the new address, or with why there is none.
 /// Asks GitHub for a newer Haul now; the state says what it found.
 async fn check_update(State(app): State<App>) -> Response {
     app.engine.check_update().await;
@@ -580,6 +573,8 @@ async fn download_from(State(app): State<App>, Json(body): Json<DownloadFrom>) -
     Json(serde_json::json!({ "changed": changed })).into_response()
 }
 
+/// Gets this machine's line a new public address now. Answers once the line
+/// is back, with the new address, or with why there is none.
 async fn reconnect(State(app): State<App>) -> Response {
     match app.engine.reconnect("asked in Haul").await {
         Ok(address) => Json(serde_json::json!({ "address": address })).into_response(),

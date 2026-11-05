@@ -18,11 +18,11 @@ use crate::{paths, store};
 /// File name of the configuration inside the data directory.
 pub const FILE: &str = "config.toml";
 
-/// User agent for every request a host does not get a browser's for.
 /// The hosts a file downloads from first until the user says otherwise:
 /// those that hand a free file over fastest, without an account.
 pub const DEFAULT_PREFERRED: [&str; 3] = ["pixeldrain.com", "vikingfile.com", "mega.nz"];
 
+/// User agent for every request a host does not get a browser's for.
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0";
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -106,7 +106,7 @@ pub struct Config {
     /// Subfolder of the download folder for the files from a host.
     pub folders: BTreeMap<String, String>,
     /// Hosts a file with mirrors downloads from first, in this order
-    /// (pixeldrain.com until the list is changed).
+    /// ([`DEFAULT_PREFERRED`] until the list is changed).
     pub preferred_hosts: Vec<String>,
     /// Hosts never downloaded from: their links are left alone.
     pub disabled_hosts: Vec<String>,

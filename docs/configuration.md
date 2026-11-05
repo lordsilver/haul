@@ -37,7 +37,7 @@ retry_failed_minutes = 15       # retry failed downloads (up to 3 times), 0 = ne
 proxy = "socks5://user:pass@host:1080" # every host goes through it unless allowed direct
 use_proxy = true                # false keeps proxies and VPN servers but connects directly
 proxies_on = true               # false leaves the proxies of proxy and proxies out
-preferred_hosts = ["rapidgator.net"]   # downloaded from first, in this order (default: ["pixeldrain.com"])
+preferred_hosts = ["rapidgator.net"]   # downloaded from first, in this order (default: ["pixeldrain.com", "vikingfile.com", "mega.nz"])
 disabled_hosts = ["mediafire.com"]     # never downloaded from: their links are left alone
 accountless_hosts = ["rapidgator.net"] # used without the account they need (gofile.io, rapidgator.net, nitroflare.com are off until it is set)
 proxies = ["socks5://u:p@nl.example:1080"]  # more proxies; downloads spread over them
@@ -65,10 +65,10 @@ What each download setting does is in [How downloads behave](downloading.md).
 
 ## Environment variables
 
-`HAUL_PROXY` replaces `proxy`; `HAUL_1FICHIER_KEY`, `HAUL_PIXELDRAIN_KEY`, `HAUL_RAPIDGATOR_USER`, `HAUL_RAPIDGATOR_PASS`, `HAUL_NITROFLARE_USER`, `HAUL_NITROFLARE_KEY` and `HAUL_GOFILE_TOKEN` fill the account keys the file leaves unset. Settings shows those as set by the environment and does not change them. `HAUL_DATA_DIR` moves the data folder and `HAUL_PORT` the local port (default 8765). `HAUL_DEBUG=1` starts Haul in [debug mode](debugging.md).
+`HAUL_PROXY` replaces `proxy`; `HAUL_1FICHIER_KEY`, `HAUL_PIXELDRAIN_KEY`, `HAUL_RAPIDGATOR_USER`, `HAUL_RAPIDGATOR_PASS`, `HAUL_NITROFLARE_USER`, `HAUL_NITROFLARE_KEY`, `HAUL_GOFILE_TOKEN`, `HAUL_ROUTER_USER`, `HAUL_ROUTER_PASSWORD`, `HAUL_NORDVPN_USER` and `HAUL_NORDVPN_PASSWORD` fill the account keys the file leaves unset. Settings shows those as set by the environment and does not change them. `HAUL_DATA_DIR` moves the data folder and `HAUL_PORT` the local port (default 8765). `HAUL_DEBUG=1` starts Haul in [debug mode](debugging.md).
 
 ## The data folder
 
 The data folder is `%LOCALAPPDATA%\io.github.lordsilver.haul` on Windows, which the uninstaller deletes when you ask it to remove the app's data, and `~/.local/share/haul` on Linux.
 
-It holds `config.toml`, the queue (`queue.json`), what Haul measured per host (`hosts.json`), the desktop app's log (`haul.log`, with the last run's kept as `haul.old.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish, and move along when you change the download folder.
+It holds `config.toml`, the queue (`queue.json`), what Haul measured per host (`hosts.json`), the desktop app's log (`haul.log`, started afresh at 10 MB with the five before it kept as `haul.1.log`, the newest, to `haul.5.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish, and move along when you change the download folder.

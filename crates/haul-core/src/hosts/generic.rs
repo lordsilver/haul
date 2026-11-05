@@ -344,7 +344,6 @@ pub(super) const PASTES: &[&str] = &[
     "paste2.org",
     "pastebin.com",
     "rentry.co",
-    "rentry.org",
     "justpaste.it",
     "controlc.com",
     "pastes.io",

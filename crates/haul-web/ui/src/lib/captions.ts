@@ -44,7 +44,7 @@ export function caption(it: ItemView, paused: boolean): string {
 // How far a download is, between 0 and 100.
 export function percent(it: ItemView): number {
   if (it.size) return Math.min(100, (it.done / it.size) * 100);
-  return it.status === 'done' ? 100 : (it.percent ?? 0);
+  return it.status === 'done' ? 100 : 0;
 }
 
 // "12 of 18 done · 3 downloading · 3 failed"
