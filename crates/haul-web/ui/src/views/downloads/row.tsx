@@ -1,9 +1,8 @@
-import { FolderOpen, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
+import { FolderOpen, type LucideIcon, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
 import { FileName } from '@/components/file-name';
 import { HostName, HostPicker, hostLabel, offHosts } from '@/components/host-picker';
-import { IconButton } from '@/components/icon-button';
 import { StatusGlyph } from '@/components/status-glyph';
 import { Checkbox } from '@/components/ui/checkbox';
 import { act, api, report } from '@/lib/api';
@@ -109,68 +108,60 @@ export function Lead({
   );
 }
 
-// The buttons the engine lists for a row (`commands`), each with its label.
+// What a command's button says and does; with `confirm` it asks first.
+export type CommandButton = {
+  label: string;
+  icon: LucideIcon;
+  action: () => Promise<unknown>;
+  confirm?: string;
+};
+
+// The buttons the engine lists (`commands`), as `buttons` describes them.
+export function CommandButtons({
+  commands,
+  buttons,
+}: {
+  commands: Command[];
+  buttons: Partial<Record<Command, CommandButton>>;
+}) {
+  return (
+    <div className={COLUMNS.actions}>
+      {commands.map((c) => {
+        const button = buttons[c];
+        if (!button) return null;
+        const { icon: Icon, ...rest } = button;
+        return <ConfirmButton key={c} iconOnly icon={<Icon />} {...rest} />;
+      })}
+    </div>
+  );
+}
+
+// A row's buttons, each with its label.
 function RowActions({ it, s }: { it: ItemView; s: State }) {
   const recycle = () =>
     api(`/api/item/${encodeURIComponent(it.id)}/remove`).then(
       () => toast(`Moved ${it.name} to the ${s.bin}`, 'success'),
       report,
     );
-  const buttons: Partial<Record<Command, () => ReactNode>> = {
-    pause: () => (
-      <IconButton key="pause" label="Pause" onClick={() => act(it.id, 'pause')}>
-        <Pause />
-      </IconButton>
-    ),
-    start: () => (
-      <IconButton key="start" label="Start" onClick={() => act(it.id, 'resume')}>
-        <Play />
-      </IconButton>
-    ),
-    resume: () => (
-      <IconButton key="resume" label="Resume" onClick={() => act(it.id, 'resume')}>
-        <Play />
-      </IconButton>
-    ),
-    retry: () => (
-      <IconButton key="retry" label="Retry" onClick={() => act(it.id, 'retry')}>
-        <RotateCw />
-      </IconButton>
-    ),
-    reveal: () => (
-      <IconButton key="reveal" label="Show in folder" onClick={() => act(it.id, 'reveal')}>
-        <FolderOpen />
-      </IconButton>
-    ),
-    recycle: () => (
-      <IconButton key="recycle" label={`Move to the ${s.bin}`} onClick={recycle}>
-        <Trash2 />
-      </IconButton>
-    ),
+  const buttons: Partial<Record<Command, CommandButton>> = {
+    pause: { label: 'Pause', icon: Pause, action: () => act(it.id, 'pause') },
+    start: { label: 'Start', icon: Play, action: () => act(it.id, 'resume') },
+    resume: { label: 'Resume', icon: Play, action: () => act(it.id, 'resume') },
+    retry: { label: 'Retry', icon: RotateCw, action: () => act(it.id, 'retry') },
+    reveal: { label: 'Show in folder', icon: FolderOpen, action: () => act(it.id, 'reveal') },
+    recycle: { label: `Move to the ${s.bin}`, icon: Trash2, action: recycle },
     // Its partial file goes with it, so it asks twice, as Remove does for a
     // selection.
-    remove_partial: () => (
-      <ConfirmButton
-        key="remove_partial"
-        label="Remove"
-        confirm="Delete partial file?"
-        iconOnly
-        icon={<X />}
-        action={() => api(`/api/item/${encodeURIComponent(it.id)}/remove`)}
-      />
-    ),
-    clear: () => (
-      <IconButton key="clear" label="Clear from list" onClick={() => act(it.id, 'remove')}>
-        <X />
-      </IconButton>
-    ),
-    remove: () => (
-      <IconButton key="remove" label="Remove" onClick={() => act(it.id, 'remove')}>
-        <X />
-      </IconButton>
-    ),
+    remove_partial: {
+      label: 'Remove',
+      confirm: 'Delete partial file?',
+      icon: X,
+      action: () => api(`/api/item/${encodeURIComponent(it.id)}/remove`),
+    },
+    clear: { label: 'Clear from list', icon: X, action: () => act(it.id, 'remove') },
+    remove: { label: 'Remove', icon: X, action: () => act(it.id, 'remove') },
   };
-  return <div className={COLUMNS.actions}>{it.commands.map((c) => buttons[c]?.())}</div>;
+  return <CommandButtons commands={it.commands} buttons={buttons} />;
 }
 
 // The host it comes from, starred when it is a preferred one and pinned

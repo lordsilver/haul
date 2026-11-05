@@ -2,8 +2,8 @@ import { Link, Play, Plus, RotateCw, X } from 'lucide-react';
 import { useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
 import { HostName, offHosts } from '@/components/host-picker';
+import { EmptyState, PageHeader, PageScroll } from '@/components/page';
 import { Button } from '@/components/ui/button';
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { openAdd } from '@/lib/add';
 import { act, api, report } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
@@ -172,19 +172,12 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
             </Button>
           ) : null}
           {/* Its files that never started go with it, so that asks twice. */}
-          {unstarted ? (
-            <ConfirmButton
-              label="Remove"
-              confirm={`Remove ${plural(unstarted, 'file')} too?`}
-              icon={<X />}
-              action={() => removeAll(card)}
-            />
-          ) : (
-            <Button variant="ghost" onClick={() => removeAll(card).catch(report)}>
-              <X />
-              Remove
-            </Button>
-          )}
+          <ConfirmButton
+            label="Remove"
+            confirm={unstarted ? `Remove ${plural(unstarted, 'file')} too?` : undefined}
+            icon={<X />}
+            action={() => removeAll(card)}
+          />
         </div>
       </div>
       {pasting && needs ? (
@@ -203,42 +196,33 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
 export function Wrappers({ s }: { s: State }) {
   return (
     <>
-      <header className="flex flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-          <h1 className="mr-auto text-2xl font-semibold tracking-tight">Wrappers</h1>
+      <PageHeader
+        title="Wrappers"
+        actions={
           <Button onClick={() => openAdd()}>
             <Plus />
             Add links
           </Button>
-        </div>
-        <p className="max-w-3xl text-sm text-muted-foreground">
-          A wrapper link holds a set of files, on one host or on many: fileguard.cc's, filecrypt.cc's or mirrored.to's,
-          a page on a site Haul has no code for that lists links, or a paste (zpaste.net, paste2.org…). Haul unwraps it
-          as soon as you add it, pastes a page links included, and each file joins the list once: the same file from
-          another host becomes a mirror of it rather than a second download. The files wait for you to start them, here
-          or in the list.
-        </p>
-      </header>
+        }
+      >
+        A wrapper link holds a set of files, on one host or on many: fileguard.cc's, filecrypt.cc's or mirrored.to's, a
+        page on a site Haul has no code for that lists links, or a paste (zpaste.net, paste2.org…). Haul unwraps it as
+        soon as you add it, pastes a page links included, and each file joins the list once: the same file from another
+        host becomes a mirror of it rather than a second download. The files wait for you to start them, here or in the
+        list.
+      </PageHeader>
       {s.wrapper_cards.length ? (
-        <div className="-mx-2 min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-4">
-          <div className="flex max-w-4xl flex-col gap-2.5">
-            {s.wrapper_cards.map((card) => (
-              <Card key={card.key} card={card} s={s} />
-            ))}
-          </div>
-        </div>
+        <PageScroll>
+          {s.wrapper_cards.map((card) => (
+            <Card key={card.key} card={card} s={s} />
+          ))}
+        </PageScroll>
       ) : (
-        <Empty className="flex-1 border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <Link />
-            </EmptyMedia>
-            <EmptyTitle>No wrapper links yet</EmptyTitle>
-            <EmptyDescription>
-              Add a fileguard.cc or filecrypt.cc link: its files join the list, not started.
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <EmptyState
+          icon={Link}
+          title="No wrapper links yet"
+          description="Add a fileguard.cc or filecrypt.cc link: its files join the list, not started."
+        />
       )}
     </>
   );

@@ -1,6 +1,5 @@
 import { ChevronDown, ChevronRight, FileArchive, KeyRound, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
-import { type FormEvent, type ReactNode, useRef, useState } from 'react';
-import { ConfirmButton } from '@/components/confirm-button';
+import { type FormEvent, useRef, useState } from 'react';
 import { FileName } from '@/components/file-name';
 import { HostNames, HostPicker, hostLabel, offHosts } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
@@ -17,7 +16,7 @@ import { bytes } from '@/lib/format';
 import { pickMany, picking } from '@/lib/selection';
 import { cn } from '@/lib/utils';
 import { toggleArchive } from '@/views/downloads/entries';
-import { Bar, COLUMNS, InlineRate, Lead, ROW, Rate } from '@/views/downloads/row';
+import { Bar, COLUMNS, type CommandButton, CommandButtons, InlineRate, Lead, ROW, Rate } from '@/views/downloads/row';
 
 // The password of an encrypted archive, typed in: Haul keeps it with the
 // archive and extracts with it.
@@ -78,78 +77,22 @@ function partsWith(a: ArchiveView, s: State, ...commands: Command[]) {
 function ArchiveActions({ a, s, focusPassword }: { a: ArchiveView; s: State; focusPassword: () => void }) {
   const extract = () => api(`/api/item/${encodeURIComponent(a.ids[0] ?? '')}/extract`).catch(report);
   const remove = () => bulk(a.ids, 'remove');
-  const buttons: Partial<Record<Command, () => ReactNode>> = {
-    extract: () => (
-      <IconButton key="extract" label="Extract" onClick={extract}>
-        <FileArchive />
-      </IconButton>
-    ),
-    extract_again: () => (
-      <IconButton key="extract_again" label="Extract again" onClick={extract}>
-        <FileArchive />
-      </IconButton>
-    ),
-    pause: () => (
-      <IconButton key="pause" label="Pause the parts" onClick={() => bulk(partsWith(a, s, 'pause'), 'pause')}>
-        <Pause />
-      </IconButton>
-    ),
-    start: () => (
-      <IconButton
-        key="start"
-        label="Start the parts"
-        onClick={() => bulk(partsWith(a, s, 'start', 'resume'), 'resume')}
-      >
-        <Play />
-      </IconButton>
-    ),
-    resume: () => (
-      <IconButton
-        key="resume"
-        label="Resume the parts"
-        onClick={() => bulk(partsWith(a, s, 'start', 'resume'), 'resume')}
-      >
-        <Play />
-      </IconButton>
-    ),
-    retry: () => (
-      <IconButton key="retry" label="Retry the failed parts" onClick={() => bulk(partsWith(a, s, 'retry'), 'retry')}>
-        <RotateCw />
-      </IconButton>
-    ),
-    password: () => (
-      <IconButton key="password" label="Enter the password" onClick={focusPassword}>
-        <KeyRound />
-      </IconButton>
-    ),
-    recycle: () => (
-      <IconButton key="recycle" label={`Move the parts to the ${s.bin}`} onClick={remove}>
-        <Trash2 />
-      </IconButton>
-    ),
+  const resume = () => bulk(partsWith(a, s, 'start', 'resume'), 'resume');
+  const buttons: Partial<Record<Command, CommandButton>> = {
+    extract: { label: 'Extract', icon: FileArchive, action: extract },
+    extract_again: { label: 'Extract again', icon: FileArchive, action: extract },
+    pause: { label: 'Pause the parts', icon: Pause, action: () => bulk(partsWith(a, s, 'pause'), 'pause') },
+    start: { label: 'Start the parts', icon: Play, action: resume },
+    resume: { label: 'Resume the parts', icon: Play, action: resume },
+    retry: { label: 'Retry the failed parts', icon: RotateCw, action: () => bulk(partsWith(a, s, 'retry'), 'retry') },
+    password: { label: 'Enter the password', icon: KeyRound, action: async () => focusPassword() },
+    recycle: { label: `Move the parts to the ${s.bin}`, icon: Trash2, action: remove },
     // Partial files go with them, so it asks twice, as a part's own Remove does.
-    remove_partial: () => (
-      <ConfirmButton
-        key="remove_partial"
-        label="Remove the parts"
-        confirm="Delete partial files?"
-        iconOnly
-        icon={<X />}
-        action={remove}
-      />
-    ),
-    clear: () => (
-      <IconButton key="clear" label="Clear the parts from the list" onClick={remove}>
-        <X />
-      </IconButton>
-    ),
-    remove: () => (
-      <IconButton key="remove" label="Remove the parts" onClick={remove}>
-        <X />
-      </IconButton>
-    ),
+    remove_partial: { label: 'Remove the parts', confirm: 'Delete partial files?', icon: X, action: remove },
+    clear: { label: 'Clear the parts from the list', icon: X, action: remove },
+    remove: { label: 'Remove the parts', icon: X, action: remove },
   };
-  return <div className={COLUMNS.actions}>{a.commands.map((c) => buttons[c]?.())}</div>;
+  return <CommandButtons commands={a.commands} buttons={buttons} />;
 }
 
 // An archive in parts as one row, like JDownloader's packages: it sums up

@@ -16,6 +16,7 @@ import { type FormEvent, type ReactNode, useEffect, useLayoutEffect, useRef, use
 import { ConfirmButton } from '@/components/confirm-button';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
+import { EmptyState, PageHeader, PageScroll } from '@/components/page';
 import { AccountField, SettingCard, SettingRow } from '@/components/setting-card';
 import { Button } from '@/components/ui/button';
 import {
@@ -24,7 +25,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { api, report } from '@/lib/api';
@@ -526,20 +526,16 @@ export function Hosts({ s }: { s: State }) {
   const headings = new Set<string>();
   return (
     <>
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Hosts</h1>
-        <p className="max-w-3xl text-sm text-muted-foreground">
-          The file hosts your downloads are on, and the wrappers and pastebins that lead to them. Choose which hosts
-          Haul uses and in what order. A file on several hosts downloads from the first of your preferred hosts that has
-          it (star a host to add it; drag it by its grip to reorder), otherwise from the fastest of the others. A host
-          switched off is never used. The wrench opens a site's settings: its account, its folder and its route.
-        </p>
-      </header>
+      <PageHeader title="Hosts">
+        The file hosts your downloads are on, and the wrappers and pastebins that lead to them. Choose which hosts Haul
+        uses and in what order. A file on several hosts downloads from the first of your preferred hosts that has it
+        (star a host to add it; drag it by its grip to reorder), otherwise from the fastest of the others. A host
+        switched off is never used. The wrench opens a site's settings: its account, its folder and its route.
+      </PageHeader>
       {hosts.length ? (
-        // biome-ignore lint/a11y/noStaticElementInteractions: where a dragged host lands; the arrows reorder from the keyboard
-        <div
+        // Where a dragged host lands; the arrows reorder from the keyboard.
+        <PageScroll
           ref={list}
-          className="-mx-2 min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-4"
           onDragOver={(e) => {
             if (!drag || !e.dataTransfer.types.includes(HOST_DRAG)) return;
             const node = (e.target as HTMLElement).closest<HTMLElement>('[data-host]');
@@ -567,47 +563,42 @@ export function Hosts({ s }: { s: State }) {
             setPreferredOrder(next);
           }}
         >
-          <div className="flex max-w-4xl flex-col gap-2.5">
-            {hosts.map((h) => {
-              // A heading where the next group starts: preferred, the rest, off.
-              const heading = headings.has(h.group) ? null : HEADINGS[h.group];
-              headings.add(h.group);
-              return [
-                heading ? (
-                  <div key={`heading-${h.group}`} className="mt-3 flex flex-wrap items-baseline gap-x-2 first:mt-0">
-                    <strong className="text-sm">{heading[0]}</strong>
-                    <span className="text-sm text-muted-foreground">{heading[1]}</span>
-                  </div>
-                ) : null,
-                <HostCard
-                  key={h.name}
-                  h={h}
-                  s={s}
-                  d={d}
-                  drop={drop}
-                  dragging={drag?.name === h.name}
-                  onDragStart={() => setDrag({ name: h.name, frozen: s.hosts })}
-                  onDragEnd={() => setDrag(null)}
-                  move={(delta) => move(h.name, delta)}
-                />,
-              ];
-            })}
-            <OtherAccounts s={s} d={d} />
-          </div>
-        </div>
+          {hosts.map((h) => {
+            // A heading where the next group starts: preferred, the rest, off.
+            const heading = headings.has(h.group) ? null : HEADINGS[h.group];
+            headings.add(h.group);
+            return [
+              heading ? (
+                <div key={`heading-${h.group}`} className="mt-3 flex flex-wrap items-baseline gap-x-2 first:mt-0">
+                  <strong className="text-sm">{heading[0]}</strong>
+                  <span className="text-sm text-muted-foreground">{heading[1]}</span>
+                </div>
+              ) : null,
+              <HostCard
+                key={h.name}
+                h={h}
+                s={s}
+                d={d}
+                drop={drop}
+                dragging={drag?.name === h.name}
+                onDragStart={() => setDrag({ name: h.name, frozen: s.hosts })}
+                onDragEnd={() => setDrag(null)}
+                move={(delta) => move(h.name, delta)}
+              />,
+            ];
+          })}
+          <OtherAccounts s={s} d={d} />
+        </PageScroll>
       ) : (
-        <Empty className="flex-1 border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <Server />
-            </EmptyMedia>
-            <EmptyTitle>No sites</EmptyTitle>
-            <EmptyDescription>The hosts, wrappers and pastebins Haul knows appear here.</EmptyDescription>
-          </EmptyHeader>
+        <EmptyState
+          icon={Server}
+          title="No sites"
+          description="The hosts, wrappers and pastebins Haul knows appear here."
+        >
           <div className="flex flex-col items-center gap-2.5">
             <OtherAccounts s={s} d={d} />
           </div>
-        </Empty>
+        </EmptyState>
       )}
     </>
   );

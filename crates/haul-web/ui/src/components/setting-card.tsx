@@ -101,6 +101,28 @@ export function SettingSwitch({
   );
 }
 
+// A card that is one setting's switch, named as the card is.
+export const SwitchCard = ({
+  icon,
+  title,
+  description,
+  name,
+  on,
+}: {
+  icon: LucideIcon;
+  title: string;
+  description: ReactNode;
+  name: string;
+  on: boolean;
+}) => (
+  <SettingCard
+    icon={icon}
+    title={title}
+    description={description}
+    controls={<SettingSwitch name={name} on={on} label={title} />}
+  />
+);
+
 // A number saved when it changes, within its bounds.
 export function NumberField({
   name,

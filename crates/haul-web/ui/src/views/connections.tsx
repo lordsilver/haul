@@ -1,6 +1,7 @@
 import { Globe, KeyRound, Monitor, RotateCw, Shield } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Infobar } from '@/components/infobar';
+import { PageHeader, PageScroll } from '@/components/page';
 import {
   AccountField,
   LinesField,
@@ -9,6 +10,7 @@ import {
   SettingCard,
   SettingRow,
   SettingSwitch,
+  SwitchCard,
   TextField,
 } from '@/components/setting-card';
 import { Button } from '@/components/ui/button';
@@ -300,7 +302,7 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
   const pool = s.pool_summary;
   const proxies = Boolean(d.proxy || d.proxies.length);
   return (
-    <div className="flex flex-col gap-2.5">
+    <>
       <SettingCard
         icon={Shield}
         title={`In use: ${pool.label}`}
@@ -320,20 +322,22 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
       <Section>Your line</Section>
       <YourLine s={s} d={d} />
       {proxies || s.services.nordvpn.length ? (
-        <SettingCard
+        <SwitchCard
           icon={Monitor}
           title="Your line in the pool"
           description="Your own connection as one more address beside the proxies and VPN servers. Hosts then see your real IP address for the downloads it takes."
-          controls={<SettingSwitch name="proxy_with_direct" on={d.proxy_with_direct} label="Your line in the pool" />}
+          name="proxy_with_direct"
+          on={d.proxy_with_direct}
         />
       ) : null}
       <Section>Proxies</Section>
       {proxies ? (
-        <SettingCard
+        <SwitchCard
           icon={Shield}
           title="Use the proxies"
           description="Off keeps them listed but leaves them out; VPN servers go on."
-          controls={<SettingSwitch name="proxies_on" on={d.proxies_on} label="Use the proxies" />}
+          name="proxies_on"
+          on={d.proxies_on}
         />
       ) : null}
       <SettingCard
@@ -367,22 +371,17 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
         />
       </SettingCard>
       {proxies ? (
-        <SettingCard
+        <SwitchCard
           icon={RotateCw}
           title="New connection for every download"
           description="For a proxy that gives each connection another address (a rotating endpoint), so each download gets its own."
-          controls={
-            <SettingSwitch
-              name="proxy_fresh_connections"
-              on={d.proxy_fresh_connections}
-              label="New connection for every download"
-            />
-          }
+          name="proxy_fresh_connections"
+          on={d.proxy_fresh_connections}
         />
       ) : null}
       <Section>VPN services</Section>
       <NordVpn s={s} d={d} />
-    </div>
+    </>
   );
 }
 
@@ -399,17 +398,12 @@ export function Connections({ s }: { s: State }) {
   const d = useSettings(s.config_version);
   return (
     <>
-      <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Connections</h1>
-        <p className="max-w-3xl text-sm text-muted-foreground">
-          What downloads go out through. Hosts limit what one address may fetch (downloads at once, daily allowances,
-          waits), so every address Haul can use is another share: a new one from your router, proxies, or a VPN
-          service's servers.
-        </p>
-      </header>
-      <div className="-mx-2 min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-4">
-        <div className="max-w-4xl">{d ? <Page s={s} d={d} /> : null}</div>
-      </div>
+      <PageHeader title="Connections">
+        What downloads go out through. Hosts limit what one address may fetch (downloads at once, daily allowances,
+        waits), so every address Haul can use is another share: a new one from your router, proxies, or a VPN service's
+        servers.
+      </PageHeader>
+      <PageScroll>{d ? <Page s={s} d={d} /> : null}</PageScroll>
     </>
   );
 }

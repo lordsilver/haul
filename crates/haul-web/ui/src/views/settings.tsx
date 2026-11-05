@@ -11,17 +11,14 @@ import {
   Globe,
   Info,
   KeyRound,
-  type LucideIcon,
-  Monitor,
-  Moon,
   Palette,
   RotateCw,
-  Sun,
   Trash2,
   Wrench,
 } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 import { Infobar } from '@/components/infobar';
+import { PageHeader, PageScroll } from '@/components/page';
 import {
   LinesField,
   NumberField,
@@ -29,6 +26,7 @@ import {
   SettingCard,
   SettingRow,
   SettingSwitch,
+  SwitchCard,
   TextField,
 } from '@/components/setting-card';
 import { Button } from '@/components/ui/button';
@@ -40,8 +38,6 @@ import type { State } from '@/lib/bindings/State';
 import { envNote, useSettings } from '@/lib/settings';
 import { THEMES, setTheme, useTheme } from '@/lib/theme';
 import { toast } from '@/lib/toast';
-
-const THEME_ICONS: Record<string, LucideIcon> = { system: Monitor, light: Sun, dark: Moon };
 
 // The desktop app picks the folder in a dialog; a browser cannot show this
 // machine's folders, so the path is typed instead.
@@ -124,7 +120,7 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
   const theme = useTheme();
   const note = (...keys: string[]) => envNote(d, ...keys);
   return (
-    <div className="flex flex-col gap-2.5">
+    <>
       {s.config_error ? (
         <Infobar
           kind="critical"
@@ -151,15 +147,12 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
             aria-label="App theme"
             onValueChange={(value) => value && setTheme(value as typeof theme)}
           >
-            {THEMES.map(({ value, label }) => {
-              const Icon = THEME_ICONS[value] ?? Monitor;
-              return (
-                <ToggleGroupItem key={value} value={value} className="px-3">
-                  <Icon />
-                  {label}
-                </ToggleGroupItem>
-              );
-            })}
+            {THEMES.map(({ value, label, icon: Icon }) => (
+              <ToggleGroupItem key={value} value={value} className="px-3">
+                <Icon />
+                {label}
+              </ToggleGroupItem>
+            ))}
           </ToggleGroup>
         }
       />
@@ -203,45 +196,33 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
         />
       </SettingCard>
       <FolderCard s={s} d={d} />
-      <SettingCard
+      <SwitchCard
         icon={Trash2}
         title={`Move removed files to the ${s.bin}`}
         description="When you remove a finished download from the list, its file goes too. Clear completed only tidies the list."
-        controls={
-          <SettingSwitch
-            name="recycle_on_remove"
-            on={d.recycle_on_remove}
-            label={`Move removed files to the ${s.bin}`}
-          />
-        }
+        name="recycle_on_remove"
+        on={d.recycle_on_remove}
       />
-      <SettingCard
+      <SwitchCard
         icon={ArrowDownToLine}
         title="Add dropped links and files right away"
         description="Off: links and .dlc / .txt files you drop on the window, or open with Haul, fill the Add dialog first, so you can check them before anything downloads."
-        controls={
-          <SettingSwitch name="skip_add_dialog" on={d.skip_add_dialog} label="Add dropped links and files right away" />
-        }
+        name="skip_add_dialog"
+        on={d.skip_add_dialog}
       />
-      <SettingCard
+      <SwitchCard
         icon={CircleCheck}
         title="Compare checksums of files already there"
         description="A file in the download folder with the same name and size counts as downloaded. With this on, Haul also reads it in full and compares it with the checksum its host publishes, one file at a time and never while downloads are paused: thorough, but slow on big files and spinning disks."
-        controls={
-          <SettingSwitch
-            name="verify_existing"
-            on={d.verify_existing}
-            label="Compare checksums of files already there"
-          />
-        }
+        name="verify_existing"
+        on={d.verify_existing}
       />
-      <SettingCard
+      <SwitchCard
         icon={FileArchive}
         title="Extract archives when their parts are done"
         description="An archive in parts (name.part1.rar, name.7z.001 and so on) is unpacked beside its parts once the last one is downloaded, one archive at a time: RAR, 7‑Zip and zip. Off: extract one with its button in the list."
-        controls={
-          <SettingSwitch name="auto_extract" on={d.auto_extract} label="Extract archives when their parts are done" />
-        }
+        name="auto_extract"
+        on={d.auto_extract}
       />
       <SettingCard
         icon={KeyRound}
@@ -250,27 +231,23 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
       >
         <LinesField name="archive_passwords" lines={d.archive_passwords} label="Archive passwords, one per line" />
       </SettingCard>
-      <SettingCard
+      <SwitchCard
         icon={Trash2}
         title={`Move extracted parts to the ${s.bin}`}
         description="Once an archive is unpacked without error, its parts go. Nothing goes when unpacking fails."
-        controls={
-          <SettingSwitch
-            name="delete_after_extract"
-            on={d.delete_after_extract}
-            label={`Move extracted parts to the ${s.bin}`}
-          />
-        }
+        name="delete_after_extract"
+        on={d.delete_after_extract}
       />
       {s.desktop ? (
-        <SettingCard
+        <SwitchCard
           icon={Clipboard}
           title="Watch the clipboard"
           description="Links you copy anywhere to a supported host, a file or a paste are added. Any other page you copy is looked at for links, and kept only if it has some."
-          controls={<SettingSwitch name="watch_clipboard" on={d.watch_clipboard} label="Watch the clipboard" />}
+          name="watch_clipboard"
+          on={d.watch_clipboard}
         />
       ) : null}
-      <SettingCard
+      <SwitchCard
         icon={ArrowUpCircle}
         title="Look for updates"
         description={
@@ -278,7 +255,8 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
             ? 'Haul asks GitHub for a newer version after it starts and every six hours, and offers to install it in the status bar.'
             : 'Haul asks GitHub for a newer version after it starts and every six hours, and says so in the status bar.'
         }
-        controls={<SettingSwitch name="check_updates" on={d.check_updates} label="Look for updates" />}
+        name="check_updates"
+        on={d.check_updates}
       />
       <Section>When something fails</Section>
       <SettingCard
@@ -388,7 +366,7 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
           controls={<SettingSwitch name="detailed_log" on={d.detailed_log} label="Detailed log" />}
         />
       </SettingCard>
-    </div>
+    </>
   );
 }
 
@@ -396,12 +374,8 @@ export function Settings({ s }: { s: State }) {
   const d = useSettings(s.config_version);
   return (
     <>
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-      </header>
-      <div className="-mx-2 min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2 pb-4">
-        <div className="max-w-4xl">{d ? <Page s={s} d={d} /> : null}</div>
-      </div>
+      <PageHeader title="Settings" />
+      <PageScroll>{d ? <Page s={s} d={d} /> : null}</PageScroll>
     </>
   );
 }

@@ -1,15 +1,15 @@
-import { useSyncExternalStore } from 'react';
+import { externalStore } from '@/lib/external-store';
 
 // Rows picked in the current view, Windows style: alone with a plain click
 // (once picking has started), added or dropped with Ctrl, a range with
 // Shift. `order` is the view's rows in display order, for ranges.
 let picked = new Set<string>();
 let anchor: string | null = null;
-const listeners = new Set<() => void>();
+const store = externalStore(() => picked);
 
 function publish(next: Set<string>) {
   picked = next;
-  for (const listener of listeners) listener();
+  store.notify();
 }
 
 export function pickMany(ids: string[], order: string[], { toggle = false, range = false } = {}) {
@@ -50,12 +50,7 @@ export function keepOnly(ids: Set<string>) {
   publish(new Set([...picked].filter((id) => ids.has(id))));
 }
 
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-};
-
-export const useSelection = () => useSyncExternalStore(subscribe, () => picked);
+export const useSelection = store.use;
 
 // Whether a click on a row picks it. A selection starts at a checkbox (or
 // with Ctrl or Shift), so a stray click on a row picks nothing; once one has
