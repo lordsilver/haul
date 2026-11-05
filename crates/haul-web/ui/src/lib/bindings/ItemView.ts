@@ -22,7 +22,8 @@ tentative: boolean,
  */
 wait: number, 
 /**
- * Seconds until a failed item is tried again on its own; 0 when never.
+ * Seconds until a failed item, or the page of one under Needs you, is
+ * tried again on its own; 0 when never.
  */
 retry_in: number, 
 /**

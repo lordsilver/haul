@@ -37,7 +37,7 @@ curl -N -H "X-Haul-Debug: $TOKEN" "http://127.0.0.1:$PORT/api/debug/stream?repla
 
 - `state`: what `/api/state` answers.
 - `engine`: what the UI does not show.
-  - `items`: each row's links (`mirrors`), the ones that failed, are gone or want a person, `page_wants_person`, `tentative`, `probed`, `running`, the exit it downloads through, retries, and the seconds until its next retry (`retry_in`) or try (`not_before_in`).
+  - `items`: each row's links (`mirrors`), the ones that failed, are gone or want a person, `page_wants_person`, `page_retrying` (its page is passed again on its own, telling nobody), `tentative`, `probed`, `running`, the exit it downloads through, retries, and the seconds until its next retry (`retry_in`) or try (`not_before_in`).
   - `hosts`: each host's limit, measured speed, failures and current penalty.
   - `lanes`: each host from each exit, with the downloads it serves, the limit it showed (`cap`), and the seconds left of its cooldown and settling.
   - `guarded` (pages behind Cloudflare's check), `cleared` (those whose clearance a pass handed Haul), `pages_pass`, `paused`, `moving`, `reconnecting`.

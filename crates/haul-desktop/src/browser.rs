@@ -87,6 +87,14 @@ impl Browser {
             || passes(&self.passes).contains_key(id)
     }
 
+    /// Whether a person has item `id`'s page before them in Haul's window: on
+    /// screen, unlike a page passed out of sight where there is no Edge.
+    pub fn person_has_page(&self, id: &str) -> bool {
+        self.app
+            .get_webview_window(&format!("browse-{id}"))
+            .is_some_and(|window| !off_screen(&window))
+    }
+
     /// The bridge's address, pointed at the proxy currently configured.
     fn bridge_to(&self, proxy: &str) -> Result<SocketAddr, String> {
         let mut slot = self.bridge.lock().unwrap_or_else(|e| e.into_inner());
@@ -131,8 +139,10 @@ impl Browser {
                         &format!("{host} wants you"),
                         "Its check did not pass by itself: tick the box on its page and the download starts.",
                     );
-                } else {
-                    // A copied page went instead, and its window with it.
+                } else if off_screen(&window) {
+                    // A copied page went instead, and its window with it, or
+                    // this was a try of its own and nobody is asked. A window
+                    // a person brought forward meanwhile is theirs.
                     let _ = window.close();
                 }
             }
@@ -235,7 +245,9 @@ impl Browser {
                 }
                 Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
                 Ok(chromium::Outcome::Failed(reason)) => engine.page_failed(&id, &reason),
-                Ok(chromium::Outcome::Later(reason)) => engine.page_later(&id, &reason),
+                Ok(chromium::Outcome::Later { reason, seconds }) => {
+                    engine.page_later(&id, &url, &reason, seconds);
+                }
                 Ok(chromium::Outcome::Cleared { cookies, agent }) => {
                     tracing::info!(item = %id, "{host} let the browser past its check: Haul reads {url} itself");
                     // Unwrapping again starts tasks, which need the async
@@ -254,7 +266,7 @@ impl Browser {
                 }
                 Ok(chromium::Outcome::Settled) => {
                     tracing::info!(item = %id, "{url} passed its check but shows no links Haul takes");
-                    if engine.page_wants_person(&id) && first_ask_in_a_while(&host) {
+                    if engine.page_needs_click(&id) && first_ask_in_a_while(&host) {
                         crate::notify_waiting(
                             &app,
                             &format!("{host} wants you"),
@@ -324,6 +336,7 @@ impl Browser {
             app: self.app.clone(),
             engine: self.engine.clone(),
             id: id.to_string(),
+            page: url.to_string(),
             label: label.clone(),
             user_agent,
             stay: stay.clone(),
@@ -353,8 +366,8 @@ impl Browser {
                     on_handoff.listed(shown);
                     false
                 }
-                None if let Some(reason) = later(url) => {
-                    on_handoff.later(&reason);
+                None if let Some((reason, seconds)) = later(url) => {
+                    on_handoff.later(&reason, seconds);
                     false
                 }
                 None => lock(&on_navigation).navigating(url.as_str()),
@@ -593,11 +606,15 @@ const LISTS: &str = "window.__haulLists = true;";
 /// shows all it has sooner ends its pass then.
 const SHOW_AFTER: Duration = Duration::from_secs(30);
 
+/// Whether a window is still where a page passed out of sight opens.
+fn off_screen(window: &WebviewWindow) -> bool {
+    window.outer_position().is_ok_and(|p| p.x < -10_000)
+}
+
 /// Brings a window opened out of sight onto the screen; one already there
 /// stays where it is.
 fn bring_forward(window: &WebviewWindow) {
-    let off_screen = window.outer_position().is_ok_and(|p| p.x < -10_000);
-    if off_screen {
+    if off_screen(window) {
         let _ = window.center();
         let _ = window.set_skip_taskbar(false);
     }
@@ -681,9 +698,15 @@ fn listed(url: &Url) -> Option<chromium::Shown> {
 }
 
 /// The reason the hand-off script gives when the page could not hand out
-/// its link this time, when `url` is that message.
-fn later(url: &Url) -> Option<String> {
-    message(url, "/later")
+/// its link this time, and how long the page says its host limits this
+/// address if it does, when `url` is that message.
+fn later(url: &Url) -> Option<(String, Option<u64>)> {
+    let reason = message(url, "/later")?;
+    let seconds = url
+        .query_pairs()
+        .find(|(k, _)| k == "seconds")
+        .and_then(|(_, v)| v.parse().ok());
+    Some((reason, seconds))
 }
 
 fn message(url: &Url, path: &str) -> Option<String> {
@@ -740,6 +763,8 @@ struct Capture {
     app: AppHandle,
     engine: Engine,
     id: String,
+    /// The page the window was opened on.
+    page: String,
     label: String,
     user_agent: Option<String>,
     stay: Arc<Mutex<Stay>>,
@@ -827,8 +852,9 @@ impl Capture {
 
     /// The page could not hand out its link this time: it is tried again
     /// later, and the window closes without asking anyone.
-    fn later(&self, reason: &str) {
-        self.engine.page_later(&self.id, reason);
+    fn later(&self, reason: &str, seconds: Option<u64>) {
+        self.engine
+            .page_later(&self.id, &self.page, reason, seconds);
         if let Some(window) = self.app.get_webview_window(&self.label) {
             let window = window.clone();
             std::thread::spawn(move || {
@@ -934,5 +960,19 @@ mod tests {
         ] {
             assert_eq!(handed_off(&other.parse().unwrap()), None, "{other}");
         }
+    }
+
+    #[test]
+    fn a_page_says_how_long_its_host_limits_the_address() {
+        let said = |url: &str| later(&url.parse().unwrap());
+        assert_eq!(
+            said("https://haul.invalid/later?reason=limit&seconds=6939"),
+            Some(("limit".to_string(), Some(6939)))
+        );
+        assert_eq!(
+            said("https://haul.invalid/later?reason=limit"),
+            Some(("limit".to_string(), None))
+        );
+        assert_eq!(said("https://haul.invalid/gone?reason=limit"), None);
     }
 }

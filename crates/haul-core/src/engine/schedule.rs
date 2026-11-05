@@ -15,6 +15,10 @@ use crate::{
     item::Status,
 };
 
+/// Why a row waits when every page it could go to is on a host that asked
+/// this address to wait.
+pub(super) const ASKED_TO_WAIT: &str = "asks this address to wait";
+
 impl Engine {
     // ---- scheduler
 
@@ -183,7 +187,7 @@ impl Engine {
                             if it.tentative {
                                 continue;
                             }
-                            if it.status == Status::Captcha {
+                            if it.status == Status::Captcha && !it.page_retrying {
                                 events.push(Event::NeedsUser {
                                     id: id.clone(),
                                     name: display_name(it),
@@ -218,12 +222,18 @@ impl Engine {
         let it = &st.items[id];
         // A mirror whose page the desktop app passes by itself, waiting its
         // turn in the browser: the file waits for it rather than go to a
-        // host Haul knows nothing of, or one measured slower.
+        // host Haul knows nothing of, or one measured slower, unless that
+        // host has asked this address to wait.
         let pass_host = (pages && !it.page_wants_person)
             .then(|| {
                 it.manual_urls
                     .iter()
-                    .find(|m| st.passes(m) && !off(m) && !it.failed.contains(*m))
+                    .find(|m| {
+                        st.passes(m)
+                            && !off(m)
+                            && !it.failed.contains(*m)
+                            && self.pass_held_until(st, m, now).is_none()
+                    })
                     .map(|m| hosts::host_of(m))
             })
             .flatten();
@@ -241,9 +251,32 @@ impl Engine {
                 .filter(|m| !it.failed.contains(*m) && off(m))
                 .map(|m| hosts::host_of(m))
                 .collect();
+            let held = self
+                .pages_held_until(st, it, now)
+                .zip(it.mirrors.iter().find(|m| it.manual_urls.contains(*m)));
+            let held = held.map(|(until, page)| (until, hosts::host_of(page)));
+            let retry_at = it
+                .retry_at
+                .or_else(|| {
+                    it.page_wants_person
+                        .then(|| self.page_retry_at(st, it, now))
+                        .flatten()
+                })
+                .filter(|_| asks);
             let it = st.items.get_mut(id).expect("caller checked");
-            if asks && it.status != Status::Error {
+            if let Some((until, host)) = held {
+                // Nothing to do but wait for the host, and no use asking a
+                // person: its page would say the same to them.
+                it.status = Status::Waiting;
+                it.not_before = Some(until);
+                it.error = format!("{host}: {ASKED_TO_WAIT}");
+            } else if asks && it.status != Status::Error {
                 it.status = Status::Captcha;
+                it.retry_at = retry_at;
+                // Said while it held, and it no longer does.
+                if it.error.ends_with(ASKED_TO_WAIT) {
+                    it.error.clear();
+                }
             } else if !only_off.is_empty() {
                 // Nothing to retry until the user turns a host back on.
                 let mut names = only_off;

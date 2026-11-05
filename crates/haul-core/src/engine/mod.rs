@@ -1618,6 +1618,10 @@ impl Engine {
                 }
                 it.manual_urls.clear();
                 it.page_wants_person = false;
+                // The person's own try: the page's first pass again.
+                it.auto_retries = 0;
+                it.retry_at = None;
+                it.page_retrying = false;
             }
             ItemAction::Extract => {}
             ItemAction::Remove => {
@@ -1709,6 +1713,19 @@ impl Engine {
         if let Some(it) = self.lock().items.get_mut(id) {
             it.done = done;
         }
+    }
+
+    /// Brings item `id`'s next automatic retry forward to now, for tests of
+    /// what it does. Returns whether it had one.
+    #[doc(hidden)]
+    pub fn debug_retry_now(&self, id: &str) -> bool {
+        let mut st = self.lock();
+        let Some(it) = st.items.get_mut(id).filter(|it| it.retry_at.is_some()) else {
+            return false;
+        };
+        it.retry_at = Some(Instant::now());
+        self.publish(st);
+        true
     }
 
     /// Stops starting downloads and pauses the running ones; they resume

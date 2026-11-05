@@ -99,6 +99,9 @@ pub(crate) struct Item {
     /// The desktop app tried this item's page out of sight and it wants a
     /// person after all (its window came forward, or was closed).
     pub page_wants_person: bool,
+    /// Its page is passed again on its own after it wanted a person, who
+    /// was told then: whatever comes of these tries tells nobody.
+    pub page_retrying: bool,
     /// `pre` came from the user (a pasted or captured link).
     pub manual: bool,
     pub name: Option<String>,
@@ -229,6 +232,7 @@ impl Item {
             prefer: None,
             tentative: false,
             page_wants_person: false,
+            page_retrying: false,
             title: None,
             found: None,
             found_hosts: Vec::new(),
@@ -257,6 +261,7 @@ impl Item {
         self.retries = 0;
         self.auto_retries = 0;
         self.retry_at = None;
+        self.page_retrying = false;
     }
 
     /// The name used to recognise the same file on other hosts.
@@ -335,7 +340,12 @@ impl Item {
     pub fn restore(id: String, s: Saved) -> Self {
         let mut it = Item::new(s.mirrors, s.name, s.package);
         it.id = id;
-        it.probed = it.name.is_some() || s.pre.is_some();
+        // Only a row queued again is looked up as Haul starts. Any other (a
+        // wrapper, say, which has no name) goes straight to its attempt once
+        // it goes at all, or nothing would ever take it from the queue.
+        it.probed = it.name.is_some()
+            || s.pre.is_some()
+            || matches!(s.status, Status::Done | Status::Paused | Status::Error);
         it.pre = s.pre;
         it.pre_for = s.pre_for;
         it.manual = s.manual;

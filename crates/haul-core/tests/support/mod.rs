@@ -550,6 +550,29 @@ pub(super) async fn start_server() -> (Server, u16) {
                             ),
                         );
                     }
+                    // One file on ddownload, whose page passes in the desktop
+                    // app, and on another host, both reached with the stand-in
+                    // as a proxy: one Haul has no code for, one whose page
+                    // passes too, or one whose page only a person can do.
+                    let beside_ddownload = match id.as_str() {
+                        "ddownload-held" => Some("http://files.example/files/held.bin"),
+                        "ddownload-gofile" => Some("https://gofile.io/d/both"),
+                        "ddownload-rapidgator" => Some("https://rapidgator.net/file/person"),
+                        _ => None,
+                    };
+                    if let Some(other) = beside_ddownload {
+                        return (
+                            [(header::CONTENT_TYPE, "text/html")],
+                            format!(
+                                r#"<div class="link-group" data-host="ddownload.com">
+                                     <a class="target-link" href="http://ddownload.com/dd/{id}">1</a>
+                                   </div>
+                                   <div class="link-group" data-host="other.example">
+                                     <a class="target-link" href="{other}">1</a>
+                                   </div>"#
+                            ),
+                        );
+                    }
                     if id == "parts" {
                         return (
                             [(header::CONTENT_TYPE, "text/html")],
@@ -603,6 +626,17 @@ pub(super) async fn start_server() -> (Server, u16) {
             // asked, as until a browser passed it; "cf-always" every time.
             get(|UrlPath(page): UrlPath<String>| async move {
                 static CF_ONCE: AtomicUsize = AtomicUsize::new(0);
+                // "missing-…" answers Not Found the first time it is asked,
+                // then is a container like "open".
+                static MISSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+                if page.starts_with("missing-") {
+                    let mut missed = MISSED.lock().unwrap();
+                    if !missed.contains(&page) {
+                        missed.push(page);
+                        return StatusCode::NOT_FOUND.into_response();
+                    }
+                    return FC_GATE.into_response();
+                }
                 let challenged = match page.as_str() {
                     "cf-once.html" => CF_ONCE.fetch_add(1, Ordering::SeqCst) == 0,
                     "cf-always.html" => true,
@@ -697,7 +731,10 @@ pub(super) async fn start_server() -> (Server, u16) {
                             format!("http://{at}/files/{id}.part2.rar"),
                         ],
                     )
-                } else if page == "open.html" || page == "cf-once.html" {
+                } else if page == "open.html"
+                    || page == "cf-once.html"
+                    || page.starts_with("missing-")
+                {
                     fc_solved(host)
                 } else {
                     FC_GATE.to_string()
@@ -907,6 +944,26 @@ pub(super) async fn start_server() -> (Server, u16) {
                     _ => "<html><head><title>Nothing here</title></head><body><a href=\"/\">Home</a></body></html>",
                 };
 (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response()
+            }),
+        )
+        .route(
+            "/dd/{id}",
+            // ddownload.com's file page, with the stand-in as the proxy.
+            get(|UrlPath(id): UrlPath<String>| async move {
+                (
+                    [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                    format!(r#"<html><body><span class="dk-dl-name" title="{id}.rar"></span></body></html>"#),
+                )
+            }),
+        )
+        .route(
+            "/paste/{id}",
+            // A paste holding no address, with the stand-in as the proxy.
+            get(|UrlPath(_): UrlPath<String>| async move {
+                (
+                    [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                    "<html><head><title>Notes</title></head><body><p>Only a host's name.</p></body></html>",
+                )
             }),
         )
         .route(

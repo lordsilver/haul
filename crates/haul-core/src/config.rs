@@ -628,7 +628,7 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # min_speed_seconds = 60
 
 # Minutes before a failed download is tried again on its own (up to three
-# times); 0 turns that off.
+# times), and a page Haul passes by itself that wanted you; 0 turns that off.
 # retry_failed_minutes = 15
 
 # Every host goes through this proxy unless you allow a direct route for it

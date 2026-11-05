@@ -131,8 +131,12 @@ pub enum Outcome {
     /// The page says something that may not last: the mirror failed for now,
     /// nobody is asked.
     Failed(String),
-    /// The page could not hand out its link this time.
-    Later(String),
+    /// The page could not hand out its link this time, and maybe says how
+    /// long its host limits this address.
+    Later {
+        reason: String,
+        seconds: Option<u64>,
+    },
     /// The browser is past the check in front of the page's site and got
     /// these cookies for it (`Set-Cookie` lines) as user agent `agent`:
     /// Haul reads the page itself with both ([`Pass::hand_clearance`]).
@@ -269,7 +273,9 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
             }
             Ok(Outcome::Gone(why)) => json!({ "gone": why }),
             Ok(Outcome::Failed(why)) => json!({ "failed": why }),
-            Ok(Outcome::Later(why)) => json!({ "later": why }),
+            Ok(Outcome::Later { reason, seconds }) => {
+                json!({ "later": reason, "seconds": seconds })
+            }
             // Their names only, not what they hold.
             Ok(Outcome::Cleared { cookies, agent }) => json!({
                 "cleared": cookies.iter().filter_map(|c| c.split('=').next()).collect::<Vec<_>>(),
@@ -446,7 +452,10 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
             return Ok(Outcome::Failed(reason.to_string()));
         }
         if let Some(reason) = sent["later"].as_str() {
-            return Ok(Outcome::Later(reason.to_string()));
+            return Ok(Outcome::Later {
+                reason: reason.to_string(),
+                seconds: sent["seconds"].as_u64(),
+            });
         }
         if let (Some(take), Some(_)) = (p.take_links, sent["links"].as_array()) {
             let strings = |key: &str| -> Vec<String> {
