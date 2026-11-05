@@ -20,15 +20,17 @@ pub struct Update {
     pub notes: String,
     /// The release's page.
     pub page: String,
-    /// The Windows setup program, when the release has one.
+    /// The Windows setup program, when the release has one and GitHub gives
+    /// its digest.
     pub installer: Option<Asset>,
-    pub sums: Option<Asset>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Asset {
     pub name: String,
     pub url: String,
+    /// Its SHA-256 as GitHub reports it, in hexadecimal.
+    pub sha256: String,
 }
 
 /// What the views show of an update.
@@ -39,7 +41,7 @@ pub struct UpdateView {
     pub notes: String,
     pub page: String,
     /// The desktop app can install it itself (on Windows, with its setup
-    /// program and checksums published).
+    /// program published and its digest known).
     pub installable: bool,
 }
 
@@ -61,6 +63,9 @@ struct Release {
 struct ReleaseAsset {
     name: String,
     browser_download_url: String,
+    /// `sha256:<hex>`.
+    #[serde(default)]
+    digest: Option<String>,
 }
 
 /// `a.b.c` as numbers, a leading `v` and anything after `-` or `+` left out.
@@ -96,22 +101,22 @@ pub async fn latest(http: &Http, api: &str, current: &str) -> Result<Option<Upda
     if release.draft || release.prerelease || !newer(&release.tag_name, current) {
         return Ok(None);
     }
-    let asset = |pick: &dyn Fn(&str) -> bool| {
-        release
-            .assets
-            .iter()
-            .find(|a| pick(&a.name))
-            .map(|a| Asset {
+    let installer = release
+        .assets
+        .iter()
+        .find(|a| a.name.ends_with("-setup.exe") && a.name.contains("windows"))
+        .and_then(|a| {
+            Some(Asset {
                 name: a.name.clone(),
                 url: a.browser_download_url.clone(),
+                sha256: sha256_of(a.digest.as_deref()?)?,
             })
-    };
+        });
     Ok(Some(Update {
         version: release.tag_name.trim_start_matches('v').to_string(),
         notes: what_changed(&release.body).to_string(),
         page: release.html_url.clone(),
-        installer: asset(&|n| n.ends_with("-setup.exe") && n.contains("windows")),
-        sums: asset(&|n| n == "SHA256SUMS"),
+        installer,
     }))
 }
 
@@ -125,43 +130,39 @@ fn what_changed(notes: &str) -> &str {
         .trim_end()
 }
 
-/// The SHA-256 `SHA256SUMS` gives for file `name` (`<hex>  <name>` lines).
-fn sum_for<'a>(sums: &'a str, name: &str) -> Option<&'a str> {
-    sums.lines().find_map(|line| {
-        let (hex, file) = line.split_once(char::is_whitespace)?;
-        (file.trim().trim_start_matches('*') == name).then_some(hex.trim())
-    })
+/// The hexadecimal SHA-256 in a digest as GitHub writes it (`sha256:<hex>`).
+fn sha256_of(digest: &str) -> Option<String> {
+    let hex = digest.strip_prefix("sha256:")?;
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| hex.to_ascii_lowercase())
+}
+
+/// Whether `bytes` are what the hexadecimal SHA-256 `want` says.
+fn matches_sha256(bytes: &[u8], want: &str) -> bool {
+    let got: String = Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    got == want
 }
 
 /// Downloads `update`'s setup program into `dir` and checks it against the
 /// release's `SHA256SUMS`. Returns where it is.
 pub async fn fetch_installer(http: &Http, update: &Update, dir: &Path) -> Result<PathBuf, String> {
-    let (Some(installer), Some(sums)) = (&update.installer, &update.sums) else {
+    let Some(installer) = &update.installer else {
         return Err("this release has no setup program to install".into());
     };
-    let get = |url: &str| http.client.get(url).send();
-    let sums = get(&sums.url)
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| e.to_string())?
-        .text()
-        .await
-        .map_err(|e| e.to_string())?;
-    let want = sum_for(&sums, &installer.name)
-        .ok_or_else(|| format!("SHA256SUMS lists no {}", installer.name))?
-        .to_ascii_lowercase();
-    let bytes = get(&installer.url)
+    let bytes = http
+        .client
+        .get(&installer.url)
+        .send()
         .await
         .and_then(|r| r.error_for_status())
         .map_err(|e| e.to_string())?
         .bytes()
         .await
         .map_err(|e| e.to_string())?;
-    let got = Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    if got != want {
+    if !matches_sha256(&bytes, &installer.sha256) {
         return Err(format!("{} does not match its checksum", installer.name));
     }
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -176,7 +177,7 @@ impl Update {
             version: self.version.clone(),
             notes: self.notes.clone(),
             page: self.page.clone(),
-            installable: cfg!(windows) && self.installer.is_some() && self.sums.is_some(),
+            installable: cfg!(windows) && self.installer.is_some(),
         }
     }
 }
@@ -204,12 +205,21 @@ mod tests {
     }
 
     #[test]
-    fn reads_sha256sums() {
-        let sums = "aa11  haul-v0.15.4-linux-x64.tar.gz\nbb22 *haul-desktop-v0.15.4-windows-x64-setup.exe\n";
-        assert_eq!(
-            sum_for(sums, "haul-desktop-v0.15.4-windows-x64-setup.exe"),
-            Some("bb22")
-        );
-        assert_eq!(sum_for(sums, "missing.exe"), None);
+    fn reads_githubs_digest() {
+        let hex = "ab".repeat(32);
+        assert_eq!(sha256_of(&format!("sha256:{hex}")), Some(hex.clone()));
+        let upper = hex.to_ascii_uppercase();
+        assert_eq!(sha256_of(&format!("sha256:{upper}")), Some(hex.clone()));
+        assert_eq!(sha256_of(&hex), None, "no algorithm");
+        assert_eq!(sha256_of(&format!("sha512:{hex}")), None);
+        assert_eq!(sha256_of("sha256:abc"), None, "too short");
+    }
+
+    #[test]
+    fn a_wrong_file_is_not_taken_for_the_right_one() {
+        // SHA-256 of "abc".
+        let want = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert!(matches_sha256(b"abc", want));
+        assert!(!matches_sha256(b"abd", want));
     }
 }

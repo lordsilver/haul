@@ -425,7 +425,7 @@ pub(super) async fn start_server() -> (Server, u16) {
         .route(
             "/repos/lordsilver/haul/releases/latest",
             // GitHub's latest release of Haul, far in the future, with its
-            // setup program and checksums.
+            // setup program and that file's digest.
             get(|State(s): State<Server>, headers: HeaderMap| async move {
                 log(&s, "/repos/lordsilver/haul/releases/latest", &headers);
                 let host = headers.get(header::HOST).unwrap().to_str().unwrap().to_string();
@@ -436,19 +436,9 @@ pub(super) async fn start_server() -> (Server, u16) {
                     "draft": false,
                     "prerelease": false,
                     "assets": [
-                        {"name": "haul-desktop-v99.0.0-windows-x64-setup.exe", "browser_download_url": format!("http://{host}/files/setup.exe")},
-                        {"name": "SHA256SUMS", "browser_download_url": format!("http://{host}/sums")},
-                    ]
+                        {"name": "haul-desktop-v99.0.0-windows-x64-setup.exe", "browser_download_url": format!("http://{host}/files/setup.exe"), "digest": format!("sha256:{}", sha256_hex(&content("setup.exe", SIZE)))},
+                        ]
                 }))
-            }),
-        )
-        .route(
-            "/sums",
-            get(|| async {
-                format!(
-                    "{}  haul-desktop-v99.0.0-windows-x64-setup.exe\n",
-                    sha256_hex(&content("setup.exe", SIZE))
-                )
             }),
         )
         .route(
