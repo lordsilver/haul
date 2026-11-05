@@ -408,6 +408,10 @@ async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/limited-long/{name}",
+            get(|| async { (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "30")]) }),
+        )
+        .route(
             "/id/{key}",
             // A host whose links are ids: the name (`A_part1_rar` for
             // A.part1.rar) comes only in the answer.
@@ -1424,6 +1428,24 @@ async fn rate_limited_host_cools_down() {
     assert!(s.items[0].error.contains("429"), "{}", s.items[0].error);
     wait_for(&engine, "done", all_done).await;
     assert_eq!(t.downloaded("d.bin"), content("d.bin", SIZE));
+}
+
+/// A preferred host shows its wait before anything came from it, as any other
+/// host does.
+#[tokio::test]
+async fn a_preferred_host_shows_its_wait_before_any_download_finished() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine
+        .set_preferred_hosts(&["127.0.0.1".to_string()])
+        .unwrap();
+    engine.add_text(&format!("{}/limited-long/d.bin", t.ip), "");
+    let s = wait_for(&engine, "cooldown", |s| {
+        s.items.first().is_some_and(|i| i.status == "waiting")
+    })
+    .await;
+    let host = s.hosts.iter().find(|h| h.name == "127.0.0.1").unwrap();
+    assert!(host.cooldown > 0, "shows its wait: {}", host.cooldown);
 }
 
 #[tokio::test]
