@@ -18,7 +18,7 @@ use crate::{
     config::{self, ACCOUNTS, Config, Route, Theme},
     hosts::{self, Http},
     item::{Item, Status},
-    paths, store,
+    paths,
 };
 
 /// Every setting, for the settings view. Unlike the state stream this
@@ -720,43 +720,6 @@ impl Engine {
             }
         }
         any
-    }
-
-    /// Route choices saved by older versions in `routes.json` move into
-    /// `config.toml`, once.
-    pub(super) fn migrate_routes(&self) {
-        let Some(path) = self.0.config_path.clone() else {
-            return;
-        };
-        let legacy = self.0.data_dir.join(store::ROUTES);
-        let Ok(routes) = store::load_routes(&self.0.data_dir) else {
-            return;
-        };
-        if routes.is_empty() {
-            return;
-        }
-        let mut cfg = (*self.cfg()).clone();
-        let mut writes = Vec::new();
-        for (host, route) in routes {
-            if let std::collections::btree_map::Entry::Vacant(slot) = cfg.routes.entry(host) {
-                writes.push((
-                    vec!["routes".into(), slot.key().clone()],
-                    Some(route.as_str().into()),
-                ));
-                slot.insert(route);
-            }
-        }
-        match self.write_and_apply(cfg, writes) {
-            Ok(()) => {
-                let _ = std::fs::rename(&legacy, legacy.with_extension("json.migrated"));
-                tracing::info!(
-                    "moved the routes in {} to {}",
-                    legacy.display(),
-                    path.display()
-                );
-            }
-            Err(e) => tracing::error!("{e}"),
-        }
     }
 }
 

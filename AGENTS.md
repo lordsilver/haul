@@ -10,6 +10,10 @@ Before introducing a restriction, explain exactly what would be blocked and why,
 
 Descriptions of current implementation behavior are not permanent prohibitions and do not authorize new restrictions. Preserve unrelated existing behavior unless the user requests a change; do not claim that editing documentation changes the implementation. If approval is missing or ambiguous, ask rather than adding the restriction.
 
+## Breaking changes
+
+Haul has one user, and until 1.0 anything can change. Break things whenever a change is worth it, without asking first, even if that invalidates existing config, saved state or data folders, the user's own included. Don't add migrations, fallbacks or compatibility code for older versions' formats or API, and remove such code when you find it. Name each break in the release notes, so the user knows what to expect. Removing a feature is still a blocking decision: this section is about old formats, not about what Haul can do.
+
 ## Example data
 
 This repository is public. Every example (in code, tests, fixtures, docs, commit messages, pull requests, issues, tags and release notes) uses generic, made-up data that says nothing about what anyone downloads with Haul:

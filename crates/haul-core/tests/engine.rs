@@ -77,7 +77,7 @@ async fn a_saved_row_without_links_is_dropped() {
     std::fs::create_dir_all(t.root.join("data")).unwrap();
     std::fs::write(
         t.root.join("data/queue.json"),
-        r#"{"empty":{"mirrors":[],"status":"queued"},"kept":{"mirrors":["http://127.0.0.1:9/k.bin"],"status":"paused"}}"#,
+        r#"{"empty":{"mirrors":[],"name":null,"package":"","status":"queued","error":"","pre":null,"size":0},"kept":{"mirrors":["http://127.0.0.1:9/k.bin"],"name":null,"package":"","status":"paused","error":"","pre":null,"size":0}}"#,
     )
     .unwrap();
     let engine = t.engine().await;
@@ -154,24 +154,6 @@ async fn a_link_named_after_its_fragment_joins_the_same_file() {
     assert_eq!(s.items.len(), 1);
     assert_eq!(s.items[0].name, "kept.bin");
     assert_eq!(engine.debug_links(&s.items[0].id).len(), 2);
-}
-
-/// A paste Haul 0.15.2 saved as a download row comes back as the wrapper
-/// it is.
-#[tokio::test]
-async fn a_paste_saved_as_a_download_comes_back_a_wrapper() {
-    let t = Setup::new().await;
-    std::fs::create_dir_all(t.root.join("data")).unwrap();
-    std::fs::write(
-        t.root.join("data/queue.json"),
-        r#"{"p":{"mirrors":["https://zpaste.net/p/a1b2c"],"status":"queued"}}"#,
-    )
-    .unwrap();
-    let engine = t.engine().await;
-    let s = engine.snapshot();
-    assert!(s.items.is_empty(), "no download row: {:?}", s.items);
-    assert_eq!(s.wrappers.len(), 1);
-    assert_eq!(s.wrappers[0].url, "https://zpaste.net/p/a1b2c");
 }
 
 /// A newer Haul on GitHub shows in the state, and its setup program
@@ -292,27 +274,6 @@ async fn a_deleted_file_fails_when_it_is_looked_up() {
     .await;
     assert!(s.items[0].error.contains("deleted"), "{}", s.items[0].error);
     assert_eq!(s.items[0].retry_in, 0, "not tried again on a timer");
-}
-
-/// A MEGA download that failed in Haul 0.15.0 for want of megatools goes
-/// again, as Haul now downloads from MEGA itself.
-#[tokio::test]
-async fn a_download_that_failed_for_want_of_megatools_goes_again() {
-    let t = Setup::new().await;
-    std::fs::create_dir_all(t.root.join("data")).unwrap();
-    std::fs::write(
-        t.root.join("data/queue.json"),
-        r#"{"m":{"mirrors":["https://mega.nz/file/AAAAAAAA#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"],"status":"error","error":"mega.nz needs megatools on PATH (https://megatools.megous.com)","pre":{"url":"https://mega.nz/file/AAAAAAAA","exec":["megatools","dl"]}}}"#,
-    )
-    .unwrap();
-    let engine = t.engine().await;
-    let s = engine.snapshot();
-    assert_ne!(s.items[0].status, "error", "queued again: {:?}", s.items[0]);
-    assert!(
-        !s.items[0].error.contains("megatools"),
-        "{}",
-        s.items[0].error
-    );
 }
 
 #[tokio::test]
@@ -548,13 +509,6 @@ async fn start_when_free(options: impl Fn() -> Options) -> Engine {
 #[tokio::test]
 async fn queue_and_settings_survive_restart_and_a_second_instance_is_refused() {
     let t = Setup::new().await;
-    std::fs::create_dir_all(t.root.join("data")).unwrap();
-    // A route choice saved by an older version.
-    std::fs::write(
-        t.root.join("data/routes.json"),
-        r#"{"old.example":"direct"}"#,
-    )
-    .unwrap();
     let engine = start_from_file(&t).await;
     assert!(matches!(
         Engine::start(t.options()).await,
@@ -586,12 +540,6 @@ async fn queue_and_settings_survive_restart_and_a_second_instance_is_refused() {
     assert_eq!(s.max_total, 3);
     let cfg = engine.cfg();
     assert_eq!(cfg.routes.get("127.0.0.1"), Some(&Route::Direct));
-    assert_eq!(
-        cfg.routes.get("old.example"),
-        Some(&Route::Direct),
-        "migrated"
-    );
-    assert!(!t.root.join("data/routes.json").exists());
     let file = std::fs::read_to_string(t.root.join("data/config.toml")).unwrap();
     assert!(file.starts_with("# Haul settings"), "{file}");
 }

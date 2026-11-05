@@ -96,11 +96,6 @@ pub struct Config {
     /// Off: NordVPN's settings stay, but its servers are not used.
     pub nordvpn_on: bool,
     pub user_agent: String,
-    /// The per-host limits table of older versions: read, and ignored.
-    /// Public only so struct updates (`..Config::default()`) work outside
-    /// this module.
-    #[serde(rename = "limits")]
-    pub old_limits: serde::de::IgnoredAny,
     /// The user's route choice per host when a proxy is configured.
     pub routes: BTreeMap<String, Route>,
     /// Subfolder of the download folder for the files from a host.
@@ -141,9 +136,6 @@ pub struct Config {
     /// Gets a new address instead of asking the router: any command, run in
     /// the system's shell.
     pub reconnect_command: Option<String>,
-    /// No longer used: Haul downloads from mega.nz itself. Kept so a file
-    /// that still sets it loads.
-    pub megatools: Option<PathBuf>,
     #[serde(skip)]
     pub endpoints: Endpoints,
     /// Keys an environment variable set, with the variable's name.
@@ -180,7 +172,6 @@ impl Default for Config {
             proxies_on: true,
             nordvpn_on: true,
             user_agent: DEFAULT_USER_AGENT.into(),
-            old_limits: serde::de::IgnoredAny,
             routes: BTreeMap::new(),
             folders: BTreeMap::new(),
             preferred_hosts: DEFAULT_PREFERRED.iter().map(|h| h.to_string()).collect(),
@@ -201,7 +192,6 @@ impl Default for Config {
             nordvpn_countries: Vec::new(),
             reconnect: false,
             reconnect_command: None,
-            megatools: None,
             endpoints: Endpoints::default(),
             from_env: BTreeMap::new(),
         }
@@ -800,9 +790,6 @@ mod tests {
             proxy = "socks5://u:p@host:1080"
             1fichier_key = "k1"
             preferred_hosts = ["B.example", "a.example"]
-            # Older versions had a limits table; it still loads.
-            [limits]
-            "1fichier.com" = 1
             [routes]
             "a.example" = "direct"
             [folders]
