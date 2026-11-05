@@ -28,7 +28,7 @@ export function AddDialog() {
   };
   return (
     <Dialog open={form.open} onOpenChange={(open) => !open && closeAdd()}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-2xl">
         <form className="flex flex-col gap-4" onSubmit={submit}>
           <DialogHeader>
             <DialogTitle>Add links</DialogTitle>
@@ -41,10 +41,10 @@ export function AddDialog() {
             <Textarea
               id="add-text"
               ref={text}
-              rows={7}
+              rows={12}
               required
               spellCheck={false}
-              className="max-h-80 font-mono text-xs"
+              className="resize-y font-mono text-xs"
               placeholder={'https://pixeldrain.com/u/…\nhttps://gofile.io/d/…'}
               value={form.text}
               onChange={(e) => editAdd({ text: e.target.value })}
