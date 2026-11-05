@@ -35,11 +35,6 @@ files: number,
  */
 empty: number, 
 /**
- * Its files only on hosts that are off until their account is set: in no
- * list, so the card is where they show.
- */
-waiting_for_account: number, 
-/**
  * The wrapper whose state the card shows, the one to open when it
  * needs a person.
  */

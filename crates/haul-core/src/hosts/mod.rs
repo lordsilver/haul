@@ -379,7 +379,7 @@ pub struct Known {
     /// Without its account it gives no decent download: a captcha for
     /// every file, or names only once a page is passed. So it is off
     /// until the user sets one or switches it on without one
-    /// ([`Known::off_for_account`]).
+    /// ([`Known::last_resort`]).
     pub needs_account: bool,
 }
 
@@ -406,10 +406,15 @@ impl Known {
         self.needs_account && !self.has_account(cfg)
     }
 
-    /// It lacks its account and the user did not switch it on without one
-    /// ([`Config::accountless_hosts`]): its links are left out.
-    pub fn off_for_account(&self, cfg: &Config) -> bool {
-        self.lacks_account(cfg) && !cfg.is_accountless(self.names[0])
+    /// It lacks its account, so its free download would cost the person a
+    /// step for every file (a captcha, or a page the desktop app can't pass
+    /// where `pages` is false), and the user did not ask to use it like any
+    /// other host without one ([`Config::accountless_hosts`]): its links are
+    /// used only when no other host has the file.
+    pub fn last_resort(&self, cfg: &Config, pages: bool) -> bool {
+        self.lacks_account(cfg)
+            && !cfg.is_accountless(self.names[0])
+            && asks_a_person(&format!("https://{}/", self.names[0]), cfg, pages)
     }
 
     /// The downloads at once it allows one address, unless an account

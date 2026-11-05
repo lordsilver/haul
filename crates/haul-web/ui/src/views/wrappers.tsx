@@ -109,10 +109,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
   // Pastes that list nothing, beside wrappers that found their files: a
   // quiet note, not a failure.
   const empty = card.empty ? `${plural(card.empty, 'paste')} ${card.empty === 1 ? 'lists' : 'list'} no links` : '';
-  const held = card.waiting_for_account
-    ? `${plural(card.waiting_for_account, 'file')} only on hosts that need an account`
-    : '';
-  const line = [card.host, state, empty, held].filter(Boolean).join(' · ');
+  const line = [card.host, state, empty].filter(Boolean).join(' · ');
   const reason = ['error', 'waiting', 'captcha'].includes(card.status) ? card.error_shown : '';
   // When a failed one, or the page of one waiting for a person, is tried
   // again on its own, after its reason.

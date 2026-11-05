@@ -468,9 +468,7 @@ impl Engine {
 
     /// Turns `host` off (its links are never tried, and it leaves the
     /// preferred hosts) or back on, which starts again the downloads that
-    /// failed for having only turned-off hosts. A host that needs an account
-    /// the user has not set is off until switched on without one
-    /// ([`Config::accountless_hosts`]); switched off, it is back to that.
+    /// failed for having only turned-off hosts.
     pub fn set_disabled(&self, host: &str, disabled: bool) -> Result<(), String> {
         let host = host.trim();
         if host.is_empty() {
@@ -480,20 +478,12 @@ impl Engine {
         if disabled == cfg.is_off(host) {
             return Ok(());
         }
-        let lacks_account = hosts::known(host).is_some_and(|k| k.lacks_account(&cfg));
         if disabled {
-            cfg.accountless_hosts
-                .retain(|h| !h.eq_ignore_ascii_case(host));
-            if !lacks_account {
-                cfg.disabled_hosts.push(host.to_ascii_lowercase());
-            }
+            cfg.disabled_hosts.push(host.to_ascii_lowercase());
             cfg.preferred_hosts
                 .retain(|h| !h.eq_ignore_ascii_case(host));
         } else {
             cfg.disabled_hosts.retain(|h| !h.eq_ignore_ascii_case(host));
-            if lacks_account && !cfg.is_accountless(host) {
-                cfg.accountless_hosts.push(hosts::main_name(host));
-            }
         }
         self.write_hosts(cfg)?;
         if !disabled {
@@ -584,10 +574,10 @@ impl Engine {
         let move_to =
             (!self.0.download_dir_fixed && folder != self.download_dir()).then_some(folder);
         let theme_changed = new.theme != old.theme;
-        // Hosts an account just set turns on, or the user switched on without
-        // one: what waited on them goes again.
+        // Hosts an account was just set for, used like any other from now on:
+        // what failed on them goes again.
         let unlocked: Vec<&str> = hosts::all()
-            .filter(|k| k.off_for_account(&old) && !k.off_for_account(&new))
+            .filter(|k| k.last_resort(&old, false) && !k.last_resort(&new, false))
             .flat_map(|k| k.names.iter().copied())
             .collect();
         let retry_changed = new.retry_failed_minutes != old.retry_failed_minutes;

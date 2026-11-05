@@ -103,7 +103,9 @@ pub(super) fn items(
         .map(|w| (w.id.as_str(), wrapper_name(w)))
         .collect();
     let known: HashMap<&str, &HostView> = hosts.iter().map(|h| (h.name.as_str(), h)).collect();
-    let off = |m: &str| known.get(m).is_some_and(|h| h.disabled || h.needs_account);
+    let off = |m: &str| known.get(m).is_some_and(|h| h.disabled);
+    // A host without its account goes after every other.
+    let last = |m: &str| known.get(m).is_some_and(|h| h.needs_account);
     let rank = |m: &str| known.get(m).and_then(|h| h.preferred).unwrap_or(usize::MAX);
     let cooling = |m: &str| known.get(m).is_some_and(|h| h.cooldown > 0);
     for it in items {
@@ -134,6 +136,7 @@ pub(super) fn items(
             on.sort_by_key(|m| {
                 (
                     it.download_from.as_deref() != Some(m.as_str()),
+                    last(m),
                     cooling(m),
                     rank(m),
                 )
@@ -293,11 +296,7 @@ pub(super) fn archives(
         .enumerate()
         .map(|(i, it)| (it.id.clone(), i))
         .collect();
-    let off = |m: &str| {
-        hosts
-            .iter()
-            .any(|h| h.name == m && (h.disabled || h.needs_account))
-    };
+    let off = |m: &str| hosts.iter().any(|h| h.name == m && h.disabled);
     let mut out = Vec::with_capacity(sets.len());
     for set in sets {
         let parts: Vec<&ItemView> = set
@@ -473,9 +472,6 @@ pub struct WrapperCard {
     /// aside while anything else on the card goes on or found files: a
     /// note, not a failure. 0 when the card failed for them.
     pub empty: usize,
-    /// Its files only on hosts that are off until their account is set: in no
-    /// list, so the card is where they show.
-    pub waiting_for_account: usize,
     /// The wrapper whose state the card shows, the one to open when it
     /// needs a person.
     pub open_id: String,
@@ -524,14 +520,14 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
         .into_iter()
         .map(|(key, ws)| {
             let w = ws[0];
-            let (waiting_for_account, files): (Vec<&ItemView>, Vec<&ItemView>) = items
+            let files: Vec<&ItemView> = items
                 .iter()
                 .filter(|it| {
                     ws.iter().any(|x| {
                         it.source.as_deref() == Some(x.id.as_str()) || it.also_from.contains(&x.id)
                     })
                 })
-                .partition(|it| it.tentative && it.status == "paused");
+                .collect();
             // A paste that lists no links (a description) is a
             // note on a card that has anything else going on or found,
             // not the card's failure.
@@ -567,7 +563,6 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 found: w.found,
                 files: files.len(),
                 empty,
-                waiting_for_account: waiting_for_account.len(),
                 open_id: urgent.id.clone(),
                 need_you: ws.iter().filter(|x| x.status == "captcha").count(),
                 tally: tally(files),

@@ -902,8 +902,10 @@ async fn a_containers_rows_without_names_stay_separate() {
 /// A wrapper's file only on a host that is off until its account is set is in
 /// no list and not started with the rest; the wrapper's card counts it, and it
 /// comes back when the host is switched on.
+/// A wrapper's file only on a host without its account is listed and starts
+/// with the others: no other host has it, so that one is used.
 #[tokio::test]
-async fn a_wrappers_file_only_on_a_host_without_its_account_stays_out_of_the_lists() {
+async fn a_wrappers_file_only_on_a_host_without_its_account_starts_with_the_others() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     engine.add_text("https://filecrypt.cc/Container/for-account.html", "");
@@ -911,25 +913,11 @@ async fn a_wrappers_file_only_on_a_host_without_its_account_stays_out_of_the_lis
         s.items.len() == 3 && s.items.iter().all(|i| i.status == "paused")
     })
     .await;
-    let hidden = |s: &Snapshot| s.items.iter().filter(|i| i.list.is_empty()).count();
-    assert_eq!(hidden(&s), 1, "the file only on gofile.io");
-    assert_eq!(s.counts.all, 2);
-    assert_eq!(s.counts.ready, 2, "the status bar counts the other two");
-    assert_eq!(s.wrapper_cards[0].files, 2);
-    assert_eq!(s.wrapper_cards[0].waiting_for_account, 1);
-
+    assert!(s.items.iter().all(|i| !i.list.is_empty()), "all listed");
+    assert_eq!(s.counts.all, 3);
+    assert_eq!(s.wrapper_cards[0].files, 3);
     let id = s.wrappers[0].id.clone();
-    assert_eq!(engine.start_wrapper(&id), Some(2), "only the two it can");
-    let s = wait_for(&engine, "the two to finish", |s| {
-        s.items.iter().filter(|i| i.status == "done").count() == 2
-    })
-    .await;
-    assert_eq!(hidden(&s), 1, "and the third waits on, with no error");
-
-    engine.set_disabled("gofile.io", false).unwrap();
-    let s = engine.snapshot();
-    assert_eq!(hidden(&s), 0, "switched on, it shows");
-    assert_eq!(s.wrapper_cards[0].waiting_for_account, 0);
+    assert_eq!(engine.start_wrapper(&id), Some(3));
 }
 
 /// A page's links to files on a host Haul has no code for, on another
@@ -1313,62 +1301,59 @@ async fn a_copied_page_that_hands_back_a_file_is_a_download() {
 /// links are left out. Switched on without one, the file asks the person
 /// for its page; switched off, it is back to that default; with the
 /// account, it downloads through the host's API.
+/// A host without its account goes only when no other host has the file:
+/// beside one, it is never asked; alone, its page is the way; with its
+/// account, its API.
 #[tokio::test]
-async fn a_host_that_needs_an_account_is_off_until_switched_on() {
+async fn a_host_without_its_account_goes_last() {
     let t = Setup::new().await;
     let mut cfg = t.config();
     cfg.endpoints.rapidgator = t.ip.clone();
     let engine = t.engine_with(cfg).await;
-    // Off for want of an account, as the Hosts view shows it.
-    let off = |s: &Snapshot| {
+    let last = |s: &Snapshot| {
         let h = s.hosts.iter().find(|h| h.name == "rapidgator.net").unwrap();
         assert!(!h.disabled);
         h.needs_account
     };
-    engine.add_text("https://rapidgator.net/file/abc/x.rar.html", "");
-    let s = wait_for(&engine, "the link left out", |s| {
-        s.items.iter().any(|i| {
-            i.error
-                .contains("only on hosts that are off: rapidgator.net")
-        })
-    })
-    .await;
-    assert!(off(&s));
+    engine.add_text(
+        &format!(
+            "https://rapidgator.net/file/abc/x.rar.html {}/files/x.rar",
+            t.ip
+        ),
+        "",
+    );
+    let s = wait_for(&engine, "the file from the other host", all_done).await;
+    assert!(last(&s));
+    assert_eq!(t.downloaded("x.rar"), content("x.rar", SIZE));
+    assert!(
+        t.server.requests("/api/v2").is_empty(),
+        "rapidgator.net never asked"
+    );
 
-    engine.set_disabled("rapidgator.net", false).unwrap();
+    engine.add_text("https://rapidgator.net/file/def/y.rar.html", "");
     let s = wait_for(&engine, "the file to ask for its page", |s| {
         s.items.iter().any(|i| i.status == "captcha")
     })
     .await;
+    let y = s.items.iter().find(|i| i.status == "captcha").unwrap();
     assert!(
-        s.items[0].error.contains("a free download is on its page"),
+        y.error.contains("a free download is on its page"),
         "{}",
-        s.items[0].error
+        y.error
     );
-    assert!(!off(&s));
-    assert_eq!(engine.cfg().accountless_hosts, ["rapidgator.net"]);
-    assert!(
-        t.server.requests("/api/v2/user/login").is_empty(),
-        "no account to log in with"
-    );
-
-    engine.set_disabled("rapidgator.net", true).unwrap();
-    assert!(off(&engine.snapshot()));
-    assert!(engine.cfg().accountless_hosts.is_empty());
-    assert!(
-        engine.cfg().disabled_hosts.is_empty(),
-        "off by default, not by the user"
-    );
+    let id = y.id.clone();
 
     let account = json!({"rapidgator_user": "u", "rapidgator_pass": "p"});
     engine
         .update_settings(account.as_object().unwrap())
         .unwrap();
-    assert!(!off(&engine.snapshot()));
-    engine.item_action(&s.items[0].id, ItemAction::RetryManual);
+    assert!(!last(&engine.snapshot()));
+    engine.item_action(&id, ItemAction::RetryManual);
     // Through the API now, which checks the link (this one names no file).
     wait_for(&engine, "the file tried with the account", |s| {
-        s.items[0].error.ends_with("bad rapidgator url")
+        s.items
+            .iter()
+            .any(|i| i.id == id && i.error.ends_with("bad rapidgator url"))
     })
     .await;
 }
@@ -1383,20 +1368,11 @@ async fn a_page_the_desktop_passes_stands_in_for_an_account_once_switched_on() {
     let engine = t.engine().await;
     engine.set_pages_pass(true);
     engine.add_text("https://gofile.io/d/folder", "");
-    wait_for(&engine, "the link left out", |s| {
-        s.items
-            .iter()
-            .any(|i| i.error.contains("only on hosts that are off: gofile.io"))
-    })
-    .await;
-    engine.set_disabled("gofile.io", false).unwrap();
     // Waiting for the desktop app to pass its page: nothing for the person.
     let s = wait_for(&engine, "the page to wait its turn", |s| {
         s.items.iter().any(|i| i.status == "passing")
     })
     .await;
-    let gofile = s.hosts.iter().find(|h| h.name == "gofile.io").unwrap();
-    assert!(!gofile.needs_account);
     let id = s.items[0].id.clone();
     // Its window came forward: now it needs the person.
     assert!(engine.page_wants_person(&id), "the download stays");
@@ -1893,9 +1869,13 @@ async fn a_host_limit_leaves_the_rows_other_page_to_pass() {
 #[tokio::test]
 async fn a_host_limit_leaves_a_page_for_a_person_under_needs_you() {
     let t = Setup::new().await;
-    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    let mut options = through_stand_in(&t);
+    if let Some(cfg) = options.config.as_mut() {
+        // Used like any other host though its account isn't set.
+        cfg.accountless_hosts = vec!["rapidgator.net".into()];
+    }
+    let engine = Engine::start(options).await.unwrap();
     engine.set_pages_pass(true);
-    engine.set_disabled("rapidgator.net", false).unwrap();
     engine.add_text("http://fileguard.cc/vault/ddownload-rapidgator", "");
     let w = wrapper_settled(&engine, "done").await.wrappers[0]
         .id
@@ -2109,7 +2089,12 @@ async fn a_page_a_person_has_open_is_not_tried_again() {
 #[tokio::test]
 async fn a_page_that_cannot_pass_by_itself_is_not_tried_again() {
     let t = Setup::new().await;
-    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    let mut options = through_stand_in(&t);
+    if let Some(cfg) = options.config.as_mut() {
+        // Used like any other host though its account isn't set.
+        cfg.accountless_hosts = vec!["rapidgator.net".into()];
+    }
+    let engine = Engine::start(options).await.unwrap();
     engine.set_pages_pass(true);
 
     // A host off for want of its account.
@@ -2136,7 +2121,6 @@ async fn a_page_that_cannot_pass_by_itself_is_not_tried_again() {
     assert!(engine.item_action(&id, ItemAction::Remove));
 
     // A mirror marked gone, leaving a page only a person can do.
-    engine.set_disabled("rapidgator.net", false).unwrap();
     engine.add_text("http://fileguard.cc/vault/ddownload-rapidgator", "");
     let w = wait_for(&engine, "the wrapper", |s| {
         s.wrappers.iter().any(|w| w.status == "done")

@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use super::{
     ArchiveView, BIN, Command, Counts, Engine, Exit, HostStats, PoolSummary, ReconnectView,
-    ServicesView, WrapperCard, display_name, unpack, views, waits_for_account,
+    ServicesView, WrapperCard, display_name, unpack, views,
 };
 use crate::{
     config::{Route, Theme},
@@ -222,8 +222,8 @@ pub struct HostView {
     pub preferred: Option<usize>,
     /// Turned off by the user: its links are never tried.
     pub disabled: bool,
-    /// Off until its account is set or the user switches it on without
-    /// one ([`hosts::Known::off_for_account`]): its links are left out.
+    /// Its account isn't set ([`hosts::Known::last_resort`]): its links are
+    /// used only when no other host has the file.
     pub needs_account: bool,
     /// Addresses it may be reached from: its slots and its learned limit
     /// count for each.
@@ -405,7 +405,7 @@ impl Engine {
                 archive: None,
                 source_name: None,
                 download_from: it.prefer.clone(),
-                tentative: it.tentative || being_read(it) || waits_for_account(it, &cfg),
+                tentative: it.tentative || being_read(it),
             })
             .collect();
         let route = |name: &str| {
@@ -444,7 +444,7 @@ impl Engine {
                 folder: cfg.folder_for(name).display().to_string(),
                 preferred: cfg.preference(name),
                 disabled: cfg.is_disabled(name),
-                needs_account: hosts::known(name).is_some_and(|k| k.off_for_account(&cfg)),
+                needs_account: hosts::known(name).is_some_and(|k| k.last_resort(&cfg, pages)),
                 cap,
                 quota: quota_view(exits.iter().filter_map(|e| lane(e).and_then(|l| l.quota))),
                 free: hosts::known(name)
