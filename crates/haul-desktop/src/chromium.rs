@@ -345,6 +345,9 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
     if p.keep_to_site {
         cdp.keep_to_site(&target, s)?;
     }
+    if let Err(e) = cdp.take_downloads() {
+        tracing::warn!("the browser will not report downloads: {e}");
+    }
     cdp.call("Page.navigate", json!({ "url": p.url }), s)?;
     let start = Instant::now();
     // The addresses the page last offered: a new page with as many (a
@@ -358,6 +361,27 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         }
         // Waiting, but answering the page's paused navigations meanwhile.
         cdp.pump(Duration::from_millis(500));
+        if let Some(download) = cdp.download.take() {
+            let agent = cdp
+                .call(
+                    "Runtime.evaluate",
+                    json!({ "expression": "navigator.userAgent", "returnByValue": true }),
+                    s,
+                )
+                .ok()
+                .and_then(|a| a["result"]["value"].as_str().map(str::to_string));
+            let cookie = cookies_for(&mut cdp, &download.url, s);
+            return Ok(Outcome::Files {
+                files: vec![File {
+                    url: download.url,
+                    name: download.name,
+                    size: None,
+                    cookie,
+                }],
+                agent,
+                page: None,
+            });
+        }
         // Tabs an ad opened go; without the page's own, the window is closed.
         let Ok(targets) = cdp.call("Target.getTargets", json!({}), None) else {
             return Ok(Outcome::Closed);
@@ -659,6 +683,31 @@ struct Cdp {
     next: u64,
     /// Keeps the page on its site ([`Cdp::keep_to_site`]).
     keep: Option<Keep>,
+    /// The file the page's site answered with instead of a page, which the
+    /// browser was told not to save ([`Cdp::take_downloads`]).
+    download: Option<Download>,
+}
+
+/// A file the browser would have saved: its final address, past redirects.
+#[derive(Debug, PartialEq)]
+struct Download {
+    url: String,
+    name: Option<String>,
+}
+
+/// The file `Browser.downloadWillBegin` tells of.
+fn download_in(event: &Value) -> Option<Download> {
+    if event["method"].as_str() != Some("Browser.downloadWillBegin") {
+        return None;
+    }
+    let url = event["params"]["url"].as_str()?;
+    Some(Download {
+        url: url.starts_with("http").then(|| url.to_string())?,
+        name: event["params"]["suggestedFilename"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+            .map(str::to_string),
+    })
 }
 
 /// A page kept on the site it landed on: its main frame is refused any
@@ -682,7 +731,21 @@ impl Cdp {
             ws,
             next: 0,
             keep: None,
+            download: None,
         })
+    }
+
+    /// Has the browser report files instead of saving them. A site that
+    /// answers a form with the file (ddownload.com does) would have it go to
+    /// the person's Downloads folder, out of sight, with Haul none the wiser:
+    /// reported, Haul downloads it itself, and can resume it.
+    fn take_downloads(&mut self) -> Result<(), String> {
+        self.call(
+            "Browser.setDownloadBehavior",
+            json!({ "behavior": "deny", "eventsEnabled": true }),
+            None,
+        )
+        .map(|_| ())
     }
 
     /// Keeps page `frame` (of `session`) on the site its first page lands
@@ -707,6 +770,11 @@ impl Cdp {
     /// Answers an event that waits for one: a paused navigation, let go or
     /// refused ([`Cdp::keep_to_site`]); and notes the first page's load.
     fn on_event(&mut self, event: &Value) {
+        if let Some(download) = download_in(event) {
+            tracing::info!(url = %download.url, "the page's site answered with a file");
+            self.download = Some(download);
+            return;
+        }
         let Some(keep) = self.keep.as_mut() else {
             return;
         };
@@ -973,4 +1041,43 @@ fn look(cdp: &mut Cdp, s: Option<&str>) -> Look {
                 .ok()
         });
     Look { page, shot }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+
+    #[test]
+    fn a_file_the_browser_reports_is_read_from_its_event() {
+        let event = json!({
+            "method": "Browser.downloadWillBegin",
+            "params": {
+                "url": "https://files.example/abc123/archive.part1.rar",
+                "suggestedFilename": "archive.part1.rar",
+            },
+        });
+        assert_eq!(
+            download_in(&event),
+            Some(Download {
+                url: "https://files.example/abc123/archive.part1.rar".into(),
+                name: Some("archive.part1.rar".into()),
+            })
+        );
+        let unnamed = json!({
+            "method": "Browser.downloadWillBegin",
+            "params": { "url": "https://files.example/abc123", "suggestedFilename": "" },
+        });
+        assert_eq!(download_in(&unnamed).unwrap().name, None);
+    }
+
+    #[test]
+    fn only_a_file_on_the_web_counts() {
+        let blob = json!({
+            "method": "Browser.downloadWillBegin",
+            "params": { "url": "blob:https://site.example/abc123" },
+        });
+        assert_eq!(download_in(&blob), None);
+        let other = json!({ "method": "Page.loadEventFired", "params": {} });
+        assert_eq!(download_in(&other), None);
+    }
 }

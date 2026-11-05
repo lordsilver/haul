@@ -134,7 +134,9 @@
     {
       // A 60-second countdown and Cloudflare's Turnstile in the download
       // form; once the button is enabled and the Turnstile has its answer,
-      // the button sends the form. The page that follows links the file.
+      // the button sends the form. The site answers with the file, which the
+      // browser reports to Haul (`Cdp::take_downloads`); a page that links it
+      // instead is read below.
       site: /(^|\.)(ddownload\.com|ddl\.to)$/,
       watch() {
         let pressed = false;
