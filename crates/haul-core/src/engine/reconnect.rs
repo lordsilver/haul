@@ -489,16 +489,16 @@ impl Engine {
         self.set_draining(Some(why));
         let deadline = Instant::now() + throttling.drain_limit;
         let finished = loop {
+            // Gone by itself (the slow one finished, the host recovered).
+            if self.wants_new_address().is_none() {
+                self.set_draining(None);
+                return;
+            }
             if self.running_well() == 0 {
                 break true;
             }
             if Instant::now() >= deadline {
                 break false;
-            }
-            // Gone by itself (the slow one finished, the host recovered).
-            if self.wants_new_address().is_none() {
-                self.set_draining(None);
-                return;
             }
             tokio::select! {
                 _ = self.0.shutdown.cancelled() => return,

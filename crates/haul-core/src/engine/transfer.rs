@@ -580,10 +580,9 @@ impl Engine {
                 (206, Some((_, Some(total)))) => Some(total),
                 _ => hosts::content_length(resp.headers()).map(|len| from + len),
             };
-            if crossing
-                && have > 0
-                && let Some(total) = total.filter(|t| part_size > 0 && *t != part_size)
-            {
+            // The bytes here stay the other host's until this one's agree.
+            let checking = crossing && have > 0;
+            if checking && let Some(total) = total.filter(|t| part_size > 0 && *t != part_size) {
                 let why = format!("has it at {total} bytes, not {part_size}");
                 return Err(lost_partial(&part, have, &why).await);
             }
@@ -598,8 +597,10 @@ impl Engine {
                 if let Some(total) = total {
                     it.size = total;
                 }
-                it.part_size = total.unwrap_or(0);
-                it.part_host = Some(host.to_string());
+                if !checking {
+                    it.part_size = total.unwrap_or(0);
+                    it.part_host = Some(host.to_string());
+                }
                 it.done = have;
                 it.attempt_from = have;
                 self.touch(&mut st);
@@ -631,7 +632,7 @@ impl Engine {
                 .await?;
             let mut file = BufWriter::with_capacity(1 << 20, file);
             // What the partial file holds where this host's answer starts.
-            let tail = if crossing && have > 0 {
+            let tail = if checking {
                 read_tail(&part, from, overlap).await?
             } else {
                 Vec::new()
@@ -695,6 +696,12 @@ impl Engine {
                             return Ok(());
                         }
                         checked += n;
+                        if checked == tail.len()
+                            && let Some(it) = self.lock().items.get_mut(id)
+                        {
+                            it.part_size = total.unwrap_or(it.part_size);
+                            it.part_host = Some(host.to_string());
+                        }
                         chunk.slice(n..)
                     } else {
                         chunk

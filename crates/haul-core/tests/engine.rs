@@ -4745,3 +4745,100 @@ async fn another_hosts_other_bytes_start_it_over() {
     assert!(asked[0].contains("bytes="), "{asked:?}");
     assert!(!asked[1].contains("bytes="), "{asked:?}");
 }
+
+/// A connection lost before the bytes were compared proves nothing: the next
+/// try compares them too, rather than add another file's bytes to the partial.
+#[tokio::test]
+async fn a_connection_lost_during_the_check_is_checked_again() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/400/x.bin {}/lost-check/x.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "enough of it", |s| {
+        row(s, "x.bin").done > 100 * 1024
+    })
+    .await;
+    let id = row(&s, "x.bin").id.clone();
+    assert!(engine.item_action(&id, ItemAction::Pause));
+    wait_for(&engine, "the pause", |s| active(s, "127.0.0.1") == 0).await;
+    let kept = std::fs::metadata(t.partial(&id)).unwrap().len();
+    engine.download_from(std::slice::from_ref(&id), Some("localhost"));
+    assert!(engine.item_action(&id, ItemAction::Resume));
+    wait_for(&engine, "done", all_done).await;
+    assert!(
+        t.downloaded("x.bin") == content("other x.bin", SIZE),
+        "the bytes of two files mixed"
+    );
+    let asked = t.server.requests("/lost-check/x.bin");
+    let check = format!("/lost-check/x.bin bytes={}-", kept - 64 * 1024);
+    assert_eq!(asked[..2], [check.clone(), check], "{asked:?}");
+}
+
+/// A host the user picks is used, though it slowed this row before and another
+/// host could take it.
+#[tokio::test]
+async fn a_host_picked_again_is_used_though_it_slowed_the_row() {
+    let t = Setup::new().await;
+    let mut cfg = quick_to_judge(&t);
+    cfg.throttling.cooldown = Duration::from_millis(300);
+    cfg.throttling.cooldown_at_most = Duration::from_millis(300);
+    let engine = t.engine_with(cfg).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/40/x.bin {}/paced/150/x.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "it to leave", |s| {
+        let it = row(s, "x.bin");
+        it.status == "downloading" && it.shown_host == "localhost" && it.speed > 0.0
+    })
+    .await;
+    let id = row(&s, "x.bin").id.clone();
+    assert!(engine.item_action(&id, ItemAction::Pause));
+    wait_for(&engine, "the pause", |s| active(s, "localhost") == 0).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(cooldown(&engine.snapshot(), "127.0.0.1"), 0);
+    engine.download_from(std::slice::from_ref(&id), Some("127.0.0.1"));
+    assert!(engine.item_action(&id, ItemAction::Resume));
+    wait_for(&engine, "the picked host", |s| {
+        active(s, "127.0.0.1") == 1 && row(s, "x.bin").shown_host == "127.0.0.1"
+    })
+    .await;
+}
+
+/// A hosts file saved before `normal` existed loads with what it holds, and one
+/// that can't be read costs only the saved numbers.
+#[tokio::test]
+async fn an_older_or_damaged_hosts_file_does_not_stop_haul() {
+    let t = Setup::new().await;
+    let data = t.root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let hosts = data.join("hosts.json");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let older = format!(
+        r#"{{"site.example":{{"speed":5000000,"measured":{now},"ok":3,"fails":1,"bytes":9}}}}"#
+    );
+    std::fs::write(&hosts, older).unwrap();
+    let engine = t.engine().await;
+    let s = engine.snapshot();
+    let host = s.hosts.iter().find(|h| h.name == "site.example").unwrap();
+    assert_eq!((host.ok, host.fails, host.bytes), (3, 1, 9));
+    assert_eq!(host.speed, 5_000_000.0);
+    let seen = engine.debug_inspect();
+    let seen = seen["hosts"].as_array().unwrap();
+    let seen = seen.iter().find(|h| h["name"] == "site.example").unwrap();
+    assert_eq!(seen["normal"], 0.0);
+    engine.shutdown().await;
+    drop(engine);
+
+    std::fs::write(&hosts, "not json").unwrap();
+    let engine = start_when_free(|| t.options()).await;
+    let s = engine.snapshot();
+    assert!(s.hosts.iter().all(|h| h.name != "site.example"));
+}

@@ -314,13 +314,16 @@ impl Engine {
             return None;
         }
         // A row doesn't go back to a mirror that slowed it while another could
-        // take it, whatever that host's cooldown says.
+        // take it, whatever that host's cooldown says, unless the user picked
+        // that host.
         let slow_on = st.items[id].slow_on.clone();
+        let picked = st.items[id].prefer.clone();
         let mut elsewhere = Vec::new();
         for m in &candidates {
             let name = hosts::host_of(m);
             let exits = self.exits_for(&name, st);
-            if !slow_on.contains(m) && !st.cooling(&name, &exits, now) {
+            let may_go = !slow_on.contains(m) || picked.as_deref() == Some(name.as_str());
+            if may_go && !st.cooling(&name, &exits, now) {
                 elsewhere.push(m.clone());
             }
         }

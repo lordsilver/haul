@@ -400,6 +400,32 @@ pub(super) async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/lost-check/{name}",
+            // Holds other bytes, and its first answer to a range promises them
+            // but breaks off before sending any.
+            get(|State(s): State<Server>, method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                let data = content(&format!("other {name}"), SIZE);
+                if method == Method::HEAD {
+                    return file_response(data, &headers);
+                }
+                log(&s, &format!("/lost-check/{name}"), &headers);
+                let start = range_start(&headers).filter(|_| s.flaky.fetch_add(1, Ordering::SeqCst) == 0);
+                let Some(start) = start else {
+                    return file_response(data, &headers);
+                };
+                let stream = futures_util::stream::once(async {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Err::<Bytes, _>(std::io::Error::other("connection dropped"))
+                });
+                Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(header::CONTENT_LENGTH, SIZE - start)
+                    .header(header::CONTENT_RANGE, format!("bytes {start}-{}/{SIZE}", SIZE - 1))
+                    .body(Body::from_stream(stream))
+                    .unwrap()
+            }),
+        )
+        .route(
             "/busy/{name}",
             // Sends at most two files at once and refuses more, saying why.
             get(|State(s): State<Server>, method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
