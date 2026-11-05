@@ -644,8 +644,22 @@ pub fn all() -> impl Iterator<Item = &'static Known> {
     KNOWN.iter()
 }
 
+/// Whether Haul runs as though it knew no site at all (`HAUL_GENERIC_ONLY`
+/// set when it starts): every host, wrapper and paste gets the general way, so
+/// the scorecard can measure what a host Haul has never seen would get. A
+/// measurement switch, not a setting.
+pub fn generic_only() -> bool {
+    static ON: LazyLock<bool> = LazyLock::new(|| {
+        std::env::var_os("HAUL_GENERIC_ONLY").is_some_and(|v| !v.is_empty() && v != "0")
+    });
+    *ON
+}
+
 /// The known host a host name (as [`host_of`] gives it) belongs to.
 pub fn known(host: &str) -> Option<&'static Known> {
+    if generic_only() {
+        return None;
+    }
     KNOWN.iter().find(|k| k.names.contains(&host))
 }
 
