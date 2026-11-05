@@ -1,5 +1,5 @@
-import { useSyncExternalStore } from 'react';
 import type { State } from '@/lib/bindings/State';
+import { externalStore } from '@/lib/external-store';
 
 // The engine's state as it streams in over /api/events, and how the stream
 // stands: lost for a moment (`offline`), or answered by another version of
@@ -7,12 +7,12 @@ import type { State } from '@/lib/bindings/State';
 export type Live = { state: State | null; offline: boolean; updated: boolean };
 
 let live: Live = { state: null, offline: false, updated: false };
-const listeners = new Set<() => void>();
+const store = externalStore(() => live);
 let pageVersion: string | null = null;
 
 function set(next: Partial<Live>) {
   live = { ...live, ...next };
-  for (const listener of listeners) listener();
+  store.notify();
 }
 
 export function connect() {
@@ -35,12 +35,7 @@ export function connect() {
   });
 }
 
-function subscribe(listener: () => void) {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
-
-export const useLive = () => useSyncExternalStore(subscribe, () => live);
+export const useLive = store.use;
 
 // The latest state, for event handlers that must not wait for a render.
 export const currentState = () => live.state;

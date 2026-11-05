@@ -20,8 +20,8 @@ import { ConfirmButton } from '@/components/confirm-button';
 import { HostPicker, offHosts } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
+import { EmptyState, PageHeader } from '@/components/page';
 import { Button } from '@/components/ui/button';
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import { Input } from '@/components/ui/input';
 import { addOpen, openAdd } from '@/lib/add';
 import { api, bulk, report } from '@/lib/api';
@@ -31,7 +31,6 @@ import { plural } from '@/lib/format';
 import { type ListKey, go } from '@/lib/route';
 import { clearSelection, keepOnly, selectAll, useSelection } from '@/lib/selection';
 import { toast } from '@/lib/toast';
-import { cn } from '@/lib/utils';
 import { ArchiveRow } from '@/views/downloads/archive-row';
 import { entriesOf, inList, matchesQuery, orderOf, useExpanded } from '@/views/downloads/entries';
 import { COLUMNS, ItemRow } from '@/views/downloads/row';
@@ -71,17 +70,7 @@ function Nothing({ s, view, query }: { s: State; view: ListKey; query: string })
           'Or paste links with Ctrl+V. Files can be .dlc containers or text files with links in them.',
         ]
       : EMPTY[view];
-  return (
-    <Empty className={cn('flex-1', !start && 'border')}>
-      <EmptyHeader>
-        <EmptyMedia variant="icon">
-          <Icon />
-        </EmptyMedia>
-        <EmptyTitle>{title}</EmptyTitle>
-        <EmptyDescription>{text}</EmptyDescription>
-      </EmptyHeader>
-    </Empty>
-  );
+  return <EmptyState icon={Icon} title={title} description={text} bordered={!start} />;
 }
 
 // App-wide state only: a download that needs the user has its own row and
@@ -222,22 +211,19 @@ function SelectionCommands({ picked, s }: { picked: ItemView[]; s: State }) {
           label="Download from"
         />
       ) : null}
-      {losing || recycling ? (
-        <ConfirmButton
-          data-role="remove"
-          label={label}
-          confirm={
-            losing ? `Delete ${plural(losing, 'partial file')}?` : `Move ${plural(recycling, 'file')} to the ${s.bin}?`
-          }
-          icon={<Trash2 />}
-          action={remove}
-        />
-      ) : (
-        <Button data-role="remove" variant="ghost" onClick={() => remove().catch(report)}>
-          <Trash2 />
-          {label}
-        </Button>
-      )}
+      <ConfirmButton
+        data-role="remove"
+        label={label}
+        confirm={
+          losing
+            ? `Delete ${plural(losing, 'partial file')}?`
+            : recycling
+              ? `Move ${plural(recycling, 'file')} to the ${s.bin}?`
+              : undefined
+        }
+        icon={<Trash2 />}
+        action={remove}
+      />
       <IconButton label="Clear selection" onClick={clearSelection}>
         <X />
       </IconButton>
@@ -283,19 +269,13 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
           and all, so it asks for a second click; elsewhere it tidies
           finished ones. */}
       {view === 'failed' ? (
-        failed ? (
-          <ConfirmButton
-            label="Clear failed"
-            confirm={`Clear ${plural(failed, 'download')}?`}
-            icon={<Eraser />}
-            action={() => api('/api/global/clear_failed')}
-          />
-        ) : (
-          <Button variant="ghost" disabled>
-            <Eraser />
-            Clear failed
-          </Button>
-        )
+        <ConfirmButton
+          label="Clear failed"
+          confirm={failed ? `Clear ${plural(failed, 'download')}?` : undefined}
+          disabled={!failed}
+          icon={<Eraser />}
+          action={() => api('/api/global/clear_failed')}
+        />
       ) : (
         <Button variant="ghost" disabled={!s.counts.done} onClick={() => api('/api/global/clear_done').catch(report)}>
           <Eraser />
@@ -352,32 +332,34 @@ export function Downloads({
 
   return (
     <>
-      <header className="flex flex-wrap items-center gap-x-4 gap-y-3">
-        <h1 className="mr-auto text-2xl font-semibold tracking-tight">{TITLES[view]}</h1>
-        <div className="flex flex-wrap items-center gap-2">
-          {pickedItems.length ? <SelectionCommands picked={pickedItems} s={s} /> : <ListCommands s={s} view={view} />}
-          <div className="relative w-56">
-            <Search
-              aria-hidden
-              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-            />
-            <Input
-              ref={search}
-              type="search"
-              value={typed}
-              placeholder="Search"
-              aria-label="Search downloads"
-              className="pl-9"
-              onChange={(e) => setTyped(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key !== 'Escape') return;
-                setTyped('');
-                search.current?.blur();
-              }}
-            />
-          </div>
-        </div>
-      </header>
+      <PageHeader
+        title={TITLES[view]}
+        actions={
+          <>
+            {pickedItems.length ? <SelectionCommands picked={pickedItems} s={s} /> : <ListCommands s={s} view={view} />}
+            <div className="relative w-56">
+              <Search
+                aria-hidden
+                className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+              />
+              <Input
+                ref={search}
+                type="search"
+                value={typed}
+                placeholder="Search"
+                aria-label="Search downloads"
+                className="pl-9"
+                onChange={(e) => setTyped(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Escape') return;
+                  setTyped('');
+                  search.current?.blur();
+                }}
+              />
+            </div>
+          </>
+        }
+      />
       <Banner s={s} offline={offline} updated={updated} view={view} />
       {visible.length ? (
         // A click on the list's empty space, outside any row, drops the

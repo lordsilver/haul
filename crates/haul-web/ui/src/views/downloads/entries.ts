@@ -1,7 +1,7 @@
-import { useSyncExternalStore } from 'react';
 import type { ArchiveView } from '@/lib/bindings/ArchiveView';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import type { State } from '@/lib/bindings/State';
+import { externalStore } from '@/lib/external-store';
 import { prefs } from '@/lib/prefs';
 import type { ListKey } from '@/lib/route';
 
@@ -60,7 +60,7 @@ let expanded = new Set<string>(
     }
   })(),
 );
-const listeners = new Set<() => void>();
+const store = externalStore(() => expanded);
 
 export function toggleArchive(key: string) {
   const next = new Set(expanded);
@@ -68,12 +68,7 @@ export function toggleArchive(key: string) {
   else next.add(key);
   expanded = next;
   prefs.set('expanded', JSON.stringify([...next].slice(-200)));
-  for (const listener of listeners) listener();
+  store.notify();
 }
 
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-};
-
-export const useExpanded = () => useSyncExternalStore(subscribe, () => expanded);
+export const useExpanded = store.use;

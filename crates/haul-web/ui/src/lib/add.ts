@@ -1,6 +1,6 @@
-import { useSyncExternalStore } from 'react';
 import { addedMessage, api, report } from '@/lib/api';
 import type { Added } from '@/lib/bindings/Added';
+import { externalStore } from '@/lib/external-store';
 import { toast } from '@/lib/toast';
 
 // The Add dialog: open or not, and what it holds. Each time it opens it
@@ -9,11 +9,11 @@ import { toast } from '@/lib/toast';
 export type AddForm = { open: boolean; text: string; pkg: string; focus: number };
 
 let form: AddForm = { open: false, text: '', pkg: '', focus: 0 };
-const listeners = new Set<() => void>();
+const store = externalStore(() => form);
 
 function publish(next: AddForm) {
   form = next;
-  for (const listener of listeners) listener();
+  store.notify();
 }
 
 // Opens the dialog, or adds `text` to it when it is open already; `pkg`
@@ -32,12 +32,7 @@ export function openAdd(text = '', pkg = '') {
 export const editAdd = (changes: Partial<Pick<AddForm, 'text' | 'pkg'>>) => publish({ ...form, ...changes });
 export const closeAdd = () => publish({ ...form, open: false });
 
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-};
-
-export const useAddForm = () => useSyncExternalStore(subscribe, () => form);
+export const useAddForm = store.use;
 export const addOpen = () => form.open;
 
 // Adds the links in `text`; answers whether any of them did something.

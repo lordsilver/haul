@@ -3,30 +3,27 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { report } from '@/lib/api';
 
-// A button that wants a second click within a few seconds, saying what it
-// asks while it waits. An icon-only one spells the question out.
-export function ConfirmButton({
-  label,
-  confirm,
-  action,
-  icon,
-  iconOnly = false,
-  variant = 'ghost',
-  size,
-  ...props
-}: {
+type Props = {
   label: string;
-  confirm: string;
+  confirm?: string;
   action: () => Promise<unknown>;
   icon?: ReactNode;
   iconOnly?: boolean;
-} & Omit<ComponentProps<typeof Button>, 'onClick' | 'children'>) {
+} & Omit<ComponentProps<typeof Button>, 'onClick' | 'children'>;
+
+// A button that, given `confirm`, wants a second click within a few seconds,
+// saying what it asks while it waits; without one a single click acts. An
+// icon-only one spells the question out. Gaining or losing `confirm` starts it
+// afresh, so a question left open is not asked again later.
+export const ConfirmButton = (props: Props) => <Asking key={props.confirm ? 'confirm' : 'plain'} {...props} />;
+
+function Asking({ label, confirm, action, icon, iconOnly = false, variant = 'ghost', size, ...props }: Props) {
   const [asking, setAsking] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
   const click = () => {
     clearTimeout(timer.current);
-    if (!asking) {
+    if (confirm && !asking) {
       setAsking(true);
       timer.current = setTimeout(() => setAsking(false), 4000);
       return;

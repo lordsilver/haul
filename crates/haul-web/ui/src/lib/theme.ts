@@ -1,13 +1,14 @@
-import { useSyncExternalStore } from 'react';
+import { type LucideIcon, Monitor, Moon, Sun } from 'lucide-react';
 import { api, report } from '@/lib/api';
 import type { Theme } from '@/lib/bindings/Theme';
+import { externalStore } from '@/lib/external-store';
 import { prefs } from '@/lib/prefs';
 
 // The theme the user picked; `system` follows the operating system. The
 // engine keeps it in the settings file; this browser remembers it too, so
 // the first paint (public/theme.js) is already right.
 let theme: Theme = (['light', 'dark'] as const).find((t) => t === prefs.get('theme')) ?? 'system';
-const listeners = new Set<() => void>();
+const store = externalStore(() => theme);
 const dark = matchMedia('(prefers-color-scheme: dark)');
 
 function paint() {
@@ -23,7 +24,7 @@ export function applyTheme(next: Theme) {
   theme = next;
   prefs.set('theme', next);
   paint();
-  for (const listener of listeners) listener();
+  store.notify();
 }
 
 export function setTheme(next: Theme) {
@@ -31,17 +32,12 @@ export function setTheme(next: Theme) {
   api('/api/settings', { theme: next }).catch(report);
 }
 
-export const THEMES: { value: Theme; label: string }[] = [
-  { value: 'system', label: 'System' },
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' },
-];
+export const THEMES = [
+  { value: 'system', label: 'System', icon: Monitor },
+  { value: 'light', label: 'Light', icon: Sun },
+  { value: 'dark', label: 'Dark', icon: Moon },
+] as const satisfies readonly { value: Theme; label: string; icon: LucideIcon }[];
 
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-};
-
-export const useTheme = () => useSyncExternalStore(subscribe, () => theme);
+export const useTheme = store.use;
 
 paint();

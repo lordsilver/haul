@@ -1,16 +1,4 @@
-import {
-  ArrowDown,
-  ClipboardList,
-  Gauge,
-  Globe,
-  LoaderCircle,
-  Monitor,
-  Moon,
-  Play,
-  Shield,
-  Sun,
-  TriangleAlert,
-} from 'lucide-react';
+import { ArrowDown, ClipboardList, Gauge, Globe, LoaderCircle, Play, Shield, TriangleAlert } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -214,8 +202,6 @@ function Pool({ s, close }: { s: State; close: () => void }) {
   );
 }
 
-const THEME_ICONS = { system: Monitor, light: Sun, dark: Moon };
-
 export function StatusBar({ state: s }: { state: State | null }) {
   const theme = useTheme();
   if (!s) return <footer className="h-9 border-t bg-sidebar" />;
@@ -225,7 +211,7 @@ export function StatusBar({ state: s }: { state: State | null }) {
   const index = THEMES.findIndex((t) => t.value === theme);
   const current = THEMES[index] ?? THEMES[0];
   const next = THEMES[(index + 1) % THEMES.length] ?? THEMES[0];
-  const ThemeIcon = THEME_ICONS[current?.value ?? 'system'];
+  const ThemeIcon = current.icon;
   return (
     <footer className="flex flex-wrap items-center gap-1 border-t bg-sidebar px-3 py-1 text-xs text-muted-foreground">
       <span className={cn(item, 'tabular-nums', s.speed && 'font-medium text-foreground')}>
@@ -307,12 +293,12 @@ export function StatusBar({ state: s }: { state: State | null }) {
       </Flyout>
       <button
         type="button"
-        title={`Theme: ${current?.label} (click for ${next?.label})`}
-        onClick={() => next && setTheme(next.value)}
+        title={`Theme: ${current.label} (click for ${next.label})`}
+        onClick={() => setTheme(next.value)}
         className={cn(item, 'hover:bg-accent hover:text-foreground')}
       >
         <ThemeIcon aria-hidden className="size-3.5" />
-        {current?.label}
+        {current.label}
       </button>
     </footer>
   );
