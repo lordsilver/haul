@@ -278,7 +278,6 @@ pub struct ItemView {
     pub size: u64,
     pub done: u64,
     pub speed: f64,
-    pub percent: Option<f32>,
     pub host: String,
     /// Host of every mirror.
     pub mirrors: Vec<String>,
@@ -2323,7 +2322,6 @@ impl Engine {
                         it.auto_retries = 0;
                         it.retry_at = None;
                         it.error.clear();
-                        it.percent = None;
                         if it.size == 0 {
                             it.size = it.done;
                         }
@@ -3686,7 +3684,6 @@ impl Engine {
                 size: it.size,
                 done: it.done,
                 speed: it.speed,
-                percent: it.percent,
                 host: it.host.clone(),
                 mirrors: it.mirrors.iter().map(|m| hosts::host_of(m)).collect(),
                 wait: wait(it),

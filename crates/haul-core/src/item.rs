@@ -115,8 +115,6 @@ pub(crate) struct Item {
     pub size: u64,
     pub done: u64,
     pub speed: f64,
-    /// Progress reported by an external program when the size is unknown.
-    pub percent: Option<f32>,
     pub host: String,
     pub not_before: Option<Instant>,
     /// Retries of the current mirror after network trouble.
@@ -213,7 +211,6 @@ impl Item {
             size: 0,
             done: 0,
             speed: 0.0,
-            percent: None,
             host: String::new(),
             not_before: None,
             retries: 0,
@@ -314,7 +311,6 @@ impl Item {
         self.path = Some(path.display().to_string());
         self.done = self.size;
         self.speed = 0.0;
-        self.percent = None;
         self.error.clear();
         self.retries = 0;
         self.auto_retries = 0;

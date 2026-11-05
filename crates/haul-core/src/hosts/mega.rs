@@ -500,11 +500,6 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
 }
 
 #[cfg(test)]
-pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    look(cx, url).await.found()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 

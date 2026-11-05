@@ -68,7 +68,7 @@ function Pill({
   title,
   children,
 }: {
-  tone?: 'plain' | 'caution' | 'success' | 'star';
+  tone?: 'plain' | 'caution' | 'star';
   title?: string;
   children: ReactNode;
 }) {
@@ -79,7 +79,6 @@ function Pill({
         'inline-flex h-6 items-center gap-1 rounded-full border px-2 text-xs [&_svg]:size-3',
         tone === 'plain' && 'text-muted-foreground',
         tone === 'caution' && 'border-warn-line bg-warn-soft text-warn-strong',
-        tone === 'success' && 'border-transparent bg-ok-soft text-ok-strong',
         tone === 'star' && 'border-transparent bg-info-soft text-info-strong',
       )}
     >
@@ -202,7 +201,7 @@ function FolderForm({ h, dir }: { h: HostView; dir: string }) {
 }
 
 // A host's account, typed in its card: each field saved as it is left.
-function AccountPanel({ form, d, close }: { form: AccountForm; d: SettingsView; close?: () => void }) {
+function AccountPanel({ form, d }: { form: AccountForm; d: SettingsView }) {
   const env = envNote(d, ...form.fields.map((f) => f.key));
   return (
     <div className="flex flex-col gap-2">
@@ -211,11 +210,6 @@ function AccountPanel({ form, d, close }: { form: AccountForm; d: SettingsView; 
         {form.fields.map((f) => (
           <AccountField key={f.key} d={d} name={f.key} label={f.label} secret={f.secret} />
         ))}
-        {close ? (
-          <Button variant="ghost" onClick={close}>
-            Done
-          </Button>
-        ) : null}
       </div>
     </div>
   );

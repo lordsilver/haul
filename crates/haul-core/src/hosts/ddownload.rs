@@ -48,8 +48,3 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
         _ => Look::Unknown,
     }
 }
-
-#[cfg(test)]
-pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    look(cx, url).await.found()
-}

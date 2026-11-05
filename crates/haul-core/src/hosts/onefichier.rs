@@ -120,11 +120,6 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
     }
 }
 
-#[cfg(test)]
-pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    look(cx, url).await.found()
-}
-
 const GONE: &str = "1fichier: the file was deleted";
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {

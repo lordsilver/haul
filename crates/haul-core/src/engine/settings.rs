@@ -577,8 +577,8 @@ impl Engine {
     }
 
     /// Puts `cfg` in effect with its preferred hosts written whole. Written
-    /// even when empty: a key left out would bring the default
-    /// (pixeldrain.com) back on the next load.
+    /// even when empty: a key left out would bring the defaults
+    /// ([`config::DEFAULT_PREFERRED`]) back on the next load.
     fn write_preferred(&self, cfg: Config) -> Result<(), String> {
         let list =
             toml_edit::Value::Array(cfg.preferred_hosts.iter().map(String::as_str).collect());
@@ -601,26 +601,6 @@ impl Engine {
         }
         self.touch(&mut st);
         Ok(())
-    }
-
-    pub fn set_max_total(&self, n: usize) {
-        self.log_failure(self.update_settings(&one("max_total", n.into())));
-    }
-
-    /// Global speed limit in MB/s; 0 removes it.
-    pub fn set_rate_mbps(&self, mbps: f64) {
-        let mbps = if mbps.is_finite() { mbps.max(0.0) } else { 0.0 };
-        self.log_failure(self.update_settings(&one("rate_limit_mbps", mbps.into())));
-    }
-
-    pub fn set_theme(&self, theme: Theme) {
-        self.log_failure(self.update_settings(&one("theme", theme.as_str().into())));
-    }
-
-    fn log_failure(&self, result: Result<(), String>) {
-        if let Err(e) = result {
-            tracing::error!("{e}");
-        }
     }
 
     fn write_and_apply(&self, cfg: Config, writes: Vec<Write>) -> Result<(), String> {
@@ -846,10 +826,6 @@ impl Engine {
             Err(e) => tracing::error!("{e}"),
         }
     }
-}
-
-fn one(key: &str, value: Value) -> Map<String, Value> {
-    Map::from_iter([(key.to_string(), value)])
 }
 
 /// A folder downloads can go to: absolute, created if needed, and writable.

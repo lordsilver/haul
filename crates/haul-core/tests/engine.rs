@@ -1553,7 +1553,9 @@ async fn queue_and_settings_survive_restart_and_a_second_instance_is_refused() {
     let id = engine.snapshot().items[0].id.clone();
     engine.item_action(&id, ItemAction::Pause);
     engine.set_route("127.0.0.1", Route::Direct).unwrap();
-    engine.set_max_total(3);
+    engine
+        .update_settings(json!({"max_total": 3}).as_object().unwrap())
+        .unwrap();
     engine.shutdown().await;
     drop(engine);
 
@@ -1683,7 +1685,9 @@ async fn failed_downloads_retry_on_their_own() {
 async fn global_speed_limit_slows_every_transfer() {
     let t = Setup::new().await;
     let engine = t.engine().await;
-    engine.set_rate_mbps(1.0);
+    engine
+        .update_settings(json!({"rate_limit_mbps": 1.0}).as_object().unwrap())
+        .unwrap();
     let started = Instant::now();
     engine.add_text(
         &format!("{0}/files/i.bin {1}/files/j.bin", t.ip, t.name),
@@ -1755,7 +1759,9 @@ async fn pause_all_pauses_running_transfers() {
 async fn a_folder_row_fails_over_without_reusing_the_folder_link() {
     let t = Setup::new().await;
     let engine = t.engine().await;
-    engine.set_max_total(1);
+    engine
+        .update_settings(json!({"max_total": 1}).as_object().unwrap())
+        .unwrap();
     engine.set_paused(true);
     engine.add_text(
         &format!("https://pixeldrain.com/l/broken {}/files/keep.bin", t.ip),
@@ -2360,7 +2366,7 @@ async fn a_host_that_needs_an_account_is_off_until_switched_on() {
     })
     .await
     .unwrap();
-    // Off for want of an account, as the Sites view shows it.
+    // Off for want of an account, as the Hosts view shows it.
     let off = |s: &Snapshot| {
         let h = s.hosts.iter().find(|h| h.name == "rapidgator.net").unwrap();
         assert!(!h.disabled);
