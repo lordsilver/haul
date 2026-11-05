@@ -1,4 +1,5 @@
 import {
+  ChevronRight,
   ClipboardList,
   Folder,
   Gauge,
@@ -33,6 +34,7 @@ import type { HostView } from '@/lib/bindings/HostView';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
 import { bytes, duration, ordinal } from '@/lib/format';
+import { prefs } from '@/lib/prefs';
 import { envNote, useSettings } from '@/lib/settings';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -487,8 +489,49 @@ function HostSettings({
   );
 }
 
+// Wrappers and pastebins are looked up now and then, unlike the file hosts the
+// page is for: their cards start folded away, and stay as the person left them.
+const FOLDABLE: ReadonlySet<string> = new Set(['wrapper', 'paste']);
+const FOLDS_KEY = 'hosts.unfolded';
+const openFolds = () => new Set((prefs.get(FOLDS_KEY) ?? '').split(' ').filter((g) => FOLDABLE.has(g)));
+
+function FoldHeading({
+  heading,
+  count,
+  open,
+  toggle,
+}: {
+  heading: [string, string];
+  count: number;
+  open: boolean;
+  toggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      onClick={toggle}
+      className="mt-3 flex w-full flex-wrap items-baseline gap-x-2 rounded-md text-left outline-none first:mt-0 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      <span className="flex items-center gap-1 self-center">
+        <ChevronRight aria-hidden className={cn('size-4 transition-transform', open && 'rotate-90')} />
+        <strong className="text-sm">{heading[0]}</strong>
+        <span className="text-sm text-muted-foreground tabular-nums">({count})</span>
+      </span>
+      <span className="text-sm text-muted-foreground">{heading[1]}</span>
+    </button>
+  );
+}
+
 export function Hosts({ s }: { s: State }) {
   const d = useSettings(s.config_version);
+  const [unfolded, setUnfolded] = useState(openFolds);
+  const toggleFold = (group: string) => {
+    const next = new Set(unfolded);
+    if (!next.delete(group)) next.add(group);
+    setUnfolded(next);
+    prefs.set(FOLDS_KEY, [...next].join(' '));
+  };
   // A drag keeps the cards still until it ends: the order as it began.
   const [drag, setDrag] = useState<{ name: string; frozen: HostView[] } | null>(null);
   const [drop, setDrop] = useState<Drop>(null);
@@ -524,6 +567,7 @@ export function Hosts({ s }: { s: State }) {
   };
 
   const headings = new Set<string>();
+  const shown = hosts.filter((h) => !FOLDABLE.has(h.group) || unfolded.has(h.group));
   return (
     <>
       <PageHeader title="Hosts">
@@ -569,22 +613,34 @@ export function Hosts({ s }: { s: State }) {
             headings.add(h.group);
             return [
               heading ? (
-                <div key={`heading-${h.group}`} className="mt-3 flex flex-wrap items-baseline gap-x-2 first:mt-0">
-                  <strong className="text-sm">{heading[0]}</strong>
-                  <span className="text-sm text-muted-foreground">{heading[1]}</span>
-                </div>
+                FOLDABLE.has(h.group) ? (
+                  <FoldHeading
+                    key={`heading-${h.group}`}
+                    heading={heading}
+                    count={hosts.filter((x) => x.group === h.group).length}
+                    open={unfolded.has(h.group)}
+                    toggle={() => toggleFold(h.group)}
+                  />
+                ) : (
+                  <div key={`heading-${h.group}`} className="mt-3 flex flex-wrap items-baseline gap-x-2 first:mt-0">
+                    <strong className="text-sm">{heading[0]}</strong>
+                    <span className="text-sm text-muted-foreground">{heading[1]}</span>
+                  </div>
+                )
               ) : null,
-              <HostCard
-                key={h.name}
-                h={h}
-                s={s}
-                d={d}
-                drop={drop}
-                dragging={drag?.name === h.name}
-                onDragStart={() => setDrag({ name: h.name, frozen: s.hosts })}
-                onDragEnd={() => setDrag(null)}
-                move={(delta) => move(h.name, delta)}
-              />,
+              shown.includes(h) ? (
+                <HostCard
+                  key={h.name}
+                  h={h}
+                  s={s}
+                  d={d}
+                  drop={drop}
+                  dragging={drag?.name === h.name}
+                  onDragStart={() => setDrag({ name: h.name, frozen: s.hosts })}
+                  onDragEnd={() => setDrag(null)}
+                  move={(delta) => move(h.name, delta)}
+                />
+              ) : null,
             ];
           })}
           <OtherAccounts s={s} d={d} />
