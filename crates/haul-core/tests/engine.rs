@@ -4235,8 +4235,8 @@ async fn a_row_does_not_bounce_between_slow_mirrors() {
     assert!(row(&s, "x.bin").slowed.is_some(), "it stays, and says so");
 }
 
-/// With no mirror a throttled download keeps going, saying why; a new row on
-/// that host waits for its cooldown, saying so.
+/// With no mirror a throttled download keeps going, saying why, and a new row
+/// only that host has starts all the same: there is nowhere else to go.
 #[tokio::test]
 async fn with_no_mirror_it_keeps_going_and_says_why() {
     let t = Setup::new().await;
@@ -4252,13 +4252,11 @@ async fn with_no_mirror_it_keeps_going_and_says_why() {
         Some("Slowed by 127.0.0.1: no other host has it")
     );
     engine.add_text(&format!("{}/files/new.bin", t.ip), "");
-    let s = wait_for(&engine, "the new row to wait", |s| {
-        row(s, "new.bin").status == "waiting"
+    wait_for(&engine, "the new row to finish", |s| {
+        row(s, "new.bin").status == "done"
     })
     .await;
-    assert_eq!(row(&s, "new.bin").error_shown, "slows this address");
-    assert!(row(&s, "new.bin").wait > 0);
-    assert!(t.server.requests("/files/new.bin").is_empty());
+    assert_eq!(row(&engine.snapshot(), "x.bin").status, "downloading");
     wait_for(&engine, "the slow one done", |s| {
         row(s, "x.bin").status == "done"
     })
@@ -4688,6 +4686,31 @@ async fn a_slow_handed_file_is_blamed_on_the_host_it_came_from() {
     );
     assert!(cooldown(&s, "ddownload.com") > 0);
     assert!(!engine.page_passes("http://ddownload.com/dd/def456"));
+    // A row with nowhere else to go passes its page all the same, and one with
+    // another host goes there.
+    let alone = "http://ddownload.com/dd/def456";
+    ddownload_waiting_its_pass(&engine, alone).await;
+    assert!(engine.page_passes(alone));
+    engine.set_disabled("gofile.io", false).unwrap();
+    engine.add_text("http://fileguard.cc/vault/ddownload-gofile", "");
+    let w = wrapper_settled(&engine, "done").await.wrappers[0]
+        .id
+        .clone();
+    engine.start_wrapper(&w);
+    let s = wait_for(&engine, "the other page's turn", |s| {
+        s.items
+            .iter()
+            .any(|i| i.name == "ddownload-gofile.rar" && i.status == "passing")
+    })
+    .await;
+    let both = row(&s, "ddownload-gofile.rar");
+    assert_eq!(both.open_urls, ["https://gofile.io/d/both"]);
+    assert!(!engine.page_passes("http://ddownload.com/dd/ddownload-gofile"));
+    assert!(engine.page_passes("https://gofile.io/d/both"));
+    assert_eq!(
+        engine.page_for(&both.id).as_deref(),
+        Some("https://gofile.io/d/both")
+    );
     assert!(s.hosts.iter().all(|h| h.name != "files.example"));
 }
 

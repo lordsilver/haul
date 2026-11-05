@@ -290,9 +290,11 @@ impl Lane {
     }
 
     /// As [`Lane::free`], but for a row with nowhere else to go: a host that
-    /// slows an address still serves it.
-    fn free_but_cooling(&self, limit: usize, now: Instant) -> bool {
-        self.active < self.slots(limit) && self.settle_until.is_none_or(|t| now >= t)
+    /// slows an address still serves it. A wait the host asked for stands.
+    fn free_while_slowing(&self, limit: usize, now: Instant) -> bool {
+        self.active < self.slots(limit)
+            && (self.slowing || !self.cooling(now))
+            && self.settle_until.is_none_or(|t| now >= t)
     }
 }
 
@@ -500,7 +502,7 @@ impl State {
 
     /// As [`State::open_exit`], for a row that has nowhere else to go than a
     /// host that is slowing the address.
-    fn exit_back_to(
+    fn exit_while_slowing(
         &mut self,
         host: &str,
         exits: &[Exit],
@@ -513,7 +515,7 @@ impl State {
         let mut best: Option<(Exit, usize)> = None;
         for &exit in exits {
             let lane = self.lane(host, exit);
-            if lane.free_but_cooling(limit, now) && best.is_none_or(|(_, a)| lane.active < a) {
+            if lane.free_while_slowing(limit, now) && best.is_none_or(|(_, a)| lane.active < a) {
                 best = Some((exit, lane.active));
             }
         }
@@ -521,8 +523,12 @@ impl State {
     }
 
     /// Whether every exit of `host` is cooling down.
-    fn cooling(&mut self, host: &str, exits: &[Exit], now: Instant) -> bool {
-        exits.iter().all(|e| self.lane(host, *e).cooling(now))
+    fn cooling(&self, host: &str, exits: &[Exit], now: Instant) -> bool {
+        exits.iter().all(|e| {
+            self.lanes
+                .get(&(host.to_string(), *e))
+                .is_some_and(|lane| lane.cooling(now))
+        })
     }
 }
 

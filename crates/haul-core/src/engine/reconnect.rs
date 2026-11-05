@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use super::{Engine, Exit, schedule::says_address_waits};
+use super::{Engine, Exit, schedule::ASKED_TO_WAIT};
 use crate::{
     config::secret,
     hosts,
@@ -174,7 +174,7 @@ impl Engine {
                 // Rows waiting out a limit on the old address go again now;
                 // one still held elsewhere is parked again on its turn.
                 for it in st.items.values_mut() {
-                    if it.status == Status::Waiting && says_address_waits(&it.error) {
+                    if it.status == Status::Waiting && it.error.ends_with(ASKED_TO_WAIT) {
                         it.not_before = None;
                     }
                     it.slow_on.clear();

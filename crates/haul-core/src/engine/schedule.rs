@@ -9,9 +9,7 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    Engine, Event, Exit, OFF_ONLY, State, display_name, exit_name, noted_quietly, throttled::SLOWS,
-};
+use super::{Engine, Event, Exit, OFF_ONLY, State, display_name, exit_name, noted_quietly};
 use crate::{
     hosts::{self, Cx},
     item::Status,
@@ -20,12 +18,6 @@ use crate::{
 /// Why a row waits when every page it could go to is on a host that asked
 /// this address to wait.
 pub(super) const ASKED_TO_WAIT: &str = "asks this address to wait";
-
-/// Whether a row's error says its hosts hold this address back, which holds
-/// no longer once the address changes or the wait ends.
-pub(super) fn says_address_waits(error: &str) -> bool {
-    error.ends_with(ASKED_TO_WAIT) || error.ends_with(SLOWS)
-}
 
 impl Engine {
     // ---- scheduler
@@ -241,7 +233,7 @@ impl Engine {
                         st.passes(m)
                             && !off(m)
                             && !it.failed.contains(*m)
-                            && self.pass_held_until(st, m, now).is_none()
+                            && self.pass_held_for(st, it, m, now).is_none()
                     })
                     .map(|m| hosts::host_of(m))
             })
@@ -264,17 +256,6 @@ impl Engine {
                 .pages_held_until(st, it, now)
                 .zip(it.mirrors.iter().find(|m| it.manual_urls.contains(*m)));
             let held = held.map(|(until, page)| (until, hosts::host_of(page)));
-            let word = held.as_ref().map_or(ASKED_TO_WAIT, |(_, host)| {
-                let exit = self
-                    .exits_for(host, st)
-                    .first()
-                    .copied()
-                    .unwrap_or_default();
-                match st.lanes.get(&(host.clone(), exit)) {
-                    Some(lane) if lane.slowing => SLOWS,
-                    _ => ASKED_TO_WAIT,
-                }
-            });
             let retry_at = it
                 .retry_at
                 .or_else(|| {
@@ -289,12 +270,12 @@ impl Engine {
                 // person: its page would say the same to them.
                 it.status = Status::Waiting;
                 it.not_before = Some(until);
-                it.error = format!("{host}: {word}");
+                it.error = format!("{host}: {ASKED_TO_WAIT}");
             } else if asks && it.status != Status::Error {
                 it.status = Status::Captcha;
                 it.retry_at = retry_at;
                 // Said while it held, and it no longer does.
-                if says_address_waits(&it.error) {
+                if it.error.ends_with(ASKED_TO_WAIT) {
                     it.error.clear();
                 }
             } else if !only_off.is_empty() {
@@ -422,11 +403,9 @@ impl Engine {
 
     /// No mirror of row `id` could start. With every one of them cooling down,
     /// a page the desktop app can pass goes next: nothing else would ever send
-    /// it to its turn. Without one, a mirror that slowed this row before takes
-    /// it back, since a slow download beats sitting idle or waiting for a
-    /// person, and there is nothing left to bounce to. Otherwise, when one slows
-    /// the address, the row says so and waits it out; no new download starts on
-    /// it.
+    /// it to its turn. Without one, a host that only slows the address takes it,
+    /// the one that slowed it before first, since a slow download beats sitting
+    /// idle with nowhere else to go. A wait a host asked for stands.
     fn when_all_cool_down(
         &self,
         st: &mut State,
@@ -436,42 +415,28 @@ impl Engine {
         cfg: &crate::Config,
         now: Instant,
     ) -> Option<(String, Exit)> {
-        let mut slowing: Option<(Instant, String)> = None;
         for m in candidates {
             let name = hosts::host_of(m);
             let exits = self.exits_for(&name, st);
             if !st.cooling(&name, &exits, now) {
                 return None;
             }
-            for exit in exits {
-                let lane = st.lane(&name, exit);
-                if let (true, Some(until)) = (lane.slowing, lane.cooldown)
-                    && slowing.as_ref().is_none_or(|(first, _)| until < *first)
-                {
-                    slowing = Some((until, name.clone()));
-                }
-            }
         }
         if page_can_pass {
             st.items.get_mut(id)?.status = Status::Captcha;
             return None;
         }
-        let back = candidates
-            .iter()
-            .find(|m| st.items[id].slow_on.contains(*m))
-            .cloned();
-        if let Some(m) = back {
-            let name = hosts::host_of(&m);
+        let slow_on = st.items.get(id)?.slow_on.clone();
+        let (before, others): (Vec<&String>, Vec<&String>) =
+            candidates.iter().partition(|m| slow_on.contains(*m));
+        for m in before.into_iter().chain(others) {
+            let name = hosts::host_of(m);
             let exits = self.exits_for(&name, st);
-            let exit = st.exit_back_to(&name, &exits, cfg, now)?;
-            tracing::info!(item = %id, "nothing else can take it: back to {name}");
-            return Some((m, exit));
+            if let Some(exit) = st.exit_while_slowing(&name, &exits, cfg, now) {
+                tracing::info!(item = %id, "nowhere else to go: on {name}, though it slows this address");
+                return Some((m.clone(), exit));
+            }
         }
-        let (until, name) = slowing?;
-        let it = st.items.get_mut(id)?;
-        it.status = Status::Waiting;
-        it.not_before = Some(until);
-        it.error = format!("{name}: {SLOWS}");
         None
     }
 }

@@ -321,7 +321,7 @@ impl Engine {
                 && it
                     .manual_urls
                     .iter()
-                    .any(|u| st.passes(u) && self.pass_held_until(&st, u, now).is_none())
+                    .any(|u| st.passes(u) && self.pass_held_for(&st, it, u, now).is_none())
         };
         let wrappers: Vec<WrapperView> = st
             .items

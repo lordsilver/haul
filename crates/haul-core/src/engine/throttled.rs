@@ -10,12 +10,9 @@ use super::{Engine, Exit, State, reconnect::DIRECT, transfer::drop_used_pre};
 use crate::{
     config::Config,
     hosts,
-    item::{Slowed, Status},
+    item::{Item, Slowed},
     throttle::{self, Around, OwnLimit, Reading, Throttling, Verdict},
 };
-
-/// Why a row waits when its hosts are on cooldown for slowing the address.
-pub(super) const SLOWS: &str = "slows this address";
 
 /// One running transfer, read for the others to be compared with.
 struct Run {
@@ -199,12 +196,6 @@ impl Engine {
             lane.slowing = false;
             lane.slowing_sure = false;
             tracing::info!("{} runs well again: its cooldown ends", run.host);
-            for it in st.items.values_mut() {
-                if it.status == Status::Waiting && it.error == format!("{}: {SLOWS}", run.host) {
-                    it.not_before = None;
-                    it.error.clear();
-                }
-            }
             changed = true;
         }
         changed
@@ -363,6 +354,19 @@ impl Engine {
         !hosts::asks_a_person(m, cfg, pages)
     }
 
+    /// Whether row `it` has a host other than page `url`'s that could take it
+    /// now: not one cooling down, that has failed, or that wants a person.
+    pub(super) fn has_another_way(&self, st: &State, it: &Item, url: &str, now: Instant) -> bool {
+        let cfg = self.cfg();
+        let host = hosts::host_of(url);
+        it.mirrors.iter().any(|m| {
+            let name = hosts::host_of(m);
+            name != host
+                && self.could_serve(st, &it.id, m, &cfg, now)
+                && !st.cooling(&name, &self.exits_for(&name, st), now)
+        })
+    }
+
     /// Why row `id` stays on `host`, as the row says it.
     fn why_it_stays(
         &self,
@@ -404,9 +408,9 @@ impl Engine {
     }
 }
 
-/// Puts the host on cooldown for this address, or keeps it there: no new row
-/// starts on it, and none of its pages is passed. A host still slowing it isn't
-/// a new strike; its cooldown only stops running out.
+/// Puts the host on cooldown for this address, or keeps it there: a row with
+/// somewhere else to go doesn't start on it or pass its pages. A host still
+/// slowing it isn't a new strike; its cooldown only stops running out.
 fn remember_slowing(
     st: &mut State,
     host: &str,

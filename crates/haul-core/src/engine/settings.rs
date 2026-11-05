@@ -801,7 +801,7 @@ impl Engine {
             let usable = self.pages_pass() && !pages.is_empty();
             let held = pages
                 .iter()
-                .map(|m| self.pass_held_until(st, m, now))
+                .map(|m| self.pass_held_for(st, it, m, now))
                 .collect::<Option<Vec<Instant>>>()
                 .and_then(|untils| untils.into_iter().min())
                 .filter(|_| usable);
