@@ -51,8 +51,8 @@ pub struct Throttling {
     pub line_patience: Duration,
     /// The first cooldown of a host that slows an address. How long its limit
     /// lasts isn't known, so it starts low and doubles while the host stays
-    /// slow each time it is tried: ddownload's two hours is found in three
-    /// tries, each costing a minute and a half.
+    /// slow each time it is tried: a two-hour limit is found in three tries,
+    /// each costing a minute and a half.
     pub cooldown: Duration,
     /// The longest it doubles to: free limits rarely outlast a working day,
     /// and a host that lifted its limit shouldn't sit idle for longer.
