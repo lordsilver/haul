@@ -26,6 +26,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::broadcast;
 
 use crate::Engine;
+pub use crate::logging::now;
 
 /// Signals kept for a slow reader before it misses some (it is told).
 const BACKLOG: usize = 8192;
@@ -77,11 +78,6 @@ pub fn enabled() -> bool {
     BUS.get().is_some()
 }
 
-/// Now, as signals and the log write it: ISO 8601, UTC, to the millisecond.
-pub fn now() -> String {
-    crate::logging::now()
-}
-
 impl Bus {
     pub fn subscribe(&self) -> broadcast::Receiver<Value> {
         self.tx.subscribe()
@@ -103,7 +99,7 @@ impl Bus {
 pub fn emit(kind: &str, fields: Value) {
     let Some(bus) = BUS.get() else { return };
     let mut signal = Map::new();
-    signal.insert("t".into(), json!(crate::logging::now()));
+    signal.insert("t".into(), json!(now()));
     signal.insert("kind".into(), json!(kind));
     if let Value::Object(fields) = fields {
         signal.extend(fields);

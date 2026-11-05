@@ -79,14 +79,10 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
                 Some(Entry {
                     url: format!("{base}/api/file/{}?download", f.id?),
                     name: Some(f.name),
-                    package: None,
                     size: Some(f.size),
-                    listed_size: None,
                     headers: headers.clone(),
                     checksum,
-                    deferred: false,
-                    mirrors: Vec::new(),
-                    decrypt: None,
+                    ..Entry::default()
                 })
             })
             .collect());
@@ -111,14 +107,10 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     Ok(vec![Entry {
         url: format!("{base}/api/file/{id}?download"),
         name: Some(file.name),
-        package: None,
         size: Some(file.size),
-        listed_size: None,
         headers,
         checksum,
-        deferred: false,
-        mirrors: Vec::new(),
-        decrypt: None,
+        ..Entry::default()
     }])
 }
 
