@@ -196,6 +196,25 @@ async fn a_newer_haul_is_found_and_its_installer_checked() {
     );
 }
 
+/// The timer keeps to the setting; a person asking does not have to.
+#[tokio::test]
+async fn a_person_can_look_for_updates_with_the_setting_off() {
+    let t = Setup::new().await;
+    let engine = t
+        .engine_with(Config {
+            check_updates: false,
+            ..t.config()
+        })
+        .await;
+    engine.check_update().await;
+    assert!(engine.snapshot().update.is_none(), "the timer keeps off");
+    assert_eq!(
+        engine.look_for_update().await,
+        Ok(Some("99.0.0".to_string())),
+    );
+    assert!(engine.snapshot().update.is_some());
+}
+
 /// A file on several hosts downloads from the one the user picked, even
 /// over the hosts they prefer in general.
 #[tokio::test]

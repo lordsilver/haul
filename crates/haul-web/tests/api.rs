@@ -425,6 +425,22 @@ async fn reorders_the_preferred_hosts() {
     );
 }
 
+/// Asking for an update when GitHub can't be reached says so.
+#[tokio::test]
+async fn checking_for_an_update_reports_a_failure() {
+    let mut config = Config::default();
+    // Nothing listens there.
+    config.endpoints.github_api = "http://127.0.0.1:9".into();
+    let s = start_with(config).await;
+    let r = s
+        .http
+        .post(format!("{}/api/update/check", s.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 502);
+}
+
 /// `/api/container` answers as `/api/add` does, over every file uploaded.
 #[tokio::test]
 async fn importing_counts_wrapper_links() {

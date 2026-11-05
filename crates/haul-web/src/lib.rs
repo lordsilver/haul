@@ -532,10 +532,12 @@ async fn nordvpn_servers(State(app): State<App>) -> Response {
     }
 }
 
-/// Asks GitHub for a newer Haul now; the state says what it found.
+/// Asks GitHub for a newer Haul now, and answers with its version, if any.
 async fn check_update(State(app): State<App>) -> Response {
-    app.engine.check_update().await;
-    ok()
+    match app.engine.look_for_update().await {
+        Ok(version) => Json(serde_json::json!({ "version": version })).into_response(),
+        Err(e) => error(StatusCode::BAD_GATEWAY, e),
+    }
 }
 
 /// Downloads the newer Haul, checks it, and has the desktop app install it.

@@ -11,6 +11,7 @@ import {
   Globe,
   Info,
   KeyRound,
+  LoaderCircle,
   Palette,
   RotateCw,
   Trash2,
@@ -41,6 +42,29 @@ import { toast } from '@/lib/toast';
 
 // The desktop app picks the folder in a dialog; a browser cannot show this
 // machine's folders, so the path is typed instead.
+// Asks now rather than wait for the next look; found, it shows in the status bar.
+function CheckNow() {
+  const [busy, setBusy] = useState(false);
+  const check = async () => {
+    setBusy(true);
+    try {
+      const { version } = await api<{ version: string | null }>('/api/update/check');
+      if (version) toast(`Haul ${version} is out: see the status bar`, 'success');
+      else toast('You have the latest Haul');
+    } catch (error) {
+      report(error);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Button variant="outline" disabled={busy} onClick={check}>
+      {busy ? <LoaderCircle aria-hidden className="animate-spin" /> : <RotateCw aria-hidden />}
+      Check now
+    </Button>
+  );
+}
+
 function FolderCard({ s, d }: { s: State; d: SettingsView }) {
   const [editing, setEditing] = useState(false);
   const [path, setPath] = useState(d.download_dir);
@@ -247,16 +271,20 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
           on={d.watch_clipboard}
         />
       ) : null}
-      <SwitchCard
+      <SettingCard
         icon={ArrowUpCircle}
         title="Look for updates"
         description={
           s.desktop
-            ? 'Haul asks GitHub for a newer version after it starts and every six hours, and offers to install it in the status bar.'
-            : 'Haul asks GitHub for a newer version after it starts and every six hours, and says so in the status bar.'
+            ? 'Haul asks GitHub for a newer version after it starts and every hour, and offers to install it in the status bar.'
+            : 'Haul asks GitHub for a newer version after it starts and every hour, and says so in the status bar.'
         }
-        name="check_updates"
-        on={d.check_updates}
+        controls={
+          <>
+            <CheckNow />
+            <SettingSwitch name="check_updates" on={d.check_updates} label="Look for updates" />
+          </>
+        }
       />
       <Section>When something fails</Section>
       <SettingCard
