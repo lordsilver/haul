@@ -439,6 +439,9 @@ pub struct WrapperCard {
     /// aside while anything else on the card goes on or found files: a
     /// note, not a failure. 0 when the card failed for them.
     pub empty: usize,
+    /// Its files only on hosts that are off until their account is set: in no
+    /// list, so the card is where they show.
+    pub waiting_for_account: usize,
     /// The wrapper whose state the card shows, the one to open when it
     /// needs a person.
     pub open_id: String,
@@ -487,14 +490,14 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
         .into_iter()
         .map(|(key, ws)| {
             let w = ws[0];
-            let files: Vec<&ItemView> = items
+            let (waiting_for_account, files): (Vec<&ItemView>, Vec<&ItemView>) = items
                 .iter()
                 .filter(|it| {
                     ws.iter().any(|x| {
                         it.source.as_deref() == Some(x.id.as_str()) || it.also_from.contains(&x.id)
                     })
                 })
-                .collect();
+                .partition(|it| it.tentative && it.status == "paused");
             // A paste that lists no links (a description) is a
             // note on a card that has anything else going on or found,
             // not the card's failure.
@@ -530,6 +533,7 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 found: w.found,
                 files: files.len(),
                 empty,
+                waiting_for_account: waiting_for_account.len(),
                 open_id: urgent.id.clone(),
                 need_you: ws.iter().filter(|x| x.status == "captcha").count(),
                 tally: tally(files),

@@ -1,9 +1,10 @@
-import { Link, Play, RotateCw, X } from 'lucide-react';
+import { Link, Play, Plus, RotateCw, X } from 'lucide-react';
 import { useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
 import { HostName, offHosts } from '@/components/host-picker';
 import { Button } from '@/components/ui/button';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
+import { openAdd } from '@/lib/add';
 import { act, api, report } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
 import type { WrapperCard } from '@/lib/bindings/WrapperCard';
@@ -109,7 +110,10 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
   // Pastes that list nothing, beside wrappers that found their files: a
   // quiet note, not a failure.
   const empty = card.empty ? `${plural(card.empty, 'paste')} ${card.empty === 1 ? 'lists' : 'list'} no links` : '';
-  const line = [card.host, state, empty].filter(Boolean).join(' · ');
+  const held = card.waiting_for_account
+    ? `${plural(card.waiting_for_account, 'file')} only on hosts that need an account`
+    : '';
+  const line = [card.host, state, empty, held].filter(Boolean).join(' · ');
   const reason = ['error', 'waiting', 'captcha'].includes(card.status) ? card.error_shown : '';
   // When a failed one is tried again on its own, after its reason.
   const again = card.status === 'error' && card.retry_in ? `trying again in ${duration(card.retry_in)}` : '';
@@ -200,7 +204,13 @@ export function Wrappers({ s }: { s: State }) {
   return (
     <>
       <header className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight">Wrappers</h1>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          <h1 className="mr-auto text-2xl font-semibold tracking-tight">Wrappers</h1>
+          <Button onClick={() => openAdd()}>
+            <Plus />
+            Add links
+          </Button>
+        </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
           A wrapper link holds a set of files, on one host or on many: fileguard.cc's, filecrypt.cc's or mirrored.to's,
           a page on a site Haul has no code for that lists links, or a paste (zpaste.net, paste2.org…). Haul unwraps it

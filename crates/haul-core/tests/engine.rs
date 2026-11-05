@@ -626,7 +626,7 @@ async fn start_server() -> (Server, u16) {
                 }
                 match page.as_str() {
                     "abc.html" | "open.html" | "cf-once.html" | "host-a.html" | "host-b.html"
-                    | "unnamed.html" | "ids-a.html" | "ids-b.html" | "same-a.html" | "same-b.html"
+                    | "unnamed.html" | "for-account.html" | "ids-a.html" | "ids-b.html" | "same-a.html" | "same-b.html"
                     | "other-a.html" | "other-b.html" => FC_GATE.into_response(),
                     // Another gate than the checkbox, past the check in front
                     // of the site.
@@ -657,6 +657,28 @@ async fn start_server() -> (Server, u16) {
                             format!("http://{other}/files/Example.Archive.part1.rar"),
                             format!("http://{other}/files/Example.Archive.part2.rar"),
                         ],
+                    )
+                } else if page == "for-account.html" {
+                    // Two files here, and one only on a host off for want of
+                    // its account, whose table has no name for it.
+                    let name = |n: &str| {
+                        format!(
+                            r#"<tr class="kwj3"><td class="status"><i class="online small"></i></td><td title="{n}">{n}<span><a href="http://{host}" class="external_link">{host}</a></span></td><td>n/a</td><td><a href="/Link/abc.html" class="button download"></a></td></tr>"#
+                        )
+                    };
+                    format!(
+                        "{}<table>{}{}{}</table>",
+                        fc_solved_with(
+                            "Example",
+                            &[
+                                format!("http://{host}/files/one.bin"),
+                                format!("http://{host}/files/two.bin"),
+                                "https://gofile.io/d/abc123".to_string(),
+                            ],
+                        ),
+                        name("one.bin"),
+                        name("two.bin"),
+                        name("n/a"),
                     )
                 } else if page == "unnamed.html" {
                     fc_unnamed(host)
@@ -1911,6 +1933,39 @@ async fn a_containers_rows_without_names_stay_separate() {
     assert_eq!(s.items.len(), 2, "two links, two rows");
     assert!(s.items.iter().all(|i| i.name != "n/a"));
     assert!(s.items.iter().all(|i| i.mirrors.len() == 1));
+}
+
+/// A wrapper's file only on a host that is off until its account is set is in
+/// no list and not started with the rest; the wrapper's card counts it, and it
+/// comes back when the host is switched on.
+#[tokio::test]
+async fn a_wrappers_file_only_on_a_host_without_its_account_stays_out_of_the_lists() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://filecrypt.cc/Container/for-account.html", "");
+    let s = wait_for(&engine, "the container's links", |s| {
+        s.items.len() == 3 && s.items.iter().all(|i| i.status == "paused")
+    })
+    .await;
+    let hidden = |s: &Snapshot| s.items.iter().filter(|i| i.list.is_empty()).count();
+    assert_eq!(hidden(&s), 1, "the file only on gofile.io");
+    assert_eq!(s.counts.all, 2);
+    assert_eq!(s.counts.ready, 2, "the status bar counts the other two");
+    assert_eq!(s.wrapper_cards[0].files, 2);
+    assert_eq!(s.wrapper_cards[0].waiting_for_account, 1);
+
+    let id = s.wrappers[0].id.clone();
+    assert_eq!(engine.start_wrapper(&id), Some(2), "only the two it can");
+    let s = wait_for(&engine, "the two to finish", |s| {
+        s.items.iter().filter(|i| i.status == "done").count() == 2
+    })
+    .await;
+    assert_eq!(hidden(&s), 1, "and the third waits on, with no error");
+
+    engine.set_disabled("gofile.io", false).unwrap();
+    let s = engine.snapshot();
+    assert_eq!(hidden(&s), 0, "switched on, it shows");
+    assert_eq!(s.wrapper_cards[0].waiting_for_account, 0);
 }
 
 /// A page's links to files on a host Haul has no code for, on another
