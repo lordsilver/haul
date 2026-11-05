@@ -50,13 +50,14 @@ export function Bar({ value, status }: { value: number; status: ItemView['status
   );
 }
 
-// The speed and what is left at it.
-export function Rate({ speed, size, done }: { speed: number; size: number; done: number }) {
+// The speed and what is left at it; while a host is slowing it, a time left
+// says nothing, since Haul means to get it elsewhere.
+export function Rate({ speed, size, done, slowed }: { speed: number; size: number; done: number; slowed: boolean }) {
   if (!speed) return null;
   return (
     <>
       <div className="text-sm font-medium text-foreground">{bytes(speed)}/s</div>
-      {size > done ? <div>{duration((size - done) / speed)} left</div> : null}
+      {slowed ? <div>slowed</div> : size > done ? <div>{duration((size - done) / speed)} left</div> : null}
     </>
   );
 }
@@ -184,7 +185,7 @@ function Subtitle({ it, s }: { it: ItemView; s: State }) {
   const rest: string[] = [];
   if (it.package) rest.push(it.package);
   if (it.source_name) rest.push(`from ${it.source_name}`);
-  const reason = ['error', 'waiting', 'captcha'].includes(it.status) ? it.error_shown : '';
+  const reason = it.slowed ?? (['error', 'waiting', 'captcha'].includes(it.status) ? it.error_shown : '');
   const tone = it.status === 'error' ? 'text-destructive' : it.status === 'captcha' ? 'text-warn-strong' : '';
   // When its page is passed again on its own, while it waits for the person.
   const again = it.status === 'captcha' && it.retry_in ? `trying again in ${duration(it.retry_in)}` : '';
@@ -265,7 +266,7 @@ export function ItemRow({
           )}
         </div>
         <div className={COLUMNS.rate}>
-          <Rate speed={it.speed} size={it.size} done={it.done} />
+          <Rate speed={it.speed} size={it.size} done={it.done} slowed={Boolean(it.slowed)} />
         </div>
         <RowActions it={it} s={s} />
       </div>

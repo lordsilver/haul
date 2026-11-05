@@ -21,7 +21,7 @@ auto_extract = false            # unpack an archive in parts once the last part 
 delete_after_extract = false    # an archive's parts go to the Recycle Bin once it is unpacked without error
 archive_passwords = []          # tried in order on an encrypted archive, after the one typed for it
 detailed_log = false            # write every request, retry and mirror choice to haul.log
-reconnect = false               # a new address from the router when yours holds downloads back
+reconnect = false               # a new address from the router when yours holds downloads back, once healthy ones finish
 reconnect_command = ""           # a command that gets the new address instead of the router
 router_user = ""                 # the router's login, for one that redials only with it
 router_password = ""
@@ -33,6 +33,7 @@ nordvpn_on = true                # false keeps the above but leaves NordVPN's se
 resume_attempts = 5             # retries per mirror after network trouble
 min_speed_kbps = 0              # give up a mirror slower than this (KiB/s) ...
 min_speed_seconds = 60          # ... over this long; 0 = off
+leave_slow_hosts = true         # leave a host that holds a big download far below what it or your line can do
 retry_failed_minutes = 15       # retry failed downloads, and pages that wanted you (up to 3 times), 0 = never
 proxy = "socks5://user:pass@host:1080" # every host goes through it unless allowed direct
 use_proxy = true                # false keeps proxies and VPN servers but connects directly

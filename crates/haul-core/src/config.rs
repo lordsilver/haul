@@ -73,6 +73,11 @@ pub struct Config {
     /// download look slow.
     pub min_speed_kbps: u32,
     pub min_speed_seconds: u64,
+    /// A host that holds a big download far below what it or the line can do
+    /// is taken to be limiting this address: the download goes on from another
+    /// mirror or a new address, and until then keeps going slowly. No threshold
+    /// to set: see [`crate::throttle`].
+    pub leave_slow_hosts: bool,
     /// Minutes before a failed download is tried again on its own (at most
     /// three times); 0 turns that off.
     pub retry_failed_minutes: u64,
@@ -138,6 +143,9 @@ pub struct Config {
     pub reconnect_command: Option<String>,
     #[serde(skip)]
     pub endpoints: Endpoints,
+    /// The numbers [`Config::leave_slow_hosts`] goes by. Only tests change them.
+    #[serde(skip)]
+    pub throttling: crate::throttle::Throttling,
     /// Keys an environment variable set, with the variable's name.
     #[serde(skip)]
     pub from_env: BTreeMap<&'static str, &'static str>,
@@ -163,6 +171,7 @@ impl Default for Config {
             resume_attempts: 5,
             min_speed_kbps: 0,
             min_speed_seconds: 60,
+            leave_slow_hosts: true,
             retry_failed_minutes: 15,
             proxy: None,
             proxies: Vec::new(),
@@ -193,6 +202,7 @@ impl Default for Config {
             reconnect: false,
             reconnect_command: None,
             endpoints: Endpoints::default(),
+            throttling: crate::throttle::Throttling::default(),
             from_env: BTreeMap::new(),
         }
     }
@@ -626,6 +636,13 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # 0 turns that off; so does a speed limit (rate_limit_mbps).
 # min_speed_kbps = 0
 # min_speed_seconds = 60
+
+# A host that holds a big download far below what it or your line can do is
+# taken to be limiting your address (free tiers do that instead of refusing).
+# The download goes on from another mirror or, with reconnect on, a new address
+# once other downloads have finished; until then it keeps going slowly and says
+# why. Your own speed limit, a slow line and a file nearly done don't count.
+# leave_slow_hosts = true
 
 # Minutes before a failed download is tried again on its own (up to three
 # times), and a page Haul passes by itself that wanted you; 0 turns that off.

@@ -38,6 +38,15 @@ impl Engine {
                     "running": it.task.is_some(),
                     "exit": it.exit,
                     "host": it.host,
+                    "url": it.url,
+                    "speed_verdict": it.pace.as_ref().map(|p| p.verdict.as_str()),
+                    "slowed": it.slowed.as_ref().map(|s| json!({
+                        "host": s.host,
+                        "sure": s.sure,
+                        "why": s.why,
+                    })),
+                    "slow_on": it.slow_on,
+                    "part_host": it.part_host,
                     "mirrors": it.mirrors,
                     "failed": failed,
                     "gone": gone,
@@ -65,6 +74,8 @@ impl Engine {
                 json!({
                     "name": name,
                     "speed": h.ema,
+                    "normal": h.normal,
+                    "redial_useless": h.redial_useless,
                     "fails": h.fails,
                     "penalty": h.penalty(now),
                     "ok": h.ok,
@@ -84,6 +95,8 @@ impl Engine {
                     "serving": lane.serving,
                     "cap": lane.cap,
                     "cooldown_in": until(lane.cooldown, now),
+                    "slowing": lane.slowing,
+                    "strikes": lane.strikes,
                     "settle_in": until(lane.settle_until, now),
                 })
             })
@@ -102,6 +115,7 @@ impl Engine {
             "paused": st.paused,
             "moving": st.moving,
             "reconnecting": st.reconnecting,
+            "draining": st.draining,
             "max_total": st.max_total,
             "pages_pass": self.pages_pass(),
             "guarded": guarded,

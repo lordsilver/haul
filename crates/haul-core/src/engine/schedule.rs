@@ -106,7 +106,7 @@ impl Engine {
         let mut events = Vec::new();
         {
             let mut st = self.lock();
-            if st.paused || st.moving || st.reconnecting {
+            if st.paused || st.moving || st.reconnecting || st.draining.is_some() {
                 return;
             }
             let now = Instant::now();
@@ -174,6 +174,7 @@ impl Engine {
                         it.status = Status::Resolving;
                         it.task = Some(cancel.clone());
                         it.exit = Some(exit);
+                        it.url = Some(url.clone());
                         running += 1;
                         busy += size;
                         changed = true;
@@ -232,12 +233,12 @@ impl Engine {
                         st.passes(m)
                             && !off(m)
                             && !it.failed.contains(*m)
-                            && self.pass_held_until(st, m, now).is_none()
+                            && self.pass_held_for(st, it, m, now).is_none()
                     })
                     .map(|m| hosts::host_of(m))
             })
             .flatten();
-        let candidates: Vec<String> = it
+        let mut candidates: Vec<String> = it
             .mirrors
             .iter()
             .filter(|m| !it.failed.contains(*m) && !it.manual_urls.contains(*m) && !off(m))
@@ -293,6 +294,40 @@ impl Engine {
             }
             return None;
         }
+        // A row doesn't go back to a mirror that slowed it while another could
+        // take it, whatever that host's cooldown says, unless the user picked
+        // that host.
+        let slow_on = st.items[id].slow_on.clone();
+        let picked = st.items[id].prefer.clone();
+        let mut elsewhere = Vec::new();
+        for m in &candidates {
+            let name = hosts::host_of(m);
+            let exits = self.exits_for(&name, st);
+            let may_go = !slow_on.contains(m) || picked.as_deref() == Some(name.as_str());
+            if may_go && !st.cooling(&name, &exits, now) {
+                elsewhere.push(m.clone());
+            }
+        }
+        if !elsewhere.is_empty() {
+            candidates = elsewhere;
+        }
+        // A file handed back for one of its mirrors goes from that mirror's
+        // host, which is the one serving it wherever its address points: waited
+        // for when only busy, passed over while it cools down.
+        let handed = {
+            let it = &st.items[id];
+            (it.manual && it.pre.is_some())
+                .then(|| it.pre_for.clone())
+                .flatten()
+                .filter(|m| candidates.contains(m))
+        };
+        if let Some(m) = handed {
+            let name = hosts::host_of(&m);
+            let exits = self.exits_for(&name, st);
+            if !st.cooling(&name, &exits, now) {
+                return st.open_exit(&name, &exits, &cfg, now).map(|exit| (m, exit));
+            }
+        }
         // The host the user picked for this file, while it has it: waited
         // for when only busy, passed over while it cools down or once its
         // link failed, the others standing by.
@@ -335,7 +370,7 @@ impl Engine {
             .unwrap_or_default();
         let mut best: Option<(String, Exit, f64)> = None;
         let mut held = false;
-        for m in candidates {
+        for m in candidates.iter().cloned() {
             let name = hosts::host_of(&m);
             if pass_host.is_some() {
                 let known = hosts::known(&name).is_some();
@@ -360,6 +395,48 @@ impl Engine {
                 it.status = Status::Captcha;
             }
         }
+        if best.is_none() && !held {
+            return self.when_all_cool_down(st, id, &candidates, pass_host.is_some(), &cfg, now);
+        }
         best.map(|(m, exit, _)| (m, exit))
+    }
+
+    /// No mirror of row `id` could start. With every one of them cooling down,
+    /// a page the desktop app can pass goes next: nothing else would ever send
+    /// it to its turn. Without one, a host that only slows the address takes it,
+    /// the one that slowed it before first, since a slow download beats sitting
+    /// idle with nowhere else to go. A wait a host asked for stands.
+    fn when_all_cool_down(
+        &self,
+        st: &mut State,
+        id: &str,
+        candidates: &[String],
+        page_can_pass: bool,
+        cfg: &crate::Config,
+        now: Instant,
+    ) -> Option<(String, Exit)> {
+        for m in candidates {
+            let name = hosts::host_of(m);
+            let exits = self.exits_for(&name, st);
+            if !st.cooling(&name, &exits, now) {
+                return None;
+            }
+        }
+        if page_can_pass {
+            st.items.get_mut(id)?.status = Status::Captcha;
+            return None;
+        }
+        let slow_on = st.items.get(id)?.slow_on.clone();
+        let (before, others): (Vec<&String>, Vec<&String>) =
+            candidates.iter().partition(|m| slow_on.contains(*m));
+        for m in before.into_iter().chain(others) {
+            let name = hosts::host_of(m);
+            let exits = self.exits_for(&name, st);
+            if let Some(exit) = st.exit_while_slowing(&name, &exits, cfg, now) {
+                tracing::info!(item = %id, "nowhere else to go: on {name}, though it slows this address");
+                return Some((m.clone(), exit));
+            }
+        }
+        None
     }
 }

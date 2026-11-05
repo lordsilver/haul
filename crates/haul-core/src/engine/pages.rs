@@ -153,7 +153,7 @@ impl Engine {
             let host = hosts::host_of(page);
             // The way out the page's pass took, and the next one's.
             if let Some(&exit) = self.exits_for(&host, &st).first() {
-                st.lane(&host, exit).cooldown = Some(now + wait);
+                st.lane(&host, exit).asked_to_wait(now + wait);
             }
         }
         if let Some(it) = st.items.get_mut(id) {
@@ -186,6 +186,24 @@ impl Engine {
             .filter(|until| now < *until)
     }
 
+    /// As [`Engine::pass_held_until`], for page `url` of row `it`: a host that
+    /// only slows the address still serves it, so its cooldown holds the page
+    /// back only while the row has somewhere else to go. A wait a host asked
+    /// for always holds.
+    pub(super) fn pass_held_for(
+        &self,
+        st: &State,
+        it: &Item,
+        url: &str,
+        now: Instant,
+    ) -> Option<Instant> {
+        let until = self.pass_held_until(st, url, now)?;
+        let host = hosts::host_of(url);
+        let exit = *self.exits_for(&host, st).first()?;
+        let slowing = st.lanes.get(&(host, exit)).is_some_and(|l| l.slowing);
+        (!slowing || self.has_another_way(st, it, url, now)).then_some(until)
+    }
+
     /// When every page row `it` waits for is one the desktop app passes and
     /// is on hold: when the first of them may go. A row with a page for a
     /// person is theirs to take on, with no need to wait.
@@ -199,7 +217,7 @@ impl Engine {
             .filter(|m| !cfg.is_off(&hosts::host_of(m)))
             .map(|m| {
                 st.passes(m)
-                    .then(|| self.pass_held_until(st, m, now))
+                    .then(|| self.pass_held_for(st, it, m, now))
                     .flatten()
             })
             .collect::<Option<Vec<Instant>>>()?
@@ -402,6 +420,7 @@ impl Engine {
             return Err("not an http(s) link".into());
         }
         let mut st = self.lock();
+        let handed_for = self.handed_for(&st, id, url);
         let it = st.items.get_mut(id).ok_or("no such item")?;
         if it.status == Status::Done {
             // Another mirror may have finished it while the user was busy.
@@ -454,7 +473,7 @@ impl Engine {
             deferred,
             ..Entry::default()
         });
-        it.pre_for = None;
+        it.pre_for = handed_for;
         it.manual = true;
         it.probed = true;
         // A copied page that hands back a file is a download.
@@ -465,18 +484,61 @@ impl Engine {
         it.reset_retries();
         it.not_before = None;
         it.manual_urls.clear();
-        it.failed.clear();
+        // A copy reported deleted stays out, whatever else was handed back.
+        let gone = it.gone.clone();
+        it.failed.retain(|m| gone.contains(m));
+        if let Some(m) = it.pre_for.clone() {
+            it.failed.remove(&m);
+            it.gone.remove(&m);
+        }
         self.publish(st);
         Ok(())
+    }
+
+    /// The mirror of row `id` a link handed back belongs to, whichever domain
+    /// the link itself is on (a host's files are often on a CDN of its own):
+    /// one on the link's own host, or the page that was being passed, or the
+    /// page a person was sent to. The row is then shown under that host, and
+    /// what the transfer shows of the host counts for it.
+    fn handed_for(&self, st: &State, id: &str, url: &str) -> Option<String> {
+        let it = st.items.get(id)?;
+        let now = Instant::now();
+        let host = hosts::host_of(url);
+        let open = || it.mirrors.iter().filter(|m| it.manual_urls.contains(*m));
+        let on_host = |m: &&String| hosts::host_of(m) == host;
+        let passed = || {
+            (self.pages_pass() && !it.page_wants_person)
+                .then(|| {
+                    open().find(|m| st.passes(m) && self.pass_held_for(st, it, m, now).is_none())
+                })
+                .flatten()
+        };
+        open()
+            .find(on_host)
+            .or_else(|| it.mirrors.iter().find(on_host))
+            .or_else(passed)
+            .or_else(|| open().find(|m| self.pass_held_for(st, it, m, now).is_none()))
+            .or_else(|| open().next())
+            .or_else(|| it.mirrors.first())
+            .cloned()
     }
 
     /// Whether the desktop app passes page `url` by itself, out of sight, now:
     /// a host's whose page does ([`hosts::page_passes`]), or one that answered
     /// with a browser check a browser usually passes, unless its host asked
-    /// the address to wait.
+    /// the address to wait, or a new address is about to make what it hands
+    /// out useless. A host only slowing the address holds it back unless a row
+    /// has nowhere else to go.
     pub fn page_passes(&self, url: &str) -> bool {
         let st = self.lock();
-        st.passes(url) && self.pass_held_until(&st, url, Instant::now()).is_none()
+        let now = Instant::now();
+        let free = || {
+            self.pass_held_until(&st, url, now).is_none()
+                || st.items.values().any(|it| {
+                    it.manual_urls.contains(url) && self.pass_held_for(&st, it, url, now).is_none()
+                })
+        };
+        st.draining.is_none() && st.passes(url) && free()
     }
 
     /// The page a person should open for this item: not one whose host asked
@@ -487,7 +549,7 @@ impl Engine {
         let now = Instant::now();
         let open = || it.mirrors.iter().filter(|m| it.manual_urls.contains(*m));
         open()
-            .find(|m| self.pass_held_until(&st, m, now).is_none())
+            .find(|m| self.pass_held_for(&st, it, m, now).is_none())
             .or_else(|| open().next())
             .or_else(|| it.mirrors.first())
             .cloned()

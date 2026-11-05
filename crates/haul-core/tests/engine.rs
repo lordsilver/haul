@@ -10,7 +10,7 @@ use std::{
 use axum::{Json, Router, routing::get};
 use haul_core::{
     Config, Engine, Event, Extract, Found, ItemAction, Options, Route, Snapshot, StartError,
-    Verifying, config::Endpoints,
+    Verifying, config::Endpoints, throttle::Throttling,
 };
 use serde_json::json;
 
@@ -4029,4 +4029,868 @@ async fn a_password_from_the_settings_opens_an_archive_on_its_own() {
     .await;
     let report = engine.diagnostics().to_string();
     assert!(!report.contains("open sesame"), "{report}");
+}
+
+// ---- hosts that slow an address down
+
+/// The rules with their waits shortened, so a test takes seconds: at these
+/// speeds /paced/40 is slow and /paced/200 runs well, and a whole file at 40
+/// KiB/s takes 15 seconds, which is worth leaving. Nothing is unsure for an
+/// hour, unless a test wants it to be.
+fn quick(t: &Setup) -> Config {
+    Config {
+        throttling: Throttling {
+            slow: 100_000.0,
+            grace: Duration::from_millis(200),
+            window: Duration::from_millis(600),
+            tick: Duration::from_millis(50),
+            worth_moving: Duration::from_secs(3),
+            far_below_ceiling: 100_000.0,
+            unsure_after: Duration::from_secs(3600),
+            compare_over: Duration::from_millis(200),
+            line_patience: Duration::from_secs(3600),
+            drain_limit: Duration::from_secs(10),
+            redial_check: Duration::from_millis(100),
+            redial_gap: Duration::from_secs(3600),
+            ..Throttling::default()
+        },
+        retry_failed_minutes: 0,
+        ..t.config()
+    }
+}
+
+/// As [`quick`], with a slow transfer that nothing explains counted as
+/// throttled soon: what a guard that fails would let through.
+fn quick_to_judge(t: &Setup) -> Config {
+    let mut cfg = quick(t);
+    cfg.throttling.unsure_after = Duration::from_millis(100);
+    cfg
+}
+
+fn row<'a>(s: &'a Snapshot, name: &str) -> &'a haul_core::ItemView {
+    s.items.iter().find(|i| i.name == name).unwrap()
+}
+
+fn cooldown(s: &Snapshot, host: &str) -> u64 {
+    s.hosts.iter().find(|h| h.name == host).unwrap().cooldown
+}
+
+/// The requests for `path` that fetch part of it, leaving out the lookup every
+/// attempt starts with, which the stand-in's /files logs too.
+fn asked_for_bytes(t: &Setup, path: &str) -> Vec<String> {
+    t.server
+        .requests(path)
+        .into_iter()
+        .filter(|r| r.contains("bytes="))
+        .collect()
+}
+
+/// Long enough for several windows to pass.
+async fn a_few_windows() {
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+}
+
+/// The heart of it: a big file crawling beside a host that serves well goes on
+/// from its fast mirror, and its host goes on cooldown.
+#[tokio::test]
+async fn a_throttled_transfer_goes_on_from_a_fast_mirror() {
+    let t = Setup::new().await;
+    let engine = t.engine_with(quick(&t)).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/40/x.bin {}/files/x.bin", t.ip, t.name),
+        "",
+    );
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    let s = wait_for(&engine, "both done", all_done).await;
+    assert_eq!(t.downloaded("x.bin"), content("x.bin", SIZE));
+    assert_eq!(t.downloaded("h.bin"), content("h.bin", SIZE));
+    assert_eq!(t.server.requests("/paced/40/x.bin").len(), 1);
+    assert_eq!(asked_for_bytes(&t, "/files/x.bin").len(), 1);
+    assert_eq!(row(&s, "x.bin").shown_host, "localhost");
+    let wait = cooldown(&s, "127.0.0.1");
+    assert!(wait > 1700, "the Hosts page shows the wait: {wait}");
+}
+
+/// A small file that finishes soon is left alone, however slow.
+#[tokio::test]
+async fn a_small_file_finishing_soon_is_left_alone() {
+    let t = Setup::new().await;
+    let mut cfg = quick_to_judge(&t);
+    cfg.throttling.worth_moving = Duration::from_secs(60);
+    let engine = t.engine_with(cfg).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/40/x.bin {}/files/x.bin", t.ip, t.name),
+        "",
+    );
+    a_few_windows().await;
+    let s = engine.snapshot();
+    assert_eq!(row(&s, "x.bin").shown_host, "127.0.0.1");
+    assert!(t.server.requests("/files/x.bin").is_empty());
+    assert_eq!(row(&s, "x.bin").slowed, None);
+    assert_eq!(cooldown(&s, "127.0.0.1"), 0);
+}
+
+/// The user's own speed limit explains a slow transfer: nothing moves.
+#[tokio::test]
+async fn the_users_own_speed_limit_is_not_a_throttle() {
+    let t = Setup::new().await;
+    let engine = t
+        .engine_with(Config {
+            rate_limit_mbps: 0.05,
+            ..quick_to_judge(&t)
+        })
+        .await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/100/x.bin {}/files/x.bin", t.ip, t.name),
+        "",
+    );
+    wait_for(&engine, "progress", |s| row(s, "x.bin").done > 0).await;
+    a_few_windows().await;
+    let s = engine.snapshot();
+    assert_eq!(row(&s, "x.bin").shown_host, "127.0.0.1");
+    assert!(t.server.requests("/files/x.bin").is_empty());
+    assert_eq!(row(&s, "x.bin").slowed, None);
+    assert_eq!(cooldown(&s, "127.0.0.1"), 0);
+}
+
+/// Transfers from other hosts slow at the same moment point at the line:
+/// neither host is blamed.
+#[tokio::test]
+async fn other_hosts_slow_too_point_at_the_line() {
+    let t = Setup::new().await;
+    let engine = t.engine_with(quick_to_judge(&t)).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/40/x.bin {}/files/x.bin", t.ip, t.name),
+        "",
+    );
+    engine.add_text(&format!("{}/paced/40/y.bin", t.name), "");
+    a_few_windows().await;
+    let s = engine.snapshot();
+    assert_eq!(row(&s, "x.bin").shown_host, "127.0.0.1");
+    assert!(t.server.requests("/files/x.bin").is_empty());
+    assert_eq!(
+        (
+            row(&s, "x.bin").slowed.clone(),
+            row(&s, "y.bin").slowed.clone()
+        ),
+        (None, None)
+    );
+    assert_eq!(cooldown(&s, "127.0.0.1") + cooldown(&s, "localhost"), 0);
+}
+
+/// One throttled host stops nothing else: the healthy host's transfer runs to
+/// its end in one go, and a new row still starts on that host.
+#[tokio::test]
+async fn a_healthy_host_is_unaffected() {
+    let t = Setup::new().await;
+    let engine = t.engine_with(quick(&t)).await;
+    engine.add_text(&format!("{}/paced/40/x.bin", t.ip), "");
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    wait_for(&engine, "the throttled row", |s| {
+        row(s, "x.bin").slowed.is_some()
+    })
+    .await;
+    engine.add_text(&format!("{}/files/new.bin", t.name), "");
+    wait_for(&engine, "the healthy ones done", |s| {
+        row(s, "h.bin").status == "done" && row(s, "new.bin").status == "done"
+    })
+    .await;
+    assert_eq!(
+        t.server.requests("/paced/200/h.bin").len(),
+        1,
+        "never stopped"
+    );
+    assert_eq!(t.downloaded("h.bin"), content("h.bin", SIZE));
+    let s = engine.snapshot();
+    assert_eq!(row(&s, "h.bin").slowed, None);
+    assert_eq!(cooldown(&s, "localhost"), 0);
+    assert!(cooldown(&s, "127.0.0.1") > 0);
+}
+
+/// A row that left a slow mirror doesn't go back while that one cools down,
+/// even when the next is slow as well.
+#[tokio::test]
+async fn a_row_does_not_bounce_between_slow_mirrors() {
+    let t = Setup::new().await;
+    let engine = t.engine_with(quick_to_judge(&t)).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/40/x.bin {}/paced/41/x.bin", t.ip, t.name),
+        "",
+    );
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    wait_for(&engine, "the move", |s| {
+        row(s, "x.bin").shown_host == "localhost"
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let s = engine.snapshot();
+    assert_eq!(row(&s, "x.bin").shown_host, "localhost");
+    assert_eq!(t.server.requests("/paced/40/x.bin").len(), 1);
+    assert_eq!(t.server.requests("/paced/41/x.bin").len(), 1);
+    assert!(row(&s, "x.bin").slowed.is_some(), "it stays, and says so");
+}
+
+/// With no mirror a throttled download keeps going, saying why, and a new row
+/// only that host has starts all the same: there is nowhere else to go.
+#[tokio::test]
+async fn with_no_mirror_it_keeps_going_and_says_why() {
+    let t = Setup::new().await;
+    let engine = t.engine_with(quick(&t)).await;
+    engine.add_text(&format!("{}/paced/80/x.bin", t.ip), "");
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    let s = wait_for(&engine, "the row to say so", |s| {
+        row(s, "x.bin").slowed.is_some()
+    })
+    .await;
+    assert_eq!(
+        row(&s, "x.bin").slowed.as_deref(),
+        Some("Slowed by 127.0.0.1: no other host has it")
+    );
+    engine.add_text(&format!("{}/files/new.bin", t.ip), "");
+    wait_for(&engine, "the new row to finish", |s| {
+        row(s, "new.bin").status == "done"
+    })
+    .await;
+    assert_eq!(row(&engine.snapshot(), "x.bin").status, "downloading");
+    wait_for(&engine, "the slow one done", |s| {
+        row(s, "x.bin").status == "done"
+    })
+    .await;
+    assert_eq!(t.downloaded("x.bin"), content("x.bin", SIZE));
+    assert_eq!(
+        t.server.requests("/paced/80/x.bin").len(),
+        1,
+        "never stopped"
+    );
+}
+
+/// A mirror only a person can use is no improvement: the download stays, and
+/// the row says its other hosts are there.
+#[tokio::test]
+async fn a_mirror_that_needs_a_person_is_not_an_improvement() {
+    let t = Setup::new().await;
+    let mut cfg = quick(&t);
+    cfg.endpoints.rapidgator = t.ip.clone();
+    cfg.accountless_hosts = vec!["rapidgator.net".into()];
+    let engine = t.engine_with(cfg).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!(
+            "{}/paced/40/x.bin https://rapidgator.net/file/abc123/x.bin.html",
+            t.ip
+        ),
+        "",
+    );
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    let s = wait_for(&engine, "the row to say so", |s| {
+        row(s, "x.bin").slowed.is_some()
+    })
+    .await;
+    let it = row(&s, "x.bin");
+    assert_eq!(
+        it.slowed.as_deref(),
+        Some("Slowed by 127.0.0.1: its other hosts need you")
+    );
+    assert_eq!((it.status, it.list), ("downloading", "active"));
+    assert_eq!(it.other_hosts, 1);
+    assert_eq!(s.counts.need_you, 0);
+    // Never left, rather than turned away there and come back.
+    assert_eq!(t.server.requests("/paced/40/x.bin").len(), 1);
+}
+
+/// A mirror that turns out to want a person after all sends the row back to
+/// the slow one rather than leave it under Needs you.
+#[tokio::test]
+async fn a_row_goes_back_when_its_next_mirror_wants_a_person() {
+    let t = Setup::new().await;
+    let engine = t.engine_with(quick(&t)).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    // A web page where the file should be.
+    engine.add_text(&format!("{}/paced/40/x.bin {}/dd/x.bin", t.ip, t.name), "");
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    let s = wait_for(&engine, "the row to go back", |s| {
+        t.server.requests("/paced/40/x.bin").len() == 2 && row(s, "x.bin").status == "downloading"
+    })
+    .await;
+    let it = row(&s, "x.bin");
+    assert_eq!(it.shown_host, "127.0.0.1");
+    assert_eq!(it.list, "active");
+    assert_eq!(it.open_urls.len(), 1, "the page stays there for a person");
+}
+
+/// The other mirror is a page the desktop app passes and the slow one is a
+/// known host: without a turn of its own the row would sit queued for the
+/// whole cooldown, never passing that page.
+#[tokio::test]
+async fn a_row_leaving_a_slow_host_gets_its_page_passed() {
+    let t = Setup::new().await;
+    let mut options = through_stand_in(&t);
+    let cfg = options.config.take().unwrap();
+    options.config = Some(Config {
+        throttling: quick(&t).throttling,
+        ..cfg
+    });
+    let engine = Engine::start(options).await.unwrap();
+    engine.set_pages_pass(true);
+    engine.add_text("http://fileguard.cc/vault/ddownload-slow", "");
+    let w = wrapper_settled(&engine, "done").await.wrappers[0]
+        .id
+        .clone();
+    wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    engine.start_wrapper(&w);
+    // Its page wants a browser, so the host measured no worse goes first.
+    wait_for(&engine, "the slow host", |_| {
+        !t.server.requests("/paced/40/held.bin").is_empty()
+    })
+    .await;
+    engine.add_text("http://files.example/paced/200/h.bin", "");
+    let s = wait_for(&engine, "the page's turn", |s| {
+        s.items[0].status == "passing"
+    })
+    .await;
+    assert_eq!(s.items[0].shown_host, "ddownload.com");
+    assert!(cooldown(&s, "fileditchfiles.st") > 0);
+    assert_eq!(t.server.requests("/paced/40/held.bin").len(), 1);
+}
+
+/// A host that lifts its limit gets its cooldown ended and the row its plain
+/// look back.
+#[tokio::test]
+async fn a_transfer_that_recovers_ends_its_hosts_cooldown() {
+    let t = Setup::new().await;
+    let engine = t.engine_with(quick(&t)).await;
+    engine.add_text(&format!("{}/eases/x.bin", t.ip), "");
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    let s = wait_for(&engine, "the row to say so", |s| {
+        row(s, "x.bin").slowed.is_some()
+    })
+    .await;
+    assert!(cooldown(&s, "127.0.0.1") > 0);
+    t.server.eased.store(true, Ordering::SeqCst);
+    wait_for(&engine, "it to recover", |s| {
+        row(s, "x.bin").slowed.is_none() && cooldown(s, "127.0.0.1") == 0
+    })
+    .await;
+    wait_for(&engine, "both done", all_done).await;
+    assert_eq!(t.server.requests("/eases/x.bin").len(), 1, "never stopped");
+}
+
+/// The setting turns all of it off.
+#[tokio::test]
+async fn it_can_be_switched_off() {
+    let t = Setup::new().await;
+    let engine = t
+        .engine_with(Config {
+            leave_slow_hosts: false,
+            ..quick(&t)
+        })
+        .await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/40/x.bin {}/files/x.bin", t.ip, t.name),
+        "",
+    );
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    a_few_windows().await;
+    let s = engine.snapshot();
+    assert_eq!(row(&s, "x.bin").shown_host, "127.0.0.1");
+    assert_eq!(row(&s, "x.bin").slowed, None);
+    assert!(t.server.requests("/files/x.bin").is_empty());
+    assert_eq!(cooldown(&s, "127.0.0.1"), 0);
+}
+
+/// The order the user asked for: with no mirror and redials on, new downloads
+/// stop starting, the healthy one finishes untouched, and only then the line
+/// redials; the slowed row resumes and everything goes again.
+#[tokio::test]
+async fn a_new_address_waits_for_healthy_downloads_to_finish() {
+    let t = Setup::new().await;
+    let engine = t
+        .engine_with(Config {
+            reconnect: true,
+            ..quick(&t)
+        })
+        .await;
+    engine.add_text(&format!("{}/eases/x.bin", t.ip), "");
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    let s = wait_for(&engine, "the hold", |s| s.reconnect.draining.is_some()).await;
+    assert_eq!(
+        row(&s, "x.bin").slowed.as_deref(),
+        Some("Slowed by 127.0.0.1: a new address once other downloads finish")
+    );
+    assert_eq!(t.server.redials.load(Ordering::SeqCst), 0);
+    assert_eq!(row(&s, "h.bin").status, "downloading");
+    engine.add_text(&format!("{}/files/new.bin", t.name), "");
+    wait_for(&engine, "everything done", all_done).await;
+    let log = |line: &str| t.server.at(line).unwrap_or_else(|| panic!("no {line}"));
+    let (finished, redial, started) = (
+        log("done /paced/200/h.bin"),
+        log("/redial"),
+        log("/files/new.bin"),
+    );
+    assert!(
+        finished < redial && redial < started,
+        "{finished} {redial} {started}"
+    );
+    assert_eq!(
+        t.server.requests("/paced/200/h.bin").len(),
+        1,
+        "never stopped"
+    );
+    assert_eq!(t.server.redials.load(Ordering::SeqCst), 1);
+    let resumed = t.server.requests("/eases/x.bin");
+    assert_eq!(resumed.len(), 2, "{resumed:?}");
+    assert!(resumed[1].contains("bytes="), "{resumed:?}");
+    assert_eq!(t.downloaded("x.bin"), content("x.bin", SIZE));
+    assert_eq!(t.downloaded("h.bin"), content("h.bin", SIZE));
+    assert_eq!(engine.snapshot().reconnect.draining, None);
+}
+
+/// Holding the queue has a limit: past it the redial is put off, nothing is
+/// aborted, and what was held back starts.
+#[tokio::test]
+async fn holding_for_a_new_address_has_a_limit() {
+    let t = Setup::new().await;
+    let mut cfg = quick(&t);
+    cfg.reconnect = true;
+    cfg.throttling.drain_limit = Duration::from_millis(500);
+    let engine = t.engine_with(cfg).await;
+    engine.add_text(&format!("{}/eases/x.bin", t.ip), "");
+    // Its size unknown, so nothing says it won't make it.
+    engine.add_text(&format!("{}/unsized/200/h.bin", t.name), "");
+    wait_for(&engine, "the hold", |s| s.reconnect.draining.is_some()).await;
+    engine.add_text(&format!("{}/files/new.bin", t.name), "");
+    // A hold can also end by itself and come up again, when a moment's reading
+    // no longer points at the host: what counts is how it ends at the limit.
+    let s = wait_for(&engine, "the limit", |s| {
+        s.reconnect
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("Put off"))
+    })
+    .await;
+    assert!(!s.reconnect.failed);
+    wait_for(&engine, "what was held back", |s| {
+        row(s, "new.bin").status == "done"
+    })
+    .await;
+    wait_for(&engine, "the healthy one", |s| {
+        row(s, "h.bin").status == "done"
+    })
+    .await;
+    assert_eq!(t.server.redials.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        t.server.requests("/unsized/200/h.bin").len(),
+        1,
+        "never stopped"
+    );
+    assert_eq!(t.server.requests("/eases/x.bin").len(), 1, "never stopped");
+}
+
+/// A healthy download that can't finish within the limit isn't waited for
+/// with the queue held: new rows go on, and the redial comes after it.
+#[tokio::test]
+async fn no_hold_for_a_download_that_cannot_finish_in_time() {
+    let t = Setup::new().await;
+    let mut cfg = quick(&t);
+    cfg.reconnect = true;
+    cfg.throttling.drain_limit = Duration::from_millis(500);
+    // A busy machine can miss so short a limit, which only puts the redial
+    // off: it has to come up again within the test.
+    cfg.throttling.redial_gap = Duration::from_millis(100);
+    let engine = t.engine_with(cfg).await;
+    engine.add_text(&format!("{}/eases/x.bin", t.ip), "");
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    wait_for(&engine, "the throttled row", |s| {
+        row(s, "x.bin").slowed.is_some()
+    })
+    .await;
+    engine.add_text(&format!("{}/files/new.bin", t.name), "");
+    wait_for(&engine, "the new row", |s| {
+        row(s, "new.bin").status == "done"
+    })
+    .await;
+    let s = wait_for(&engine, "the healthy one", |s| {
+        // Near its end, within the limit, it can be held for.
+        if row(s, "h.bin").done < SIZE as u64 * 3 / 4 {
+            assert_eq!(
+                s.reconnect.draining, None,
+                "no hold while it has long to go"
+            );
+        }
+        assert_eq!(t.server.redials.load(Ordering::SeqCst), 0);
+        row(s, "h.bin").status == "done"
+    })
+    .await;
+    assert_eq!(row(&s, "h.bin").status, "done");
+    wait_for(&engine, "the redial after it", |_| {
+        t.server.redials.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert_eq!(
+        t.server.requests("/paced/200/h.bin").len(),
+        1,
+        "never stopped"
+    );
+}
+
+/// The gap `wants_new_address` had: a row running well, with only a mirror on
+/// a host cooling down, is held back by nothing. With a throttled host going
+/// on cooldown, it would have had the line cut under the row that just moved.
+#[tokio::test]
+async fn a_healthy_row_with_a_cooling_mirror_wants_no_new_address() {
+    let t = Setup::new().await;
+    let engine = t
+        .engine_with(Config {
+            reconnect: true,
+            ..quick(&t)
+        })
+        .await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/40/x.bin {}/paced/200/x.bin", t.ip, t.name),
+        "",
+    );
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    wait_for(&engine, "the move", |s| {
+        row(s, "x.bin").shown_host == "localhost"
+    })
+    .await;
+    wait_for(&engine, "both done", |s| {
+        assert_eq!(s.reconnect.draining, None);
+        all_done(s)
+    })
+    .await;
+    assert_eq!(t.server.redials.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        t.server.requests("/paced/200/x.bin").len(),
+        1,
+        "never stopped"
+    );
+}
+
+/// A host as slow on the new address as on the old doesn't limit by address:
+/// the line isn't cut again for it.
+#[tokio::test]
+async fn a_redial_that_did_not_help_is_not_repeated() {
+    let t = Setup::new().await;
+    let mut cfg = quick(&t);
+    cfg.reconnect = true;
+    cfg.throttling.redial_gap = Duration::from_millis(100);
+    let engine = t.engine_with(cfg).await;
+    engine.add_text(&format!("{}/paced/40/x.bin", t.ip), "");
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    wait_for(&engine, "the redial", |_| {
+        t.server.redials.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    wait_for(&engine, "the row to resume", |_| {
+        t.server.requests("/paced/40/x.bin").len() == 2
+    })
+    .await;
+    let s = wait_for(&engine, "it to be slow again", |s| {
+        row(s, "x.bin").slowed.is_some()
+    })
+    .await;
+    assert_eq!(
+        row(&s, "x.bin").slowed.as_deref(),
+        Some("Slowed by 127.0.0.1: no other host has it")
+    );
+    a_few_windows().await;
+    assert_eq!(t.server.redials.load(Ordering::SeqCst), 1);
+}
+
+/// The row's own host is the one serving it, not a preferred mirror: a file a
+/// page hands over, on an address of another domain, belongs to that page's
+/// host, and a mirror reported deleted stays out.
+#[tokio::test]
+async fn a_handed_file_shows_under_the_host_it_came_from() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+    engine.set_disabled("gofile.io", false).unwrap();
+    // The host the row would name if it went by preference.
+    engine.set_preferred("gofile.io", true).unwrap();
+    engine.add_text("http://fileguard.cc/vault/ddownload-gofile", "");
+    let w = wrapper_settled(&engine, "done").await.wrappers[0]
+        .id
+        .clone();
+    let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    let id = s.items[0].id.clone();
+    engine.start_wrapper(&w);
+    wait_for(&engine, "both pages to wait", |s| {
+        s.items[0].status == "passing" && s.items[0].open_urls.len() == 2
+    })
+    .await;
+    assert_eq!(
+        engine.page_for(&id).as_deref(),
+        Some("https://gofile.io/d/both")
+    );
+    engine.page_gone(&id, "the file was deleted");
+    let s = wait_for(&engine, "its other page", |s| {
+        s.items[0].status == "passing" && s.items[0].open_urls.len() == 1
+    })
+    .await;
+    assert_eq!(s.items[0].shown_host, "ddownload.com");
+    let file = haul_core::hosts::Entry {
+        url: "http://files.example/paced/200/handed.bin".to_string(),
+        name: Some("handed.bin".to_string()),
+        ..Default::default()
+    };
+    engine.set_files(&id, vec![file]).unwrap();
+    let s = wait_for(&engine, "the transfer", |s| {
+        s.items[0].status == "downloading"
+    })
+    .await;
+    let it = &s.items[0];
+    assert_eq!(it.shown_host, "ddownload.com", "the host it came from");
+    assert!(!it.preferred_host);
+    assert_eq!(it.other_hosts, 0, "gofile.io's copy was deleted");
+    assert_eq!(active(&s, "ddownload.com"), 1);
+    assert_eq!(active(&s, "gofile.io"), 0);
+    let s = wait_for(&engine, "done", all_done).await;
+    assert_eq!(s.items[0].shown_host, "ddownload.com");
+    let host = |name: &str| s.hosts.iter().find(|h| h.name == name).unwrap();
+    assert_eq!((host("ddownload.com").ok, host("gofile.io").ok), (1, 0));
+}
+
+/// A handed file crawling is held against the host it came from, not its
+/// file's domain: that host goes on cooldown and no other of its pages opens.
+#[tokio::test]
+async fn a_slow_handed_file_is_blamed_on_the_host_it_came_from() {
+    let t = Setup::new().await;
+    let mut options = through_stand_in(&t);
+    let cfg = options.config.take().unwrap();
+    options.config = Some(Config {
+        throttling: quick(&t).throttling,
+        ..cfg
+    });
+    let engine = Engine::start(options).await.unwrap();
+    engine.set_pages_pass(true);
+    let page = "http://ddownload.com/dd/abc123";
+    let id = ddownload_waiting_its_pass(&engine, page).await;
+    let file = haul_core::hosts::Entry {
+        url: "http://files.example/paced/40/x.bin".to_string(),
+        name: Some("x.bin".to_string()),
+        ..Default::default()
+    };
+    engine.set_files(&id, vec![file]).unwrap();
+    engine.add_text("http://other.example/paced/200/h.bin", "");
+    let s = wait_for(&engine, "the row to say so", |s| {
+        s.items.iter().any(|i| i.slowed.is_some())
+    })
+    .await;
+    let it = s.items.iter().find(|i| i.id == id).unwrap();
+    assert_eq!(
+        it.slowed.as_deref(),
+        Some("Slowed by ddownload.com: no other host has it")
+    );
+    assert!(cooldown(&s, "ddownload.com") > 0);
+    assert!(!engine.page_passes("http://ddownload.com/dd/def456"));
+    // A row with nowhere else to go passes its page all the same, and one with
+    // another host goes there.
+    let alone = "http://ddownload.com/dd/def456";
+    ddownload_waiting_its_pass(&engine, alone).await;
+    assert!(engine.page_passes(alone));
+    engine.set_disabled("gofile.io", false).unwrap();
+    engine.add_text("http://fileguard.cc/vault/ddownload-gofile", "");
+    let w = wrapper_settled(&engine, "done").await.wrappers[0]
+        .id
+        .clone();
+    engine.start_wrapper(&w);
+    let s = wait_for(&engine, "the other page's turn", |s| {
+        s.items
+            .iter()
+            .any(|i| i.name == "ddownload-gofile.rar" && i.status == "passing")
+    })
+    .await;
+    let both = row(&s, "ddownload-gofile.rar");
+    assert_eq!(both.open_urls, ["https://gofile.io/d/both"]);
+    assert!(!engine.page_passes("http://ddownload.com/dd/ddownload-gofile"));
+    assert!(engine.page_passes("https://gofile.io/d/both"));
+    assert_eq!(
+        engine.page_for(&both.id).as_deref(),
+        Some("https://gofile.io/d/both")
+    );
+    assert!(s.hosts.iter().all(|h| h.name != "files.example"));
+}
+
+/// Going on from another host keeps the bytes when that host's agree: it asks
+/// for 64 KiB more than it needs and adds only what is new.
+#[tokio::test]
+async fn another_hosts_copy_resumes_when_its_bytes_agree() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/400/x.bin {}/files/x.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "enough of it", |s| {
+        row(s, "x.bin").done > 100 * 1024
+    })
+    .await;
+    let id = row(&s, "x.bin").id.clone();
+    assert!(engine.item_action(&id, ItemAction::Pause));
+    wait_for(&engine, "the pause", |s| active(s, "127.0.0.1") == 0).await;
+    let kept = std::fs::metadata(t.partial(&id)).unwrap().len();
+    engine.download_from(std::slice::from_ref(&id), Some("localhost"));
+    assert!(engine.item_action(&id, ItemAction::Resume));
+    wait_for(&engine, "done", all_done).await;
+    assert_eq!(t.downloaded("x.bin"), content("x.bin", SIZE));
+    let want = format!("/files/x.bin bytes={}-", kept - 64 * 1024);
+    assert_eq!(asked_for_bytes(&t, "/files/x.bin"), [want]);
+}
+
+/// A copy by the same name and size that holds other bytes doesn't mix with
+/// the partial file: those bytes go, and the download starts over from it.
+#[tokio::test]
+async fn another_hosts_other_bytes_start_it_over() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/400/x.bin {}/other/x.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "enough of it", |s| {
+        row(s, "x.bin").done > 100 * 1024
+    })
+    .await;
+    let id = row(&s, "x.bin").id.clone();
+    assert!(engine.item_action(&id, ItemAction::Pause));
+    wait_for(&engine, "the pause", |s| active(s, "127.0.0.1") == 0).await;
+    engine.download_from(std::slice::from_ref(&id), Some("localhost"));
+    assert!(engine.item_action(&id, ItemAction::Resume));
+    wait_for(&engine, "done", all_done).await;
+    assert_eq!(t.downloaded("x.bin"), content("other x.bin", SIZE));
+    let asked = t.server.requests("/other/x.bin");
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(asked[0].contains("bytes="), "{asked:?}");
+    assert!(!asked[1].contains("bytes="), "{asked:?}");
+}
+
+/// A connection lost before the bytes were compared proves nothing: the next
+/// try compares them too, rather than add another file's bytes to the partial.
+#[tokio::test]
+async fn a_connection_lost_during_the_check_is_checked_again() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/400/x.bin {}/lost-check/x.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "enough of it", |s| {
+        row(s, "x.bin").done > 100 * 1024
+    })
+    .await;
+    let id = row(&s, "x.bin").id.clone();
+    assert!(engine.item_action(&id, ItemAction::Pause));
+    wait_for(&engine, "the pause", |s| active(s, "127.0.0.1") == 0).await;
+    let kept = std::fs::metadata(t.partial(&id)).unwrap().len();
+    engine.download_from(std::slice::from_ref(&id), Some("localhost"));
+    assert!(engine.item_action(&id, ItemAction::Resume));
+    wait_for(&engine, "done", all_done).await;
+    assert!(
+        t.downloaded("x.bin") == content("other x.bin", SIZE),
+        "the bytes of two files mixed"
+    );
+    let asked = t.server.requests("/lost-check/x.bin");
+    let check = format!("/lost-check/x.bin bytes={}-", kept - 64 * 1024);
+    assert_eq!(asked[..2], [check.clone(), check], "{asked:?}");
+}
+
+/// A host the user picks is used, though it slowed this row before and another
+/// host could take it.
+#[tokio::test]
+async fn a_host_picked_again_is_used_though_it_slowed_the_row() {
+    let t = Setup::new().await;
+    let mut cfg = quick_to_judge(&t);
+    cfg.throttling.cooldown = Duration::from_millis(300);
+    cfg.throttling.cooldown_at_most = Duration::from_millis(300);
+    let engine = t.engine_with(cfg).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/40/x.bin {}/paced/150/x.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "it to leave", |s| {
+        let it = row(s, "x.bin");
+        it.status == "downloading" && it.shown_host == "localhost" && it.speed > 0.0
+    })
+    .await;
+    let id = row(&s, "x.bin").id.clone();
+    assert!(engine.item_action(&id, ItemAction::Pause));
+    wait_for(&engine, "the pause", |s| active(s, "localhost") == 0).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(cooldown(&engine.snapshot(), "127.0.0.1"), 0);
+    engine.download_from(std::slice::from_ref(&id), Some("127.0.0.1"));
+    assert!(engine.item_action(&id, ItemAction::Resume));
+    wait_for(&engine, "the picked host", |s| {
+        active(s, "127.0.0.1") == 1 && row(s, "x.bin").shown_host == "127.0.0.1"
+    })
+    .await;
+}
+
+/// A hosts file saved before `normal` existed loads with what it holds, and one
+/// that can't be read costs only the saved numbers.
+#[tokio::test]
+async fn an_older_or_damaged_hosts_file_does_not_stop_haul() {
+    let t = Setup::new().await;
+    let data = t.root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let hosts = data.join("hosts.json");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let older = format!(
+        r#"{{"site.example":{{"speed":5000000,"measured":{now},"ok":3,"fails":1,"bytes":9}}}}"#
+    );
+    std::fs::write(&hosts, older).unwrap();
+    let engine = t.engine().await;
+    let s = engine.snapshot();
+    let host = s.hosts.iter().find(|h| h.name == "site.example").unwrap();
+    assert_eq!((host.ok, host.fails, host.bytes), (3, 1, 9));
+    assert_eq!(host.speed, 5_000_000.0);
+    let seen = engine.debug_inspect();
+    let seen = seen["hosts"].as_array().unwrap();
+    let seen = seen.iter().find(|h| h["name"] == "site.example").unwrap();
+    assert_eq!(seen["normal"], 0.0);
+    engine.shutdown().await;
+    drop(engine);
+
+    std::fs::write(&hosts, "not json").unwrap();
+    let engine = start_when_free(|| t.options()).await;
+    let s = engine.snapshot();
+    assert!(s.hosts.iter().all(|h| h.name != "site.example"));
+}
+
+/// Time the whole process stood still (a stalled machine, a computer asleep)
+/// says nothing about a host: a transfer running well isn't blamed for it.
+#[tokio::test]
+async fn a_frozen_process_is_not_a_slow_host() {
+    let t = Setup::new().await;
+    let engine = t.engine_with(quick_to_judge(&t)).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/200/x.bin {}/files/x.bin", t.ip, t.name),
+        "",
+    );
+    wait_for(&engine, "progress", |s| row(s, "x.bin").done > 0).await;
+    for _ in 0..3 {
+        // Holds this test's one thread, which everything here runs on.
+        std::thread::sleep(Duration::from_millis(800));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let s = engine.snapshot();
+    assert_eq!(row(&s, "x.bin").shown_host, "127.0.0.1");
+    assert_eq!(cooldown(&s, "127.0.0.1"), 0);
+    assert!(t.server.requests("/files/x.bin").is_empty());
 }

@@ -662,6 +662,23 @@ pub fn page_passes(url: &str) -> bool {
     known(&host_of(url)).is_some_and(|k| k.page_passes)
 }
 
+/// Whether a file on `url`'s host takes a person, as far as can be told before
+/// asking the host: a captcha for every file without its account, or a page
+/// only the desktop app passes by itself (`pages`: it is there to).
+pub fn asks_a_person(url: &str, cfg: &Config, pages: bool) -> bool {
+    let Some(k) = known(&host_of(url)) else {
+        return false;
+    };
+    if k.has_account(cfg) {
+        return false;
+    }
+    match k.kind {
+        Kind::OneFichier | Kind::Rapidgator | Kind::Nitroflare => true,
+        Kind::Gofile | Kind::Vikingfile | Kind::Ddownload => !pages,
+        _ => false,
+    }
+}
+
 fn kind_of(url: &str) -> Option<Kind> {
     known(&host_of(url)).map(|k| k.kind)
 }

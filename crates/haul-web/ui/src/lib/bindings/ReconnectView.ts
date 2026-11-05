@@ -25,4 +25,9 @@ blocked: string | null,
 /**
  * The last redial failed: its note is an error to show.
  */
-failed: boolean, };
+failed: boolean, 
+/**
+ * A redial on its own waits for downloads to finish, and nothing new
+ * starts: why it would help.
+ */
+draining: string | null, };

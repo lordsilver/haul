@@ -138,6 +138,12 @@ pub struct ItemView {
     pub other_hosts: usize,
     /// Its error without `shown_host`'s name in front.
     pub error_shown: String,
+    /// The hosts whose link failed for it, or says the file is gone: not among
+    /// the hosts that could take over.
+    pub failed_hosts: Vec<String>,
+    /// The host limiting its download and why it stays there, for the row to
+    /// say instead of a time left that means nothing.
+    pub slowed: Option<String>,
     /// What its buttons do.
     pub commands: Vec<Command>,
     /// The key of the archive in parts it is one of.
@@ -261,7 +267,7 @@ fn quota_view(quotas: impl Iterator<Item = hosts::Allowance>) -> Option<QuotaVie
 impl Engine {
     pub fn snapshot(&self) -> Snapshot {
         // Before the state's lock: the two are always taken in this order.
-        let reconnect = self.reconnect_view();
+        let mut reconnect = self.reconnect_view();
         let services = self.services_view();
         let pages = self.pages_pass();
         let pool = {
@@ -288,6 +294,7 @@ impl Engine {
             },
         );
         let st = self.lock();
+        reconnect.draining.clone_from(&st.draining);
         let now = Instant::now();
         let has_proxy = self.clients().exits.len() > 1;
         let cfg = self.cfg();
@@ -314,7 +321,7 @@ impl Engine {
                 && it
                     .manual_urls
                     .iter()
-                    .any(|u| st.passes(u) && self.pass_held_until(&st, u, now).is_none())
+                    .any(|u| st.passes(u) && self.pass_held_for(&st, it, u, now).is_none())
         };
         let wrappers: Vec<WrapperView> = st
             .items
@@ -384,6 +391,16 @@ impl Engine {
                 preferred_host: false,
                 other_hosts: 0,
                 error_shown: String::new(),
+                failed_hosts: it
+                    .failed
+                    .iter()
+                    .chain(&it.gone)
+                    .map(|m| hosts::host_of(m))
+                    .collect(),
+                slowed: it.slowed.as_ref().map(|s| {
+                    let by = if s.sure { "Slowed by" } else { "Slow from" };
+                    format!("{by} {}: {}", s.host, s.why)
+                }),
                 commands: Vec::new(),
                 archive: None,
                 source_name: None,

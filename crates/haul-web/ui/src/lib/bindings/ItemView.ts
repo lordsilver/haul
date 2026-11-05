@@ -90,6 +90,16 @@ other_hosts: number,
  */
 error_shown: string, 
 /**
+ * The hosts whose link failed for it, or says the file is gone: not among
+ * the hosts that could take over.
+ */
+failed_hosts: Array<string>, 
+/**
+ * The host limiting its download and why it stays there, for the row to
+ * say instead of a time left that means nothing.
+ */
+slowed: string | null, 
+/**
  * What its buttons do.
  */
 commands: Array<Command>, 
