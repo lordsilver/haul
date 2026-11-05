@@ -36,7 +36,6 @@ struct Cli {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
     let data_dir = cli.data_dir.unwrap_or_else(paths::data_dir);
-    paths::adopt_old_data(&data_dir);
     // haul.log in the data folder, for a report; the terminal reads along.
     let debug = cli.debug || haul_core::debug::asked();
     haul_core::logging::init(&data_dir, true, debug);

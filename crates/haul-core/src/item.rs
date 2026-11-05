@@ -2,7 +2,7 @@
 
 use std::{collections::HashSet, time::Instant};
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::hosts::{Checksum, Entry, guess_name, name_key, tidy_name};
@@ -284,11 +284,11 @@ impl Item {
         Saved {
             mirrors: self.mirrors.clone(),
             name: self.name.clone(),
-            package: Some(self.package.clone()),
+            package: self.package.clone(),
             status: self.status,
             error: self.error.clone(),
             pre: self.pre.clone(),
-            size: Some(self.size),
+            size: self.size,
             pre_for: self.pre_for.clone(),
             manual: self.manual,
             path: self.path.clone(),
@@ -333,13 +333,13 @@ impl Item {
     /// Rebuilds a saved row. Anything that was in flight is queued again; the
     /// partial file on disk lets it resume.
     pub fn restore(id: String, s: Saved) -> Self {
-        let mut it = Item::new(s.mirrors, s.name, s.package.unwrap_or_default());
+        let mut it = Item::new(s.mirrors, s.name, s.package);
         it.id = id;
         it.probed = it.name.is_some() || s.pre.is_some();
         it.pre = s.pre;
         it.pre_for = s.pre_for;
         it.manual = s.manual;
-        it.size = s.size.unwrap_or(0);
+        it.size = s.size;
         it.error = s.error;
         it.path = s.path;
         it.checksum = s.checksum;
@@ -365,30 +365,6 @@ impl Item {
             Status::Done | Status::Paused | Status::Error => s.status,
             _ => Status::Queued,
         };
-        // MEGA needed megatools in Haul 0.15.0 and earlier; it no longer
-        // does, so a download that failed for want of it goes again, resolved
-        // afresh.
-        if it.status == Status::Error && it.error.contains("megatools") {
-            it.status = Status::Queued;
-            it.error.clear();
-            it.pre = None;
-            it.pre_for = None;
-            it.probed = it.name.is_some();
-        }
-        // A paste saved as a download (Haul 0.15.2 made them rows) is the
-        // list of links it is: a wrapper, unwrapped again.
-        if !it.wrapper
-            && it.status != Status::Done
-            && it.mirrors.len() == 1
-            && crate::hosts::is_paste(&it.mirrors[0])
-        {
-            it.wrapper = true;
-            it.status = Status::Queued;
-            it.name = None;
-            it.pre = None;
-            it.pre_for = None;
-            it.probed = false;
-        }
         // Downloaded bytes are not saved; a finished file has all of them.
         if it.status == Status::Done {
             it.done = it.size;
@@ -397,23 +373,16 @@ impl Item {
     }
 }
 
-/// The on-disk form of an item in `queue.json`, compatible with the queue
-/// files of the original Python version.
+/// The on-disk form of an item in `queue.json`.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Saved {
     pub mirrors: Vec<String>,
-    #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub package: Option<String>,
-    #[serde(deserialize_with = "lenient_status")]
+    pub package: String,
     pub status: Status,
-    #[serde(default)]
     pub error: String,
-    #[serde(default)]
     pub pre: Option<Entry>,
-    #[serde(default)]
-    pub size: Option<u64>,
+    pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_for: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -454,7 +423,61 @@ pub(crate) struct Saved {
     pub gone: Vec<String>,
 }
 
-fn lenient_status<'de, D: Deserializer<'de>>(d: D) -> Result<Status, D::Error> {
-    let s = String::deserialize(d)?;
-    Ok(serde_json::from_value(serde_json::Value::String(s)).unwrap_or(Status::Queued))
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The form of a row in `queue.json`, checked against what `saved` writes
+    /// now, loads again.
+    #[test]
+    fn a_row_as_this_version_writes_it_loads() {
+        let mut it = Item::new(
+            vec!["https://site.example/archive.part1.rar".into()],
+            Some("archive.part1.rar".into()),
+            "Example".into(),
+        );
+        it.status = Status::Error;
+        it.error = "HTTP 500".into();
+        it.size = 1024;
+        let written = r#"{"mirrors":["https://site.example/archive.part1.rar"],"name":"archive.part1.rar","package":"Example","status":"error","error":"HTTP 500","pre":null,"size":1024}"#;
+        assert_eq!(
+            serde_json::to_value(it.saved()).unwrap(),
+            serde_json::from_str::<serde_json::Value>(written).unwrap()
+        );
+
+        let back = Item::restore("abc123".into(), serde_json::from_str(written).unwrap());
+        assert_eq!(back.id, "abc123");
+        assert_eq!(back.mirrors, it.mirrors);
+        assert_eq!(back.name.as_deref(), Some("archive.part1.rar"));
+        assert_eq!(back.package, "Example");
+        assert_eq!(back.status, Status::Error);
+        assert_eq!(back.error, "HTTP 500");
+        assert_eq!(back.size, 1024);
+    }
+
+    /// A row loads whatever its state, with or without a name, and what was
+    /// in flight is queued again.
+    #[test]
+    fn a_saved_row_in_any_state_loads() {
+        for (status, restored) in [
+            (Status::Queued, Status::Queued),
+            (Status::Resolving, Status::Queued),
+            (Status::Downloading, Status::Queued),
+            (Status::Waiting, Status::Queued),
+            (Status::Captcha, Status::Queued),
+            (Status::Paused, Status::Paused),
+            (Status::Done, Status::Done),
+            (Status::Error, Status::Error),
+        ] {
+            let mut it = Item::new(
+                vec!["https://site.example/video.mkv".into()],
+                None,
+                String::new(),
+            );
+            it.status = status;
+            let text = serde_json::to_string(&it.saved()).unwrap();
+            let saved: Saved = serde_json::from_str(&text).unwrap();
+            assert_eq!(Item::restore(it.id, saved).status, restored, "{text}");
+        }
+    }
 }

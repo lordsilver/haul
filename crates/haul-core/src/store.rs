@@ -1,6 +1,6 @@
-//! Files in the data directory: the queue, what Haul learned about hosts,
-//! per-host routes from older versions, and the lock that keeps a second
-//! instance from loading and rewriting the same queue.
+//! Files in the data directory: the queue, what Haul learned about hosts, and
+//! the lock that keeps a second instance from loading and rewriting the same
+//! queue.
 
 use std::{
     collections::BTreeMap,
@@ -12,10 +12,9 @@ use std::{
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{config::Route, engine::StartError, item::Saved};
+use crate::{engine::StartError, item::Saved};
 
 pub(crate) const QUEUE: &str = "queue.json";
-pub(crate) const ROUTES: &str = "routes.json";
 pub(crate) const HOSTS: &str = "hosts.json";
 /// Present while downloads are paused, so a restart keeps them paused.
 const PAUSED: &str = "paused";
@@ -69,10 +68,6 @@ fn read<T: DeserializeOwned + Default>(path: PathBuf) -> Result<T, StartError> {
 
 pub(crate) fn load_queue(dir: &Path) -> Result<IndexMap<String, Saved>, StartError> {
     read(dir.join(QUEUE))
-}
-
-pub(crate) fn load_routes(dir: &Path) -> Result<BTreeMap<String, Route>, StartError> {
-    read(dir.join(ROUTES))
 }
 
 /// What Haul learned about a host, kept across restarts.

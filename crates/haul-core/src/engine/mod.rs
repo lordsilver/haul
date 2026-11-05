@@ -603,7 +603,8 @@ impl Engine {
             .into_iter()
             .map(|(id, s)| (id.clone(), Item::restore(id, s)))
             .collect();
-        // Left by versions that kept them.
+        // Dropping a host from a wrapper's card can take its last file and
+        // leave the wrapper on the list until now.
         drop_spent_wrappers(&mut items);
         let unprobed: Vec<String> = items
             .values()
@@ -665,7 +666,6 @@ impl Engine {
                 }
             }
         }
-        engine.migrate_routes();
         for id in unprobed {
             tokio::spawn(engine.clone().probe(id));
         }

@@ -53,7 +53,6 @@ fn main() {
             // Only the instance that runs gets here, so a second launch
             // leaves this one's log and data alone.
             haul_core::logging::init(&data_dir, false, haul_core::debug::asked());
-            paths::adopt_old_data(&data_dir);
             let handle = app.handle().clone();
             if let Err(message) = tauri::async_runtime::block_on(start(&handle, data_dir)) {
                 tracing::error!("{message}");

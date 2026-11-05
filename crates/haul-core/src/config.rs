@@ -96,9 +96,10 @@ pub struct Config {
     /// Off: NordVPN's settings stay, but its servers are not used.
     pub nordvpn_on: bool,
     pub user_agent: String,
-    /// The per-host limits table of older versions: read, and ignored.
-    /// Public only so struct updates (`..Config::default()`) work outside
-    /// this module.
+    /// The per-host limits table of older versions: read, and ignored. Not
+    /// to be removed lightly: a settings file holding an unknown key stops
+    /// Haul from starting. Public only so struct updates
+    /// (`..Config::default()`) work outside this module.
     #[serde(rename = "limits")]
     pub old_limits: serde::de::IgnoredAny,
     /// The user's route choice per host when a proxy is configured.
@@ -142,7 +143,7 @@ pub struct Config {
     /// the system's shell.
     pub reconnect_command: Option<String>,
     /// No longer used: Haul downloads from mega.nz itself. Kept so a file
-    /// that still sets it loads.
+    /// that still sets it loads, since an unknown key stops Haul from starting.
     pub megatools: Option<PathBuf>,
     #[serde(skip)]
     pub endpoints: Endpoints,

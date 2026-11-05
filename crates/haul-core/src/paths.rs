@@ -2,8 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{config, store};
-
 /// The desktop app's identifier, as in `tauri.conf.json`.
 pub const APP_ID: &str = "io.github.lordsilver.haul";
 
@@ -19,72 +17,6 @@ pub fn data_dir() -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| dirs::data_local_dir().map(|d| d.join(name)))
         .unwrap_or_else(|| PathBuf::from("haul-data"))
-}
-
-/// Up to 0.3, Haul kept its data in `%LOCALAPPDATA%\haul` on Windows, which is
-/// also the folder the installer puts the program in (Windows ignores case).
-/// When `dir` is the default data folder, this moves that data over, once.
-pub fn adopt_old_data(dir: &Path) {
-    if !cfg!(windows) {
-        return;
-    }
-    if let Some(local) = dirs::data_local_dir()
-        && dir == local.join(APP_ID)
-    {
-        move_data(&local.join("haul"), dir);
-    }
-}
-
-/// Haul's own files in its data folder, besides the log and the lock.
-const DATA: [&str; 6] = [
-    config::FILE,
-    store::QUEUE,
-    store::HOSTS,
-    store::ROUTES,
-    "routes.json.migrated",
-    // The in-app browser's profiles.
-    "webview",
-];
-
-/// Moves Haul's data from `old` to `dir` unless `dir` has settings or a queue
-/// already, or an older Haul still holds `old`. Only Haul's own files move:
-/// `old` may be the program folder.
-fn move_data(old: &Path, dir: &Path) {
-    let has_data = |d: &Path| {
-        [config::FILE, store::QUEUE]
-            .iter()
-            .any(|f| d.join(f).exists())
-    };
-    if !has_data(old) || has_data(dir) {
-        return;
-    }
-    let lock = match store::lock(old) {
-        Ok(lock) => lock,
-        Err(e) => {
-            tracing::warn!("leaving the data in {} where it is: {e}", old.display());
-            return;
-        }
-    };
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        tracing::warn!("not moving the data in {}: {e}", old.display());
-        return;
-    }
-    for name in DATA {
-        let from = old.join(name);
-        if from.exists()
-            && let Err(e) = std::fs::rename(&from, dir.join(name))
-        {
-            tracing::warn!("moving {} to {}: {e}", from.display(), dir.display());
-        }
-    }
-    tracing::info!("moved the data in {} to {}", old.display(), dir.display());
-    // The old log and lock go too, and the folder itself unless the program
-    // is in it.
-    drop(lock);
-    for name in ["haul.log", "haul.lock"] {
-        let _ = std::fs::remove_file(old.join(name));
-    }
-    let _ = std::fs::remove_dir(old);
 }
 
 /// `dir/name` unless something is there already; then the first free
@@ -177,12 +109,9 @@ pub fn subfolder(value: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeSet,
-        path::{Path, PathBuf},
-    };
+    use std::path::{Path, PathBuf};
 
-    use super::{APP_ID, move_data, safe, subfolder, unused_name};
+    use super::{safe, subfolder, unused_name};
 
     #[test]
     fn safe_names() {
@@ -211,56 +140,6 @@ mod tests {
             Path::new("C_").join("Downloads")
         );
         assert_eq!(subfolder(" / .. / ... "), PathBuf::new());
-    }
-
-    #[test]
-    fn data_moves_out_of_the_program_folder() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (old, dir) = (tmp.path().join("Haul"), tmp.path().join(APP_ID));
-        std::fs::create_dir_all(old.join("webview")).unwrap();
-        for f in [
-            "Haul.exe",
-            "uninstall.exe",
-            "config.toml",
-            "queue.json",
-            "haul.log",
-        ] {
-            std::fs::write(old.join(f), f).unwrap();
-        }
-        let running = crate::store::lock(&old).unwrap();
-        move_data(&old, &dir);
-        assert!(!dir.exists(), "an older Haul still holds the folder");
-        drop(running);
-
-        move_data(&old, &dir);
-        assert_eq!(
-            std::fs::read_to_string(dir.join("queue.json")).unwrap(),
-            "queue.json"
-        );
-        assert!(dir.join("config.toml").is_file() && dir.join("webview").is_dir());
-        let left: BTreeSet<String> = std::fs::read_dir(&old)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().into_string().unwrap())
-            .collect();
-        assert_eq!(left, ["Haul.exe", "uninstall.exe"].map(String::from).into());
-
-        std::fs::write(old.join("queue.json"), "older").unwrap();
-        move_data(&old, &dir);
-        assert_eq!(
-            std::fs::read_to_string(dir.join("queue.json")).unwrap(),
-            "queue.json",
-            "moved once only"
-        );
-    }
-
-    #[test]
-    fn an_emptied_data_folder_goes() {
-        let tmp = tempfile::tempdir().unwrap();
-        let (old, dir) = (tmp.path().join("haul"), tmp.path().join(APP_ID));
-        std::fs::create_dir_all(&old).unwrap();
-        std::fs::write(old.join("queue.json"), "{}").unwrap();
-        move_data(&old, &dir);
-        assert!(!old.exists() && dir.join("queue.json").is_file());
     }
 
     #[test]
