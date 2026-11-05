@@ -4301,6 +4301,8 @@ async fn a_mirror_that_needs_a_person_is_not_an_improvement() {
     assert_eq!((it.status, it.list), ("downloading", "active"));
     assert_eq!(it.other_hosts, 1);
     assert_eq!(s.counts.need_you, 0);
+    // Never left, rather than turned away there and come back.
+    assert_eq!(t.server.requests("/paced/40/x.bin").len(), 1);
 }
 
 /// A mirror that turns out to want a person after all sends the row back to
