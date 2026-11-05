@@ -11,4 +11,4 @@ Release notes live only in GitHub releases. They are written once, in the annota
 2. Wait for CI to pass on that commit (`~/.local/bin/gh run list --commit <sha>` finds the run).
 3. Write the notes: first line `Haul vX.Y.Z`, a blank line, then Markdown with `### Added`, `### Changed`, `### Fixed` as needed, written for users. While the version is `0.x`, name every break in config keys, state files or the API.
 4. Tag with an unsigned annotated tag and `--cleanup=verbatim`, otherwise Git drops the `#` headings as comments: `git tag -a --cleanup=verbatim -F notes.md vX.Y.Z <commit>`, then `git push origin vX.Y.Z`.
-5. The release workflow builds the Windows installers and the `haul` server archives, and publishes them with `SHA256SUMS` and build provenance.
+5. The release workflow builds the Windows installers and the `haul` server archives, and publishes them with build provenance.
