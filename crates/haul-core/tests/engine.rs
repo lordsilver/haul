@@ -4496,6 +4496,9 @@ async fn no_hold_for_a_download_that_cannot_finish_in_time() {
     let mut cfg = quick(&t);
     cfg.reconnect = true;
     cfg.throttling.drain_limit = Duration::from_millis(500);
+    // A busy machine can miss so short a limit, which only puts the redial
+    // off: it has to come up again within the test.
+    cfg.throttling.redial_gap = Duration::from_millis(100);
     let engine = t.engine_with(cfg).await;
     engine.add_text(&format!("{}/eases/x.bin", t.ip), "");
     engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
