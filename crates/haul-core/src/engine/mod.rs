@@ -3657,21 +3657,17 @@ impl Engine {
         let host_view = |name: &str, stats: Option<&HostStats>| {
             let exits = self.exits_for(name, &st);
             let lane = |e: &Exit| st.lanes.get(&(name.to_string(), *e));
-            // Without stats (a preferred host's first attempts can have none
-            // yet) a host shows neither limit nor wait, whatever its lanes say.
-            let cap = stats.and_then(|_| st.lanes_of(name).filter_map(|l| l.cap).min());
+            let cap = st.lanes_of(name).filter_map(|l| l.cap).min();
             // Waiting only when every address it may use was asked to.
-            let cooldown = stats.map_or(0, |_| {
-                exits
-                    .iter()
-                    .map(|e| {
-                        lane(e)
-                            .and_then(|l| l.cooldown)
-                            .map_or(0, |c| c.saturating_duration_since(now).as_secs())
-                    })
-                    .min()
-                    .unwrap_or(0)
-            });
+            let cooldown = exits
+                .iter()
+                .map(|e| {
+                    lane(e)
+                        .and_then(|l| l.cooldown)
+                        .map_or(0, |c| c.saturating_duration_since(now).as_secs())
+                })
+                .min()
+                .unwrap_or(0);
             let h = stats.unwrap_or(&unmeasured);
             HostView {
                 name: name.to_string(),
