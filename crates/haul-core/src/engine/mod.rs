@@ -2578,13 +2578,7 @@ impl Engine {
         let _serving = Serving::start(self, host, exit);
         let mut resp = or_cancel(cancel, req.send()).await??;
         let status = resp.status().as_u16();
-        if matches!(status, 429 | 503) {
-            let seconds = hosts::retry_after(resp.headers(), 90);
-            return Err(Fail::Wait {
-                seconds,
-                message: format!("{status} rate limited"),
-            });
-        }
+        hosts::rate_limited(&resp)?;
         // The host's transfer allowance for this address is used up (MEGA's
         // free quota answers so): it comes back over time.
         if status == 509 {

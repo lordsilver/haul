@@ -1003,6 +1003,16 @@ impl Setup {
         Engine::start(self.options()).await.unwrap()
     }
 
+    /// An engine on this config instead of the plain `config()`.
+    async fn engine_with(&self, config: Config) -> Engine {
+        Engine::start(Options {
+            config: Some(config),
+            ..self.options()
+        })
+        .await
+        .unwrap()
+    }
+
     fn downloaded(&self, rel: &str) -> Vec<u8> {
         std::fs::read(self.root.join("dl").join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
     }
@@ -1661,12 +1671,7 @@ async fn failed_downloads_retry_on_their_own() {
     let t = Setup::new().await;
     let mut config = t.config();
     config.retry_failed_minutes = 0;
-    let engine = Engine::start(Options {
-        config: Some(config),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+    let engine = t.engine_with(config).await;
     engine.add_text(&format!("{}/missing/o.bin", t.ip), "");
     let s = wait_for(&engine, "failure", |s| s.items[0].status == "error").await;
     assert_eq!(s.items[0].retry_in, 0, "turned off");
@@ -2360,12 +2365,7 @@ async fn a_host_that_needs_an_account_is_off_until_switched_on() {
     let t = Setup::new().await;
     let mut cfg = t.config();
     cfg.endpoints.rapidgator = t.ip.clone();
-    let engine = Engine::start(Options {
-        config: Some(cfg),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+    let engine = t.engine_with(cfg).await;
     // Off for want of an account, as the Hosts view shows it.
     let off = |s: &Snapshot| {
         let h = s.hosts.iter().find(|h| h.name == "rapidgator.net").unwrap();
@@ -2582,12 +2582,7 @@ async fn the_nearest_to_done_resumes_first() {
     let t = Setup::new().await;
     let mut cfg = t.config();
     cfg.max_total = 1;
-    let engine = Engine::start(Options {
-        config: Some(cfg),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+    let engine = t.engine_with(cfg).await;
     engine.set_paused(true);
     for name in ["fresh", "half", "most"] {
         engine.add_text(&format!("{}/slow/{name}.bin", t.ip), "");
@@ -3299,15 +3294,12 @@ async fn host_folders_and_the_recycle_bin() {
 async fn preferred_hosts_go_first() {
     let t = Setup::new().await;
     // The mechanism itself, without the shipped default preference.
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             preferred_hosts: Vec::new(),
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     engine.set_preferred("localhost", true).unwrap();
     let both = |name: &str| format!("{}/slow/{name} {}/slow/{name}", t.ip, t.name);
     engine.add_text(&format!("{} {}", both("q1.bin"), both("q2.bin")), "");
@@ -3501,19 +3493,16 @@ fn files_in(dir: &std::path::Path) -> Vec<String> {
 #[tokio::test]
 async fn a_name_that_comes_with_the_download_is_checked_first() {
     let t = Setup::new().await;
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             onefichier_key: Some("key".into()),
             endpoints: Endpoints {
                 onefichier: t.ip.clone(),
                 ..t.config().endpoints
             },
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     engine.add_text(&format!("{}/files/same.bin", t.ip), "");
     let s = wait_for(&engine, "the named file", all_done).await;
     let done = s.items[0].id.clone();
@@ -3594,15 +3583,12 @@ async fn a_published_checksum_decides_when_asked() {
     // The host's bytes, and other bytes of the same size under the same name.
     std::fs::write(t.root.join("dl/kept.bin"), content("kept", SIZE)).unwrap();
     std::fs::write(t.root.join("dl/twin.bin"), content("not the twin", SIZE)).unwrap();
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             verify_existing: true,
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     engine.add_text(
         "https://pixeldrain.com/u/kept https://pixeldrain.com/u/twin",
         "",
@@ -3677,15 +3663,12 @@ async fn progress_starts_the_retry_count_over() {
     let t = Setup::new().await;
     // One retry only: each break would fail the download, were it not for the
     // data that arrived before it.
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             resume_attempts: 1,
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     engine.add_text(&format!("{}/drip/d.bin", t.ip), "");
     wait_for(&engine, "done", all_done).await;
     assert_eq!(t.downloaded("d.bin"), content("d.bin", SIZE));
@@ -3701,15 +3684,12 @@ async fn progress_starts_the_retry_count_over() {
 #[tokio::test]
 async fn clearing_failed_downloads_keeps_the_rest() {
     let t = Setup::new().await;
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             retry_failed_minutes: 0,
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     engine.add_text(
         &format!(
             "{0}/files/kept.bin {0}/api/file/missing-a {0}/api/file/missing-b",
@@ -3735,17 +3715,14 @@ async fn clearing_failed_downloads_keeps_the_rest() {
 #[tokio::test]
 async fn a_slow_mirror_gives_way() {
     let t = Setup::new().await;
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             min_speed_kbps: 100,
             min_speed_seconds: 1,
             retry_failed_minutes: 0,
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     // The slow host first, so it has to give way to the fast one.
     engine.set_preferred("127.0.0.1", true).unwrap();
     engine.add_text(
@@ -3783,15 +3760,12 @@ async fn a_slow_mirror_gives_way() {
 async fn the_size_cap_spaces_out_big_files() {
     let t = Setup::new().await;
     // Room for one of these files at a time, not two.
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             max_active_gb: (SIZE as f64 * 1.5) / 1e9,
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     let links: Vec<String> = (1..=3).map(|i| format!("{}/slow/z{i}.bin", t.ip)).collect();
     engine.add_text(&links.join(" "), "");
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -3951,12 +3925,7 @@ async fn downloads_from_one_host_spread_over_the_proxies() {
     let (second, port) = start_server().await;
     let mut cfg = t.config();
     cfg.proxies = vec![t.ip.clone(), format!("http://127.0.0.1:{port}")];
-    let engine = Engine::start(Options {
-        config: Some(cfg),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+    let engine = t.engine_with(cfg).await;
     engine.set_paused(true);
     // A host the machine cannot reach itself: only the proxies know it.
     engine.add_text(
@@ -4231,16 +4200,13 @@ fn assert_example(dir: &std::path::Path) {
 #[tokio::test]
 async fn an_archive_in_parts_unpacks_when_its_last_part_is_done() {
     let t = Setup::new().await;
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             auto_extract: true,
             delete_after_extract: true,
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     let mut events = engine.subscribe();
     let links: Vec<String> = (1..=3)
         .map(|n| format!("{}/archive/R5.part{n}.rar", t.ip))
@@ -4331,15 +4297,12 @@ async fn an_archive_unpacks_when_asked_and_says_why_it_cannot() {
 #[tokio::test]
 async fn a_part_missing_from_the_list_holds_the_archive_back() {
     let t = Setup::new().await;
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             auto_extract: true,
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     engine.add_text(
         &format!("{0}/archive/R5.part1.rar {0}/archive/R5.part3.rar", t.ip),
         "",
@@ -4376,15 +4339,12 @@ async fn a_part_missing_from_the_list_holds_the_archive_back() {
 #[tokio::test]
 async fn a_zip_split_into_z01_pieces_extracts() {
     let t = Setup::new().await;
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             auto_extract: true,
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     engine.add_text(&format!("{0}/archive/ZS.z01 {0}/archive/ZS.zip", t.ip), "");
     let s = wait_for(&engine, "extracted", |s| {
         s.items.len() == 2 && s.items.iter().all(|i| i.extract == Extract::Done)
@@ -4400,16 +4360,13 @@ async fn a_zip_split_into_z01_pieces_extracts() {
 #[tokio::test]
 async fn an_encrypted_archive_asks_for_its_password_and_keeps_it() {
     let t = Setup::new().await;
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             auto_extract: true,
             archive_passwords: vec!["wrong".into()],
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     engine.add_text(
         &format!("{0}/archive/PV.part1.rar {0}/archive/PV.part2.rar", t.ip),
         "",
@@ -4452,15 +4409,12 @@ async fn an_encrypted_archive_asks_for_its_password_and_keeps_it() {
 #[tokio::test]
 async fn a_password_from_the_settings_opens_an_archive_on_its_own() {
     let t = Setup::new().await;
-    let engine = Engine::start(Options {
-        config: Some(Config {
+    let engine = t
+        .engine_with(Config {
             auto_extract: true,
             ..t.config()
-        }),
-        ..t.options()
-    })
-    .await
-    .unwrap();
+        })
+        .await;
     let list = json!({"archive_passwords": "wrong\nopen sesame\n\nwrong"});
     engine.update_settings(list.as_object().unwrap()).unwrap();
     assert_eq!(

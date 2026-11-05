@@ -58,16 +58,12 @@ fn walk(node: &Value, token: &str, out: &mut Vec<Entry>) {
             out.push(Entry {
                 url: link.to_string(),
                 name: child["name"].as_str().map(str::to_string),
-                package: None,
                 size: child["size"].as_u64(),
-                listed_size: None,
                 headers: BTreeMap::from([("Cookie".into(), format!("accountToken={token}"))]),
                 checksum: child["md5"]
                     .as_str()
                     .and_then(|h| Checksum::from_hex(Algo::Md5, h)),
-                deferred: false,
-                mirrors: Vec::new(),
-                decrypt: None,
+                ..Entry::default()
             });
         }
     }

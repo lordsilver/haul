@@ -50,14 +50,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     };
     Ok(vec![Entry {
         url: location,
-        name: None,
-        package: None,
-        size: None,
-        listed_size: None,
         headers: BTreeMap::from([("Referer".into(), url.to_string())]),
-        checksum: None,
-        deferred: false,
-        mirrors: Vec::new(),
-        decrypt: None,
+        ..Entry::default()
     }])
 }

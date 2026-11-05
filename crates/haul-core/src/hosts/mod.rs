@@ -26,6 +26,8 @@ mod rapidgator;
 mod rootz;
 mod vikingfile;
 
+pub use generic::{is_gated, is_guarded, is_paste, pasted_links, short_title};
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::Read,
@@ -367,7 +369,7 @@ pub struct Free {
 pub struct Known {
     pub names: &'static [&'static str],
     kind: Kind,
-    pub accounts: &'static [&'static str],
+    pub accounts: &'static [AccountField],
     pub free: Free,
     pub tells_allowance: bool,
     /// Its page's check passes by itself in a browser from most addresses,
@@ -393,8 +395,8 @@ impl Known {
     /// Whether the user set every account setting this host takes.
     pub fn has_account(&self, cfg: &Config) -> bool {
         !self.accounts.is_empty()
-            && self.accounts.iter().all(|key| {
-                cfg.account(key)
+            && self.accounts.iter().all(|field| {
+                cfg.account(field.key)
                     .is_some_and(|v| crate::config::secret(v).is_some())
             })
     }
@@ -439,17 +441,6 @@ pub struct AccountField {
     pub secret: bool,
 }
 
-/// Each account setting's label, and whether it is a secret.
-const ACCOUNT_FIELDS: &[(&str, &str, bool)] = &[
-    ("1fichier_key", "API key", true),
-    ("pixeldrain_key", "API key", true),
-    ("gofile_token", "Account token", true),
-    ("rapidgator_user", "Username", false),
-    ("rapidgator_pass", "Password", true),
-    ("nitroflare_user", "User", false),
-    ("nitroflare_key", "Premium key", true),
-];
-
 /// The account form of every host that takes one, in the order of
 /// [`KNOWN`].
 pub fn account_forms(cfg: &Config) -> Vec<AccountForm> {
@@ -467,21 +458,34 @@ pub fn account_forms(cfg: &Config) -> Vec<AccountForm> {
                 _ if k.needs_account => "A premium account: without one, every file asks for a captcha.",
                 _ => "",
             },
-            fields: k
-                .accounts
-                .iter()
-                .map(|key| {
-                    let (_, label, secret) = ACCOUNT_FIELDS
-                        .iter()
-                        .find(|(k, ..)| k == key)
-                        .copied()
-                        .unwrap_or((key, key, true));
-                    AccountField { key, label, secret }
-                })
-                .collect(),
+            fields: k.accounts.to_vec(),
             set: k.has_account(cfg),
         })
         .collect()
+}
+
+/// A free user's limits, where none is known.
+const NO_LIMITS: Free = Free {
+    at_once: None,
+    daily_bytes: None,
+    slowed_to: None,
+    per_file: None,
+};
+
+/// What an entry of [`KNOWN`] leaves out. `names` and `kind` are always its
+/// own.
+const HOST: Known = Known {
+    names: &[],
+    kind: Kind::Direct,
+    accounts: &[],
+    free: NO_LIMITS,
+    tells_allowance: false,
+    page_passes: false,
+    needs_account: false,
+};
+
+const fn field(key: &'static str, label: &'static str, secret: bool) -> AccountField {
+    AccountField { key, label, secret }
 }
 
 /// Every host with code of its own. Free limits are what was measured:
@@ -492,218 +496,128 @@ static KNOWN: &[Known] = &[
     Known {
         names: &["pixeldrain.com"],
         kind: Kind::Pixeldrain,
-        accounts: &["pixeldrain_key"],
+        accounts: &[field("pixeldrain_key", "API key", true)],
         free: Free {
             at_once: Some(5),
             daily_bytes: Some(6_000_000_000),
             slowed_to: Some(1_048_576),
-            per_file: None,
+            ..NO_LIMITS
         },
         tells_allowance: true,
-        page_passes: false,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["gofile.io"],
         kind: Kind::Gofile,
-        accounts: &["gofile_token"],
+        accounts: &[field("gofile_token", "Account token", true)],
         free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
             per_file: Some("only through its page, named late"),
+            ..NO_LIMITS
         },
-        tells_allowance: false,
         page_passes: true,
         needs_account: true,
+        ..HOST
     },
     Known {
         names: &["buzzheavier.com"],
         kind: Kind::Buzzheavier,
-        accounts: &[],
-        free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
-            per_file: None,
-        },
-        tells_allowance: false,
-        page_passes: false,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["1fichier.com"],
         kind: Kind::OneFichier,
-        accounts: &["1fichier_key"],
+        accounts: &[field("1fichier_key", "API key", true)],
         free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
             per_file: Some("a wait and a captcha per file"),
+            ..NO_LIMITS
         },
-        tells_allowance: false,
-        page_passes: false,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["rapidgator.net"],
         kind: Kind::Rapidgator,
-        accounts: &["rapidgator_user", "rapidgator_pass"],
+        accounts: &[
+            field("rapidgator_user", "Username", false),
+            field("rapidgator_pass", "Password", true),
+        ],
         free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
             per_file: Some("a wait and a captcha per file"),
+            ..NO_LIMITS
         },
-        tells_allowance: false,
-        page_passes: false,
         needs_account: true,
+        ..HOST
     },
     Known {
         names: &["nitroflare.com"],
         kind: Kind::Nitroflare,
-        accounts: &["nitroflare_user", "nitroflare_key"],
+        accounts: &[
+            field("nitroflare_user", "User", false),
+            field("nitroflare_key", "Premium key", true),
+        ],
         free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
             per_file: Some("a wait and a captcha per file"),
+            ..NO_LIMITS
         },
-        tells_allowance: false,
-        page_passes: false,
         needs_account: true,
+        ..HOST
     },
     Known {
         names: &["mega.nz", "mega.co.nz", "transfer.it"],
         kind: Kind::Mega,
-        accounts: &[],
-        free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
-            per_file: None,
-        },
-        tells_allowance: false,
-        page_passes: false,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["ddownload.com", "ddl.to"],
         kind: Kind::Ddownload,
-        accounts: &[],
-        free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
-            per_file: None,
-        },
-        tells_allowance: false,
         // A 60-second wait and Cloudflare's Turnstile, which a browser
         // passes out of sight.
         page_passes: true,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["mediafire.com"],
         kind: Kind::Mediafire,
-        accounts: &[],
-        free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
-            per_file: None,
-        },
-        tells_allowance: false,
         // Some files' pages are behind Cloudflare's check, whose clearance
         // does not let Haul's own requests through: the browser that passes
         // it takes the address on the page's download button.
         page_passes: true,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["rootz.so"],
         kind: Kind::Rootz,
-        accounts: &[],
         // One download per address every two minutes.
         free: Free {
             at_once: Some(1),
-            daily_bytes: None,
-            slowed_to: None,
-            per_file: None,
+            ..NO_LIMITS
         },
-        tells_allowance: false,
-        page_passes: false,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["vikingfile.com", "vik1ngfile.site"],
         kind: Kind::Vikingfile,
-        accounts: &[],
-        free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
-            per_file: None,
-        },
-        tells_allowance: false,
         page_passes: true,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["fileditchfiles.st"],
         kind: Kind::Direct,
-        accounts: &[],
-        free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
-            per_file: None,
-        },
-        tells_allowance: false,
-        page_passes: false,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["fileguard.cc"],
         kind: Kind::Fileguard,
-        accounts: &[],
-        free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
-            per_file: None,
-        },
-        tells_allowance: false,
-        page_passes: false,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["filecrypt.cc"],
         kind: Kind::Filecrypt,
-        accounts: &[],
-        free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
-            per_file: None,
-        },
-        tells_allowance: false,
-        page_passes: false,
-        needs_account: false,
+        ..HOST
     },
     Known {
         names: &["mirrored.to"],
         kind: Kind::Mirrored,
-        accounts: &[],
-        free: Free {
-            at_once: None,
-            daily_bytes: None,
-            slowed_to: None,
-            per_file: None,
-        },
-        tells_allowance: false,
-        page_passes: false,
-        needs_account: false,
+        ..HOST
     },
 ];
 
@@ -1379,18 +1293,6 @@ pub fn listed(title: Option<String>, links: Vec<String>) -> Unwrapped {
     }
 }
 
-/// A page's title without the site's name after a separator ("Example |
-/// Site" is "Example").
-pub fn short_title(raw: &str) -> Option<String> {
-    generic::short_title(raw)
-}
-
-/// Whether `url` is a paste (zpaste.net, paste2.org…): a list of links,
-/// taken as a wrapper from the start.
-pub fn is_paste(url: &str) -> bool {
-    generic::is_paste(url)
-}
-
 /// Whether `url` stands for more links rather than a file: a wrapper's, or
 /// a paste.
 pub fn lists(url: &str) -> bool {
@@ -1401,19 +1303,6 @@ pub fn lists(url: &str) -> bool {
 /// read itself, or one the desktop app passed out of sight.
 pub fn lists_no_links(message: &str) -> bool {
     message.ends_with(" lists no links")
-}
-
-/// Whether a resolver's request for a person is for a page behind a
-/// browser check a browser usually passes by itself (Cloudflare's).
-pub fn is_guarded(message: &str) -> bool {
-    generic::is_guarded(message)
-}
-
-/// Whether a resolver's request for a person is for a gate past the check in
-/// front of the site: the browser has to read the page, as a clearance
-/// handed to Haul would only bring it back to the same gate.
-pub fn is_gated(message: &str) -> bool {
-    generic::is_gated(message)
 }
 
 /// What a host whose free download is its page's (a wait, then a captcha)
@@ -1440,12 +1329,6 @@ pub fn reads_past_check(url: &str) -> bool {
 /// from the page at `page`.
 pub fn listed_links(text: &str, page: &str) -> Vec<String> {
     url::Url::parse(page).map_or_else(|_| Vec::new(), |base| generic::links_in(text, &base, page))
-}
-
-/// The addresses a paste at `page` writes out, on any host: its list. None
-/// when `page` is no paste, whose text may name anything.
-pub fn pasted_links(shown: &[String], page: &str) -> Vec<String> {
-    generic::pasted_links(shown, page)
 }
 
 /// Direct links for `url`. Folders and lists expand to several entries.
@@ -1630,6 +1513,28 @@ pub(crate) fn retry_after(headers: &HeaderMap, default: u64) -> u64 {
         .get(RETRY_AFTER)
         .and_then(|v| v.to_str().ok()?.trim().parse().ok())
         .unwrap_or(default)
+}
+
+/// A 429 or 503 as the wait it asks for: a rate limit, not a refusal.
+pub(crate) fn rate_limited(r: &reqwest::Response) -> Result<(), ResolveError> {
+    let status = r.status().as_u16();
+    if matches!(status, 429 | 503) {
+        return Err(ResolveError::Wait {
+            seconds: retry_after(r.headers(), 90),
+            message: format!("{status} rate limited"),
+        });
+    }
+    Ok(())
+}
+
+/// A 404, 410 or 5xx as a failure: gone or broken is not something a person
+/// can fix in a browser.
+fn gone_or_broken(r: &reqwest::Response) -> Result<(), ResolveError> {
+    let status = r.status().as_u16();
+    if matches!(status, 404 | 410) || status >= 500 {
+        return Err(ResolveError::Failed(format!("HTTP {status}")));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

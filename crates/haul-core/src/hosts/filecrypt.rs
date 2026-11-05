@@ -34,8 +34,8 @@ use serde::Serialize;
 use sha1::{Digest, Sha1};
 
 use super::{
-    Cx, Entry, ResolveError, StopOnDrop, Unwrapped, content_type, group_named, guess_name,
-    page_text, retry_after,
+    Cx, Entry, ResolveError, StopOnDrop, Unwrapped, content_type, gone_or_broken, group_named,
+    guess_name, page_text, rate_limited,
 };
 use crate::container;
 
@@ -355,13 +355,10 @@ fn refusal(r: &reqwest::Response, what: &str) -> Option<ResolveError> {
     if super::generic::challenged(r.headers()) {
         return Some(super::generic::guarded(r.url().as_str()));
     }
-    let status = r.status().as_u16();
-    if matches!(status, 429 | 503) {
-        return Some(ResolveError::Wait {
-            seconds: retry_after(r.headers(), 90),
-            message: format!("{status} rate limited"),
-        });
+    if let Err(wait) = rate_limited(r) {
+        return Some(wait);
     }
+    let status = r.status().as_u16();
     // Past the clearance it may send a client it refuses to its 404 page.
     if matches!(status, 404 | 410) || r.url().path().eq_ignore_ascii_case("/404.html") {
         return Some(ResolveError::Failed(NOT_FOUND.into()));
@@ -677,17 +674,9 @@ async fn from_dlc(cx: &Cx<'_>, id: &str) -> Result<Unwrapped, ResolveError> {
         .get(format!("{}/DLC/{id}.dlc", cx.cfg.endpoints.filecrypt))
         .send()
         .await?;
+    rate_limited(&r)?;
+    gone_or_broken(&r)?;
     let status = r.status().as_u16();
-    if matches!(status, 429 | 503) {
-        let seconds = retry_after(r.headers(), 90);
-        return Err(ResolveError::Wait {
-            seconds,
-            message: format!("{status} rate limited"),
-        });
-    }
-    if matches!(status, 404 | 410) || status >= 500 {
-        return Err(ResolveError::Failed(format!("HTTP {status}")));
-    }
     if status >= 400 {
         return Err(ResolveError::NeedsUser(format!(
             "filecrypt.cc answered HTTP {status} on its .dlc link; solve its gate in a browser"

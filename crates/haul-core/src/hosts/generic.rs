@@ -12,8 +12,8 @@ use reqwest::header::{ACCEPT_ENCODING, RANGE};
 
 use super::{
     Cx, Entry, FILE_EXTENSIONS, Look, Probed, ResolveError, content_length, content_range,
-    content_type, disposition_name, guess_name, header_checksum, host_of, known, retry_after,
-    site_of, wraps,
+    content_type, disposition_name, gone_or_broken, guess_name, header_checksum, host_of, known,
+    rate_limited, site_of, wraps,
 };
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
@@ -44,13 +44,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     if challenged(r.headers()) {
         return Err(guarded(url));
     }
-    if matches!(status, 429 | 503) {
-        let seconds = retry_after(r.headers(), 90);
-        return Err(ResolveError::Wait {
-            seconds,
-            message: format!("{status} rate limited"),
-        });
-    }
+    rate_limited(&r)?;
     if status < 400 && !content_type(r.headers()).contains("text/html") {
         let size = match content_range(r.headers()) {
             Some((_, total)) => total,
@@ -68,10 +62,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             ..Entry::default()
         }]);
     }
-    // Gone or broken is not something a person can fix in a browser.
-    if matches!(status, 404 | 410) || status >= 500 {
-        return Err(ResolveError::Failed(format!("HTTP {status}")));
-    }
+    gone_or_broken(&r)?;
     Err(ResolveError::NeedsUser(format!(
         "{} answers with a web page: it wants a browser (captcha, timer or a click)",
         host_of(url)
@@ -102,15 +93,16 @@ pub(super) fn gated(url: &str) -> ResolveError {
 
 const GATE: &str = "shows a gate Haul cannot answer; open the page";
 
-/// Whether a resolver's request for a person is [`guarded`]'s or [`gated`]'s:
-/// a page whose check a browser usually passes by itself.
-pub(super) fn is_guarded(message: &str) -> bool {
+/// Whether a resolver's request for a person is for a page behind a
+/// browser check a browser usually passes by itself (Cloudflare's).
+pub fn is_guarded(message: &str) -> bool {
     message.ends_with(GUARD) || is_gated(message)
 }
 
-/// Whether a resolver's request for a person is [`gated`]'s: a clearance
-/// would change nothing, since the gate is past it.
-pub(super) fn is_gated(message: &str) -> bool {
+/// Whether a resolver's request for a person is for a gate past the check in
+/// front of the site: the browser has to read the page, as a clearance
+/// handed to Haul would only bring it back to the same gate.
+pub fn is_gated(message: &str) -> bool {
     message.ends_with(GATE)
 }
 
@@ -265,13 +257,7 @@ pub(super) async fn page(
     if challenged(r.headers()) {
         return Err(guarded(url));
     }
-    if matches!(status, 429 | 503) {
-        let seconds = retry_after(r.headers(), 90);
-        return Err(ResolveError::Wait {
-            seconds,
-            message: format!("{status} rate limited"),
-        });
-    }
+    rate_limited(&r)?;
     if status >= 400 {
         return Err(ResolveError::Failed(format!("HTTP {status}")));
     }
@@ -314,8 +300,9 @@ pub(super) fn page_title(page: &str) -> Option<String> {
     short_title(&super::decode_entities(&raw))
 }
 
-/// A page's title without the site's name after a separator.
-pub(super) fn short_title(raw: &str) -> Option<String> {
+/// A page's title without the site's name after a separator ("Example |
+/// Site" is "Example").
+pub fn short_title(raw: &str) -> Option<String> {
     let name = [" | ", " – ", " — ", " - ", " » "]
         .iter()
         .fold(raw, |name, sep| name.split(sep).next().unwrap_or(name))
@@ -330,9 +317,9 @@ pub(super) fn short_title(raw: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-/// Whether `url` is on a paste site (see [`PASTES`]): a list of links,
-/// never a file.
-pub(super) fn is_paste(url: &str) -> bool {
+/// Whether `url` is a paste (zpaste.net, paste2.org…): a list of links,
+/// taken as a wrapper from the start.
+pub fn is_paste(url: &str) -> bool {
     PASTES.contains(&host_of(url).as_str())
 }
 
@@ -369,8 +356,9 @@ fn paste_text_links(page: &str, url: &str) -> Vec<String> {
     pasted_links(&shown, url)
 }
 
-/// See [`super::pasted_links`].
-pub(super) fn pasted_links(shown: &[String], page: &str) -> Vec<String> {
+/// The addresses a paste at `page` writes out, on any host: its list. None
+/// when `page` is no paste, whose text may name anything.
+pub fn pasted_links(shown: &[String], page: &str) -> Vec<String> {
     let site = host_of(page);
     if !PASTES.contains(&site.as_str()) {
         return Vec::new();

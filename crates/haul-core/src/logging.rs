@@ -139,17 +139,12 @@ impl<S: Subscriber> Layer<S> for HistoryLayer {
         remember(
             item,
             Moment {
-                at: now_utc(),
+                at: now(),
                 level: event.metadata().level().to_string().to_lowercase(),
                 message: format!("{}{}", fields.message, fields.rest),
             },
         );
     }
-}
-
-/// Now, as the log writes it: ISO 8601, UTC, to the millisecond.
-pub(crate) fn now() -> String {
-    now_utc()
 }
 
 /// Every field of an event, as JSON, for the debug bus.
@@ -209,13 +204,21 @@ impl<S: Subscriber> Layer<S> for DebugLayer {
     }
 }
 
-fn now_utc() -> String {
+/// Now, as signals and the log write it: ISO 8601, UTC, to the millisecond.
+pub fn now() -> String {
     let d = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let (days, secs) = ((d.as_secs() / 86_400) as i64, d.as_secs() % 86_400);
+    let seconds = utc(d.as_secs());
+    let seconds = seconds.trim_end_matches('Z');
+    format!("{seconds}.{:03}Z", d.subsec_millis())
+}
+
+/// `secs` since 1970 as an ISO 8601 UTC time, such as `2026-10-16T12:30:00Z`.
+pub(crate) fn utc(secs: u64) -> String {
+    let (days, rest) = (secs / 86_400, secs % 86_400);
     // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
-    let z = days + 719_468;
+    let z = days as i64 + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
@@ -225,11 +228,10 @@ fn now_utc() -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        secs / 3_600,
-        secs % 3_600 / 60,
-        secs % 60,
-        d.subsec_millis()
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3_600,
+        rest % 3_600 / 60,
+        rest % 60
     )
 }
 
@@ -438,7 +440,7 @@ mod tests {
             remember(
                 "it".into(),
                 Moment {
-                    at: now_utc(),
+                    at: now(),
                     level: "info".into(),
                     message: format!("event {n}"),
                 },
@@ -448,7 +450,7 @@ mod tests {
         assert_eq!(h.len(), HISTORY);
         assert_eq!(h[0].message, "event 5");
         assert!(history("nobody").is_empty());
-        let at = now_utc();
+        let at = now();
         assert_eq!(at.len(), "2026-10-16T12:00:00.000Z".len(), "{at}");
     }
 
