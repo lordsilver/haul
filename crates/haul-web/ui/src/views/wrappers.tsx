@@ -206,11 +206,8 @@ export function Wrappers({ s }: { s: State }) {
           </Button>
         }
       >
-        A wrapper link holds a set of files, on one host or on many: fileguard.cc's, filecrypt.cc's or mirrored.to's, a
-        page on a site Haul has no code for that lists links, or a paste (zpaste.net, paste2.org…). Haul unwraps it as
-        soon as you add it, pastes a page links included, and each file joins the list once: the same file from another
-        host becomes a mirror of it rather than a second download. The files wait for you to start them, here or in the
-        list.
+        A wrapper link holds a set of files, on one host or many. Haul unwraps it when you add it, and its files wait
+        for you to start them.
       </PageHeader>
       {s.wrapper_cards.length ? (
         <PageScroll>

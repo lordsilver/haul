@@ -14,12 +14,13 @@ export function PageHeader({
   children?: ReactNode;
 }) {
   return (
-    <header className="flex flex-col gap-1">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-        <h1 className="mr-auto text-2xl font-semibold tracking-tight">{title}</h1>
-        {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+    <header className="flex flex-wrap items-center gap-x-4 gap-y-3">
+      {/* Words need room to sit in one line; a title alone leaves it to the actions. */}
+      <div className={cn('min-w-0', children ? 'flex-[1_1_320px]' : 'mr-auto')}>
+        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        {children ? <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{children}</p> : null}
       </div>
-      {children ? <p className="max-w-3xl text-sm text-muted-foreground">{children}</p> : null}
+      {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
     </header>
   );
 }

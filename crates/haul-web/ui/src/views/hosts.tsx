@@ -634,10 +634,7 @@ export function Hosts({ s }: { s: State }) {
           <LinkSitesButton key={group} group={group} sites={sites} s={s} d={d} />
         ))}
       >
-        The file hosts your downloads are on, and the wrappers and pastebins that lead to them. Choose which hosts Haul
-        uses and in what order. A file on several hosts downloads from the first of your preferred hosts that has it
-        (star a host to add it; drag it by its grip to reorder), otherwise from the fastest of the others. A host
-        switched off is never used. The wrench opens a site's settings: its account, its folder and its route.
+        Star the hosts you prefer and drag them into order. A host switched off is never used.
       </PageHeader>
       {hosts.length ? (
         // Where a dragged host lands; the arrows reorder from the keyboard.
