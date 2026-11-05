@@ -6,13 +6,15 @@
 //! line stop; they resume from where they were once the line is back, and
 //! what was learned about the old address (limits, waits, allowance) goes.
 //! Automatic redials need the setting, come at most every ten minutes, and
-//! stop after a redial brings the same address back: that line keeps it.
+//! stop after a redial brings the same address back: that line keeps it. One
+//! on its own lets the downloads running well finish first ([`Engine::drain`]);
+//! nothing that runs well is cut off for a host that isn't its own.
 
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use super::{Engine, Exit, schedule::ASKED_TO_WAIT};
+use super::{Engine, Exit, schedule::says_address_waits};
 use crate::{
     config::secret,
     hosts,
@@ -20,12 +22,10 @@ use crate::{
     router::{self, Router},
 };
 
-/// The least time between automatic redials.
-const GAP: Duration = Duration::from_secs(600);
 /// A host's wait for this address worth a redial.
 const LONG_WAIT: Duration = Duration::from_secs(300);
 /// This machine's own connection.
-const DIRECT: Exit = 0;
+pub(super) const DIRECT: Exit = 0;
 
 #[derive(Debug, Default)]
 pub(super) struct Reconnects {
@@ -60,6 +60,9 @@ pub struct ReconnectView {
     pub blocked: Option<String>,
     /// The last redial failed: its note is an error to show.
     pub failed: bool,
+    /// A redial on its own waits for downloads to finish, and nothing new
+    /// starts: why it would help.
+    pub draining: Option<String>,
 }
 
 impl Engine {
@@ -79,7 +82,14 @@ impl Engine {
             auto: cfg.reconnect && !r.keeps_address && blocked.is_none(),
             blocked,
             failed: r.failed,
+            draining: None,
         }
+    }
+
+    /// Whether a redial could come on its own, as things are set.
+    pub(super) fn redials_on_its_own(&self, cfg: &crate::Config) -> bool {
+        let r = self.reconnects();
+        cfg.reconnect && !r.keeps_address && blocker(cfg, &r).is_none()
     }
 
     /// Why no redial can work as things are set, if none can.
@@ -164,9 +174,10 @@ impl Engine {
                 // Rows waiting out a limit on the old address go again now;
                 // one still held elsewhere is parked again on its turn.
                 for it in st.items.values_mut() {
-                    if it.status == Status::Waiting && it.error.ends_with(ASKED_TO_WAIT) {
+                    if it.status == Status::Waiting && says_address_waits(&it.error) {
                         it.not_before = None;
                     }
+                    it.slow_on.clear();
                 }
                 self.touch(&mut st);
             }
@@ -290,10 +301,12 @@ impl Engine {
         router.redial(&http, login).await
     }
 
-    /// Why a new address would help now, when automatic redials are on: a
-    /// host slowed this machine's address for the day, or asked it for a
-    /// long wait, for a download that still needs that host, and no proxy
-    /// can take over.
+    /// Why a new address would help now, when automatic redials are on: the
+    /// address is what holds a download back, it has no other way to go, and
+    /// no proxy can take over. A running download is held back only by the
+    /// host it downloads from, and one waiting only when every one of its hosts
+    /// holds this address back: a row doing well, or that can go elsewhere,
+    /// wants nothing whatever its other mirrors are up to.
     pub(super) fn wants_new_address(&self) -> Option<String> {
         let cfg = self.cfg();
         if !cfg.reconnect {
@@ -304,61 +317,112 @@ impl Engine {
             if r.busy
                 || r.keeps_address
                 || blocker(&cfg, &r).is_some()
-                || r.last.is_some_and(|t| t.elapsed() < GAP)
+                || r.last
+                    .is_some_and(|t| t.elapsed() < cfg.throttling.redial_gap)
             {
                 return None;
             }
         }
         let st = self.lock();
         let now = Instant::now();
-        let mut hosts: Vec<String> = st
-            .items
-            .values()
-            .filter(|i| {
-                matches!(
-                    i.status,
-                    Status::Queued | Status::Waiting | Status::Downloading
-                )
-            })
-            .flat_map(|i| i.mirrors.iter().map(|m| hosts::host_of(m)))
-            .filter(|h| !cfg.is_off(h))
-            .collect();
-        hosts.sort();
-        hosts.dedup();
-        for host in hosts {
-            let exits = self.exits_for(&host, &st);
-            if !exits.contains(&DIRECT) {
-                continue;
-            }
-            let lane = |e: Exit| st.lanes.get(&(host.clone(), e));
+        // The line can help this host, or it no longer needs to: the host is
+        // reached through it, no proxy is free for it, and a redial made for
+        // it before didn't already show it doesn't limit by address.
+        let line_helps = |host: &str| {
+            let exits = self.exits_for(host, &st);
+            let lane = |e: Exit| st.lanes.get(&(host.to_string(), e));
             let proxy_free = exits
                 .iter()
                 .any(|&e| e != DIRECT && lane(e).is_none_or(|l| !l.slowed() && !l.cooling(now)));
-            if proxy_free {
+            let useless = st.hosts.get(host).is_some_and(|h| h.redial_useless);
+            exits.contains(&DIRECT) && !proxy_free && !useless
+        };
+        let quota_slowed = |host: &str| {
+            st.lanes
+                .get(&(host.to_string(), DIRECT))
+                .and_then(|l| l.quota)
+                .filter(|q| q.slowed())
+                .map(|q| {
+                    format!(
+                        "{host} slowed this address to {} KB/s for the day",
+                        q.slowed_to / 1024
+                    )
+                })
+        };
+        for it in st.items.values() {
+            if !matches!(
+                it.status,
+                Status::Queued | Status::Waiting | Status::Downloading
+            ) {
                 continue;
             }
-            let Some(direct) = lane(DIRECT) else { continue };
-            if let Some(q) = direct.quota.filter(|q| q.slowed()) {
-                return Some(format!(
-                    "{host} slowed this address to {} KB/s for the day",
-                    q.slowed_to / 1024
-                ));
+            if it.running() {
+                let host = it.host.as_str();
+                if it.exit != Some(DIRECT) || !line_helps(host) {
+                    continue;
+                }
+                if let Some(why) = quota_slowed(host) {
+                    return Some(why);
+                }
+                let slowing = st
+                    .lanes
+                    .get(&(host.to_string(), DIRECT))
+                    .is_some_and(|l| l.slowing && l.slowing_sure);
+                if slowing && it.slowed.as_ref().is_some_and(|s| s.sure) {
+                    return Some(format!("{host} is slowing this address"));
+                }
+                continue;
             }
-            if let Some(until) = direct.cooldown
-                && until.saturating_duration_since(now) >= LONG_WAIT
-            {
-                return Some(format!(
-                    "{host} asked this address to wait {} minutes",
-                    until.saturating_duration_since(now).as_secs() / 60
-                ));
+            let mirrors: Vec<String> = it
+                .mirrors
+                .iter()
+                .filter(|m| !it.failed.contains(*m))
+                .map(|m| hosts::host_of(m))
+                .filter(|h| !cfg.is_off(h))
+                .collect();
+            let held = |host: &String| {
+                self.exits_for(host, &st).iter().all(|&e| {
+                    st.lanes
+                        .get(&(host.clone(), e))
+                        .is_some_and(|l| l.slowed() || l.cooling(now))
+                })
+            };
+            if mirrors.is_empty() || !mirrors.iter().all(held) {
+                continue;
+            }
+            for host in mirrors.iter().filter(|h| line_helps(h)) {
+                if let Some(why) = quota_slowed(host) {
+                    return Some(why);
+                }
+                let Some(direct) = st.lanes.get(&(host.clone(), DIRECT)) else {
+                    continue;
+                };
+                // A host's slowness nothing else confirms isn't worth cutting
+                // the line for.
+                if direct.slowing && !direct.slowing_sure {
+                    continue;
+                }
+                if let Some(until) = direct.cooldown
+                    && until.saturating_duration_since(now) >= LONG_WAIT
+                {
+                    return Some(if direct.slowing {
+                        format!("{host} is slowing this address")
+                    } else {
+                        format!(
+                            "{host} asked this address to wait {} minutes",
+                            until.saturating_duration_since(now).as_secs() / 60
+                        )
+                    });
+                }
             }
         }
         None
     }
 
-    /// Redials on its own whenever [`Engine::wants_new_address`] says so.
-    /// The router is looked for only once redials are on (or the settings
-    /// ask), so nothing searches the network for those who never use it.
+    /// Redials on its own whenever [`Engine::wants_new_address`] says so, once
+    /// the downloads running well have finished ([`Engine::drain`]). The router
+    /// is looked for only once redials are on (or the settings ask), so nothing
+    /// searches the network for those who never use it.
     pub(super) async fn watch_reconnects(self) {
         loop {
             if self.cfg().reconnect {
@@ -366,12 +430,124 @@ impl Engine {
             }
             tokio::select! {
                 _ = self.0.shutdown.cancelled() => return,
-                _ = tokio::time::sleep(Duration::from_secs(30)) => {}
+                _ = tokio::time::sleep(self.cfg().throttling.redial_check) => {}
             }
             if let Some(why) = self.wants_new_address() {
-                let _ = self.reconnect(&why).await;
+                self.drain(&why).await;
             }
         }
+    }
+
+    /// The downloads on the line running well: what a redial would cut off.
+    /// One a host is slowing isn't among them, since it could take hours and
+    /// loses nothing by stopping.
+    fn running_well(&self) -> usize {
+        self.lock()
+            .items
+            .values()
+            .filter(|i| i.running() && i.exit == Some(DIRECT) && i.slowed.is_none())
+            .count()
+    }
+
+    /// Whether what runs well on the line should be done within the limit, as
+    /// far as can be told: holding the queue for one that won't would help
+    /// nobody, and the new address can wait for it.
+    fn could_drain(&self, limit: Duration) -> bool {
+        let cfg = self.cfg();
+        let now = Instant::now();
+        let st = self.lock();
+        st.items
+            .values()
+            .filter(|i| i.running() && i.exit == Some(DIRECT) && i.slowed.is_none())
+            .all(|i| {
+                // Before a row has a speed of its own, what it has shown so far.
+                let speed = i
+                    .pace
+                    .as_ref()
+                    .and_then(|p| p.recent(now, &cfg.throttling))
+                    .unwrap_or(i.speed);
+                speed <= 0.0
+                    || i.size == 0
+                    || i.size.saturating_sub(i.done) as f64 / speed <= limit.as_secs_f64()
+            })
+    }
+
+    /// Gets a new address without cutting off anything that runs well: nothing
+    /// new starts while the downloads running well on the line go on to their
+    /// end, then [`Engine::reconnect`] stops what is left (only those a host is
+    /// slowing) and redials, and everything goes again. Past the limit the
+    /// redial is put off and the queue goes on; it comes up again after the
+    /// usual gap. Downloads through a proxy aren't waited for: a redial doesn't
+    /// touch them.
+    async fn drain(&self, why: &str) {
+        let throttling = self.cfg().throttling.clone();
+        if !self.could_drain(throttling.drain_limit) {
+            tracing::debug!("a new address would help ({why}): after what's running");
+            return;
+        }
+        tracing::info!("a new address would help ({why}): starting nothing new meanwhile");
+        self.set_draining(Some(why));
+        let deadline = Instant::now() + throttling.drain_limit;
+        let finished = loop {
+            if self.running_well() == 0 {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            // Gone by itself (the slow one finished, the host recovered).
+            if self.wants_new_address().is_none() {
+                self.set_draining(None);
+                return;
+            }
+            tokio::select! {
+                _ = self.0.shutdown.cancelled() => return,
+                _ = tokio::time::sleep(throttling.tick) => {}
+            }
+        };
+        if !finished {
+            tracing::info!(
+                "no new address: downloads still running after {} minutes; later",
+                throttling.drain_limit.as_secs() / 60
+            );
+            {
+                let mut r = self.reconnects();
+                r.last = Some(Instant::now());
+                r.note = Some(format!(
+                    "Put off a new address ({why}): downloads still running"
+                ));
+                r.note_at = super::unix_now();
+                r.failed = false;
+            }
+            self.set_draining(None);
+            return;
+        }
+        // The hosts this redial is for: with them still slow on the new
+        // address, another would be no use ([`Engine::throttled`]).
+        let for_hosts: Vec<String> = {
+            let st = self.lock();
+            st.lanes
+                .iter()
+                .filter(|((_, exit), l)| *exit == DIRECT && l.slowing && l.slowing_sure)
+                .map(|((host, _), _)| host.clone())
+                .collect()
+        };
+        let got = self.reconnect(why).await;
+        {
+            let mut st = self.lock();
+            if got.is_ok() {
+                for host in &for_hosts {
+                    st.host(host).redialed_for = true;
+                }
+            }
+        }
+        self.set_draining(None);
+    }
+
+    fn set_draining(&self, why: Option<&str>) {
+        let mut st = self.lock();
+        st.draining = why.map(str::to_string);
+        self.publish(st);
     }
 }
 

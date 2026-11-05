@@ -105,15 +105,39 @@ pub(super) fn items(
     let known: HashMap<&str, &HostView> = hosts.iter().map(|h| (h.name.as_str(), h)).collect();
     let off = |m: &str| known.get(m).is_some_and(|h| h.disabled || h.needs_account);
     let rank = |m: &str| known.get(m).and_then(|h| h.preferred).unwrap_or(usize::MAX);
+    let cooling = |m: &str| known.get(m).is_some_and(|h| h.cooldown > 0);
     for it in items {
         // A page on trial, or being read, is in no list until it shows what
         // it is.
         it.list = if it.tentative { "" } else { list_of(it.status) };
         it.not_started = it.status == "paused" && it.done == 0;
-        it.shown_host = if it.host.is_empty() {
-            let mut on: Vec<&String> = it.mirrors.iter().filter(|m| !off(m)).collect();
-            // The host the user picked comes first, then their preferred ones.
-            on.sort_by_key(|m| (it.download_from.as_deref() != Some(m.as_str()), rank(m)));
+        let failed = |m: &str| it.failed_hosts.iter().any(|h| h == m);
+        // The page being passed is where it goes next, whatever else it has.
+        let passing = (it.status == "passing")
+            .then(|| {
+                it.open_urls
+                    .iter()
+                    .map(|u| hosts::host_of(u))
+                    .find(|h| !cooling(h))
+            })
+            .flatten();
+        it.shown_host = if let Some(page) = passing {
+            page
+        } else if it.host.is_empty() {
+            let mut on: Vec<&String> = it
+                .mirrors
+                .iter()
+                .filter(|m| !off(m) && !failed(m))
+                .collect();
+            // The host the user picked comes first, then their preferred ones;
+            // one cooling down would be passed over.
+            on.sort_by_key(|m| {
+                (
+                    it.download_from.as_deref() != Some(m.as_str()),
+                    cooling(m),
+                    rank(m),
+                )
+            });
             on.first()
                 .or(it.mirrors.first().as_ref())
                 .map(|m| m.to_string())
@@ -127,7 +151,7 @@ pub(super) fn items(
         it.other_hosts = it
             .mirrors
             .iter()
-            .filter(|m| **m != it.shown_host && !off(m))
+            .filter(|m| **m != it.shown_host && !off(m) && !failed(m))
             .count();
         it.error_shown = without_host(&it.error, &it.shown_host);
         it.source_name = it.source.as_deref().and_then(|s| sources.get(s)).cloned();
@@ -223,6 +247,9 @@ pub struct ArchiveView {
     pub other_hosts: usize,
     /// Every host its parts are on, for choosing one.
     pub all_hosts: Vec<String>,
+    /// What its parts' hosts are slowing, for the row to say instead of a time
+    /// left that means nothing.
+    pub slowed: Option<String>,
     /// The host the user picked for every part, when they picked one.
     pub download_from: Option<String>,
     pub package: String,
@@ -323,6 +350,12 @@ pub(super) fn archives(
                 all_hosts.push(m.clone());
             }
         }
+        let slowed: Vec<&String> = parts.iter().filter_map(|p| p.slowed.as_ref()).collect();
+        let slowed = match slowed.as_slice() {
+            [] => None,
+            [one] => Some((*one).clone()),
+            many => Some(format!("{} parts slowed by their hosts", many.len())),
+        };
         let download_from = first
             .download_from
             .clone()
@@ -380,6 +413,7 @@ pub(super) fn archives(
             hosts: shown,
             other_hosts: others.len(),
             all_hosts,
+            slowed,
             download_from,
             package: first.package.clone(),
             source: first.source.clone(),
@@ -555,6 +589,9 @@ pub struct Counts {
     pub downloading: usize,
     /// Queued, waiting their turn or a retry, or being looked up.
     pub waiting: usize,
+    /// Downloads a host is slowing: what is left says little about when
+    /// everything is done while these run.
+    pub slowed: usize,
     /// Paused, and the pause holds something back that would run.
     pub held: bool,
     /// Bytes still to download in the Active list, over the files whose
@@ -592,6 +629,7 @@ pub(super) fn counts(
         done: in_list("done"),
         downloading: t.downloading,
         waiting: t.waiting,
+        slowed: items.iter().filter(|i| i.slowed.is_some()).count(),
         held: paused && items.iter().any(|i| i.list == "active"),
         left: items
             .iter()
@@ -863,6 +901,8 @@ mod tests {
             preferred_host: false,
             other_hosts: 0,
             error_shown: String::new(),
+            failed_hosts: Vec::new(),
+            slowed: None,
             commands: Vec::new(),
             archive: None,
             source_name: None,

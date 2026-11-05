@@ -8,7 +8,7 @@ use std::{
 };
 
 use reqwest::header::{ACCEPT_ENCODING, RANGE};
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -18,6 +18,7 @@ use crate::{
     hosts::{self, Cx, Entry, Http, ResolveError},
     item::{Item, Status},
     paths,
+    throttle::Pace,
 };
 
 /// Refusals in a row from a busy host before a download counts as failed.
@@ -26,6 +27,12 @@ const BUSY_REFUSALS: u32 = 10;
 /// Seconds a download refused by a busy host waits before it may try again
 /// (and only then if the host has a free slot).
 const BUSY_PAUSE: u64 = 5;
+
+/// How much of a partial file another host's bytes have to agree with before
+/// it is resumed from there. Hosts hold compressed archives, so 64 KiB that
+/// agree at that very offset are the same file; a file of one name and exact
+/// size can be another one, as sets split alike are. It costs next to nothing.
+const OVERLAP: u64 = 64 * 1024;
 
 /// Counts a download as under way with its host, from the request to the end
 /// of the transfer.
@@ -334,7 +341,7 @@ impl Engine {
                 Err(Fail::Wait { seconds, message }) => {
                     let until = now + Duration::from_secs(seconds);
                     // The wait is asked of this address.
-                    st.lane(host, exit).cooldown = Some(until);
+                    st.lane(host, exit).asked_to_wait(until);
                     if let Some(it) = st.items.get_mut(id) {
                         it.status = Status::Waiting;
                         it.not_before = Some(until);
@@ -385,6 +392,9 @@ impl Engine {
                     it.speed = 0.0;
                     it.task = None;
                     it.exit = None;
+                    it.url = None;
+                    it.pace = None;
+                    it.slowed = None;
                 }
                 // Removed or merged away while it ran.
                 None => removed.push(id.to_string()),
@@ -413,6 +423,10 @@ impl Engine {
     ) -> Option<Event> {
         st.host(host).penalize(Instant::now());
         let it = st.items.get_mut(id)?;
+        // Named next by the host it would try first, not this one.
+        if it.host == host {
+            it.host.clear();
+        }
         // A paste holding no address has nothing to try again on a timer, as
         // when the desktop app's pass finds so ([`Engine::page_gone`]).
         if hosts::lists_no_links(&message) {
@@ -421,7 +435,8 @@ impl Engine {
         it.error = format!("{host}: {message}");
         // The next mirror gets its own retries.
         it.retries = 0;
-        let was_manual = it.manual;
+        // A link handed back for another mirror stays that mirror's.
+        let was_manual = it.manual && it.pre_for.as_deref().is_none_or(|p| p == url);
         drop_used_pre(it, url);
         if was_manual {
             // The user's link died or expired: ask again.
@@ -466,8 +481,18 @@ impl Engine {
             .fold(http.client.get(&entry.url), |r, (k, v)| r.header(k, v))
             // The file as stored: its length and offsets are what resuming counts.
             .header(ACCEPT_ENCODING, "identity");
+        // Bytes another host sent are checked against this one's before going
+        // on from them: some more than needed are asked for, and compared.
+        let (part_host, part_size) = {
+            let st = self.lock();
+            let it = st.items.get(id).ok_or(Fail::Cancelled)?;
+            (it.part_host.clone(), it.part_size)
+        };
+        let crossing = have > 0 && part_host.as_deref() != Some(host);
+        let overlap = if crossing { have.min(OVERLAP) } else { 0 };
+        let mut from = have - overlap;
         if have > 0 {
-            req = req.header(RANGE, format!("bytes={have}-"));
+            req = req.header(RANGE, format!("bytes={from}-"));
         }
         // Counted from the request to the end of the transfer.
         let _serving = Serving::start(self, host, exit);
@@ -484,6 +509,10 @@ impl Engine {
             });
         }
         let known_size = self.lock().items.get(id).map(|i| i.size).unwrap_or(0);
+        if status == 416 && crossing {
+            // This host's copy is shorter than what is already here.
+            return Err(lost_partial(&part, have, "has less of it").await);
+        }
         if status == 416 && have > 0 {
             // Nothing left to send: the partial file is complete, unless we
             // know it should be longer.
@@ -531,19 +560,33 @@ impl Engine {
                 ));
             }
             let range = hosts::content_range(resp.headers());
-            if status == 206 && range.is_some_and(|(start, _)| start != have) {
+            if status == 206 && range.is_some_and(|(start, _)| start != from) {
                 let _ = tokio::fs::remove_file(&part).await;
                 return Err(Fail::Error(
                     "host resumed at the wrong offset; starting over".into(),
                 ));
             }
             if status == 200 {
+                if crossing {
+                    tracing::info!(
+                        item = id,
+                        "{host} doesn't resume: starting over, without the {have} bytes from before"
+                    );
+                }
                 have = 0;
+                from = 0;
             }
             let total = match (status, range) {
                 (206, Some((_, Some(total)))) => Some(total),
-                _ => hosts::content_length(resp.headers()).map(|len| have + len),
+                _ => hosts::content_length(resp.headers()).map(|len| from + len),
             };
+            if crossing
+                && have > 0
+                && let Some(total) = total.filter(|t| part_size > 0 && *t != part_size)
+            {
+                let why = format!("has it at {total} bytes, not {part_size}");
+                return Err(lost_partial(&part, have, &why).await);
+            }
             let named_now = {
                 let mut st = self.lock();
                 let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
@@ -555,6 +598,8 @@ impl Engine {
                 if let Some(total) = total {
                     it.size = total;
                 }
+                it.part_size = total.unwrap_or(0);
+                it.part_host = Some(host.to_string());
                 it.done = have;
                 it.attempt_from = have;
                 self.touch(&mut st);
@@ -585,6 +630,14 @@ impl Engine {
                 .open(&part)
                 .await?;
             let mut file = BufWriter::with_capacity(1 << 20, file);
+            // What the partial file holds where this host's answer starts.
+            let tail = if crossing && have > 0 {
+                read_tail(&part, from, overlap).await?
+            } else {
+                Vec::new()
+            };
+            let (mut checked, mut differs) = (0, false);
+            let mut at = from;
             let mut done = have;
             let (mut mark, mut mark_bytes) = (Instant::now(), have);
             // The slowest it may be over each window, in bytes per second; 0
@@ -598,6 +651,9 @@ impl Engine {
             };
             let window = Duration::from_secs(cfg.min_speed_seconds.max(1));
             let (mut window_at, mut window_bytes) = (Instant::now(), have);
+            if let Some(it) = self.lock().items.get_mut(id) {
+                it.pace = Some(Pace::new(Instant::now(), have));
+            }
             let streamed: Result<(), Fail> = async {
                 loop {
                     // Woken at the window's end too, so a stalled connection
@@ -626,11 +682,26 @@ impl Engine {
                     let chunk = match &entry.decrypt {
                         Some(key) => {
                             let mut plain = chunk.to_vec();
-                            key.apply(&mut plain, done);
+                            key.apply(&mut plain, at);
                             plain.into()
                         }
                         None => chunk,
                     };
+                    at += chunk.len() as u64;
+                    let chunk = if checked < tail.len() {
+                        let n = (tail.len() - checked).min(chunk.len());
+                        if chunk[..n] != tail[checked..checked + n] {
+                            differs = true;
+                            return Ok(());
+                        }
+                        checked += n;
+                        chunk.slice(n..)
+                    } else {
+                        chunk
+                    };
+                    if chunk.is_empty() {
+                        continue;
+                    }
                     file.write_all(&chunk).await?;
                     done += chunk.len() as u64;
                     self.0.limiter.throttle(chunk.len()).await;
@@ -661,7 +732,14 @@ impl Engine {
             .await;
             file.flush().await?;
             drop(file);
+            if differs {
+                return Err(lost_partial(&part, have, "holds other bytes there").await);
+            }
             streamed?;
+            // Its answer ended before it reached the bytes it should add to.
+            if checked < tail.len() {
+                return Err(lost_partial(&part, have, "has less of it").await);
+            }
             if let Some(total) = total
                 && done < total
             {
@@ -716,6 +794,24 @@ impl Engine {
     }
 }
 
+/// The host holds another file than the partial file's, so the bytes can't be
+/// mixed: they go, and the download starts over.
+async fn lost_partial(part: &Path, have: u64, why: &str) -> Fail {
+    let _ = tokio::fs::remove_file(part).await;
+    Fail::Transient(format!(
+        "{why}: a different file, so the {have} bytes from before are lost; starting over"
+    ))
+}
+
+/// The `len` bytes of the file at `path` from `from` on.
+async fn read_tail(path: &Path, from: u64, len: u64) -> std::io::Result<Vec<u8>> {
+    let mut file = tokio::fs::File::open(path).await?;
+    file.seek(std::io::SeekFrom::Start(from)).await?;
+    let mut buf = vec![0; len as usize];
+    file.read_exact(&mut buf).await?;
+    Ok(buf)
+}
+
 fn log_outcome(id: &str, url: &str, result: &Result<Outcome, Fail>) {
     match result {
         Ok(Outcome::Done) => tracing::info!(item = id, url, "downloaded"),
@@ -740,7 +836,7 @@ fn log_outcome(id: &str, url: &str, result: &Result<Outcome, Fail>) {
     }
 }
 
-fn drop_used_pre(it: &mut Item, url: &str) {
+pub(super) fn drop_used_pre(it: &mut Item, url: &str) {
     if it.pre.is_some() && it.pre_for.as_deref().is_none_or(|p| p == url) {
         it.pre = None;
         it.pre_for = None;

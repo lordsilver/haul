@@ -168,6 +168,52 @@ pub(super) struct Server {
     /// The address the internet sees stays the same across redials, as
     /// behind a carrier's shared address.
     pub(super) public_kept: Arc<std::sync::atomic::AtomicBool>,
+    /// /eases stops slowing, as a host lifting its limit does.
+    pub(super) eased: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A file sent at the KiB/s `rate` says for each moment, from where it is
+/// asked, 50 ms apart; logs `done <path>` once all of it went out, which an
+/// aborted transfer never reaches. `sized`: says its length.
+fn paced(
+    s: &Server,
+    path: String,
+    data: Vec<u8>,
+    headers: &HeaderMap,
+    sized: bool,
+    rate: impl Fn() -> usize + Send + 'static,
+) -> Response {
+    let len = data.len();
+    let start = range_start(headers).unwrap_or(0).min(len);
+    let log = s.log.clone();
+    let stream = futures_util::stream::unfold(start, move |at| {
+        let chunk = (rate() * 1024 / 20).max(1);
+        let end = (at + chunk).min(len);
+        let bytes = Bytes::copy_from_slice(&data[at..end]);
+        let log = log.clone();
+        let path = path.clone();
+        async move {
+            if at == len {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if end == len {
+                log.lock().unwrap().push(format!("done {path}"));
+            }
+            Some((Ok::<_, Infallible>(bytes), end))
+        }
+    });
+    let mut resp = Response::builder();
+    if sized {
+        resp = resp.header(header::CONTENT_LENGTH, len - start);
+    }
+    if start > 0 {
+        resp = resp.status(StatusCode::PARTIAL_CONTENT).header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{}/{len}", len - 1),
+        );
+    }
+    resp.body(Body::from_stream(stream)).unwrap()
 }
 
 /// Counts a /busy transfer out when its body is done or dropped.
@@ -180,6 +226,15 @@ impl Drop for BusyOut {
 }
 
 impl Server {
+    /// Where the first logged line starting with `line` stands in the log.
+    pub(super) fn at(&self, line: &str) -> Option<usize> {
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .position(|l| l.starts_with(line))
+    }
+
     pub(super) fn requests(&self, path: &str) -> Vec<String> {
         self.log
             .lock()
@@ -288,6 +343,60 @@ pub(super) async fn start_server() -> (Server, u16) {
                         .header(header::CONTENT_RANGE, format!("bytes {start}-{}/{SIZE}", SIZE - 1));
                 }
                 resp.body(Body::from_stream(stream)).unwrap()
+            }),
+        )
+        .route(
+            "/paced/{rate}/{name}",
+            // A steady speed in KiB/s, for a host that holds a download at one.
+            get(|State(s): State<Server>, method: Method, UrlPath((rate, name)): UrlPath<(usize, String)>, headers: HeaderMap| async move {
+                if method == Method::HEAD {
+                    return file_response(content(&name, SIZE), &headers);
+                }
+                let path = format!("/paced/{rate}/{name}");
+                log(&s, &path, &headers);
+                paced(&s, path, content(&name, SIZE), &headers, true, move || rate)
+            }),
+        )
+        .route(
+            "/unsized/{rate}/{name}",
+            // The same, never saying how big the file is.
+            get(|State(s): State<Server>, method: Method, UrlPath((rate, name)): UrlPath<(usize, String)>, headers: HeaderMap| async move {
+                if method == Method::HEAD {
+                    return StatusCode::OK.into_response();
+                }
+                let path = format!("/unsized/{rate}/{name}");
+                log(&s, &path, &headers);
+                paced(&s, path, content(&name, SIZE), &headers, false, move || rate)
+            }),
+        )
+        .route(
+            "/eases/{name}",
+            // 40 KiB/s until the host eases off or the address changes, then
+            // 300 KiB/s.
+            get(|State(s): State<Server>, method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                if method == Method::HEAD {
+                    return file_response(content(&name, SIZE), &headers);
+                }
+                let path = format!("/eases/{name}");
+                log(&s, &path, &headers);
+                let (eased, redials) = (s.eased.clone(), s.redials.clone());
+                paced(&s, path, content(&name, SIZE), &headers, true, move || {
+                    if eased.load(Ordering::SeqCst) || redials.load(Ordering::SeqCst) > 0 {
+                        300
+                    } else {
+                        40
+                    }
+                })
+            }),
+        )
+        .route(
+            "/other/{name}",
+            // A file by the same name and size that holds other bytes.
+            get(|State(s): State<Server>, method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                if method != Method::HEAD {
+                    log(&s, &format!("/other/{name}"), &headers);
+                }
+                file_response(content(&format!("other {name}"), SIZE), &headers)
             }),
         )
         .route(
@@ -556,6 +665,7 @@ pub(super) async fn start_server() -> (Server, u16) {
                     // passes too, or one whose page only a person can do.
                     let beside_ddownload = match id.as_str() {
                         "ddownload-held" => Some("http://files.example/files/held.bin"),
+                        "ddownload-slow" => Some("http://fileditchfiles.st/paced/40/held.bin"),
                         "ddownload-gofile" => Some("https://gofile.io/d/both"),
                         "ddownload-rapidgator" => Some("https://rapidgator.net/file/person"),
                         _ => None,
@@ -791,6 +901,7 @@ pub(super) async fn start_server() -> (Server, u16) {
                 let redials = s.redials.load(Ordering::SeqCst);
                 let answer = match action.as_str() {
                     "ForceTermination" => {
+                        s.log.lock().unwrap().push("/redial".to_string());
                         s.redials.fetch_add(1, Ordering::SeqCst);
                         String::new()
                     }

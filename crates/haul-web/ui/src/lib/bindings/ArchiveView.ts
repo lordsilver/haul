@@ -38,6 +38,11 @@ hosts: Array<string>, other_hosts: number,
  */
 all_hosts: Array<string>, 
 /**
+ * What its parts' hosts are slowing, for the row to say instead of a time
+ * left that means nothing.
+ */
+slowed: string | null, 
+/**
  * The host the user picked for every part, when they picked one.
  */
 download_from: string | null, package: string, 

@@ -9,6 +9,11 @@ export type Counts = { all: number, active: number, attention: number, failed: n
  */
 waiting: number, 
 /**
+ * Downloads a host is slowing: what is left says little about when
+ * everything is done while these run.
+ */
+slowed: number, 
+/**
  * Paused, and the pause holds something back that would run.
  */
 held: boolean, 

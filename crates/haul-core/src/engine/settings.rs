@@ -49,6 +49,7 @@ pub struct SettingsView {
     pub resume_attempts: u32,
     pub min_speed_kbps: u32,
     pub min_speed_seconds: u64,
+    pub leave_slow_hosts: bool,
     pub retry_failed_minutes: u64,
     pub proxy: String,
     pub proxies: Vec<String>,
@@ -116,6 +117,7 @@ const FLAGS: &[(&str, Flag)] = &[
     ("auto_extract", |c| &mut c.auto_extract),
     ("delete_after_extract", |c| &mut c.delete_after_extract),
     ("reconnect", |c| &mut c.reconnect),
+    ("leave_slow_hosts", |c| &mut c.leave_slow_hosts),
     ("detailed_log", |c| &mut c.detailed_log),
     ("skip_add_dialog", |c| &mut c.skip_add_dialog),
     ("proxies_on", |c| &mut c.proxies_on),
@@ -155,6 +157,7 @@ impl Engine {
             resume_attempts: cfg.resume_attempts,
             min_speed_kbps: cfg.min_speed_kbps,
             min_speed_seconds: cfg.min_speed_seconds,
+            leave_slow_hosts: cfg.leave_slow_hosts,
             retry_failed_minutes: cfg.retry_failed_minutes,
             proxy: shown(&cfg.proxy),
             proxies: cfg.proxies.clone(),
@@ -657,6 +660,7 @@ impl Engine {
             match Config::load(&path) {
                 Ok(mut cfg) => {
                     cfg.endpoints = self.cfg().endpoints.clone();
+                    cfg.throttling = self.cfg().throttling.clone();
                     self.set_config_error(None);
                     tracing::info!("{} changed; applying it", path.display());
                     self.reconfigure(cfg);

@@ -127,7 +127,7 @@ export function ArchiveRow({
   const others = a.other_hosts ? `${a.other_hosts} other ${a.other_hosts === 1 ? 'host' : 'hosts'}` : null;
   const host = [a.hosts.join(', '), others].filter(Boolean).join(' · ');
   const rest = [a.package || null, a.source_name ? `from ${a.source_name}` : null].filter(Boolean).join(' · ');
-  const sub = [lead, host, rest].filter(Boolean).join(' · ');
+  const sub = [lead, host, rest, a.slowed].filter(Boolean).join(' · ');
   // Once every part is done, the bar and its caption are the unpacking's.
   const share = a.extract === 'extracting' ? (a.extract_progress ?? 0) : a.share;
   const label = open ? 'Hide the parts' : 'Show the parts';
@@ -205,7 +205,7 @@ export function ArchiveRow({
           </div>
         </div>
         <div className={COLUMNS.rate}>
-          <Rate speed={a.speed} size={a.size} done={a.done} />
+          <Rate speed={a.speed} size={a.size} done={a.done} slowed={Boolean(a.slowed)} />
         </div>
         <ArchiveActions a={a} s={s} focusPassword={() => password.current?.focus()} />
       </div>

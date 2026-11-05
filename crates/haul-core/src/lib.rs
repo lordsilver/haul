@@ -20,6 +20,7 @@ pub mod paths;
 pub mod router;
 pub mod stay;
 mod store;
+pub mod throttle;
 pub mod update;
 pub mod vpn;
 

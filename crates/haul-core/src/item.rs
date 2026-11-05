@@ -5,7 +5,10 @@ use std::{collections::HashSet, time::Instant};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::hosts::{Checksum, Entry, guess_name, name_key, tidy_name};
+use crate::{
+    hosts::{Checksum, Entry, guess_name, name_key, tidy_name},
+    throttle::Pace,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -76,6 +79,17 @@ impl Extract {
     }
 }
 
+/// A host is limiting this row's download ([`crate::throttle`]) and it stays
+/// on it for now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Slowed {
+    pub host: String,
+    /// Something other than its slowness shows the host is the cause.
+    pub sure: bool,
+    /// Why it stays, as the row says it.
+    pub why: &'static str,
+}
+
 /// What unwrapping a wrapper found on its page.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
@@ -130,6 +144,20 @@ pub(crate) struct Item {
     pub auto_retries: u32,
     /// When the next automatic retry happens.
     pub retry_at: Option<Instant>,
+    /// The mirror the running attempt goes to.
+    pub url: Option<String>,
+    /// How the running transfer's speed has gone.
+    pub pace: Option<Pace>,
+    /// The host limiting the running transfer, when one is.
+    pub slowed: Option<Slowed>,
+    /// Mirrors that slowed this row: it goes back to one only when nothing
+    /// else can take it, which beats sitting idle.
+    pub slow_on: HashSet<String>,
+    /// The host the partial file's last bytes came from; `None` when not known
+    /// (a restart, a merged row), which counts as another's.
+    pub part_host: Option<String>,
+    /// The size of the file the partial file is part of; 0 when not known.
+    pub part_size: u64,
     /// Where the finished file went.
     pub path: Option<String>,
     /// The checksum a host published for the file.
@@ -221,6 +249,12 @@ impl Item {
             attempt_from: 0,
             auto_retries: 0,
             retry_at: None,
+            url: None,
+            pace: None,
+            slowed: None,
+            slow_on: HashSet::new(),
+            part_host: None,
+            part_size: 0,
             path: None,
             checksum: None,
             existing: false,
@@ -350,6 +384,7 @@ impl Item {
         it.pre_for = s.pre_for;
         it.manual = s.manual;
         it.size = s.size;
+        it.part_size = s.size;
         it.error = s.error;
         it.path = s.path;
         it.checksum = s.checksum;

@@ -81,6 +81,8 @@ pub(crate) struct SavedHost {
     pub ok: u32,
     pub fails: u32,
     pub bytes: u64,
+    /// What it gives when it isn't limiting the address, in bytes per second.
+    pub normal: u64,
 }
 
 /// The hosts file is only a head start, so a damaged one is set aside.

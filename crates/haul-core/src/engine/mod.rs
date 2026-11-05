@@ -41,6 +41,7 @@ mod schedule;
 mod services;
 mod settings;
 mod snapshot;
+mod throttled;
 mod transfer;
 mod unpack;
 mod views;
@@ -217,6 +218,15 @@ struct Lane {
     cap_since: Option<Instant>,
     active: usize,
     cooldown: Option<Instant>,
+    /// `cooldown` is for the host slowing this address, not a wait it asked
+    /// for: a transfer recovering ends it.
+    slowing: bool,
+    /// ... and something other than the slowness shows the host is the cause:
+    /// worth a new address.
+    slowing_sure: bool,
+    /// Times in a row the host slowed this address, which `cooldown` doubles
+    /// with ([`crate::throttle::Throttling::cooldown_for`]).
+    strikes: u32,
     /// What the host says this address may still fetch at full speed today
     /// (pixeldrain publishes it).
     quota: Option<hosts::Allowance>,
@@ -247,6 +257,16 @@ impl Lane {
         self.cap_since = None;
         self.cooldown = None;
         self.settle_until = None;
+        self.slowing = false;
+        self.slowing_sure = false;
+        self.strikes = 0;
+    }
+
+    /// The host asked this address to wait until `until`.
+    fn asked_to_wait(&mut self, until: Instant) {
+        self.cooldown = Some(until);
+        self.slowing = false;
+        self.slowing_sure = false;
     }
 
     fn slowed(&self) -> bool {
@@ -268,6 +288,12 @@ impl Lane {
             && !self.cooling(now)
             && self.settle_until.is_none_or(|t| now >= t)
     }
+
+    /// As [`Lane::free`], but for a row with nowhere else to go: a host that
+    /// slows an address still serves it.
+    fn free_but_cooling(&self, limit: usize, now: Instant) -> bool {
+        self.active < self.slots(limit) && self.settle_until.is_none_or(|t| now >= t)
+    }
 }
 
 struct HostStats {
@@ -275,6 +301,17 @@ struct HostStats {
     ema: f64,
     /// When `ema` last changed, in seconds since 1970.
     measured: u64,
+    /// What one stream gets when the host isn't limiting the address: learned
+    /// only from whole windows above the slow line, since `ema` follows a
+    /// throttled transfer down within seconds. 0 until one was seen.
+    normal: f64,
+    /// A redial was made because of this host, and it hasn't been seen running
+    /// well since.
+    redialed_for: bool,
+    /// It was as slow on the new address as on the old: it doesn't limit by
+    /// address, so another redial would cut the line for nothing. Until a
+    /// restart, or it runs well again.
+    redial_useless: bool,
     fails: u32,
     /// Failures weighed by age: each halves every [`PENALTY_HALF_LIFE`].
     penalty: f64,
@@ -311,6 +348,18 @@ impl HostStats {
         self.fails += 1;
     }
 
+    /// Takes in a whole window of a transfer that ran well: quick to learn the
+    /// host can do more, slow to believe it does less.
+    fn learn_normal(&mut self, speed: f64) {
+        self.normal = if self.normal == 0.0 {
+            speed
+        } else if speed > self.normal {
+            self.normal * 0.7 + speed * 0.3
+        } else {
+            self.normal * 0.99 + speed * 0.01
+        };
+    }
+
     /// Unknown hosts score high, so each gets tried and the ranking learns;
     /// recent failures weigh more than old ones.
     fn score(&self, now: Instant) -> f64 {
@@ -322,6 +371,9 @@ impl HostStats {
         Self {
             ema: 0.0,
             measured: 0,
+            normal: 0.0,
+            redialed_for: false,
+            redial_useless: false,
             fails: 0,
             penalty: 0.0,
             penalty_at: Instant::now(),
@@ -337,6 +389,7 @@ impl HostStats {
         Self {
             ema: if fresh { saved.speed as f64 } else { 0.0 },
             measured: if fresh { saved.measured } else { 0 },
+            normal: if fresh { saved.normal as f64 } else { 0.0 },
             ok: saved.ok,
             fails: saved.fails,
             bytes: saved.bytes,
@@ -348,6 +401,7 @@ impl HostStats {
         store::SavedHost {
             speed: self.ema.round() as u64,
             measured: self.measured,
+            normal: self.normal.round() as u64,
             ok: self.ok,
             fails: self.fails,
             bytes: self.bytes,
@@ -366,6 +420,9 @@ struct State {
     moving: bool,
     /// The router is redialing: start nothing new.
     reconnecting: bool,
+    /// A redial on its own waits for the downloads running well on the line:
+    /// start nothing new meanwhile. Why it would help.
+    draining: Option<String>,
     max_total: usize,
     dirty: bool,
     /// Pages that answered with a browser check (Cloudflare's) a browser
@@ -436,6 +493,28 @@ impl State {
             let rank = (lane.slowed(), lane.active);
             if lane.free(limit, now) && best.is_none_or(|(_, r)| rank < r) {
                 best = Some((exit, rank));
+            }
+        }
+        best.map(|(exit, _)| exit)
+    }
+
+    /// As [`State::open_exit`], for a row that has nowhere else to go than a
+    /// host that is slowing the address.
+    fn exit_back_to(
+        &mut self,
+        host: &str,
+        exits: &[Exit],
+        cfg: &Config,
+        now: Instant,
+    ) -> Option<Exit> {
+        let limit = hosts::known(host)
+            .and_then(|k| k.at_once(cfg))
+            .map_or(AT_ONCE, |at_once| at_once.min(AT_ONCE));
+        let mut best: Option<(Exit, usize)> = None;
+        for &exit in exits {
+            let lane = self.lane(host, exit);
+            if lane.free_but_cooling(limit, now) && best.is_none_or(|(_, a)| lane.active < a) {
+                best = Some((exit, lane.active));
             }
         }
         best.map(|(exit, _)| exit)
@@ -622,6 +701,7 @@ impl Engine {
                 paused,
                 moving: false,
                 reconnecting: false,
+                draining: None,
                 max_total: cfg.max_total.max(1),
                 dirty: false,
                 guarded: HashSet::new(),
@@ -672,6 +752,7 @@ impl Engine {
         tokio::spawn(engine.clone().scheduler());
         tokio::spawn(engine.clone().watch_quotas());
         tokio::spawn(engine.clone().watch_reconnects());
+        tokio::spawn(engine.clone().watch_speeds());
         tokio::spawn(engine.clone().watch_services());
         tokio::spawn(engine.clone().saver());
         tokio::spawn(engine.clone().watch_config());
@@ -2272,14 +2353,21 @@ mod tests {
             ok: 3,
             fails: 1,
             bytes: 9,
+            normal: 7_000_000,
         };
         let now = 10 * SPEED_MEMORY;
         let fresh = HostStats::restore(&saved(now - 60), now);
-        assert_eq!((fresh.ema, fresh.ok), (5e6, 3));
+        assert_eq!((fresh.ema, fresh.normal, fresh.ok), (5e6, 7e6, 3));
         let stale = HostStats::restore(&saved(now - SPEED_MEMORY - 1), now);
         assert_eq!(
-            (stale.ema, stale.measured, stale.ok, stale.fails),
-            (0.0, 0, 3, 1)
+            (
+                stale.ema,
+                stale.normal,
+                stale.measured,
+                stale.ok,
+                stale.fails
+            ),
+            (0.0, 0.0, 0, 3, 1)
         );
     }
 
@@ -2320,6 +2408,7 @@ mod exit_tests {
             paused: false,
             moving: false,
             reconnecting: false,
+            draining: None,
             max_total: 8,
             dirty: false,
             guarded: HashSet::new(),

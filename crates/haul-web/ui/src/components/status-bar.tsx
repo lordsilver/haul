@@ -205,7 +205,7 @@ function Pool({ s, close }: { s: State; close: () => void }) {
 export function StatusBar({ state: s }: { state: State | null }) {
   const theme = useTheme();
   if (!s) return <footer className="h-9 border-t bg-sidebar" />;
-  const { downloading, waiting, left, unwrapping, need_you, ready } = s.counts;
+  const { downloading, waiting, left, slowed, unwrapping, need_you, ready } = s.counts;
   const clipboard = s.desktop && s.watch_clipboard;
   const pooled = s.pool.proxies + s.pool.vpn > 0;
   const index = THEMES.findIndex((t) => t.value === theme);
@@ -221,7 +221,15 @@ export function StatusBar({ state: s }: { state: State | null }) {
       <span className={item}>{s.paused ? 'Paused' : `${downloading} downloading · ${waiting} waiting`}</span>
       {left ? (
         <span className={cn(item, 'tabular-nums')}>
-          {bytes(left)} left{s.speed && !s.paused ? ` · ${roughly(left / s.speed)}` : ''}
+          {bytes(left)} left
+          {slowed ? ` · ${slowed} slowed by ${slowed === 1 ? 'its host' : 'their hosts'}` : ''}
+          {!slowed && s.speed && !s.paused ? ` · ${roughly(left / s.speed)}` : ''}
+        </span>
+      ) : null}
+      {s.reconnect.draining ? (
+        <span className={item} title={s.reconnect.draining}>
+          <LoaderCircle aria-hidden className="size-3.5 animate-spin" />
+          New address once downloads finish: nothing new starts
         </span>
       ) : null}
       {/* Work on links before files show, and who waits for the user:
