@@ -244,6 +244,21 @@ impl Item {
         self.task.is_some()
     }
 
+    /// Stops its transfer, if one is running; the row's status stays.
+    pub(crate) fn cancel(&self) {
+        if let Some(task) = &self.task {
+            task.cancel();
+        }
+    }
+
+    /// Starts its retry counts over and forgets what went wrong.
+    pub(crate) fn reset_retries(&mut self) {
+        self.error.clear();
+        self.retries = 0;
+        self.auto_retries = 0;
+        self.retry_at = None;
+    }
+
     /// The name used to recognise the same file on other hosts.
     pub fn key_name(&self) -> Option<String> {
         self.name
@@ -311,10 +326,7 @@ impl Item {
         self.path = Some(path.display().to_string());
         self.done = self.size;
         self.speed = 0.0;
-        self.error.clear();
-        self.retries = 0;
-        self.auto_retries = 0;
-        self.retry_at = None;
+        self.reset_retries();
         self.not_before = None;
     }
 

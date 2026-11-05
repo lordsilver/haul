@@ -93,6 +93,40 @@ fn number(value: &Value, key: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("{key} must be a whole number"))
 }
 
+/// A text setting that empty unsets: its value, and the write that sets or
+/// removes its key.
+fn optional_text(value: &Value, key: &str) -> Result<(Option<String>, Write), String> {
+    let given = Some(text(value, key)?).filter(|t| !t.is_empty());
+    let write = top(key, given.as_deref().map(Into::into));
+    Ok((given, write))
+}
+
+fn str_list(list: &[String]) -> toml_edit::Value {
+    toml_edit::Value::Array(list.iter().map(String::as_str).collect())
+}
+
+type Flag = fn(&mut Config) -> &mut bool;
+
+/// The settings that are simply on or off, by their names in the file.
+const FLAGS: &[(&str, Flag)] = &[
+    ("watch_clipboard", |c| &mut c.watch_clipboard),
+    ("check_updates", |c| &mut c.check_updates),
+    ("recycle_on_remove", |c| &mut c.recycle_on_remove),
+    ("verify_existing", |c| &mut c.verify_existing),
+    ("auto_extract", |c| &mut c.auto_extract),
+    ("delete_after_extract", |c| &mut c.delete_after_extract),
+    ("reconnect", |c| &mut c.reconnect),
+    ("detailed_log", |c| &mut c.detailed_log),
+    ("skip_add_dialog", |c| &mut c.skip_add_dialog),
+    ("proxies_on", |c| &mut c.proxies_on),
+    ("nordvpn_on", |c| &mut c.nordvpn_on),
+    ("proxy_with_direct", |c| &mut c.proxy_with_direct),
+    ("proxy_fresh_connections", |c| {
+        &mut c.proxy_fresh_connections
+    }),
+    ("use_proxy", |c| &mut c.use_proxy),
+];
+
 impl Engine {
     /// Every setting, for the settings view.
     pub fn settings(&self) -> SettingsView {
@@ -220,33 +254,6 @@ impl Engine {
                     cfg.theme = theme;
                     writes.push(top(key, Some(theme.as_str().into())));
                 }
-                "watch_clipboard" => {
-                    let on = value.as_bool().ok_or("watch_clipboard is true or false")?;
-                    cfg.watch_clipboard = on;
-                    writes.push(top(key, Some(on.into())));
-                }
-                "check_updates" => {
-                    let on = value.as_bool().ok_or("check_updates is true or false")?;
-                    cfg.check_updates = on;
-                    writes.push(top(key, Some(on.into())));
-                }
-                "recycle_on_remove" => {
-                    let on = value
-                        .as_bool()
-                        .ok_or("recycle_on_remove is true or false")?;
-                    cfg.recycle_on_remove = on;
-                    writes.push(top(key, Some(on.into())));
-                }
-                "verify_existing" => {
-                    let on = value.as_bool().ok_or("verify_existing is true or false")?;
-                    cfg.verify_existing = on;
-                    writes.push(top(key, Some(on.into())));
-                }
-                "auto_extract" => {
-                    let on = value.as_bool().ok_or("auto_extract is true or false")?;
-                    cfg.auto_extract = on;
-                    writes.push(top(key, Some(on.into())));
-                }
                 "archive_passwords" => {
                     // A list, or text with one password per line. A password
                     // keeps its spaces: only empty lines go.
@@ -265,27 +272,8 @@ impl Engine {
                         .collect();
                     let mut seen = std::collections::HashSet::new();
                     list.retain(|p| seen.insert(p.clone()));
-                    writes.push(top(
-                        key,
-                        Some(toml_edit::Value::Array(
-                            list.iter().map(String::as_str).collect(),
-                        )),
-                    ));
+                    writes.push(top(key, Some(str_list(&list))));
                     cfg.archive_passwords = list;
-                }
-                "delete_after_extract" => {
-                    let on = value
-                        .as_bool()
-                        .ok_or("delete_after_extract is true or false")?;
-                    cfg.delete_after_extract = on;
-                    writes.push(top(key, Some(on.into())));
-                }
-                "reconnect" => {
-                    let on = value.as_bool().ok_or("reconnect is true or false")?;
-                    // Checked against the rest of this change below: a login
-                    // set in the same request counts.
-                    cfg.reconnect = on;
-                    writes.push(top(key, Some(on.into())));
                 }
                 "nordvpn_servers" => {
                     let n = value
@@ -303,31 +291,13 @@ impl Engine {
                         .map(|v| v.as_str().map(|s| s.trim().to_string()))
                         .collect::<Option<_>>()
                         .ok_or("countries are text")?;
-                    writes.push(top(
-                        key,
-                        Some(toml_edit::Value::Array(
-                            list.iter().map(String::as_str).collect(),
-                        )),
-                    ));
+                    writes.push(top(key, Some(str_list(&list))));
                     cfg.nordvpn_countries = list;
                 }
                 "reconnect_command" => {
-                    let command = text(value, key)?;
-                    writes.push(top(
-                        key,
-                        (!command.is_empty()).then(|| command.as_str().into()),
-                    ));
-                    cfg.reconnect_command = (!command.is_empty()).then_some(command);
-                }
-                "detailed_log" => {
-                    let on = value.as_bool().ok_or("detailed_log is true or false")?;
-                    cfg.detailed_log = on;
-                    writes.push(top(key, Some(on.into())));
-                }
-                "skip_add_dialog" => {
-                    let on = value.as_bool().ok_or("skip_add_dialog is true or false")?;
-                    cfg.skip_add_dialog = on;
-                    writes.push(top(key, Some(on.into())));
+                    let (command, write) = optional_text(value, key)?;
+                    writes.push(write);
+                    cfg.reconnect_command = command;
                 }
                 "resume_attempts" => {
                     let n = number(value, key)?.min(20) as u32;
@@ -350,12 +320,12 @@ impl Engine {
                     writes.push(top(key, Some((n as i64).into())));
                 }
                 "proxy" => {
-                    let proxy = text(value, key)?;
-                    if !proxy.is_empty() {
-                        check_proxy(&proxy, &cfg.user_agent)?;
+                    let (proxy, write) = optional_text(value, key)?;
+                    if let Some(proxy) = &proxy {
+                        check_proxy(proxy, &cfg.user_agent)?;
                     }
-                    writes.push(top(key, (!proxy.is_empty()).then(|| proxy.as_str().into())));
-                    cfg.proxy = (!proxy.is_empty()).then_some(proxy);
+                    writes.push(write);
+                    cfg.proxy = proxy;
                 }
                 "proxies" => {
                     // A list, or text with one proxy per line.
@@ -374,83 +344,51 @@ impl Engine {
                     for proxy in &list {
                         check_proxy(proxy, &cfg.user_agent)?;
                     }
-                    writes.push(top(
-                        key,
-                        Some(toml_edit::Value::Array(
-                            list.iter().map(String::as_str).collect(),
-                        )),
-                    ));
+                    writes.push(top(key, Some(str_list(&list))));
                     cfg.proxies = list;
                 }
-                "proxies_on" => {
-                    let on = value.as_bool().ok_or("proxies_on is true or false")?;
-                    cfg.proxies_on = on;
-                    writes.push(top(key, Some(on.into())));
-                }
-                "nordvpn_on" => {
-                    let on = value.as_bool().ok_or("nordvpn_on is true or false")?;
-                    cfg.nordvpn_on = on;
-                    writes.push(top(key, Some(on.into())));
-                }
-                "proxy_with_direct" => {
-                    let on = value
-                        .as_bool()
-                        .ok_or("proxy_with_direct is true or false")?;
-                    cfg.proxy_with_direct = on;
-                    writes.push(top(key, Some(on.into())));
-                }
-                "proxy_fresh_connections" => {
-                    let on = value
-                        .as_bool()
-                        .ok_or("proxy_fresh_connections is true or false")?;
-                    cfg.proxy_fresh_connections = on;
-                    writes.push(top(key, Some(on.into())));
-                }
-                "use_proxy" => {
-                    let on = value.as_bool().ok_or("use_proxy is true or false")?;
-                    cfg.use_proxy = on;
-                    writes.push(top(key, Some(on.into())));
-                }
                 "user_agent" => {
-                    let agent = text(value, key)?;
-                    if HeaderValue::from_str(&agent).is_err() {
+                    let (agent, write) = optional_text(value, key)?;
+                    if agent
+                        .as_deref()
+                        .is_some_and(|a| HeaderValue::from_str(a).is_err())
+                    {
                         return Err("the user agent must be text on one line".into());
                     }
-                    writes.push(top(key, (!agent.is_empty()).then(|| agent.as_str().into())));
-                    cfg.user_agent = if agent.is_empty() {
-                        config::DEFAULT_USER_AGENT.into()
-                    } else {
-                        agent
-                    };
+                    writes.push(write);
+                    cfg.user_agent = agent.unwrap_or_else(|| config::DEFAULT_USER_AGENT.into());
                 }
                 "download_dir" => {
                     if self.0.download_dir_fixed {
                         return Err("the download folder was given on the command line".into());
                     }
-                    let dir = text(value, key)?;
-                    if dir.is_empty() {
-                        cfg.download_dir = None;
-                        writes.push(top(key, None));
-                    } else {
-                        let path = PathBuf::from(&dir);
-                        usable_folder(&path)?;
-                        cfg.download_dir = Some(path);
-                        writes.push(top(key, Some(dir.as_str().into())));
+                    let (dir, write) = optional_text(value, key)?;
+                    if let Some(dir) = &dir {
+                        usable_folder(Path::new(dir))?;
                     }
+                    writes.push(write);
+                    cfg.download_dir = dir.map(PathBuf::from);
                 }
                 account if cfg.account(account).is_some() => {
-                    let secret = text(value, key)?;
-                    *cfg.account_mut(account).expect("checked") =
-                        (!secret.is_empty()).then(|| secret.clone());
-                    writes.push(top(
-                        key,
-                        (!secret.is_empty()).then(|| secret.as_str().into()),
-                    ));
+                    let (secret, write) = optional_text(value, key)?;
+                    *cfg.account_mut(account).expect("checked") = secret;
+                    writes.push(write);
                 }
-                _ => return Err(format!("unknown setting {key}")),
+                _ => {
+                    let Some((_, flag)) = FLAGS.iter().find(|(name, _)| name == key) else {
+                        return Err(format!("unknown setting {key}"));
+                    };
+                    let on = value
+                        .as_bool()
+                        .ok_or_else(|| format!("{key} is true or false"))?;
+                    *flag(&mut cfg) = on;
+                    writes.push(top(key, Some(on.into())));
+                }
             }
         }
         // Redialing on its own is switched on only when a redial can work.
+        // Checked here, against the whole change: a login set in the same
+        // request counts.
         if cfg.reconnect
             && changes.contains_key("reconnect")
             && let Some(why) = self.redial_blocker(&cfg)
@@ -563,15 +501,10 @@ impl Engine {
 
     /// Puts `cfg` in effect with the host lists written whole.
     fn write_hosts(&self, cfg: Config) -> Result<(), String> {
-        let list = |hosts: &[String]| {
-            Some(toml_edit::Value::Array(
-                hosts.iter().map(String::as_str).collect(),
-            ))
-        };
         let writes = vec![
-            top("preferred_hosts", list(&cfg.preferred_hosts)),
-            top("disabled_hosts", list(&cfg.disabled_hosts)),
-            top("accountless_hosts", list(&cfg.accountless_hosts)),
+            top("preferred_hosts", Some(str_list(&cfg.preferred_hosts))),
+            top("disabled_hosts", Some(str_list(&cfg.disabled_hosts))),
+            top("accountless_hosts", Some(str_list(&cfg.accountless_hosts))),
         ];
         self.write_and_apply(cfg, writes)
     }
@@ -580,8 +513,7 @@ impl Engine {
     /// even when empty: a key left out would bring the defaults
     /// ([`config::DEFAULT_PREFERRED`]) back on the next load.
     fn write_preferred(&self, cfg: Config) -> Result<(), String> {
-        let list =
-            toml_edit::Value::Array(cfg.preferred_hosts.iter().map(String::as_str).collect());
+        let list = str_list(&cfg.preferred_hosts);
         self.write_and_apply(cfg, vec![top("preferred_hosts", Some(list))])
     }
 
