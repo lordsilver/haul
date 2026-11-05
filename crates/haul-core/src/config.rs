@@ -167,7 +167,7 @@ impl Default for Config {
             auto_extract: false,
             delete_after_extract: false,
             archive_passwords: Vec::new(),
-            detailed_log: false,
+            detailed_log: true,
             resume_attempts: 5,
             min_speed_kbps: 0,
             min_speed_seconds: 60,
@@ -624,8 +624,8 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # archive_passwords = ["password one", "password two"]
 
 # Writes Haul's debug events to haul.log too (every request, retry and mirror
-# choice), for reproducing a problem; off, the log keeps notable events.
-# detailed_log = false
+# choice), so a problem is on record the first time; false keeps notable events.
+# detailed_log = true
 
 # Retries of a mirror after a dropped connection or a network error. An attempt
 # that gets data in before it stops starts the count over.

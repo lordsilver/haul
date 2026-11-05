@@ -379,23 +379,11 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
         title="Report"
         description="Saves one file to send when something goes wrong: your downloads and their links, the hosts, the settings and the recent log. Keys and passwords are left out."
         controls={
-          <>
-            <Button variant="outline" onClick={() => openPlace('log')}>
-              Show log
-            </Button>
-            <Button variant="outline" onClick={() => saveDiagnostics(s.desktop)}>
-              Save report…
-            </Button>
-          </>
+          <Button variant="outline" onClick={() => saveDiagnostics(s.desktop)}>
+            Save report…
+          </Button>
         }
-      >
-        {/* How much the log keeps: only worth more while reproducing. */}
-        <SettingRow
-          title="Detailed log"
-          description="Records every request and retry. Turn it on before reproducing a problem."
-          controls={<SettingSwitch name="detailed_log" on={d.detailed_log} label="Detailed log" />}
-        />
-      </SettingCard>
+      />
       <Section>About</Section>
       <SettingCard
         icon={Info}

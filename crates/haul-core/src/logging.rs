@@ -7,9 +7,9 @@
 //!   (`haul.1.log` the newest of them).
 //! - Neither it nor the console keeps the part of a link after `#`, which
 //!   holds mega.nz's keys: a log can be read and sent as it is.
-//! - Notable events are logged; with the detailed log on (a setting that
-//!   applies at once) Haul's own debug events are too. `RUST_LOG`, when
-//!   set, decides instead.
+//! - Haul's own debug events are logged along with the notable ones, so a
+//!   problem is on record the first time it happens; `detailed_log = false`
+//!   keeps notable events only. `RUST_LOG`, when set, decides instead.
 //! - Every download keeps its last [`HISTORY`] events, debug ones included
 //!   whatever the setting, so a report shows how each one got where it is.
 

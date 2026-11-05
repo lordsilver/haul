@@ -27,7 +27,7 @@ export const act = (id: string, action: string) => api(item(id, action)).catch(r
 // The in-app browser window for a page that needs a person.
 export const openHere = (id: string) => api(item(id, 'browse'), { user_agent: navigator.userAgent }).catch(report);
 
-export const openPlace = (place: 'downloads' | 'config' | 'data' | 'log') => api(`/api/open/${place}`).catch(report);
+export const openPlace = (place: 'downloads' | 'config' | 'data') => api(`/api/open/${place}`).catch(report);
 
 // Each action on every item it applies to; one report if any fail. Answers
 // how many succeeded.
