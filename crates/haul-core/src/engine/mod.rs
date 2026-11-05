@@ -205,6 +205,17 @@ pub struct Added {
     pub pages: usize,
 }
 
+impl std::ops::AddAssign for Added {
+    fn add_assign(&mut self, other: Self) {
+        self.added += other.added;
+        self.merged += other.merged;
+        self.duplicates += other.duplicates;
+        self.invalid += other.invalid;
+        self.wrappers += other.wrappers;
+        self.pages += other.pages;
+    }
+}
+
 #[derive(Debug, Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct Snapshot {

@@ -314,12 +314,7 @@ async fn container(State(app): State<App>, form: Multipart) -> Response {
     let mut total = Added::default();
     for (name, bytes) in files {
         match app.engine.import(&name, &bytes).await {
-            Ok(a) => {
-                total.added += a.added;
-                total.merged += a.merged;
-                total.duplicates += a.duplicates;
-                total.invalid += a.invalid;
-            }
+            Ok(a) => total += a,
             Err(e) => return error(StatusCode::BAD_REQUEST, format!("{name}: {e}")),
         }
     }

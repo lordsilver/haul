@@ -425,6 +425,41 @@ async fn reorders_the_preferred_hosts() {
     );
 }
 
+/// `/api/container` answers as `/api/add` does, over every file uploaded.
+#[tokio::test]
+async fn importing_counts_wrapper_links() {
+    let mut config = Config::default();
+    // Nothing listens there: the wrappers stay on this machine.
+    config.endpoints.filecrypt = "http://127.0.0.1:9".into();
+    let s = start_with(config).await;
+    let file = |name: &str, links: &str| {
+        reqwest::multipart::Part::bytes(links.as_bytes().to_vec()).file_name(name.to_string())
+    };
+    let form = reqwest::multipart::Form::new()
+        .part(
+            "file",
+            file("one.txt", "https://filecrypt.cc/Container/abc.html"),
+        )
+        .part(
+            "file",
+            file("two.txt", "https://filecrypt.cc/Container/def.html"),
+        );
+    let r: Value = s
+        .http
+        .post(format!("{}/api/container", s.base))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        r,
+        json!({"added": 0, "merged": 0, "duplicates": 0, "invalid": 0, "wrappers": 2, "pages": 0})
+    );
+}
+
 #[tokio::test]
 async fn wrappers_have_their_own_list_and_actions() {
     // A container that asks for its password waits for a person.
