@@ -6,6 +6,6 @@
 export type UpdateView = { version: string, notes: string, page: string, 
 /**
  * The desktop app can install it itself (on Windows, with its setup
- * program and checksums published).
+ * program published and its digest known).
  */
 installable: boolean, };

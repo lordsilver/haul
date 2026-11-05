@@ -175,7 +175,7 @@ async fn a_paste_saved_as_a_download_comes_back_a_wrapper() {
 }
 
 /// A newer Haul on GitHub shows in the state, and its setup program
-/// downloads checked against the published checksums.
+/// downloads checked against the digest GitHub gives.
 #[tokio::test]
 async fn a_newer_haul_is_found_and_its_installer_checked() {
     let t = Setup::new().await;
