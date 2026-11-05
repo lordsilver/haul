@@ -1,6 +1,6 @@
 //! Haul's own updates: the latest release on GitHub, when it is newer than
 //! this build, with what the desktop app needs to install it (its setup
-//! program and `SHA256SUMS`, which the download is checked against).
+//! program, whose download is checked against the digest GitHub gives).
 
 use std::path::{Path, PathBuf};
 
@@ -147,7 +147,7 @@ fn matches_sha256(bytes: &[u8], want: &str) -> bool {
 }
 
 /// Downloads `update`'s setup program into `dir` and checks it against the
-/// release's `SHA256SUMS`. Returns where it is.
+/// digest GitHub gives for it. Returns where it is.
 pub async fn fetch_installer(http: &Http, update: &Update, dir: &Path) -> Result<PathBuf, String> {
     let Some(installer) = &update.installer else {
         return Err("this release has no setup program to install".into());

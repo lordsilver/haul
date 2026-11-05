@@ -1468,6 +1468,9 @@ impl Engine {
                 }
             }
         }
+        // A wrapper or a paste served its page: the Hosts view counts these as
+        // it does a host's files.
+        st.host(&hosts::host_of(url)).ok += 1;
         if let Some(row) = st.items.get_mut(id) {
             row.tentative = false;
             if !row.wrapper {

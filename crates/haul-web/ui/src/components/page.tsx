@@ -1,26 +1,83 @@
-import type { LucideIcon } from 'lucide-react';
-import type { ComponentProps, ReactNode } from 'react';
+import { Info, type LucideIcon, Search } from 'lucide-react';
+import type { ComponentProps, ReactNode, Ref } from 'react';
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
+import { Input } from '@/components/ui/input';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
-// A page's title, what it does on its right, and what it is for below.
+// A page's title, with what the page is for behind an info mark, and the row
+// of what it does. `wide` for a page whose list takes the whole width, so the
+// row ends where the list does.
 export function PageHeader({
   title,
   actions,
+  wide = false,
   children,
 }: {
   title: ReactNode;
   actions?: ReactNode;
-  children?: ReactNode;
+  wide?: boolean;
+  children?: string;
 }) {
   return (
-    <header className="flex flex-col gap-1">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-        <h1 className="mr-auto text-2xl font-semibold tracking-tight">{title}</h1>
-        {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
+    <header className={cn('flex flex-col gap-3', !wide && 'max-w-4xl')}>
+      <div className="flex items-center gap-2">
+        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        {children ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label={children}
+                className="rounded-full text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+              >
+                <Info aria-hidden className="size-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{children}</TooltipContent>
+          </Tooltip>
+        ) : null}
       </div>
-      {children ? <p className="max-w-3xl text-sm text-muted-foreground">{children}</p> : null}
+      {actions ? <div className="flex min-h-9 flex-wrap items-center gap-2">{actions}</div> : null}
     </header>
+  );
+}
+
+// The search at the end of a page's row of actions.
+export function SearchBox({
+  value,
+  label,
+  placeholder = 'Search',
+  onChange,
+  ref,
+}: {
+  value: string;
+  label: string;
+  placeholder?: string;
+  onChange: (value: string) => void;
+  ref?: Ref<HTMLInputElement>;
+}) {
+  return (
+    <div className="relative ml-auto w-56">
+      <Search
+        aria-hidden
+        className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+      />
+      <Input
+        ref={ref}
+        type="search"
+        value={value}
+        placeholder={placeholder}
+        aria-label={label}
+        className="pl-9"
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== 'Escape') return;
+          onChange('');
+          e.currentTarget.blur();
+        }}
+      />
+    </div>
   );
 }
 

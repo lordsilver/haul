@@ -139,9 +139,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Checksums
-        working-directory: dist
-        run: sha256sum -- * > SHA256SUMS
       # Attestations need a public repository (or GitHub Enterprise).
       - uses: actions/attest-build-provenance@v4
         if: ${{ !github.event.repository.private }}
@@ -180,9 +177,8 @@ jobs:
             echo "| \`haul-desktop-$TAG-windows-x64.msi\` | Windows desktop app, MSI package |"
             echo "| \`haul-$TAG-windows-x64.zip\` | Headless server \`haul\` for Windows |"
             echo "| \`haul-$TAG-linux-x64.tar.gz\` | Headless server \`haul\` for Linux |"
-            echo "| \`SHA256SUMS\` | SHA-256 checksums of the files above |"
             echo
-            echo "Check a download with \`sha256sum --check --ignore-missing SHA256SUMS\`."
+            echo "GitHub shows each file's SHA-256 beside it on this page."
             if [ "$PUBLIC" = true ]; then
               echo "Check where it was built with \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`."
             fi

@@ -399,9 +399,8 @@ export function Connections({ s }: { s: State }) {
   return (
     <>
       <PageHeader title="Connections">
-        What downloads go out through. Hosts limit what one address may fetch (downloads at once, daily allowances,
-        waits), so every address Haul can use is another share: a new one from your router, proxies, or a VPN service's
-        servers.
+        What downloads go out through. Each address Haul can use, from your router, proxies or a VPN, is another share
+        of a host's limits.
       </PageHeader>
       <PageScroll>{d ? <Page s={s} d={d} /> : null}</PageScroll>
     </>

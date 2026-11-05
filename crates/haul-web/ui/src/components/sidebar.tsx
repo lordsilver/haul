@@ -8,13 +8,16 @@ import {
   Link,
   List,
   type LucideIcon,
+  Plus,
   Server,
   Settings,
   TriangleAlert,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Count, type CountTone } from '@/components/count';
+import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import { openAdd } from '@/lib/add';
 import { openPlace } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
 import { type ViewKey, go } from '@/lib/route';
@@ -92,6 +95,10 @@ export function Sidebar({ state, view }: { state: State | null; view: ViewKey })
           <span className="text-xs text-muted-foreground">{state?.version}</span>
         </div>
       </div>
+      <Button className="mb-1 w-full" onClick={() => openAdd()}>
+        <Plus />
+        Add links
+      </Button>
       <Heading>Downloads</Heading>
       {lists.map(([key, label, icon, iconClass, n, tone]) => (
         <NavItem key={key} icon={icon} iconClass={iconClass} label={label} current={view === key} onClick={open(key)}>
