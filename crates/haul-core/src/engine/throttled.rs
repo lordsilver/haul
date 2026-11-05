@@ -149,6 +149,7 @@ impl Engine {
                     h.learn_normal(speed);
                     h.redialed_for = false;
                     h.redial_useless = false;
+                    h.redial_useless_at = 0;
                     st.lane(&run.host, run.exit).strikes = 0;
                     changed |= self.not_slowed(&mut st, run, true, now);
                 }
@@ -259,7 +260,10 @@ impl Engine {
         if first && sure {
             // As slow on a new address as on the old one.
             let h = st.host(host);
-            h.redial_useless |= h.redialed_for;
+            if h.redialed_for && !h.redial_useless {
+                h.redial_useless = true;
+                h.redial_useless_at = super::unix_now();
+            }
         }
         let left = run.left.map_or("?".to_string(), mb);
         let it = st.items.get_mut(&run.id).expect("found above");

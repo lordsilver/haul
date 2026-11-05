@@ -774,7 +774,7 @@ pub(super) fn pool(cfg: &Config, p: super::PoolView, vpn: VpnFound) -> PoolSumma
         let status = if !cfg.proxies_on {
             "Off".to_string()
         } else if paused {
-            "Paused by the switch above".to_string()
+            "Paused: use_proxy is off in the settings file".to_string()
         } else {
             format!("{} in use", p.proxies)
         };
@@ -801,7 +801,7 @@ pub(super) fn pool(cfg: &Config, p: super::PoolView, vpn: VpnFound) -> PoolSumma
         } else if failing {
             vpn.error.clone().unwrap_or_default()
         } else if paused {
-            "Paused by the switch above".to_string()
+            "Paused: use_proxy is off in the settings file".to_string()
         } else if vpn.servers > 0 {
             format!(
                 "{} {} · {where_}",

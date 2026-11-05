@@ -268,6 +268,13 @@ impl Engine {
         }
         match after {
             Some(after) if after != before => Ok(after),
+            // The router has a public address of its own, not the one hosts
+            // see: this machine's traffic leaves some other way, which a
+            // redial can't change. A private or shared one is the carrier's
+            // network in between, as before.
+            Some(after) if is_public(&reported) && reported != after => Err(format!(
+                "downloads leave through something other than the router, such as a VPN on this PC: hosts see {after}, the router's own address is {reported}, so a new one changes nothing for them"
+            )),
             Some(after) => Err(format!(
                 "the same address came back: the internet still sees {after} (the router reported {reported})"
             )),
@@ -551,6 +558,20 @@ impl Engine {
     }
 }
 
+/// Whether `address` is one the internet routes to: not a private, shared
+/// (a carrier's, `100.64.0.0/10`), link-local or loopback one.
+fn is_public(address: &str) -> bool {
+    match address.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(a)) => {
+            let [first, second, ..] = a.octets();
+            let shared = first == 100 && (64..128).contains(&second);
+            !(a.is_private() || a.is_loopback() || a.is_link_local() || shared)
+        }
+        Ok(std::net::IpAddr::V6(a)) => !(a.is_loopback() || (a.segments()[0] & 0xfe00) == 0xfc00),
+        Err(_) => false,
+    }
+}
+
 /// Runs the user's reconnect command in the system's shell.
 async fn run(command: &str) -> Result<(), String> {
     let mut cmd = if cfg!(windows) {
@@ -597,5 +618,26 @@ fn blocker(cfg: &crate::Config, r: &Reconnects) -> Option<String> {
             ))
         }
         Some(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::is_public;
+
+    #[test]
+    fn only_a_routed_address_is_public() {
+        assert!(is_public("203.0.113.9"));
+        for local in [
+            "10.0.0.2",
+            "192.168.1.1",
+            "172.16.0.1",
+            "100.64.0.1",
+            "127.0.0.1",
+            "fd00::1",
+        ] {
+            assert!(!is_public(local), "{local}");
+        }
+        assert!(!is_public("unknown (no router to ask)"));
     }
 }

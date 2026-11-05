@@ -13,6 +13,7 @@ import {
   SwitchCard,
   TextField,
 } from '@/components/setting-card';
+import { SettingsTabs } from '@/components/settings-tabs';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -315,16 +316,13 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
             'No proxies or VPN set up yet: every download uses your line. Add them below.'
           )
         }
-        controls={
-          pool.configured ? <SettingSwitch name="use_proxy" on={d.use_proxy} label="Use proxies and VPN" /> : null
-        }
       />
       <Section>Your line</Section>
       <YourLine s={s} d={d} />
       {proxies || s.services.nordvpn.length ? (
         <SwitchCard
           icon={Monitor}
-          title="Your line in the pool"
+          title="Also download without a proxy"
           description="Your own connection as one more address beside the proxies and VPN servers. Hosts then see your real IP address for the downloads it takes."
           name="proxy_with_direct"
           on={d.proxy_with_direct}
@@ -381,6 +379,17 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
       ) : null}
       <Section>VPN services</Section>
       <NordVpn s={s} d={d} />
+      <Section>Requests</Section>
+      <SettingCard icon={Globe} title="User agent" description="Sent to hosts. Empty uses Haul's own.">
+        <TextField
+          d={d}
+          name="user_agent"
+          value={d.user_agent === d.default_user_agent ? '' : d.user_agent}
+          label="User agent"
+          placeholder={d.default_user_agent}
+          wide
+        />
+      </SettingCard>
     </>
   );
 }
@@ -398,10 +407,7 @@ export function Connections({ s }: { s: State }) {
   const d = useSettings(s.config_version);
   return (
     <>
-      <PageHeader title="Connections">
-        What downloads go out through. Each address Haul can use, from your router, proxies or a VPN, is another share
-        of a host's limits.
-      </PageHeader>
+      <PageHeader title="Settings" actions={<SettingsTabs current="connections" />} />
       <PageScroll>{d ? <Page s={s} d={d} /> : null}</PageScroll>
     </>
   );

@@ -3,22 +3,17 @@ import {
   CircleCheck,
   CirclePause,
   CircleX,
-  FolderOpen,
-  Globe,
   Link,
   List,
   type LucideIcon,
   Plus,
-  Server,
   Settings,
   TriangleAlert,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Count, type CountTone } from '@/components/count';
 import { Button } from '@/components/ui/button';
-import { Separator } from '@/components/ui/separator';
 import { openAdd } from '@/lib/add';
-import { openPlace } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
 import { type ViewKey, go } from '@/lib/route';
 import { clearSelection } from '@/lib/selection';
@@ -111,15 +106,11 @@ export function Sidebar({ state, view }: { state: State | null; view: ViewKey })
       </NavItem>
       <div className="min-h-4 flex-1" />
       <NavItem
-        icon={FolderOpen}
-        label="Downloads"
-        title={state ? `Open ${state.download_dir}` : undefined}
-        onClick={() => openPlace('downloads')}
+        icon={Settings}
+        label="Settings"
+        current={view === 'settings' || view === 'hosts' || view === 'connections'}
+        onClick={open('settings')}
       />
-      <Separator className="mx-1 my-1.5 data-horizontal:w-auto" />
-      <NavItem icon={Server} label="Hosts" current={view === 'hosts'} onClick={open('hosts')} />
-      <NavItem icon={Globe} label="Connections" current={view === 'connections'} onClick={open('connections')} />
-      <NavItem icon={Settings} label="Settings" current={view === 'settings'} onClick={open('settings')} />
     </nav>
   );
 }

@@ -16,6 +16,54 @@ use crate::{item::Item, logging::utc};
 const LOG_TAIL: u64 = 256 * 1024;
 
 impl Engine {
+    /// The report as one file to send, named for when it was made:
+    /// `report.json` ([`Engine::diagnostics`]), the log and the one before it
+    /// in full, and the last picture of each site's page that wanted a person
+    /// (under `pages/`). The logs keep no part of a link after `#` already.
+    pub fn report_zip(&self) -> Result<(String, Vec<u8>), String> {
+        use std::io::{Cursor, Write};
+
+        use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
+
+        let report = self.diagnostics();
+        let stamp: String = report["created"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .filter(char::is_ascii_digit)
+            .collect();
+        let packed = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        let mut add = |name: &str, bytes: &[u8]| -> Result<(), String> {
+            zip.start_file(name, packed).map_err(|e| e.to_string())?;
+            zip.write_all(bytes).map_err(|e| e.to_string())
+        };
+        add(
+            "report.json",
+            &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+        )?;
+        let dir = &self.0.data_dir;
+        let logs = std::iter::once(crate::logging::path(dir))
+            .chain(crate::logging::older(dir).into_iter().take(1));
+        for log in logs {
+            if let (Some(name), Ok(bytes)) = (log.file_name(), std::fs::read(&log)) {
+                add(&name.to_string_lossy(), &bytes)?;
+            }
+        }
+        if let Ok(pages) = std::fs::read_dir(dir.join("webview").join("chromium")) {
+            for page in pages.flatten() {
+                let name = page.file_name().to_string_lossy().into_owned();
+                if name.ends_with("-wants-person.png")
+                    && let Ok(bytes) = std::fs::read(page.path())
+                {
+                    add(&format!("pages/{name}"), &bytes)?;
+                }
+            }
+        }
+        let bytes = zip.finish().map_err(|e| e.to_string())?.into_inner();
+        Ok((format!("haul-report-{stamp}.zip"), bytes))
+    }
+
     /// The report: Haul's version and system, the settings with every secret
     /// left out (an account key says only whether it is set, a proxy loses
     /// its credentials), each download and wrapper with its links, state and

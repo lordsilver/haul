@@ -38,10 +38,6 @@ pub trait Desktop: Send + Sync + 'static {
     /// answer. `None` when they cancel.
     fn pick_folder(&self, start: &std::path::Path) -> Option<std::path::PathBuf>;
 
-    /// Asks the user where to save `contents`, suggesting `name`, and saves
-    /// it there; blocks until they answer. `None` when they cancel.
-    fn save_file(&self, name: &str, contents: &[u8]) -> Result<Option<std::path::PathBuf>, String>;
-
     /// Runs the newer Haul's setup program at `installer`, which installs it
     /// over this one and starts it again, and closes the app.
     fn install_update(&self, installer: &std::path::Path) -> Result<(), String>;
@@ -297,10 +293,16 @@ struct AddBody {
     text: String,
     #[serde(default)]
     package: String,
+    /// Tried first on the archives among these links' files.
+    #[serde(default)]
+    password: String,
 }
 
 async fn add(State(app): State<App>, Json(body): Json<AddBody>) -> Json<Added> {
-    Json(app.engine.add_text(&body.text, body.package.trim()))
+    Json(
+        app.engine
+            .add_text_with(&body.text, body.package.trim(), Some(&body.password)),
+    )
 }
 
 /// The files in a multipart upload, by name; the reason when it is malformed.
@@ -679,49 +681,53 @@ async fn pick_download_dir(State(app): State<App>) -> Response {
     answer(app.engine.update_settings(&change), StatusCode::BAD_REQUEST)
 }
 
-/// The diagnostics report and the name to save it under.
-fn report(engine: &Engine) -> (String, Vec<u8>) {
-    let report = engine.diagnostics();
-    let stamp: String = report["created"]
-        .as_str()
-        .unwrap_or_default()
-        .chars()
-        .filter(char::is_ascii_digit)
-        .collect();
-    let body = serde_json::to_vec_pretty(&report).unwrap_or_default();
-    (format!("haul-diagnostics-{stamp}.json"), body)
-}
-
-/// The diagnostics report, as a file to save: what Haul is doing, with
-/// account keys and proxy credentials left out.
+/// The report, as a zip to save ([`Engine::report_zip`]): what Haul is doing,
+/// with account keys and proxy credentials left out, and its logs.
 async fn diagnostics(State(app): State<App>) -> Response {
-    let (name, body) = report(&app.engine);
-    (
-        [
-            (header::CONTENT_TYPE, "application/json".to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{name}\""),
-            ),
-        ],
-        body,
-    )
-        .into_response()
+    let engine = app.engine.clone();
+    match tokio::task::spawn_blocking(move || engine.report_zip()).await {
+        Ok(Ok((name, body))) => (
+            [
+                (header::CONTENT_TYPE, "application/zip".to_string()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{name}\""),
+                ),
+            ],
+            body,
+        )
+            .into_response(),
+        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
-/// Desktop app only (501 elsewhere): saves the report where the user picks
-/// in the system's dialog.
+/// Desktop app only (501 elsewhere): saves the report to the system's
+/// Downloads folder, without asking, and shows it there.
 async fn save_diagnostics(State(app): State<App>) -> Response {
-    let Some(desktop) = app.desktop.clone() else {
+    if app.desktop.is_none() {
         return error(
             StatusCode::NOT_IMPLEMENTED,
-            "only the desktop app has a save dialog; GET /api/diagnostics instead",
+            "only the desktop app saves the report itself; GET /api/diagnostics instead",
         );
-    };
-    let (name, body) = report(&app.engine);
-    match tokio::task::spawn_blocking(move || desktop.save_file(&name, &body)).await {
-        Ok(Ok(Some(path))) => Json(json!({ "saved": path.display().to_string() })).into_response(),
-        Ok(Ok(None)) => Json(json!({ "cancelled": true })).into_response(),
+    }
+    let engine = app.engine.clone();
+    let saved = tokio::task::spawn_blocking(move || -> Result<std::path::PathBuf, String> {
+        let (name, body) = engine.report_zip()?;
+        let folder = haul_core::paths::downloads_folder();
+        std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        let path = haul_core::paths::unused_name(&folder, &name);
+        std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(path)
+    })
+    .await;
+    match saved {
+        Ok(Ok(path)) => {
+            if let Err(e) = os::reveal(&path) {
+                tracing::debug!("showing the report: {e}");
+            }
+            Json(json!({ "saved": path.display().to_string() })).into_response()
+        }
         Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }

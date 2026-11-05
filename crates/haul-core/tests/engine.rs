@@ -4973,3 +4973,28 @@ async fn an_answer_cut_short_does_not_cost_the_partial_file() {
         "the partial file was thrown away"
     );
 }
+
+/// The password given with the links opens their archive with no one asked.
+#[tokio::test]
+async fn a_password_given_with_the_links_opens_their_archive() {
+    let t = Setup::new().await;
+    let engine = t
+        .engine_with(Config {
+            auto_extract: true,
+            ..t.config()
+        })
+        .await;
+    engine.add_text_with(
+        &format!("{0}/archive/PV.part1.rar {0}/archive/PV.part2.rar", t.ip),
+        "",
+        Some("open sesame"),
+    );
+    wait_for(&engine, "extracted", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.extract == Extract::Done)
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(t.root.join("dl/Secret/note.txt")).unwrap(),
+        "secret stuff\n"
+    );
+}
