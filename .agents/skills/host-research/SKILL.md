@@ -34,4 +34,4 @@ Using the rapidgator, nitroflare and 1fichier checksums costs one more request p
 
 ## Testing
 
-`crates/haul-core/src/hosts/resolver_tests.rs` runs each resolver against a local stand-in for the host's API: pin there the request and the answer the docs or the plugin describe. `crates/haul-core/tests/engine.rs` has stand-in hosts for whole downloads (`/busy` sends two files at once and refuses more, `/trickle` is slow, `/drip` breaks every third of a file, `/refuse` always says no). Add one when a behaviour needs it. Whether the real host still answers that way is a separate, live question, for the user's own files.
+`crates/haul-core/src/hosts/resolver_tests.rs` runs each resolver against a local stand-in for the host's API: pin there the request and the answer the docs or the plugin describe. `crates/haul-core/tests/support/mod.rs` has stand-in hosts for whole downloads (`/busy` sends two files at once and refuses more, `/trickle` is slow, `/drip` breaks every third of a file, `/refuse` always says no). Add one when a behaviour needs it. Whether the real host still answers that way is a separate, live question, for the user's own files.
