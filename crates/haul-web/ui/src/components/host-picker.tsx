@@ -18,7 +18,7 @@ const AUTOMATIC = '';
 // The hosts that are off: switched off, or off until their account is set
 // or they are switched on in Hosts. Rows grey them out.
 export function offHosts(s: State): Set<string> {
-  return new Set(s.hosts.filter((h) => h.disabled || h.needs_account).map((h) => h.name));
+  return new Set(s.hosts.filter((h) => h.disabled).map((h) => h.name));
 }
 
 // A host's name as a row lists it: greyed out while it is off.

@@ -348,7 +348,7 @@ function HostCard({
   // Files download from a host; the others only lead to links, so they have
   // no order, account or folder.
   const fileHost = h.kind === 'host';
-  const off = h.disabled || h.needs_account;
+  const off = h.disabled;
   const Icon = KIND_ICONS[h.kind];
   const preferred = h.preferred !== null;
   // Its settings: a host's account and folder, and any site's route when
@@ -453,7 +453,7 @@ function HostCard({
 
 // Whether Haul uses this site.
 function HostSwitch({ h }: { h: HostView }) {
-  const off = h.disabled || h.needs_account;
+  const off = h.disabled;
   return (
     <span
       className="ml-1 flex items-center gap-2 text-sm text-muted-foreground"
@@ -461,7 +461,7 @@ function HostSwitch({ h }: { h: HostView }) {
         h.disabled
           ? 'Off: its links are never tried. Click to use it again.'
           : h.needs_account
-            ? 'Off by default, as its free download is slow going. Click to use it free, or set its account under the wrench.'
+            ? 'On, used only when no other host has the file: free, it needs you for each one. Set its account under the wrench to use it like any other.'
             : 'On: click to never use this host'
       }
     >

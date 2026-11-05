@@ -225,6 +225,14 @@ impl Engine {
         // turn in the browser: the file waits for it rather than go to a
         // host Haul knows nothing of, or one measured slower, unless that
         // host has asked this address to wait.
+        // A host without its account goes only when no other host has the
+        // file ([`hosts::Known::last_resort`]).
+        let usable = |m: &String| !it.failed.contains(m) && !off(m);
+        let others = it
+            .mirrors
+            .iter()
+            .any(|m| usable(m) && !cfg.is_last_resort(m, pages));
+        let wanted = |m: &String| !(others && cfg.is_last_resort(m, pages));
         let pass_host = (pages && !it.page_wants_person)
             .then(|| {
                 it.manual_urls
@@ -232,6 +240,7 @@ impl Engine {
                     .find(|m| {
                         st.passes(m)
                             && !off(m)
+                            && wanted(m)
                             && !it.failed.contains(*m)
                             && self.pass_held_for(st, it, m, now).is_none()
                     })
@@ -241,7 +250,9 @@ impl Engine {
         let mut candidates: Vec<String> = it
             .mirrors
             .iter()
-            .filter(|m| !it.failed.contains(*m) && !it.manual_urls.contains(*m) && !off(m))
+            .filter(|m| {
+                !it.failed.contains(*m) && !it.manual_urls.contains(*m) && !off(m) && wanted(m)
+            })
             .cloned()
             .collect();
         if candidates.is_empty() {

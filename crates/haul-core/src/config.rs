@@ -110,9 +110,9 @@ pub struct Config {
     pub preferred_hosts: Vec<String>,
     /// Hosts never downloaded from: their links are left alone.
     pub disabled_hosts: Vec<String>,
-    /// Hosts that need an account ([`crate::hosts::Known::needs_account`]),
-    /// switched on by the user without one. The others stay off until
-    /// their account is set.
+    /// Hosts that need an account ([`crate::hosts::Known::needs_account`])
+    /// the user wants used like any other without one. The others are used
+    /// only when no other host has the file, until their account is set.
     pub accountless_hosts: Vec<String>,
     #[serde(rename = "1fichier_key")]
     pub onefichier_key: Option<String>,
@@ -368,11 +368,17 @@ impl Config {
             .any(|h| h.eq_ignore_ascii_case(host))
     }
 
-    /// Whether `host`'s links are left out: the user turned it off, or it
-    /// needs an account that is not set and the user did not switch it on
-    /// without one (see [`crate::hosts::Known::off_for_account`]).
+    /// Whether `host`'s links are left out: the user turned it off. One that
+    /// lacks its account is used, after every other
+    /// ([`crate::hosts::Known::last_resort`]).
     pub fn is_off(&self, host: &str) -> bool {
-        self.is_disabled(host) || crate::hosts::known(host).is_some_and(|k| k.off_for_account(self))
+        self.is_disabled(host)
+    }
+
+    /// Whether `url`'s host is used only when no other host has the file;
+    /// `pages`: the desktop app passes pages by itself.
+    pub fn is_last_resort(&self, url: &str, pages: bool) -> bool {
+        crate::hosts::known(&crate::hosts::host_of(url)).is_some_and(|k| k.last_resort(self, pages))
     }
 
     /// The subfolder for files from `host`, relative to the download folder;
@@ -708,9 +714,10 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # disabled_hosts = ["mediafire.com"]
 
 # Hosts that give no decent download without an account (gofile.io,
-# rapidgator.net, nitroflare.com) are off until their account is set, or
-# until you switch them on here without one: then every file asks you for a
-# captcha, or, for gofile, comes only through its page.
+# rapidgator.net, nitroflare.com) are used only when no other host has the
+# file, until their account is set. List one here to use it like any other
+# host without its account: every file then asks you for a captcha, or, for
+# gofile, comes only through its page.
 # accountless_hosts = ["rapidgator.net"]
 
 # Sent to hosts with every request.

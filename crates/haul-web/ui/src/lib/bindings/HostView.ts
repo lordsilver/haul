@@ -21,8 +21,8 @@ preferred: number | null,
  */
 disabled: boolean, 
 /**
- * Off until its account is set or the user switches it on without
- * one ([`hosts::Known::off_for_account`]): its links are left out.
+ * Its account isn't set ([`hosts::Known::last_resort`]): its links are
+ * used only when no other host has the file.
  */
 needs_account: boolean, 
 /**
