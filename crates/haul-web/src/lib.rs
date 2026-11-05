@@ -258,6 +258,14 @@ fn ok() -> Response {
     Json(json!({})).into_response()
 }
 
+/// What a request with nothing else to say answers: `ok()`, or why it failed.
+fn answer(result: Result<(), String>, status: StatusCode) -> Response {
+    match result {
+        Ok(()) => ok(),
+        Err(e) => error(status, e),
+    }
+}
+
 async fn state(State(app): State<App>) -> Json<View> {
     Json(app.view())
 }
@@ -375,13 +383,11 @@ async fn direct(
     Path(id): Path<String>,
     Json(body): Json<DirectBody>,
 ) -> Response {
-    match app
-        .engine
-        .set_direct(&id, body.url.trim(), body.headers, body.name)
-    {
-        Ok(()) => ok(),
-        Err(e) => error(StatusCode::BAD_REQUEST, e),
-    }
+    answer(
+        app.engine
+            .set_direct(&id, body.url.trim(), body.headers, body.name),
+        StatusCode::BAD_REQUEST,
+    )
 }
 
 #[derive(Deserialize, Default)]
@@ -400,10 +406,10 @@ async fn browse(State(app): State<App>, Path(id): Path<String>, body: Bytes) -> 
         return error(StatusCode::NOT_FOUND, "no such item");
     };
     let body: BrowseBody = serde_json::from_slice(&body).unwrap_or_default();
-    match desktop.browse(&id, &url, body.user_agent) {
-        Ok(()) => ok(),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-    }
+    answer(
+        desktop.browse(&id, &url, body.user_agent),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
 }
 
 async fn item(State(app): State<App>, Path((id, action)): Path<(String, String)>) -> Response {
@@ -489,10 +495,10 @@ async fn host_folder(
     Path(name): Path<String>,
     Json(body): Json<Folder>,
 ) -> Response {
-    match app.engine.set_host_folder(&name, &body.folder) {
-        Ok(()) => ok(),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-    }
+    answer(
+        app.engine.set_host_folder(&name, &body.folder),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
 }
 
 #[derive(Deserialize)]
@@ -506,10 +512,10 @@ async fn host_preferred(
     Path(name): Path<String>,
     Json(body): Json<Preferred>,
 ) -> Response {
-    match app.engine.set_preferred(&name, body.preferred) {
-        Ok(()) => ok(),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-    }
+    answer(
+        app.engine.set_preferred(&name, body.preferred),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
 }
 
 /// Looks for the router on this network again.
@@ -551,13 +557,10 @@ async fn install_update(State(app): State<App>) -> Response {
     let started = tokio::task::spawn_blocking(move || desktop.install_update(&installer))
         .await
         .unwrap_or_else(|e| Err(e.to_string()));
-    match started {
-        Ok(()) => ok(),
-        Err(e) => {
-            tracing::warn!("installing the update: {e}");
-            error(StatusCode::INTERNAL_SERVER_ERROR, e)
-        }
-    }
+    answer(
+        started.inspect_err(|e| tracing::warn!("installing the update: {e}")),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
 }
 
 #[derive(Deserialize)]
@@ -593,10 +596,10 @@ async fn host_disabled(
     Path(name): Path<String>,
     Json(body): Json<Disabled>,
 ) -> Response {
-    match app.engine.set_disabled(&name, body.disabled) {
-        Ok(()) => ok(),
-        Err(e) => error(StatusCode::BAD_REQUEST, e),
-    }
+    answer(
+        app.engine.set_disabled(&name, body.disabled),
+        StatusCode::BAD_REQUEST,
+    )
 }
 
 #[derive(Deserialize)]
@@ -606,10 +609,10 @@ struct PreferredHosts {
 
 /// The preferred hosts, all of them, in a new order.
 async fn preferred_hosts(State(app): State<App>, Json(body): Json<PreferredHosts>) -> Response {
-    match app.engine.set_preferred_hosts(&body.hosts) {
-        Ok(()) => ok(),
-        Err(e) => error(StatusCode::BAD_REQUEST, e),
-    }
+    answer(
+        app.engine.set_preferred_hosts(&body.hosts),
+        StatusCode::BAD_REQUEST,
+    )
 }
 
 /// The user's approval to reach one host directly, or to go back to the proxy.
@@ -622,10 +625,10 @@ async fn host_route(
         "proxy" => Route::Proxy,
         _ => return error(StatusCode::BAD_REQUEST, "route is direct or proxy"),
     };
-    match app.engine.set_route(&name, route) {
-        Ok(()) => ok(),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-    }
+    answer(
+        app.engine.set_route(&name, route),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
 }
 
 async fn global(State(app): State<App>, Path(action): Path<String>) -> Response {
@@ -651,10 +654,7 @@ async fn update_settings(
     State(app): State<App>,
     Json(body): Json<serde_json::Map<String, serde_json::Value>>,
 ) -> Response {
-    match app.engine.update_settings(&body) {
-        Ok(()) => ok(),
-        Err(e) => error(StatusCode::BAD_REQUEST, e),
-    }
+    answer(app.engine.update_settings(&body), StatusCode::BAD_REQUEST)
 }
 
 /// Lets the user pick the download folder in the system's folder dialog.
@@ -674,10 +674,7 @@ async fn pick_download_dir(State(app): State<App>) -> Response {
         "download_dir".to_string(),
         serde_json::Value::String(folder.display().to_string()),
     )]);
-    match app.engine.update_settings(&change) {
-        Ok(()) => ok(),
-        Err(e) => error(StatusCode::BAD_REQUEST, e),
-    }
+    answer(app.engine.update_settings(&change), StatusCode::BAD_REQUEST)
 }
 
 /// The diagnostics report and the name to save it under.
@@ -733,13 +730,10 @@ async fn reveal(State(app): State<App>, Path(id): Path<String>) -> Response {
     let Some(path) = app.engine.item_path(&id) else {
         return error(StatusCode::NOT_FOUND, "nothing saved for this item yet");
     };
-    match os::reveal(&path) {
-        Ok(()) => ok(),
-        Err(e) => error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("{}: {e}", path.display()),
-        ),
-    }
+    answer(
+        os::reveal(&path).map_err(|e| format!("{}: {e}", path.display())),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
 }
 
 /// Opens one of the app's own places; never a path the caller names.
@@ -754,13 +748,10 @@ async fn open_place(State(app): State<App>, Path(place): Path<String>) -> Respon
         // The log, picked out in its folder.
         "log" => {
             let log = haul_core::logging::path(app.engine.data_dir());
-            return match os::reveal(&log) {
-                Ok(()) => ok(),
-                Err(e) => error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("{}: {e}", log.display()),
-                ),
-            };
+            return answer(
+                os::reveal(&log).map_err(|e| format!("{}: {e}", log.display())),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
         }
         _ => return error(StatusCode::BAD_REQUEST, "unknown place"),
     };
@@ -769,13 +760,12 @@ async fn open_place(State(app): State<App>, Path(place): Path<String>) -> Respon
     } else {
         std::fs::create_dir_all(&path)
     };
-    match prepared.and_then(|()| open::that_detached(&path)) {
-        Ok(()) => ok(),
-        Err(e) => error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("{}: {e}", path.display()),
-        ),
-    }
+    answer(
+        prepared
+            .and_then(|()| open::that_detached(&path))
+            .map_err(|e| format!("{}: {e}", path.display())),
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )
 }
 
 #[cfg(test)]

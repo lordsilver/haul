@@ -795,13 +795,7 @@ impl From<ResolveError> for Fail {
 impl From<reqwest::Error> for Fail {
     fn from(e: reqwest::Error) -> Self {
         // A host that cannot be reached right now may well be back shortly.
-        let network = e.is_connect() || e.is_timeout();
-        let message = hosts::error_text(e);
-        if network {
-            Fail::Transient(message)
-        } else {
-            Fail::Error(message)
-        }
+        ResolveError::from(e).into()
     }
 }
 
@@ -1037,6 +1031,14 @@ impl Engine {
         self.0.version.send_modify(|v| *v += 1);
     }
 
+    /// Does what [`Engine::touch`] does, then lets go of the lock and wakes
+    /// the scheduler.
+    fn publish(&self, mut st: MutexGuard<'_, State>) {
+        self.touch(&mut st);
+        drop(st);
+        self.0.wake.notify_one();
+    }
+
     /// The settings in effect.
     pub fn cfg(&self) -> Arc<Config> {
         self.0.cfg.read().unwrap_or_else(|e| e.into_inner()).clone()
@@ -1179,9 +1181,7 @@ impl Engine {
                 .collect();
             let mut wrappers = wrapper_keys(&st);
             for link in links {
-                let ok = url::Url::parse(&link.url)
-                    .is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
-                if !ok {
+                if !hosts::is_http(&link.url) {
                     added.invalid += 1;
                     continue;
                 }
@@ -1383,9 +1383,7 @@ impl Engine {
                 }
                 if self.dedupe(&mut st, &id) {
                     st.items.shift_remove(&id);
-                    self.touch(&mut st);
-                    drop(st);
-                    self.0.wake.notify_one();
+                    self.publish(st);
                     return;
                 }
             }
@@ -1445,9 +1443,7 @@ impl Engine {
             // says so, as for a download whose hosts are all off.
             if self.cfg().is_off(&hosts::host_of(&url)) {
                 it.probed = true;
-                self.touch(&mut st);
-                drop(st);
-                self.0.wake.notify_one();
+                self.publish(st);
                 return;
             }
             let http = self.http_for(&hosts::host_of(&url), &st).for_page(&url);
@@ -2265,15 +2261,12 @@ impl Engine {
             row.found = Some(seen);
             row.found_hosts = found_hosts;
             row.title = found.title;
-            row.error.clear();
+            row.reset_retries();
             row.pre = None;
             row.pre_for = None;
             row.manual = false;
             row.manual_urls.clear();
             row.failed.clear();
-            row.retries = 0;
-            row.auto_retries = 0;
-            row.retry_at = None;
             row.not_before = None;
         }
         self.touch(&mut st);
@@ -2318,10 +2311,7 @@ impl Engine {
                     st.host(host).ok += 1;
                     if let Some(it) = st.items.get_mut(id) {
                         it.status = Status::Done;
-                        it.retries = 0;
-                        it.auto_retries = 0;
-                        it.retry_at = None;
-                        it.error.clear();
+                        it.reset_retries();
                         if it.size == 0 {
                             it.size = it.done;
                         }
@@ -2864,20 +2854,15 @@ impl Engine {
         match action {
             ItemAction::Pause => {
                 it.status = Status::Paused;
-                if let Some(t) = &it.task {
-                    t.cancel();
-                }
+                it.cancel();
             }
             ItemAction::Resume | ItemAction::Retry => {
                 if !it.running() {
                     it.status = Status::Queued;
                 }
-                it.error.clear();
+                it.reset_retries();
                 it.failed.clear();
                 it.not_before = None;
-                it.retries = 0;
-                it.auto_retries = 0;
-                it.retry_at = None;
             }
             ItemAction::RetryManual => {
                 if !it.running() {
@@ -2889,9 +2874,7 @@ impl Engine {
             ItemAction::Extract => {}
             ItemAction::Remove => {
                 let running = it.running();
-                if let Some(t) = &it.task {
-                    t.cancel();
-                }
+                it.cancel();
                 st.items.shift_remove(id);
                 drop_spent_wrappers(&mut st.items);
                 if !running {
@@ -2899,9 +2882,7 @@ impl Engine {
                 }
             }
         }
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
+        self.publish(st);
         true
     }
 
@@ -2938,8 +2919,7 @@ impl Engine {
     /// sight ([`hosts::Known::page_passes`]).
     pub fn set_pages_pass(&self, on: bool) {
         self.0.pages_pass.store(on, Ordering::Relaxed);
-        self.touch(&mut self.lock());
-        self.0.wake.notify_one();
+        self.publish(self.lock());
     }
 
     pub(crate) fn pages_pass(&self) -> bool {
@@ -2958,9 +2938,7 @@ impl Engine {
             }
             _ => {
                 let page = self.page_for(id).ok_or("no such item")?;
-                if files.iter().any(|f| {
-                    !url::Url::parse(&f.url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
-                }) {
+                if files.iter().any(|f| !hosts::is_http(&f.url)) {
                     return Err("not an http(s) link".into());
                 }
                 self.expand(id, &page, files);
@@ -2985,9 +2963,7 @@ impl Engine {
                 n += 1;
             }
         }
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
+        self.publish(st);
         n
     }
 
@@ -3004,9 +2980,7 @@ impl Engine {
         if !drop_tentative_row(&mut st, id, why) {
             return false;
         }
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
+        self.publish(st);
         true
     }
 
@@ -3045,9 +3019,7 @@ impl Engine {
                 it.status = Status::Queued;
             }
         }
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
+        self.publish(st);
         true
     }
 
@@ -3064,9 +3036,7 @@ impl Engine {
                 it.not_before = Some(Instant::now() + PAGE_LATER);
             }
         }
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
+        self.publish(st);
     }
 
     /// Whether the desktop app, passing page `url` out of sight, hands Haul
@@ -3228,9 +3198,7 @@ impl Engine {
                 it.status = Status::Queued;
             }
         }
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
+        self.publish(st);
     }
 
     /// Uses a direct link the user supplied (pasted, or caught from the
@@ -3242,7 +3210,7 @@ impl Engine {
         headers: BTreeMap<String, String>,
         name_hint: Option<String>,
     ) -> Result<(), String> {
-        if !url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")) {
+        if !hosts::is_http(url) {
             return Err("not an http(s) link".into());
         }
         let mut st = self.lock();
@@ -3306,16 +3274,11 @@ impl Engine {
         if !it.running() {
             it.status = Status::Queued;
         }
-        it.error.clear();
+        it.reset_retries();
         it.not_before = None;
         it.manual_urls.clear();
         it.failed.clear();
-        it.retries = 0;
-        it.auto_retries = 0;
-        it.retry_at = None;
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
+        self.publish(st);
         Ok(())
     }
 
@@ -3349,14 +3312,10 @@ impl Engine {
         st.paused = paused;
         if paused {
             for it in st.items.values() {
-                if let Some(t) = &it.task {
-                    t.cancel();
-                }
+                it.cancel();
             }
         }
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
+        self.publish(st);
     }
 
     /// Tries every failed download again; wrappers have their own section.
@@ -3425,9 +3384,7 @@ impl Engine {
                 started += 1;
             }
         }
-        self.touch(&mut st);
-        drop(st);
-        self.0.wake.notify_one();
+        self.publish(st);
         Some(started)
     }
 
@@ -3440,9 +3397,7 @@ impl Engine {
             let Some(w) = st.items.get(id).filter(|w| w.wrapper) else {
                 return false;
             };
-            if let Some(t) = &w.task {
-                t.cancel();
-            }
+            w.cancel();
             // A file another wrapper lists too stays, as that one's.
             for it in st
                 .items
@@ -3506,17 +3461,13 @@ impl Engine {
                 }
                 touched += 1;
                 if on_host.len() == it.mirrors.len() {
-                    if let Some(t) = &it.task {
-                        t.cancel();
-                    }
+                    it.cancel();
                     gone.push(it.id.clone());
                     continue;
                 }
-                if it.host == host
-                    && let Some(t) = &it.task
-                {
+                if it.host == host {
                     // It starts again from another host on its next turn.
-                    t.cancel();
+                    it.cancel();
                 }
                 for m in &on_host {
                     it.mirrors.retain(|x| x != m);
@@ -3621,6 +3572,11 @@ impl Engine {
                 .cloned()
                 .collect()
         };
+        // The desktop app passes one of its pages by itself, in turn: nothing
+        // for the person yet.
+        let passing = |it: &Item| {
+            pages && !it.page_wants_person && it.manual_urls.iter().any(|u| st.passes(u))
+        };
         let wrappers: Vec<WrapperView> = st
             .items
             .values()
@@ -3637,16 +3593,8 @@ impl Engine {
                 package: it.package.clone(),
                 status: match it.status {
                     Status::Queued | Status::Resolving | Status::Downloading => "unwrapping",
-                    // The desktop app passes its page by itself (a page or
-                    // paste behind Cloudflare's check): nothing for the
-                    // person yet.
-                    Status::Captcha
-                        if pages
-                            && !it.page_wants_person
-                            && it.manual_urls.iter().any(|u| st.passes(u)) =>
-                    {
-                        "passing"
-                    }
+                    // A page or paste behind Cloudflare's check, say.
+                    Status::Captcha if passing(it) => "passing",
                     other => other.as_str(),
                 },
                 source: it.source.clone(),
@@ -3669,13 +3617,7 @@ impl Engine {
                 package: it.package.clone(),
                 status: if it.status == Status::Queued && !it.probed {
                     "checking"
-                } else if it.status == Status::Captcha
-                    && pages
-                    && !it.page_wants_person
-                    && it.manual_urls.iter().any(|u| st.passes(u))
-                {
-                    // The desktop app passes one of its pages by itself, in
-                    // turn: nothing for the person yet.
+                } else if it.status == Status::Captcha && passing(it) {
                     "passing"
                 } else {
                     it.status.as_str()
@@ -3717,14 +3659,16 @@ impl Engine {
                 Route::Direct
             })
         };
-        let mut hosts: Vec<HostView> = st
-            .hosts
-            .iter()
-            .map(|(name, h)| {
-                let exits = self.exits_for(name, &st);
-                let lane = |e: &Exit| st.lanes.get(&(name.clone(), *e));
-                // Waiting only when every address it may use was asked to.
-                let cooldown = exits
+        let unmeasured = HostStats::new();
+        let host_view = |name: &str, stats: Option<&HostStats>| {
+            let exits = self.exits_for(name, &st);
+            let lane = |e: &Exit| st.lanes.get(&(name.to_string(), *e));
+            // Without stats (a preferred host's first attempts can have none
+            // yet) a host shows neither limit nor wait, whatever its lanes say.
+            let cap = stats.and_then(|_| st.lanes_of(name).filter_map(|l| l.cap).min());
+            // Waiting only when every address it may use was asked to.
+            let cooldown = stats.map_or(0, |_| {
+                exits
                     .iter()
                     .map(|e| {
                         lane(e)
@@ -3732,34 +3676,40 @@ impl Engine {
                             .map_or(0, |c| c.saturating_duration_since(now).as_secs())
                     })
                     .min()
-                    .unwrap_or(0);
-                HostView {
-                    name: name.clone(),
-                    active: st.lanes_of(name).map(|l| l.active).sum(),
-                    speed: h.ema,
-                    fails: h.fails,
-                    ok: h.ok,
-                    bytes: h.bytes,
-                    blocked: h.blocked,
-                    route: route(name),
-                    cooldown,
-                    folder: cfg.folder_for(name).display().to_string(),
-                    preferred: cfg.preference(name),
-                    disabled: cfg.is_disabled(name),
-                    needs_account: hosts::known(name).is_some_and(|k| k.off_for_account(&cfg)),
-                    cap: st.lanes_of(name).filter_map(|l| l.cap).min(),
-                    quota: quota_view(exits.iter().filter_map(|e| lane(e).and_then(|l| l.quota))),
-                    free: hosts::known(name)
-                        .map(|k| k.free)
-                        .filter(|f| *f != hosts::Free::default()),
-                    account: hosts::known(name).is_some_and(|k| k.has_account(&cfg)),
-                    exits: exits.len(),
-                    kind: "",
-                    listed: true,
-                    group: "",
-                    movable: false,
-                }
-            })
+                    .unwrap_or(0)
+            });
+            let h = stats.unwrap_or(&unmeasured);
+            HostView {
+                name: name.to_string(),
+                active: st.lanes_of(name).map(|l| l.active).sum(),
+                speed: h.ema,
+                fails: h.fails,
+                ok: h.ok,
+                bytes: h.bytes,
+                blocked: h.blocked,
+                route: route(name),
+                cooldown,
+                folder: cfg.folder_for(name).display().to_string(),
+                preferred: cfg.preference(name),
+                disabled: cfg.is_disabled(name),
+                needs_account: hosts::known(name).is_some_and(|k| k.off_for_account(&cfg)),
+                cap,
+                quota: quota_view(exits.iter().filter_map(|e| lane(e).and_then(|l| l.quota))),
+                free: hosts::known(name)
+                    .map(|k| k.free)
+                    .filter(|f| *f != hosts::Free::default()),
+                account: hosts::known(name).is_some_and(|k| k.has_account(&cfg)),
+                exits: exits.len(),
+                kind: "",
+                listed: true,
+                group: "",
+                movable: false,
+            }
+        };
+        let mut hosts: Vec<HostView> = st
+            .hosts
+            .iter()
+            .map(|(name, h)| host_view(name, Some(h)))
             .collect();
         // A host shows before Haul has reached it when it is preferred or
         // turned off, so the choice can be seen and changed, and when a
@@ -3780,36 +3730,7 @@ impl Engine {
             if name.is_empty() || hosts.iter().any(|h| h.name == name) {
                 continue;
             }
-            hosts.push(HostView {
-                active: 0,
-                speed: 0.0,
-                fails: 0,
-                ok: 0,
-                bytes: 0,
-                blocked: false,
-                route: route(&name),
-                cooldown: 0,
-                folder: cfg.folder_for(&name).display().to_string(),
-                preferred: cfg.preference(&name),
-                disabled: cfg.is_disabled(&name),
-                needs_account: hosts::known(&name).is_some_and(|k| k.off_for_account(&cfg)),
-                cap: None,
-                exits: self.exits_for(&name, &st).len(),
-                free: hosts::known(&name)
-                    .map(|k| k.free)
-                    .filter(|f| *f != hosts::Free::default()),
-                account: hosts::known(&name).is_some_and(|k| k.has_account(&cfg)),
-                quota: quota_view(
-                    self.exits_for(&name, &st)
-                        .iter()
-                        .filter_map(|e| st.lanes.get(&(name.clone(), *e)).and_then(|l| l.quota)),
-                ),
-                name,
-                kind: "",
-                listed: true,
-                group: "",
-                movable: false,
-            });
+            hosts.push(host_view(&name, None));
         }
         for h in &mut hosts {
             h.kind = views::site_kind(&h.name);
@@ -3980,9 +3901,7 @@ impl Engine {
             let mut st = self.lock();
             st.paused = true;
             for it in st.items.values() {
-                if let Some(t) = &it.task {
-                    t.cancel();
-                }
+                it.cancel();
             }
         }
         let deadline = Instant::now() + Duration::from_secs(3);

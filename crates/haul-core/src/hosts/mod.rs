@@ -782,6 +782,11 @@ pub fn is_download_link(url: &str) -> bool {
         && guess_name(url).is_some()
 }
 
+/// Whether `url` is a well-formed `http` or `https` address.
+pub fn is_http(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
+}
+
 /// Whether `url` is a web page that may list download links: on a site
 /// Haul has no code for, and not the site's front page.
 pub fn is_web_page(url: &str) -> bool {
