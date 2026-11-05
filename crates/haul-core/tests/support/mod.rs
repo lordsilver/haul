@@ -453,6 +453,19 @@ pub(super) async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/gate/{kind}",
+            // A page behind a gate, as the product behind it draws one.
+            get(|UrlPath(kind): UrlPath<String>| async move {
+                let widget = match kind.as_str() {
+                    "recaptcha" => r#"<script src="https://www.google.com/recaptcha/api.js"></script><div class="g-recaptcha" data-sitekey="x"></div>"#,
+                    "hcaptcha" => r#"<script src="https://js.hcaptcha.com/1/api.js"></script><div class="h-captcha" data-sitekey="x"></div>"#,
+                    "turnstile" => r#"<div class="cf-turnstile" data-sitekey="x"></div>"#,
+                    _ => "<p>Press the button</p>",
+                };
+                axum::response::Html(format!("<html><head><title>Download</title></head><body><form>{widget}<button>Download</button></form></body></html>"))
+            }),
+        )
+        .route(
             "/busy/{name}",
             // Sends at most two files at once and refuses more, saying why.
             get(|State(s): State<Server>, method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
@@ -1026,6 +1039,24 @@ pub(super) async fn start_server() -> (Server, u16) {
             // hosts Haul knows, among the site's own and an ad.
             get(|State(s): State<Server>, UrlPath(post): UrlPath<String>, headers: HeaderMap| async move {
                 log(&s, &format!("/blog/{post}"), &headers);
+                // An archive in parts on another site (this server by its
+                // other name) and, in the text, its password.
+                if post == "with-password" {
+                    let port = headers
+                        .get(header::HOST)
+                        .and_then(|h| h.to_str().ok())
+                        .and_then(|h| h.rsplit(':').next())
+                        .unwrap_or_default()
+                        .to_string();
+                    return axum::response::Html(format!(
+                        r#"<html><head><title>Example V</title></head><body>
+                        <a href="http://localhost:{port}/archive/PV.part1.rar">Part 1</a>
+                        <a href="http://localhost:{port}/archive/PV.part2.rar">Part 2</a>
+                        <p>Password: "open sesame"</p>
+                        </body></html>"#
+                    ))
+                    .into_response();
+                }
                 let body = match post.as_str() {
                     // An address that reads like a file's name.
                     "links" | "Example.Set.v1.25.html" => r#"<html><head><title>Example R</title></head><body>

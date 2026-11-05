@@ -395,6 +395,7 @@ async fn solved(cx: &Cx<'_>, html: &str) -> Result<Unwrapped, ResolveError> {
     Ok(Unwrapped {
         title: heading(html).or(found.title),
         files: found.files,
+        ..Unwrapped::default()
     })
 }
 
@@ -441,6 +442,7 @@ pub(super) fn shown(html: &str) -> Option<Unwrapped> {
     Some(Unwrapped {
         title: heading(html),
         files,
+        ..Unwrapped::default()
     })
 }
 
@@ -721,7 +723,11 @@ async fn from_dlc(cx: &Cx<'_>, id: &str) -> Result<Unwrapped, ResolveError> {
             ..Entry::default()
         })
         .collect();
-    Ok(Unwrapped { title, files })
+    Ok(Unwrapped {
+        title,
+        files,
+        ..Unwrapped::default()
+    })
 }
 
 /// The report back from the form's encoding, as filecrypt.cc reads it.

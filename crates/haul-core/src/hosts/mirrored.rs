@@ -86,6 +86,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
             deferred: true,
             ..Entry::default()
         }],
+        ..Unwrapped::default()
     })
 }
 

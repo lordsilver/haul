@@ -151,6 +151,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         return Ok(Unwrapped {
             title: title(&html),
             files: group_mirrors(shown),
+            ..Unwrapped::default()
         });
     }
     let Some(csrf) = CSRF.captures(&html).map(|c| c[1].to_string()) else {
@@ -253,6 +254,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     Ok(Unwrapped {
         title: title(&solved),
         files: group_mirrors(urls),
+        ..Unwrapped::default()
     })
 }
 

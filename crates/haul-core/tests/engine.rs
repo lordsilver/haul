@@ -4982,3 +4982,30 @@ async fn a_password_given_with_the_links_opens_their_archive() {
         "secret stuff\n"
     );
 }
+
+/// A post that gives its archive's password beside the links: the archive
+/// opens with it, no one asked.
+#[tokio::test]
+async fn a_password_on_the_page_opens_the_archive_it_lists() {
+    let t = Setup::new().await;
+    let engine = t
+        .engine_with(Config {
+            auto_extract: true,
+            ..t.config()
+        })
+        .await;
+    engine.add_text(&format!("{}/blog/with-password", t.ip), "");
+    let s = wait_for(&engine, "the post's parts", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.status == "paused")
+    })
+    .await;
+    assert_eq!(engine.start_wrapper(&s.wrappers[0].id), Some(2));
+    wait_for(&engine, "extracted", |s| {
+        s.items.iter().all(|i| i.extract == Extract::Done)
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(t.root.join("dl/Secret/note.txt")).unwrap(),
+        "secret stuff\n"
+    );
+}

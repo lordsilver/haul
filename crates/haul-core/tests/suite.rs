@@ -52,6 +52,8 @@ struct Case {
     expect: Outcome,
     /// The file a `File` outcome must hold: its name at the stand-in.
     file: Option<&'static str>,
+    /// Words its reason must hold, such as the gate it names.
+    says: Option<&'static str>,
 }
 
 fn cases() -> Vec<Case> {
@@ -65,6 +67,7 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: File,
             file: Some("plain.bin"),
+            says: None,
         },
         Case {
             site: "any site: a file without its size",
@@ -72,6 +75,7 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: File,
             file: Some("unsized.bin"),
+            says: None,
         },
         Case {
             site: "any site: a refused link",
@@ -79,6 +83,7 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: Failed,
             file: None,
+            says: None,
         },
         Case {
             site: "any site: a page only a person passes",
@@ -86,6 +91,7 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: NeedsYou,
             file: None,
+            says: None,
         },
         Case {
             site: "any site: a page that lists links",
@@ -93,6 +99,7 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: Listed(2),
             file: None,
+            says: None,
         },
         Case {
             site: "any site: a short rate limit, then the file",
@@ -100,6 +107,7 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: File,
             file: Some("later.bin"),
+            says: None,
         },
         Case {
             site: "any site: a long rate limit",
@@ -107,6 +115,40 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: Waits,
             file: None,
+            says: None,
+        },
+        Case {
+            site: "any site: a post with its archive's password",
+            link: |t| format!("{}/blog/with-password", t.ip),
+            reach: Direct,
+            expect: Listed(2),
+            file: None,
+            says: None,
+        },
+        // Gates, known by their own marks whatever the site.
+        Case {
+            site: "any site: behind reCAPTCHA",
+            link: |t| format!("{}/gate/recaptcha", t.ip),
+            reach: Direct,
+            expect: NeedsYou,
+            file: None,
+            says: Some("shows reCAPTCHA"),
+        },
+        Case {
+            site: "any site: behind hCaptcha",
+            link: |t| format!("{}/gate/hcaptcha", t.ip),
+            reach: Direct,
+            expect: NeedsYou,
+            file: None,
+            says: Some("shows hCaptcha"),
+        },
+        Case {
+            site: "any site: behind Turnstile",
+            link: |t| format!("{}/gate/turnstile", t.ip),
+            reach: Direct,
+            expect: NeedsYou,
+            file: None,
+            says: Some("shows Cloudflare Turnstile"),
         },
         // Hosts with code of their own.
         Case {
@@ -115,6 +157,7 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: File,
             file: None,
+            says: None,
         },
         Case {
             site: "1fichier.com: a deleted file",
@@ -122,6 +165,7 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: Gone,
             file: None,
+            says: None,
         },
         Case {
             site: "rapidgator.net, without its account",
@@ -129,6 +173,7 @@ fn cases() -> Vec<Case> {
             reach: AsProxy,
             expect: NeedsYou,
             file: None,
+            says: None,
         },
         Case {
             site: "gofile.io, without the desktop app",
@@ -136,6 +181,7 @@ fn cases() -> Vec<Case> {
             reach: AsProxy,
             expect: NeedsYou,
             file: None,
+            says: None,
         },
         // Wrappers and pastes.
         Case {
@@ -144,6 +190,7 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: Listed(1),
             file: None,
+            says: None,
         },
         Case {
             site: "filecrypt.cc",
@@ -151,6 +198,7 @@ fn cases() -> Vec<Case> {
             reach: Direct,
             expect: Listed(2),
             file: None,
+            says: None,
         },
         Case {
             site: "paste2.org: a paste that lists no links",
@@ -158,6 +206,7 @@ fn cases() -> Vec<Case> {
             reach: AsProxy,
             expect: Gone,
             file: None,
+            says: None,
         },
     ]
 }
@@ -169,7 +218,7 @@ fn outcome(s: &Snapshot) -> Option<Outcome> {
     };
     if let Some(w) = s.wrappers.first() {
         return match w.status {
-            "done" => Some(Outcome::Listed(w.found.map_or(0, |f| f.files as usize))),
+            "done" => Some(Outcome::Listed(w.found.map_or(0, |f| f.files))),
             "captcha" => Some(Outcome::NeedsYou),
             "error" if gone(&w.error) => Some(Outcome::Gone),
             "error" => Some(Outcome::Failed),
@@ -249,7 +298,9 @@ async fn every_kind_of_site_comes_to_what_it_should() {
     let mut failed = 0;
     for case in cases() {
         let got = run(&case).await;
-        let ok = got.as_ref().is_ok_and(|(g, _)| *g == case.expect);
+        let ok = got
+            .as_ref()
+            .is_ok_and(|(g, said)| *g == case.expect && case.says.is_none_or(|w| said.contains(w)));
         if !ok {
             failed += 1;
         }

@@ -14,6 +14,7 @@ mod buzzheavier;
 mod ddownload;
 mod filecrypt;
 mod fileguard;
+pub mod gates;
 mod generic;
 mod gofile;
 mod mediafire;
@@ -94,6 +95,9 @@ pub struct Unwrapped {
     pub title: Option<String>,
     /// One entry per file, each with its links on every host.
     pub files: Vec<Entry>,
+    /// The archive password the page gives beside its links
+    /// ([`generic::password_in`]), tried first on their archives.
+    pub password: Option<String>,
 }
 
 /// What a probe learns about a file without downloading it.
@@ -1308,8 +1312,11 @@ pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
         Some(Kind::Filecrypt) => filecrypt::unwrap(cx, url).await,
         Some(Kind::Mirrored) => mirrored::unwrap(cx, url).await,
         None => {
-            let (title, links) = generic::page(cx, url).await?;
-            Ok(listed(title, links))
+            let (title, links, password) = generic::page(cx, url).await?;
+            Ok(Unwrapped {
+                password,
+                ..listed(title, links)
+            })
         }
         _ => Err(ResolveError::failed("not a wrapper link")),
     }
@@ -1329,6 +1336,7 @@ pub fn shown(url: &str, html: &str) -> Option<Unwrapped> {
 /// when its turn comes.
 pub fn listed(title: Option<String>, links: Vec<String>) -> Unwrapped {
     Unwrapped {
+        password: None,
         title,
         files: links
             .into_iter()
@@ -1429,6 +1437,10 @@ pub enum Look {
         title: Option<String>,
         named: Option<String>,
         links: Vec<String>,
+        /// The archive password it gives beside them.
+        password: Option<String>,
+        /// The gate it shows instead, when it shows one ([`gates::detect`]).
+        gate: Option<gates::Gate>,
     },
     /// A page behind a browser check a browser usually passes by itself
     /// (Cloudflare's).

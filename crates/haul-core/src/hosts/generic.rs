@@ -12,8 +12,8 @@ use reqwest::header::{ACCEPT_ENCODING, RANGE};
 
 use super::{
     Cx, Entry, FILE_EXTENSIONS, Look, Probed, ResolveError, content_length, content_range,
-    content_type, disposition_name, gone_or_broken, guess_name, header_checksum, host_of, known,
-    rate_limited, site_of, wraps,
+    content_type, disposition_name, gates, gone_or_broken, guess_name, header_checksum, host_of,
+    known, rate_limited, site_of, wraps,
 };
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
@@ -63,10 +63,28 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         }]);
     }
     gone_or_broken(&r)?;
-    Err(ResolveError::NeedsUser(format!(
-        "{} answers with a web page: it wants a browser (captcha, timer or a click)",
-        host_of(url)
-    )))
+    // The page's start, for the gate it shows: the row can then say what
+    // stands in the way. A HEAD gave no body to read it from.
+    let gate = match cx
+        .http
+        .client
+        .get(url)
+        .header(ACCEPT_ENCODING, "identity")
+        .send()
+        .await
+    {
+        Ok(mut page) if is_html(&page) => {
+            gates::detect(&String::from_utf8_lossy(&read(&mut page, PEEK).await))
+        }
+        _ => None,
+    };
+    Err(ResolveError::NeedsUser(match gate {
+        Some(gate) => format!("{} shows {}: it wants a browser", host_of(url), gate.name()),
+        None => format!(
+            "{} answers with a web page: it wants a browser (captcha, timer or a click)",
+            host_of(url)
+        ),
+    }))
 }
 
 /// Whether a site answered with Cloudflare's browser check instead of the
@@ -226,6 +244,8 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
         title: page_title(&page),
         named: named_in_title(&page),
         links: links_in(&page, r.url(), url),
+        password: password_in(&page),
+        gate: gates::detect(&page),
     }
 }
 
@@ -251,7 +271,7 @@ static EMBEDDED: LazyLock<Regex> = LazyLock::new(|| {
 pub(super) async fn page(
     cx: &Cx<'_>,
     url: &str,
-) -> Result<(Option<String>, Vec<String>), ResolveError> {
+) -> Result<(Option<String>, Vec<String>, Option<String>), ResolveError> {
     let mut r = cx.http.client.get(url).send().await?;
     let status = r.status().as_u16();
     if challenged(r.headers()) {
@@ -283,12 +303,15 @@ pub(super) async fn page(
         }
     }
     if urls.is_empty() {
-        return Err(ResolveError::NeedsUser(format!(
-            "{} answers with a web page that links no host Haul knows: it wants a browser",
-            host_of(url)
-        )));
+        return Err(ResolveError::NeedsUser(match gates::detect(&page) {
+            Some(gate) => format!("{} shows {}: it wants a browser", host_of(url), gate.name()),
+            None => format!(
+                "{} answers with a web page that links no host Haul knows: it wants a browser",
+                host_of(url)
+            ),
+        }));
     }
-    Ok((page_title(&page), urls))
+    Ok((page_title(&page), urls, password_in(&page)))
 }
 
 /// A page's name for itself: its `og:title`, else its `<title>`, the site's
@@ -624,5 +647,72 @@ https://unknown.example/f/x?y=1&amp;z=2</pre></body></html>"#;
                 "https://pixeldrain.com/u/xyz",
             ]
         );
+    }
+}
+
+/// "Password:" (or its like in a few languages) and what follows, in a page's
+/// text, as a post or a paste gives an archive's password beside its links.
+static PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?i)\b(?:archive\s+|rar\s+)?(?:password|passwort|passwd|pass|pwd|pw|mot de passe|contraseña|senha)",
+        r#"\s*[:=]\s*(?:"([^"<>]{1,80})"|“([^”<>]{1,80})”|([^\s<>"']{1,80}))"#,
+    ))
+    .unwrap()
+});
+
+/// Words that say there is no password rather than give one.
+const NO_PASSWORD: &[&str] = &[
+    "none", "no", "nothing", "n/a", "na", "-", "--", "?", "required", "*", "empty", "free",
+];
+
+/// The archive password a page gives in its text, when it gives one: what
+/// follows the first "Password:" outside its scripts and tags. A guess, so it
+/// is only tried first; a wrong one costs one try before the others.
+pub(super) fn password_in(page: &str) -> Option<String> {
+    let text = SCRIPT.replace_all(page, " ");
+    let text = super::decode_entities(&TAG.replace_all(&text, " "));
+    PASSWORD.captures_iter(&text).find_map(|c| {
+        // Quoted, it may hold spaces; bare, it ends at the first one.
+        let quoted = c
+            .get(1)
+            .or_else(|| c.get(2))
+            .map(|m| m.as_str().to_string());
+        let value = quoted.unwrap_or_else(|| {
+            c.get(3)
+                .map_or("", |m| m.as_str())
+                .trim_end_matches(['.', ',', ';', ')'])
+                .to_string()
+        });
+        (!value.is_empty() && !NO_PASSWORD.contains(&value.to_ascii_lowercase().as_str()))
+            .then_some(value)
+    })
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::password_in;
+
+    #[test]
+    fn a_page_gives_its_archives_password() {
+        let cases = [
+            ("<p>Password: open-sesame</p>", Some("open-sesame")),
+            (
+                "<b>Archive password</b>: <code>www.site.example</code>",
+                Some("www.site.example"),
+            ),
+            ("Passwort = Beispiel123.", Some("Beispiel123")),
+            ("pw: abc123", Some("abc123")),
+            (
+                r#"Password: "open sesame" (case sensitive)"#,
+                Some("open sesame"),
+            ),
+            ("Password: none", None),
+            ("No password needed", None),
+            ("<input type=\"password\" name=\"password\">", None),
+            ("<script>var password = 'x'</script><p>links</p>", None),
+        ];
+        for (page, want) in cases {
+            assert_eq!(password_in(page).as_deref(), want, "{page}");
+        }
     }
 }

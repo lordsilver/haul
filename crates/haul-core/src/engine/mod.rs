@@ -1113,9 +1113,12 @@ impl Engine {
         // Behind a check the desktop app passes, a page shows its links
         // only once passed.
         let (found, listed, guarded) = match looked {
-            hosts::Look::Page { title, links, .. } if !links.is_empty() => {
-                (None, Some((title, links)), false)
-            }
+            hosts::Look::Page {
+                title,
+                links,
+                password,
+                ..
+            } if !links.is_empty() => (None, Some((title, links, password)), false),
             hosts::Look::Guarded => (None, None, self.pages_pass()),
             looked => (looked.found(), None, false),
         };
@@ -1124,9 +1127,13 @@ impl Engine {
         drop(permit);
         // A page that lists links is a wrapper of them: its links join the
         // queue under it, not started, as a wrapper's files do.
-        if let (Some((title, links)), Some(url)) = (listed, &url) {
+        if let (Some((title, links, password)), Some(url)) = (listed, &url) {
             tracing::info!(item = %id, "{url} links {} files and wrappers", links.len());
-            for id in self.unwrapped(&id, url, hosts::listed(title, links)) {
+            let found = hosts::Unwrapped {
+                password,
+                ..hosts::listed(title, links)
+            };
+            for id in self.unwrapped(&id, url, found) {
                 self.spawn_probe(id);
             }
             return;
@@ -1442,7 +1449,11 @@ impl Engine {
             return probe;
         };
         let package = row.package.clone();
-        let password = row.extract_password.clone();
+        // The one given with the link, else the one the page gives.
+        let password = row
+            .extract_password
+            .clone()
+            .or_else(|| found.password.clone());
         let mut known: HashSet<String> = st
             .items
             .iter()
