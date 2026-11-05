@@ -1,5 +1,4 @@
 import {
-  ChevronRight,
   ClipboardList,
   Folder,
   Gauge,
@@ -21,6 +20,14 @@ import { EmptyState, PageHeader, PageScroll } from '@/components/page';
 import { AccountField, SettingCard, SettingRow } from '@/components/setting-card';
 import { Button } from '@/components/ui/button';
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -34,7 +41,6 @@ import type { HostView } from '@/lib/bindings/HostView';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
 import { bytes, duration, ordinal } from '@/lib/format';
-import { prefs } from '@/lib/prefs';
 import { envNote, useSettings } from '@/lib/settings';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -408,30 +414,36 @@ function HostCard({
           ) : null}
           {/* Wrappers and pastebins are listed to look up, not to turn off;
               one switched off before keeps its switch, to turn it back on. */}
-          {fileHost || h.disabled ? (
-            <span
-              className="ml-1 flex items-center gap-2 text-sm text-muted-foreground"
-              title={
-                h.disabled
-                  ? 'Off: its links are never tried. Click to use it again.'
-                  : h.needs_account
-                    ? 'Off by default, as its free download is slow going. Click to use it free, or set its account under the wrench.'
-                    : 'On: click to never use this host'
-              }
-            >
-              {off ? 'Off' : 'On'}
-              <Switch
-                checked={!off}
-                aria-label={off ? `Use ${h.name}` : `Never use ${h.name}`}
-                onCheckedChange={(on) => api(host(h.name, 'disabled'), { disabled: !on }).catch(report)}
-              />
-            </span>
-          ) : null}
+          {fileHost || h.disabled ? <HostSwitch h={h} /> : null}
         </div>
       </div>
       <RouteBar h={h} proxy={s.proxy} />
       {open ? <HostSettings h={h} s={s} d={d} account={account} /> : null}
     </div>
+  );
+}
+
+// Whether Haul uses this site.
+function HostSwitch({ h }: { h: HostView }) {
+  const off = h.disabled || h.needs_account;
+  return (
+    <span
+      className="ml-1 flex items-center gap-2 text-sm text-muted-foreground"
+      title={
+        h.disabled
+          ? 'Off: its links are never tried. Click to use it again.'
+          : h.needs_account
+            ? 'Off by default, as its free download is slow going. Click to use it free, or set its account under the wrench.'
+            : 'On: click to never use this host'
+      }
+    >
+      {off ? 'Off' : 'On'}
+      <Switch
+        checked={!off}
+        aria-label={off ? `Use ${h.name}` : `Never use ${h.name}`}
+        onCheckedChange={(on) => api(host(h.name, 'disabled'), { disabled: !on }).catch(report)}
+      />
+    </span>
   );
 }
 
@@ -490,48 +502,91 @@ function HostSettings({
 }
 
 // Wrappers and pastebins are looked up now and then, unlike the file hosts the
-// page is for: their cards start folded away, and stay as the person left them.
-const FOLDABLE: ReadonlySet<string> = new Set(['wrapper', 'paste']);
-const FOLDS_KEY = 'hosts.unfolded';
-const openFolds = () => new Set((prefs.get(FOLDS_KEY) ?? '').split(' ').filter((g) => FOLDABLE.has(g)));
+// page is for: each kind opens from a button rather than fill the list.
+const LINK_SITES = ['wrapper', 'paste'] as const;
+const isLinkSite = (h: HostView) => (LINK_SITES as readonly string[]).includes(h.group);
 
-function FoldHeading({
-  heading,
-  count,
-  open,
-  toggle,
-}: {
-  heading: [string, string];
-  count: number;
-  open: boolean;
-  toggle: () => void;
-}) {
+function LinkSite({ h, s, d }: { h: HostView; s: State; d: SettingsView | null }) {
+  const [open, setOpen] = useState(false);
+  const Icon = KIND_ICONS[h.kind];
+  const account = s.accounts.find((a) => a.host === h.name);
   return (
-    <button
-      type="button"
-      aria-expanded={open}
-      onClick={toggle}
-      className="mt-3 flex w-full flex-wrap items-baseline gap-x-2 rounded-md text-left outline-none first:mt-0 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+    <div
+      className={cn(
+        'flex flex-col gap-3 rounded-lg border bg-card px-3 py-2.5',
+        h.disabled && 'opacity-70',
+        // Its settings need the room.
+        (open || h.blocked) && 'sm:col-span-2',
+      )}
     >
-      <span className="flex items-center gap-1 self-center">
-        <ChevronRight aria-hidden className={cn('size-4 transition-transform', open && 'rotate-90')} />
-        <strong className="text-sm">{heading[0]}</strong>
-        <span className="text-sm text-muted-foreground tabular-nums">({count})</span>
-      </span>
-      <span className="text-sm text-muted-foreground">{heading[1]}</span>
-    </button>
+      <div className="flex min-h-7 flex-wrap items-center gap-x-2.5 gap-y-1.5">
+        <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium" title={h.name}>
+            {h.name}
+          </div>
+          {stats(h) ? <div className="text-xs text-muted-foreground">{stats(h)}</div> : null}
+        </div>
+        <Pills h={h} proxy={s.proxy} />
+        {s.proxy ? (
+          <IconButton label={`Settings for ${h.name}`} aria-expanded={open} onClick={() => setOpen(!open)}>
+            <Wrench className={cn(open && 'text-foreground')} />
+          </IconButton>
+        ) : null}
+        {h.disabled ? <HostSwitch h={h} /> : null}
+      </div>
+      <RouteBar h={h} proxy={s.proxy} />
+      {open ? <HostSettings h={h} s={s} d={d} account={account} /> : null}
+    </div>
+  );
+}
+
+function LinkSitesButton({
+  group,
+  sites,
+  s,
+  d,
+}: {
+  group: (typeof LINK_SITES)[number];
+  sites: HostView[];
+  s: State;
+  d: SettingsView | null;
+}) {
+  const Icon = KIND_ICONS[group];
+  const [title, description] = HEADINGS[group];
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button variant="outline">
+          <Icon aria-hidden />
+          {title}
+          <span className="text-muted-foreground tabular-nums">{sites.length}</span>
+        </Button>
+      </DialogTrigger>
+      <DialogContent
+        className="sm:max-w-2xl"
+        // On the dialog itself, or its first button's tooltip opens with it.
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          (e.currentTarget as HTMLElement).focus();
+        }}
+      >
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <div className="-mx-1 grid max-h-[60vh] gap-2 overflow-y-auto px-1 sm:grid-cols-2">
+          {sites.map((h) => (
+            <LinkSite key={h.name} h={h} s={s} d={d} />
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 export function Hosts({ s }: { s: State }) {
   const d = useSettings(s.config_version);
-  const [unfolded, setUnfolded] = useState(openFolds);
-  const toggleFold = (group: string) => {
-    const next = new Set(unfolded);
-    if (!next.delete(group)) next.add(group);
-    setUnfolded(next);
-    prefs.set(FOLDS_KEY, [...next].join(' '));
-  };
   // A drag keeps the cards still until it ends: the order as it began.
   const [drag, setDrag] = useState<{ name: string; frozen: HostView[] } | null>(null);
   const [drop, setDrop] = useState<Drop>(null);
@@ -567,10 +622,18 @@ export function Hosts({ s }: { s: State }) {
   };
 
   const headings = new Set<string>();
-  const shown = hosts.filter((h) => !FOLDABLE.has(h.group) || unfolded.has(h.group));
+  const listed = hosts.filter((h) => !isLinkSite(h));
+  const linkSites = LINK_SITES.map((group) => ({ group, sites: hosts.filter((h) => h.group === group) })).filter(
+    (kind) => kind.sites.length,
+  );
   return (
     <>
-      <PageHeader title="Hosts">
+      <PageHeader
+        title="Hosts"
+        actions={linkSites.map(({ group, sites }) => (
+          <LinkSitesButton key={group} group={group} sites={sites} s={s} d={d} />
+        ))}
+      >
         The file hosts your downloads are on, and the wrappers and pastebins that lead to them. Choose which hosts Haul
         uses and in what order. A file on several hosts downloads from the first of your preferred hosts that has it
         (star a host to add it; drag it by its grip to reorder), otherwise from the fastest of the others. A host
@@ -607,40 +670,28 @@ export function Hosts({ s }: { s: State }) {
             setPreferredOrder(next);
           }}
         >
-          {hosts.map((h) => {
+          {listed.map((h) => {
             // A heading where the next group starts: preferred, the rest, off.
             const heading = headings.has(h.group) ? null : HEADINGS[h.group];
             headings.add(h.group);
             return [
               heading ? (
-                FOLDABLE.has(h.group) ? (
-                  <FoldHeading
-                    key={`heading-${h.group}`}
-                    heading={heading}
-                    count={hosts.filter((x) => x.group === h.group).length}
-                    open={unfolded.has(h.group)}
-                    toggle={() => toggleFold(h.group)}
-                  />
-                ) : (
-                  <div key={`heading-${h.group}`} className="mt-3 flex flex-wrap items-baseline gap-x-2 first:mt-0">
-                    <strong className="text-sm">{heading[0]}</strong>
-                    <span className="text-sm text-muted-foreground">{heading[1]}</span>
-                  </div>
-                )
+                <div key={`heading-${h.group}`} className="mt-3 flex flex-wrap items-baseline gap-x-2 first:mt-0">
+                  <strong className="text-sm">{heading[0]}</strong>
+                  <span className="text-sm text-muted-foreground">{heading[1]}</span>
+                </div>
               ) : null,
-              shown.includes(h) ? (
-                <HostCard
-                  key={h.name}
-                  h={h}
-                  s={s}
-                  d={d}
-                  drop={drop}
-                  dragging={drag?.name === h.name}
-                  onDragStart={() => setDrag({ name: h.name, frozen: s.hosts })}
-                  onDragEnd={() => setDrag(null)}
-                  move={(delta) => move(h.name, delta)}
-                />
-              ) : null,
+              <HostCard
+                key={h.name}
+                h={h}
+                s={s}
+                d={d}
+                drop={drop}
+                dragging={drag?.name === h.name}
+                onDragStart={() => setDrag({ name: h.name, frozen: s.hosts })}
+                onDragEnd={() => setDrag(null)}
+                move={(delta) => move(h.name, delta)}
+              />,
             ];
           })}
           <OtherAccounts s={s} d={d} />
