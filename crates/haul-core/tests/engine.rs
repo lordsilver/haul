@@ -4136,21 +4136,29 @@ async fn a_small_file_finishing_soon_is_left_alone() {
 #[tokio::test]
 async fn the_users_own_speed_limit_is_not_a_throttle() {
     let t = Setup::new().await;
-    let engine = t
-        .engine_with(Config {
-            rate_limit_mbps: 0.05,
-            ..quick_to_judge(&t)
-        })
-        .await;
+    let mut cfg = Config {
+        rate_limit_mbps: 0.05,
+        ..quick_to_judge(&t)
+    };
+    // A limited transfer comes in bursts, and Windows' coarse timers make
+    // them bigger: windows this short could read one as a stall.
+    cfg.throttling.window = Duration::from_secs(2);
+    cfg.throttling.compare_over = Duration::from_millis(600);
+    let engine = t.engine_with(cfg).await;
     engine.set_preferred("127.0.0.1", true).unwrap();
     engine.add_text(
         &format!("{}/paced/100/x.bin {}/files/x.bin", t.ip, t.name),
         "",
     );
     wait_for(&engine, "progress", |s| row(s, "x.bin").done > 0).await;
-    a_few_windows().await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
     let s = engine.snapshot();
-    assert_eq!(row(&s, "x.bin").shown_host, "127.0.0.1");
+    assert_eq!(
+        row(&s, "x.bin").shown_host,
+        "127.0.0.1",
+        "{:#}",
+        engine.debug_inspect()["engine"]["items"]
+    );
     assert!(t.server.requests("/files/x.bin").is_empty());
     assert_eq!(row(&s, "x.bin").slowed, None);
     assert_eq!(cooldown(&s, "127.0.0.1"), 0);
@@ -4503,6 +4511,10 @@ async fn no_hold_for_a_download_that_cannot_finish_in_time() {
     // A busy machine can miss so short a limit, which only puts the redial
     // off: it has to come up again within the test.
     cfg.throttling.redial_gap = Duration::from_millis(100);
+    // What a download is expected to take is read from its recent speed: a
+    // burst over a moment this short, as Windows' coarse timers make, would
+    // promise it finishes far sooner than it does.
+    cfg.throttling.compare_over = Duration::from_millis(800);
     let engine = t.engine_with(cfg).await;
     engine.add_text(&format!("{}/eases/x.bin", t.ip), "");
     engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
@@ -4519,8 +4531,10 @@ async fn no_hold_for_a_download_that_cannot_finish_in_time() {
         // Near its end, within the limit, it can be held for.
         if row(s, "h.bin").done < SIZE as u64 * 3 / 4 {
             assert_eq!(
-                s.reconnect.draining, None,
-                "no hold while it has long to go"
+                s.reconnect.draining,
+                None,
+                "no hold while it has long to go: {:#}",
+                engine.debug_inspect()["engine"]["items"]
             );
         }
         assert_eq!(t.server.redials.load(Ordering::SeqCst), 0);
