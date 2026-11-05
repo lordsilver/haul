@@ -60,6 +60,16 @@ fn http() -> Http {
     Http::new(None, "test-agent").unwrap()
 }
 
+/// A context with everything going over one `Http`, the key service too.
+fn context<'a>(http: &'a Http, cfg: &'a Config, tokens: &'a Tokens) -> Cx<'a> {
+    Cx {
+        http,
+        cfg,
+        tokens,
+        key_service: http,
+    }
+}
+
 #[tokio::test]
 async fn pixeldrain_file_list_and_captcha() {
     let app = Router::new()
@@ -86,12 +96,7 @@ async fn pixeldrain_file_list_and_captcha() {
     let mut cfg = config(&base);
     cfg.pixeldrain_key = Some("secret".into());
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
 
     let file = pixeldrain::resolve(&cx, "https://pixeldrain.com/u/abc")
         .await
@@ -174,12 +179,7 @@ async fn gofile_asks_nothing_without_an_account_and_lists_folders_with_one() {
     let mut cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
 
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     assert!(matches!(
         gofile::resolve(&cx, "https://gofile.io/d/abc").await,
         Err(ResolveError::NeedsUser(_))
@@ -187,12 +187,7 @@ async fn gofile_asks_nothing_without_an_account_and_lists_folders_with_one() {
     assert_eq!(calls.load(Ordering::SeqCst), 0, "gofile was not asked");
 
     cfg.gofile_token = Some("premium".into());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     let entries = gofile::resolve(&cx, "https://gofile.io/d/abc")
         .await
         .unwrap();
@@ -230,12 +225,7 @@ async fn buzzheavier_redirects_rate_limits_and_gone_files() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
 
     let e = buzzheavier::resolve(&cx, "https://buzzheavier.com/ok")
         .await
@@ -300,12 +290,7 @@ async fn onefichier_api_key_and_free_mode() {
     let base = serve(app).await;
     let mut cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
 
     let e = onefichier::resolve(&cx, &format!("{base}/?ready&af=99"))
         .await
@@ -351,12 +336,7 @@ async fn onefichier_api_key_and_free_mode() {
     );
 
     cfg.onefichier_key = Some("key".into());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     let e = onefichier::resolve(&cx, "https://1fichier.com/?abc&af=1")
         .await
         .unwrap();
@@ -393,12 +373,7 @@ async fn rapidgator_logs_in_once_and_relogs_after_errors() {
     let mut cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
     {
-        let cx = Cx {
-            http: &http,
-            cfg: &cfg,
-            tokens: &tokens,
-            key_service: &http,
-        };
+        let cx = context(&http, &cfg, &tokens);
         assert!(
             matches!(rapidgator::resolve(&cx, "https://rapidgator.net/file/x").await, Err(ResolveError::NeedsUser(m)) if m == FREE_ON_PAGE),
             "without the account, its page's free download"
@@ -406,12 +381,7 @@ async fn rapidgator_logs_in_once_and_relogs_after_errors() {
     }
     cfg.rapidgator_user = Some("me".into());
     cfg.rapidgator_pass = Some("pw".into());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     let good =
         "https://rapidgator.net/file/abcdefabcdefabcdefabcdefabcdefab/archive.part1.rar.html";
     let e = rapidgator::resolve(&cx, good).await.unwrap();
@@ -454,12 +424,7 @@ async fn nitroflare_premium_link() {
     cfg.nitroflare_user = Some("me".into());
     cfg.nitroflare_key = Some("k".into());
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     let e = nitroflare::resolve(&cx, "https://nitroflare.com/view/ABC123/n.zip")
         .await
         .unwrap();
@@ -540,12 +505,7 @@ async fn generic_links_and_probes() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
 
     let e = generic::resolve(&cx, &format!("{base}/file/data.bin"))
         .await
@@ -573,12 +533,7 @@ async fn generic_links_and_probes() {
         client,
         ..Http::new(None, "").unwrap()
     };
-    let stall_cx = Cx {
-        http: &quick,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &quick,
-    };
+    let stall_cx = context(&quick, &cfg, &tokens);
     let e = generic::resolve(&stall_cx, &format!("{base}/stall/data.bin"))
         .await
         .unwrap();
@@ -729,12 +684,7 @@ async fn fileguard_solves_the_proof_of_work_and_lists_links() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
 
     let found = fileguard::unwrap(&cx, &format!("{base}/vault/abc/1fichier"))
         .await
@@ -1058,12 +1008,7 @@ async fn filecrypt_answers_its_checkbox() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
 
     let found = filecrypt::unwrap(&cx, "https://filecrypt.cc/Container/open.html")
         .await
@@ -1136,12 +1081,7 @@ async fn files_are_asked_for_uncompressed() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     let e = generic::resolve(&cx, &format!("{base}/f/data.bin"))
         .await
         .unwrap();
@@ -1179,12 +1119,7 @@ async fn vikingfile_checks_the_file_then_wants_a_person() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
 
     let probed = probe(&cx, "https://vikingfile.com/f/AbCdE12345")
         .await
@@ -1252,12 +1187,7 @@ async fn mirrored_lists_one_file_on_every_host_that_took_it() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     let url = "https://www.mirrored.to/files/9EC6E16F/";
     assert!(wraps(url));
     assert_eq!(wrapper_key(url), "mirrored.to/9EC6E16F");
@@ -1314,12 +1244,7 @@ async fn mega_names_and_decrypts_a_file_without_megatools() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     let link_key = URL_SAFE_NO_PAD.encode(&raw);
     let e = mega::resolve(&cx, &format!("https://mega.nz/file/AAAAAAAA#{link_key}"))
         .await
@@ -1413,12 +1338,7 @@ async fn mega_lists_a_folder_and_downloads_its_files() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     let key = URL_SAFE_NO_PAD.encode(master);
     let folder = format!("https://mega.nz/folder/ROOTROOT#{key}");
 
@@ -1495,12 +1415,7 @@ async fn rootz_looks_a_file_up_with_its_pages_token() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     let e = rootz::resolve(&cx, "https://www.rootz.so/d/abc123")
         .await
         .unwrap();
@@ -1569,12 +1484,7 @@ async fn transfer_it_lists_with_its_keys_in_clear() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     // One file: the transfer resolves to it at once, decrypted on the way.
     let e = mega::resolve(&cx, "https://transfer.it/t/AbCdEf123456")
         .await
@@ -1611,12 +1521,7 @@ async fn ddownload_names_the_file_and_leaves_its_wait_to_a_browser() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     assert_eq!(
         ddownload::look(&cx, &format!("{base}/b95mf0a361s1"))
             .await
@@ -1717,12 +1622,7 @@ async fn mediafire_sends_a_page_behind_cloudflares_check_to_a_browser() {
     let base = serve(app).await;
     let cfg = config(&base);
     let (http, tokens) = (http(), Tokens::default());
-    let cx = Cx {
-        http: &http,
-        cfg: &cfg,
-        tokens: &tokens,
-        key_service: &http,
-    };
+    let cx = context(&http, &cfg, &tokens);
     let e = mediafire::resolve(
         &cx,
         "https://www.mediafire.com/file/plain1111/archive.part1.rar/file",
