@@ -106,7 +106,8 @@ pub(super) fn items(
     let off = |m: &str| known.get(m).is_some_and(|h| h.disabled || h.needs_account);
     let rank = |m: &str| known.get(m).and_then(|h| h.preferred).unwrap_or(usize::MAX);
     for it in items {
-        // A copied page on trial is in no list until it shows links.
+        // A page on trial, or being read, is in no list until it shows what
+        // it is.
         it.list = if it.tentative { "" } else { list_of(it.status) };
         it.not_started = it.status == "paused" && it.done == 0;
         it.shown_host = if it.host.is_empty() {
@@ -438,6 +439,9 @@ pub struct WrapperCard {
     /// aside while anything else on the card goes on or found files: a
     /// note, not a failure. 0 when the card failed for them.
     pub empty: usize,
+    /// Its files only on hosts that are off until their account is set: in no
+    /// list, so the card is where they show.
+    pub waiting_for_account: usize,
     /// The wrapper whose state the card shows, the one to open when it
     /// needs a person.
     pub open_id: String,
@@ -486,14 +490,14 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
         .into_iter()
         .map(|(key, ws)| {
             let w = ws[0];
-            let files: Vec<&ItemView> = items
+            let (waiting_for_account, files): (Vec<&ItemView>, Vec<&ItemView>) = items
                 .iter()
                 .filter(|it| {
                     ws.iter().any(|x| {
                         it.source.as_deref() == Some(x.id.as_str()) || it.also_from.contains(&x.id)
                     })
                 })
-                .collect();
+                .partition(|it| it.tentative && it.status == "paused");
             // A paste that lists no links (a description) is a
             // note on a card that has anything else going on or found,
             // not the card's failure.
@@ -529,6 +533,7 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 found: w.found,
                 files: files.len(),
                 empty,
+                waiting_for_account: waiting_for_account.len(),
                 open_id: urgent.id.clone(),
                 need_you: ws.iter().filter(|x| x.status == "captcha").count(),
                 tally: tally(files),
@@ -602,7 +607,7 @@ pub(super) fn counts(
                 .iter()
                 .filter(|i| {
                     i.status == "passing"
-                        // A copied page on trial, while it is looked at.
+                        // A page on trial or being read, while it is looked at.
                         || (i.tentative
                             && matches!(i.status, "queued" | "resolving" | "checking"))
                 })

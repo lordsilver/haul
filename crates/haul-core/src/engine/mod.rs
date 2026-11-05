@@ -3400,13 +3400,18 @@ impl Engine {
     /// Starts the files a wrapper added that are waiting to be started.
     /// Returns how many, or `None` when there is no such wrapper.
     pub fn start_wrapper(&self, id: &str) -> Option<usize> {
+        let cfg = self.cfg();
         let mut st = self.lock();
         if !st.items.get(id)?.wrapper {
             return None;
         }
         let mut started = 0;
         for it in st.items.values_mut() {
-            if it.listed_by(id) && it.status == Status::Paused && !it.wrapper {
+            if it.listed_by(id)
+                && it.status == Status::Paused
+                && !it.wrapper
+                && !waits_for_account(it, &cfg)
+            {
                 it.status = Status::Queued;
                 started += 1;
             }
@@ -3694,7 +3699,7 @@ impl Engine {
                 archive: None,
                 source_name: None,
                 download_from: it.prefer.clone(),
-                tentative: it.tentative,
+                tentative: it.tentative || being_read(it) || waits_for_account(it, &cfg),
             })
             .collect();
         let route = |name: &str| {
@@ -4165,6 +4170,34 @@ fn recycle(file: &Path, bin: Option<&Path>) -> Result<bool, String> {
         None => trash::delete(file).map_err(|e| e.to_string())?,
     }
     Ok(true)
+}
+
+/// Whether `it` is a wrapper's file, not started, whose every link is on a
+/// host that is off until its account is set: it stays out of the lists, and
+/// comes back when the host is switched on. The user asked for this on
+/// 2026-11-05; a link added by itself still says why it does not start.
+fn waits_for_account(it: &Item, cfg: &crate::config::Config) -> bool {
+    it.source.is_some()
+        && !it.wrapper
+        && it.status == Status::Paused
+        && it.done == 0
+        && !it.mirrors.is_empty()
+        && it.mirrors.iter().all(|url| {
+            hosts::known(&hosts::host_of(url)).is_some_and(|host| host.off_for_account(cfg))
+        })
+}
+
+/// Whether `it` is a pasted web page not read yet: it may turn out a wrapper
+/// or a file, so it waits in no list, or it would flash through the downloads
+/// on its way to the wrappers.
+fn being_read(it: &Item) -> bool {
+    it.status == Status::Queued
+        && !it.probed
+        && !it.wrapper
+        && it
+            .mirrors
+            .first()
+            .is_some_and(|url| hosts::is_web_page(url) && !hosts::is_download_link(url))
 }
 
 fn display_name(it: &Item) -> String {

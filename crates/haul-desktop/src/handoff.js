@@ -216,7 +216,7 @@
           if (answered !== 404 && location.pathname.toLowerCase() !== "/404.html") return;
           handed = true;
           window.__haulHandoff = {
-            failed: "filecrypt.cc: answered Not Found: the container was deleted, or the site is refusing this address for now",
+            failed: "filecrypt.cc: answered Not Found: the container was deleted, or the site is refusing this browser for now",
           };
         };
         // The status may not be there yet as the document starts.

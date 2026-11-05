@@ -341,10 +341,11 @@ fn visit(user_agent: &str, tz: &str, page: &str) -> String {
 }
 
 /// What a container that answers "Not Found" may be. filecrypt.cc says the
-/// same of a container that was deleted and to an address it refuses: every
-/// container, on a fresh browser profile, for hours on end.
+/// same of a container that was deleted and to a browser it refuses: every
+/// container, on a fresh browser profile, while the same containers opened in
+/// an older profile on the same line.
 const NOT_FOUND: &str =
-    "answered Not Found: the container was deleted, or the site is refusing this address for now";
+    "answered Not Found: the container was deleted, or the site is refusing this browser for now";
 
 /// An answer that is not the page to read: a rate limit to wait out, a
 /// container that is gone, or a refusal a person may get past.
@@ -416,7 +417,7 @@ pub(super) fn shown(html: &str) -> Option<Unwrapped> {
     // elsewhere before anything downloads.
     let names = row_names(html);
     let names = if names.len() == urls.len() {
-        names.into_iter().map(Some).collect()
+        names
     } else {
         vec![None; urls.len()]
     };
@@ -451,11 +452,13 @@ fn heading(html: &str) -> Option<String> {
     HEADING.captures(html).and_then(|h| page_text(&h[1]))
 }
 
-/// The file name of each row of a solved page's link table, in order.
-fn row_names(html: &str) -> Vec<String> {
+/// The file name of each row of a solved page's link table, in order; `None`
+/// for a row that shows none (`n/a`). Rows with the same name are taken for
+/// one file on several hosts, so `n/a` must not count as a name.
+fn row_names(html: &str) -> Vec<Option<String>> {
     ROW_NAME
         .captures_iter(html)
-        .filter_map(|c| page_text(&c[1]))
+        .map(|c| page_text(&c[1]).filter(|name| !name.eq_ignore_ascii_case("n/a")))
         .collect()
 }
 
@@ -769,7 +772,23 @@ mod tests {
             row("R.part01.rar", "998E063144"),
             row("R &amp; Co.part02.rar", "11AA")
         );
-        assert_eq!(row_names(&html), ["R.part01.rar", "R & Co.part02.rar"]);
+        assert_eq!(
+            row_names(&html),
+            [
+                Some("R.part01.rar".into()),
+                Some("R & Co.part02.rar".into())
+            ]
+        );
+        let html = format!(
+            "<table>{}{}</table>",
+            row("a.rar", "11AA"),
+            row("N/A", "22BB")
+        );
+        assert_eq!(
+            row_names(&html),
+            [Some("a.rar".into()), None],
+            "in their rows"
+        );
     }
 
     #[test]

@@ -105,6 +105,22 @@ fn fc_sized(host: &str, name: &str, sizes: [&str; 2]) -> String {
     format!("{}<table>{rows}</table>", fc_solved_with("Folder", &links))
 }
 
+/// A solved container whose link table has no names: two different folders
+/// on `host`, each row showing `n/a` where a file's name goes.
+fn fc_unnamed(host: &str) -> String {
+    let links = [
+        format!("http://{host}/d/abc123"),
+        format!("http://{host}/d/def456"),
+    ];
+    let row = format!(
+        r#"<tr class="kwj3"><td class="status"><i class="online small"></i></td><td title="n/a">n/a<span><a href="http://{host}" class="external_link">{host}</a></span></td><td>n/a</td><td><a href="/Link/abc.html" class="button download"></a></td></tr>"#
+    );
+    format!(
+        "{}<table>{row}{row}</table>",
+        fc_solved_with("Example", &links)
+    )
+}
+
 /// The `.dlc` the test server hands out and the key service's answer for it,
 /// the way JDownloader builds one: two of the server's own files.
 fn dlc_fixture(host: &str) -> (Vec<u8>, String) {
@@ -610,7 +626,7 @@ async fn start_server() -> (Server, u16) {
                 }
                 match page.as_str() {
                     "abc.html" | "open.html" | "cf-once.html" | "host-a.html" | "host-b.html"
-                    | "ids-a.html" | "ids-b.html" | "same-a.html" | "same-b.html"
+                    | "unnamed.html" | "for-account.html" | "ids-a.html" | "ids-b.html" | "same-a.html" | "same-b.html"
                     | "other-a.html" | "other-b.html" => FC_GATE.into_response(),
                     // Another gate than the checkbox, past the check in front
                     // of the site.
@@ -642,6 +658,30 @@ async fn start_server() -> (Server, u16) {
                             format!("http://{other}/files/Example.Archive.part2.rar"),
                         ],
                     )
+                } else if page == "for-account.html" {
+                    // Two files here, and one only on a host off for want of
+                    // its account, whose table has no name for it.
+                    let name = |n: &str| {
+                        format!(
+                            r#"<tr class="kwj3"><td class="status"><i class="online small"></i></td><td title="{n}">{n}<span><a href="http://{host}" class="external_link">{host}</a></span></td><td>n/a</td><td><a href="/Link/abc.html" class="button download"></a></td></tr>"#
+                        )
+                    };
+                    format!(
+                        "{}<table>{}{}{}</table>",
+                        fc_solved_with(
+                            "Example",
+                            &[
+                                format!("http://{host}/files/one.bin"),
+                                format!("http://{host}/files/two.bin"),
+                                "https://gofile.io/d/abc123".to_string(),
+                            ],
+                        ),
+                        name("one.bin"),
+                        name("two.bin"),
+                        name("n/a"),
+                    )
+                } else if page == "unnamed.html" {
+                    fc_unnamed(host)
                 } else if page == "same-a.html" {
                     fc_sized(host, "Archive.One", ["2.00 GB", "880.00 MB"])
                 } else if page == "same-b.html" {
@@ -1849,6 +1889,83 @@ async fn a_page_of_links_is_a_wrapper_of_them() {
         s.items.iter().any(|i| i.status == "captcha")
     })
     .await;
+}
+
+/// A page is read before it is known to be a file or a wrapper, so it waits
+/// in no list until then, or it would flash through the downloads on its way
+/// to the wrappers; the status bar counts it. A plain file stays in its list.
+#[tokio::test]
+async fn a_page_being_read_is_in_no_list_until_it_shows_what_it_is() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/blog/links", t.ip), "");
+    let s = engine.snapshot();
+    assert_eq!(s.items.len(), 1, "added, and not read yet");
+    assert_eq!(s.items[0].status, "checking");
+    assert_eq!(s.items[0].list, "", "in no list while it is read");
+    assert_eq!(s.counts.all, 0, "not counted among the downloads");
+    assert_eq!(
+        s.counts.unwrapping, 1,
+        "the status bar says it is worked on"
+    );
+
+    let s = wait_for(&engine, "the page's files", |s| s.items.len() == 2).await;
+    assert_eq!(s.wrappers.len(), 1);
+    assert_eq!(s.counts.all, 2);
+
+    engine.add_text(&format!("{}/files/report.bin", t.ip), "");
+    let s = engine.snapshot();
+    let file = s.items.iter().find(|i| i.name == "report.bin").unwrap();
+    assert_ne!(file.list, "", "a file's link is a download from the start");
+}
+
+/// `n/a` in a container's table is no file's name: its links are not one file
+/// on several hosts, nor is any row called that.
+#[tokio::test]
+async fn a_containers_rows_without_names_stay_separate() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://filecrypt.cc/Container/unnamed.html", "");
+    let s = wait_for(&engine, "the container's links", |s| {
+        s.wrappers.first().is_some_and(|w| w.status == "done") && !s.items.is_empty()
+    })
+    .await;
+    assert_eq!(s.items.len(), 2, "two links, two rows");
+    assert!(s.items.iter().all(|i| i.name != "n/a"));
+    assert!(s.items.iter().all(|i| i.mirrors.len() == 1));
+}
+
+/// A wrapper's file only on a host that is off until its account is set is in
+/// no list and not started with the rest; the wrapper's card counts it, and it
+/// comes back when the host is switched on.
+#[tokio::test]
+async fn a_wrappers_file_only_on_a_host_without_its_account_stays_out_of_the_lists() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://filecrypt.cc/Container/for-account.html", "");
+    let s = wait_for(&engine, "the container's links", |s| {
+        s.items.len() == 3 && s.items.iter().all(|i| i.status == "paused")
+    })
+    .await;
+    let hidden = |s: &Snapshot| s.items.iter().filter(|i| i.list.is_empty()).count();
+    assert_eq!(hidden(&s), 1, "the file only on gofile.io");
+    assert_eq!(s.counts.all, 2);
+    assert_eq!(s.counts.ready, 2, "the status bar counts the other two");
+    assert_eq!(s.wrapper_cards[0].files, 2);
+    assert_eq!(s.wrapper_cards[0].waiting_for_account, 1);
+
+    let id = s.wrappers[0].id.clone();
+    assert_eq!(engine.start_wrapper(&id), Some(2), "only the two it can");
+    let s = wait_for(&engine, "the two to finish", |s| {
+        s.items.iter().filter(|i| i.status == "done").count() == 2
+    })
+    .await;
+    assert_eq!(hidden(&s), 1, "and the third waits on, with no error");
+
+    engine.set_disabled("gofile.io", false).unwrap();
+    let s = engine.snapshot();
+    assert_eq!(hidden(&s), 0, "switched on, it shows");
+    assert_eq!(s.wrapper_cards[0].waiting_for_account, 0);
 }
 
 /// A page's links to files on a host Haul has no code for, on another
