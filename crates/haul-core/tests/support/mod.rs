@@ -426,6 +426,33 @@ pub(super) async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/expired/{name}",
+            // A link that has run out: past the start of the file it answers
+            // with a bare 416, as if it had nothing there.
+            get(|State(s): State<Server>, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                log(&s, &format!("/expired/{name}"), &headers);
+                if range_start(&headers).is_some_and(|start| start > 0) {
+                    return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+                }
+                file_response(content(&name, SIZE), &headers)
+            }),
+        )
+        .route(
+            "/cut/{name}",
+            // Answers a range as if it had the file, and sends nothing.
+            get(|State(s): State<Server>, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                log(&s, &format!("/cut/{name}"), &headers);
+                let Some(start) = range_start(&headers) else {
+                    return file_response(content(&name, SIZE), &headers);
+                };
+                Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(header::CONTENT_RANGE, format!("bytes {start}-{}/*", SIZE - 1))
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
             "/busy/{name}",
             // Sends at most two files at once and refuses more, saying why.
             get(|State(s): State<Server>, method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {

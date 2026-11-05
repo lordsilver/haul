@@ -4894,3 +4894,68 @@ async fn a_frozen_process_is_not_a_slow_host() {
     assert_eq!(cooldown(&s, "127.0.0.1"), 0);
     assert!(t.server.requests("/files/x.bin").is_empty());
 }
+
+/// A link that has run out says nothing about the partial file: it stays, and
+/// the row goes on from another host.
+#[tokio::test]
+async fn an_expired_link_does_not_cost_the_partial_file() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/400/x.bin {}/expired/x.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "enough of it", |s| {
+        row(s, "x.bin").done > 100 * 1024
+    })
+    .await;
+    let id = row(&s, "x.bin").id.clone();
+    assert!(engine.item_action(&id, ItemAction::Pause));
+    wait_for(&engine, "the pause", |s| active(s, "127.0.0.1") == 0).await;
+    engine.download_from(std::slice::from_ref(&id), Some("localhost"));
+    assert!(engine.item_action(&id, ItemAction::Resume));
+    wait_for(&engine, "the expired link's answer", |_| {
+        !asked_for_bytes(&t, "/expired/x.bin").is_empty()
+    })
+    .await;
+    wait_for(&engine, "done from the other host", all_done).await;
+    assert_eq!(t.downloaded("x.bin"), content("x.bin", SIZE));
+    let asked = t.server.requests("/paced/400/x.bin");
+    let last = asked.last().unwrap();
+    assert!(last.contains("bytes="), "went on from its bytes: {asked:?}");
+}
+
+/// An answer that ends before any byte was compared proves nothing either.
+#[tokio::test]
+async fn an_answer_cut_short_does_not_cost_the_partial_file() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/400/x.bin {}/cut/x.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "enough of it", |s| {
+        row(s, "x.bin").done > 100 * 1024
+    })
+    .await;
+    let id = row(&s, "x.bin").id.clone();
+    assert!(engine.item_action(&id, ItemAction::Pause));
+    wait_for(&engine, "the pause", |s| active(s, "127.0.0.1") == 0).await;
+    let kept = std::fs::metadata(t.partial(&id)).unwrap().len();
+    engine.download_from(std::slice::from_ref(&id), Some("localhost"));
+    assert!(engine.item_action(&id, ItemAction::Resume));
+    wait_for(&engine, "the short answer", |_| {
+        !t.server.requests("/cut/x.bin").is_empty()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        std::fs::metadata(t.partial(&id))
+            .map(|m| m.len())
+            .unwrap_or(0)
+            >= kept,
+        "the partial file was thrown away"
+    );
+}

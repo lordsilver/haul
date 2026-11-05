@@ -1537,6 +1537,18 @@ pub(crate) fn content_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
     Some((start, total.trim().parse().ok()))
 }
 
+/// The size a 416 states (`Content-Range: bytes */1234`), when it does.
+pub(crate) fn unsatisfied_total(headers: &HeaderMap) -> Option<u64> {
+    let v = headers.get(CONTENT_RANGE)?.to_str().ok()?;
+    v.trim()
+        .strip_prefix("bytes")?
+        .trim_start()
+        .strip_prefix("*/")?
+        .trim()
+        .parse()
+        .ok()
+}
+
 /// Seconds from `Retry-After`, or `default` when absent or a date.
 pub(crate) fn retry_after(headers: &HeaderMap, default: u64) -> u64 {
     headers
