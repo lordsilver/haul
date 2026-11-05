@@ -115,8 +115,9 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
     : '';
   const line = [card.host, state, empty, held].filter(Boolean).join(' · ');
   const reason = ['error', 'waiting', 'captcha'].includes(card.status) ? card.error_shown : '';
-  // When a failed one is tried again on its own, after its reason.
-  const again = card.status === 'error' && card.retry_in ? `trying again in ${duration(card.retry_in)}` : '';
+  // When a failed one, or the page of one waiting for a person, is tried
+  // again on its own, after its reason.
+  const again = (card.status === 'error' || needs) && card.retry_in ? `trying again in ${duration(card.retry_in)}` : '';
   // The wrapper the card shows: the one to open when it needs a person.
   const first = card.open_id;
   const hint = s.desktop

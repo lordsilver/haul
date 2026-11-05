@@ -3,7 +3,8 @@
 //! page known to, or one behind Cloudflare's check) gets its
 //! page opened out of sight ([`Browser::pass`]), one page at a time and
 //! each page once per wait, so the user is asked only when the check wants
-//! them.
+//! them. The engine sends a page that wanted them back here on its timer
+//! ([`Engine::page_wants_person`]), unless they have it open.
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
@@ -35,7 +36,7 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
                 );
             let waiting: Vec<(String, String, bool, bool)> = rows
                 // Waiting their turn ("passing"), or shown to the person after
-                // their turn ("captcha"): kept, so the tried set stays theirs.
+                // their turn ("captcha").
                 .filter(|(_, status, _)| *status == "passing" || *status == "captcha")
                 .filter_map(|(id, status, open)| {
                     let page = open.iter().find(|u| engine.page_passes(u))?;
@@ -45,11 +46,24 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
                 .collect();
             let key =
                 |id: &String, page: &String, clearance: bool| (id.clone(), page.clone(), clearance);
+            // A pass counts while its row waits its turn. Back with the
+            // person, the row's next try of its own (the engine's timer sends
+            // it back to passing) is a pass of its own.
             tried.retain(|(id, page, c)| {
                 waiting
                     .iter()
-                    .any(|(w, p, _, wc)| w == id && p == page && wc == c)
+                    .any(|(w, p, passing, wc)| *passing && w == id && p == page && wc == c)
             });
+            // A page a person has open is theirs: a try of its own coming due
+            // waits, here and in the engine, so no pass fights their window.
+            let with_person: Vec<&String> = waiting
+                .iter()
+                .map(|(id, ..)| id)
+                .filter(|id| browser.person_has_page(id))
+                .collect();
+            for id in &with_person {
+                engine.page_with_person(id);
+            }
             // A pass whose row went or stopped waiting (removed, paused,
             // started by hand) stops, so it holds up no other.
             for id in browser.passing_out_of_sight() {
@@ -71,9 +85,9 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
                     *passing && tried.contains(&key(id, page, *c)) && browser.is_passing(id)
                 });
             if !busy
-                && let Some((id, page, _, c)) = waiting
-                    .iter()
-                    .find(|(id, page, passing, c)| *passing && !tried.contains(&key(id, page, *c)))
+                && let Some((id, page, _, c)) = waiting.iter().find(|(id, page, passing, c)| {
+                    *passing && !tried.contains(&key(id, page, *c)) && !with_person.contains(&id)
+                })
             {
                 tried.insert(key(id, page, *c));
                 // A pass that cannot start asks the person rather than

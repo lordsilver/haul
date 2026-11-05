@@ -25,7 +25,8 @@ status: "unwrapping" | "waiting" | "passing" | "captcha" | "paused" | "error" | 
  */
 wait: number, 
 /**
- * Seconds until a failed one is tried again on its own; 0 when never.
+ * Seconds until a failed one, or the page of one waiting for a person,
+ * is tried again on its own; 0 when never.
  */
 retry_in: number, 
 /**

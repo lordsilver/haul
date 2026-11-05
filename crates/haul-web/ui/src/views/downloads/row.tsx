@@ -186,11 +186,17 @@ function Subtitle({ it, s }: { it: ItemView; s: State }) {
   if (it.source_name) rest.push(`from ${it.source_name}`);
   const reason = ['error', 'waiting', 'captcha'].includes(it.status) ? it.error_shown : '';
   const tone = it.status === 'error' ? 'text-destructive' : it.status === 'captcha' ? 'text-warn-strong' : '';
+  // When its page is passed again on its own, while it waits for the person.
+  const again = it.status === 'captcha' && it.retry_in ? `trying again in ${duration(it.retry_in)}` : '';
   return (
-    <div className="truncate text-xs text-muted-foreground" title={[host, ...rest, reason].filter(Boolean).join('\n')}>
+    <div
+      className="truncate text-xs text-muted-foreground"
+      title={[host, ...rest, reason, again].filter(Boolean).join('\n')}
+    >
       <HostPicker ids={[it.id]} hosts={it.mirrors} off={off} chosen={it.download_from} label={label} />
       {rest.length ? ` · ${rest.join(' · ')}` : null}
       {reason ? <span className={tone}> · {reason}</span> : null}
+      {again ? ` · ${again}` : null}
     </div>
   );
 }

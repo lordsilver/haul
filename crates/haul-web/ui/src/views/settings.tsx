@@ -313,7 +313,7 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
       <SettingCard
         icon={Clock}
         title="Retry failed downloads"
-        description="Tries a failed download again after this many minutes, up to three times. 0 turns it off."
+        description="Tries a failed download again after this many minutes, up to three times, and a page Haul passes by itself that wanted you. 0 turns it off."
         controls={
           <NumberField
             name="retry_failed_minutes"

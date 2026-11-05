@@ -33,7 +33,7 @@ nordvpn_on = true                # false keeps the above but leaves NordVPN's se
 resume_attempts = 5             # retries per mirror after network trouble
 min_speed_kbps = 0              # give up a mirror slower than this (KiB/s) ...
 min_speed_seconds = 60          # ... over this long; 0 = off
-retry_failed_minutes = 15       # retry failed downloads (up to 3 times), 0 = never
+retry_failed_minutes = 15       # retry failed downloads, and pages that wanted you (up to 3 times), 0 = never
 proxy = "socks5://user:pass@host:1080" # every host goes through it unless allowed direct
 use_proxy = true                # false keeps proxies and VPN servers but connects directly
 proxies_on = true               # false leaves the proxies of proxy and proxies out

@@ -98,6 +98,7 @@ fn item_report(it: &Item) -> Value {
         "handed_back": it.pre.as_ref().filter(|_| it.manual).map(|p| page_only(&p.url)),
         "retries": it.retries,
         "auto_retries": it.auto_retries,
+        "page_retrying": it.page_retrying,
         "busy": it.busy,
         "existing": it.existing,
         "path": it.path,

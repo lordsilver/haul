@@ -101,7 +101,8 @@ pub struct ItemView {
     pub tentative: bool,
     /// Seconds until a waiting item may try again.
     pub wait: u64,
-    /// Seconds until a failed item is tried again on its own; 0 when never.
+    /// Seconds until a failed item, or the page of one under Needs you, is
+    /// tried again on its own; 0 when never.
     pub retry_in: u64,
     /// Mirrors a person has to open.
     pub open_urls: Vec<String>,
@@ -167,7 +168,8 @@ pub struct WrapperView {
     pub error: String,
     /// Seconds until it is tried again.
     pub wait: u64,
-    /// Seconds until a failed one is tried again on its own; 0 when never.
+    /// Seconds until a failed one, or the page of one waiting for a person,
+    /// is tried again on its own; 0 when never.
     pub retry_in: u64,
     /// Pages a person has to open.
     pub open_urls: Vec<String>,
@@ -307,7 +309,12 @@ impl Engine {
         // The desktop app passes one of its pages by itself, in turn: nothing
         // for the person yet.
         let passing = |it: &Item| {
-            pages && !it.page_wants_person && it.manual_urls.iter().any(|u| st.passes(u))
+            pages
+                && !it.page_wants_person
+                && it
+                    .manual_urls
+                    .iter()
+                    .any(|u| st.passes(u) && self.pass_held_until(&st, u, now).is_none())
         };
         let wrappers: Vec<WrapperView> = st
             .items

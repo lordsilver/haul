@@ -43,6 +43,7 @@ impl Engine {
                     "gone": gone,
                     "manual_urls": manual,
                     "page_wants_person": it.page_wants_person,
+                    "page_retrying": it.page_retrying,
                     "prefer": it.prefer,
                     "error": it.error,
                     "size": it.size,

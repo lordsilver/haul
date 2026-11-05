@@ -1520,11 +1520,656 @@ async fn a_page_without_its_link_is_passed_again_later() {
         s.items[0].status == "passing"
     })
     .await;
-    engine.page_later(&id, "vikingfile: too many requests");
+    engine.page_later(
+        &id,
+        "https://gofile.io/d/held",
+        "vikingfile: too many requests",
+        None,
+    );
     let s = engine.snapshot();
     assert_eq!(s.items[0].status, "waiting");
     assert!(s.items[0].wait > 0, "it counts down to the next pass");
     assert_eq!(s.items[0].error, "vikingfile: too many requests");
+}
+
+/// An engine whose requests go out through the stand-in as their proxy, so
+/// pages of hosts with no endpoint of their own (ddownload.com, paste2.org)
+/// are answered by it, never by the real site. As with any proxy, each
+/// host's pages open from that one address.
+fn through_stand_in(t: &Setup) -> Options {
+    let mut config = t.config();
+    config.proxies = vec![t.ip.clone()];
+    Options {
+        config: Some(config),
+        ..t.options()
+    }
+}
+
+/// What the engine's own count of automatic retries says of row `id`.
+fn auto_retries(engine: &Engine, id: &str) -> u64 {
+    let seen = engine.debug_inspect();
+    let items = seen["items"].as_array().unwrap();
+    let it = items.iter().find(|i| i["id"] == id).unwrap();
+    it["auto_retries"].as_u64().unwrap()
+}
+
+/// Waits for a link on ddownload to wait for its page's pass, and gives its
+/// row's id.
+async fn ddownload_waiting_its_pass(engine: &Engine, page: &str) -> String {
+    engine.add_text(page, "");
+    let links = |i: &haul_core::ItemView| engine.debug_links(&i.id).contains(&page.to_string());
+    let s = wait_for(engine, "the page to wait its turn", |s| {
+        s.items.iter().any(|i| links(i) && i.status == "passing")
+    })
+    .await;
+    s.items.iter().find(|i| links(i)).unwrap().id.clone()
+}
+
+/// A wrapper that failed runs again when its retry comes due, here finding
+/// what the first try did not.
+#[tokio::test]
+async fn a_failed_wrapper_runs_again_when_its_retry_comes_due() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://filecrypt.cc/Container/missing-live.html", "");
+    let s = wrapper_settled(&engine, "error").await;
+    assert!(s.wrappers[0].retry_in > 0, "due for a retry");
+    assert!(engine.debug_retry_now(&s.wrappers[0].id));
+    let s = wrapper_settled(&engine, "done").await;
+    assert_eq!(s.wrappers[0].found.map(|f| f.files), Some(2));
+    assert_eq!(s.counts.unwrapping, 0, "nothing left unwrapping");
+}
+
+/// So it does after a restart, which forgets that the wrapper was looked at.
+#[tokio::test]
+async fn a_failed_wrapper_runs_again_after_a_restart() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://filecrypt.cc/Container/missing-restart.html", "");
+    wrapper_settled(&engine, "error").await;
+    engine.shutdown().await;
+    drop(engine);
+
+    let engine = start_when_free(|| t.options()).await;
+    let s = engine.snapshot();
+    assert!(s.wrappers[0].retry_in > 0, "due for a retry again");
+    assert!(engine.debug_retry_now(&s.wrappers[0].id));
+    let s = wrapper_settled(&engine, "done").await;
+    assert_eq!(s.counts.unwrapping, 0, "nothing left unwrapping");
+}
+
+/// A wrapper's retry is unwrapped at once, as when it was added, whatever
+/// the queue is doing: its files only wait for the user, so it takes no
+/// download's turn and waits for none.
+#[tokio::test]
+async fn a_wrapper_retry_does_not_wait_behind_downloads() {
+    let t = Setup::new().await;
+    let mut config = t.config();
+    config.max_total = 1;
+    config.rate_limit_mbps = 0.05;
+    let engine = t.engine_with(config).await;
+    engine.add_text(&format!("{}/files/long.bin", t.ip), "");
+    wait_for(&engine, "the download to take the only slot", |s| {
+        s.items.iter().any(|i| i.status == "downloading")
+    })
+    .await;
+    engine.add_text("https://filecrypt.cc/Container/missing-busy.html", "");
+    let s = wrapper_settled(&engine, "error").await;
+    assert!(engine.debug_retry_now(&s.wrappers[0].id));
+    wrapper_settled(&engine, "done").await;
+    let s = engine.snapshot();
+    assert!(
+        s.items.iter().any(|i| i.status == "downloading"),
+        "the download still has the slot"
+    );
+}
+
+/// A paste Haul read itself that lists no links is not tried again on a
+/// timer, as with one the desktop app passed, after a restart either.
+#[tokio::test]
+async fn a_paste_that_lists_no_links_is_not_retried_on_a_timer() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.add_text("http://paste2.org/paste/abc123", "");
+    let s = wrapper_settled(&engine, "error").await;
+    assert!(
+        haul_core::hosts::lists_no_links(&s.wrappers[0].error),
+        "{}",
+        s.wrappers[0].error
+    );
+    assert_eq!(s.wrappers[0].retry_in, 0, "not tried again on a timer");
+    engine.shutdown().await;
+    drop(engine);
+
+    let engine = start_when_free(|| through_stand_in(&t)).await;
+    let s = engine.snapshot();
+    assert_eq!(s.wrappers[0].status, "error");
+    assert_eq!(s.wrappers[0].retry_in, 0, "nor after a restart");
+}
+
+/// A failed download whose name no host gave is looked up on its retry, not
+/// left waiting for a lookup that never comes, after a restart.
+#[tokio::test]
+async fn a_failed_download_without_a_name_retries_after_a_restart() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/missing/", t.ip), "");
+    let s = wait_for(&engine, "the failure", |s| {
+        s.items.iter().any(|i| i.status == "error")
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    engine.shutdown().await;
+    drop(engine);
+
+    let engine = start_when_free(|| t.options()).await;
+    assert!(engine.debug_retry_now(&id));
+    wait_for(&engine, "the retry to fail again", |s| {
+        auto_retries(&engine, &id) == 1 && s.items[0].status == "error"
+    })
+    .await;
+}
+
+/// A host's limit on an address, which its page states: the row waits it out
+/// rather than ask a person, and goes again by itself when it ends.
+#[tokio::test]
+async fn a_host_limit_waits_and_goes_again_by_itself() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+    let page = "http://ddownload.com/dd/abc123";
+    let id = ddownload_waiting_its_pass(&engine, page).await;
+
+    engine.page_later(&id, page, "ddownload: limit", Some(2));
+    let s = wait_for(&engine, "the row to wait", |s| {
+        s.items[0].status == "waiting"
+    })
+    .await;
+    assert!(s.items[0].wait <= 2, "as long as the page said");
+    assert_eq!(s.items[0].list, "active", "not under Needs you");
+    assert_eq!(s.counts.need_you, 0);
+    assert!(!engine.page_passes(page), "no pass while it holds");
+
+    let s = wait_for(&engine, "the row to go again", |s| {
+        s.items[0].status == "passing"
+    })
+    .await;
+    assert_eq!(s.items[0].open_urls, [page]);
+    assert!(engine.page_passes(page), "passed again");
+}
+
+/// The limit is the address's, not the file's: other rows on that host wait
+/// out the same cooldown, and none opens a page meanwhile, a row under
+/// Needs you or one added since included.
+#[tokio::test]
+async fn a_host_limit_holds_every_row_on_that_host() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+    let page = "http://ddownload.com/dd/abc123";
+    let id = ddownload_waiting_its_pass(&engine, page).await;
+    let other = "http://ddownload.com/dd/def456";
+    ddownload_waiting_its_pass(&engine, other).await;
+    let wanted = "http://ddownload.com/dd/ghi789";
+    let wants = ddownload_waiting_its_pass(&engine, wanted).await;
+    assert!(engine.page_wants_person(&wants));
+    wait_for(&engine, "the row under Needs you", |s| {
+        s.counts.need_you == 1
+    })
+    .await;
+
+    engine.page_later(&id, page, "ddownload: limit", Some(3600));
+    let s = wait_for(&engine, "every row to wait", |s| {
+        s.items.iter().all(|i| i.status == "waiting")
+    })
+    .await;
+    assert_eq!(s.counts.need_you, 0);
+    for it in &s.items {
+        assert!(
+            (3590..=3600).contains(&it.wait),
+            "one wait for all: {}",
+            it.wait
+        );
+    }
+    let host = s.hosts.iter().find(|h| h.name == "ddownload.com").unwrap();
+    assert!((3590..=3600).contains(&host.cooldown), "{}", host.cooldown);
+    for link in [page, other, wanted] {
+        assert!(!engine.page_passes(link), "{link} is not passed");
+    }
+
+    // One added since waits too, and opens no page either.
+    engine.add_text("http://ddownload.com/dd/jkl012", "");
+    wait_for(&engine, "the new row, looked up", |s| {
+        s.items.len() == 4 && s.items.iter().all(|i| i.status != "checking")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let s = engine.snapshot();
+    assert!(
+        !s.items
+            .iter()
+            .any(|i| matches!(i.status, "passing" | "captcha")),
+        "{:?}",
+        s.items.iter().map(|i| i.status).collect::<Vec<_>>()
+    );
+    assert_eq!(s.counts.need_you, 0);
+}
+
+/// Any wait a host asks of the address holds its pages' passes the same way:
+/// here a 429 to another of the host's links, while a page waits its pass.
+#[tokio::test]
+async fn a_hosts_rate_limit_holds_its_pages_passes() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    let page = format!("{}/blog/guarded", t.ip);
+    engine.add_text(&page, "");
+    wait_for(&engine, "the page to wait its turn", |s| {
+        s.items.iter().any(|i| i.status == "passing")
+    })
+    .await;
+    assert!(engine.page_passes(&page));
+    engine.add_text(&format!("{}/limited-long/d.bin", t.ip), "");
+    let s = wait_for(&engine, "both to wait", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.status == "waiting")
+    })
+    .await;
+    assert_eq!(s.counts.need_you, 0, "no moment under Needs you");
+    assert!(!engine.page_passes(&page), "no pass meanwhile");
+}
+
+/// A new address from the router ends the limit on the old one: the row goes
+/// again rather than wait out what no longer holds.
+#[tokio::test]
+async fn a_new_address_ends_a_host_limit() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    let page = format!("{}/blog/guarded", t.ip);
+    engine.add_text(&page, "");
+    let s = wait_for(&engine, "the page to wait its turn", |s| {
+        s.items.iter().any(|i| i.status == "passing")
+    })
+    .await;
+    engine.page_later(&s.items[0].id, &page, "a limit", Some(3600));
+    wait_for(&engine, "the row to wait", |s| {
+        s.items[0].status == "waiting"
+    })
+    .await;
+    engine.find_router().await;
+    engine.reconnect("a test").await.unwrap();
+    wait_for(&engine, "the row to go again", |s| {
+        s.items[0].status == "passing"
+    })
+    .await;
+    assert!(engine.page_passes(&page));
+}
+
+/// A page's word on how long is taken within reason: a day at most.
+#[tokio::test]
+async fn a_host_limit_is_a_day_at_most() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+    let page = "http://ddownload.com/dd/abc123";
+    let id = ddownload_waiting_its_pass(&engine, page).await;
+    engine.page_later(&id, page, "ddownload: limit", Some(u64::MAX));
+    let s = wait_for(&engine, "the row to wait", |s| {
+        s.items[0].status == "waiting"
+    })
+    .await;
+    assert!(
+        (86_390..=86_400).contains(&s.items[0].wait),
+        "{}",
+        s.items[0].wait
+    );
+}
+
+/// A row with another usable mirror goes on to it at once rather than wait
+/// out the limit, even a host Haul knows nothing of, which it held back for
+/// the page's pass.
+#[tokio::test]
+async fn a_host_limit_sends_the_row_to_its_other_mirror() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+    engine.add_text("http://fileguard.cc/vault/ddownload-held", "");
+    let w = wrapper_settled(&engine, "done").await.wrappers[0]
+        .id
+        .clone();
+    let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    let id = s.items[0].id.clone();
+    engine.start_wrapper(&w);
+    wait_for(&engine, "the file held for its page", |s| {
+        s.items[0].status == "passing"
+    })
+    .await;
+    assert!(t.server.requests("/files/held.bin").is_empty());
+
+    let page = "http://ddownload.com/dd/ddownload-held";
+    engine.page_later(&id, page, "ddownload: limit", Some(3600));
+    wait_for(&engine, "the other mirror", all_done).await;
+    assert!(!t.server.requests("/files/held.bin").is_empty());
+}
+
+/// A row with another page to pass goes on to that one while the limit holds:
+/// the pass and the person's button both leave the limited page out.
+#[tokio::test]
+async fn a_host_limit_leaves_the_rows_other_page_to_pass() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+    engine.set_disabled("gofile.io", false).unwrap();
+    engine.add_text("http://fileguard.cc/vault/ddownload-gofile", "");
+    let w = wrapper_settled(&engine, "done").await.wrappers[0]
+        .id
+        .clone();
+    let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    let id = s.items[0].id.clone();
+    engine.start_wrapper(&w);
+    let s = wait_for(&engine, "both pages to wait", |s| {
+        s.items[0].status == "passing" && s.items[0].open_urls.len() == 2
+    })
+    .await;
+    let page = "http://ddownload.com/dd/ddownload-gofile";
+    assert_eq!(s.items[0].open_urls[0], page);
+
+    engine.page_later(&id, page, "ddownload: limit", Some(3600));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let s = engine.snapshot();
+    assert_eq!(s.items[0].status, "passing", "{}", s.items[0].error);
+    assert!(!engine.page_passes(page));
+    assert!(engine.page_passes("https://gofile.io/d/both"));
+    assert_eq!(
+        engine.page_for(&id).as_deref(),
+        Some("https://gofile.io/d/both")
+    );
+}
+
+/// A row beside the limit with a page only a person can do is for that
+/// person: under Needs you, its button on that page.
+#[tokio::test]
+async fn a_host_limit_leaves_a_page_for_a_person_under_needs_you() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+    engine.set_disabled("rapidgator.net", false).unwrap();
+    engine.add_text("http://fileguard.cc/vault/ddownload-rapidgator", "");
+    let w = wrapper_settled(&engine, "done").await.wrappers[0]
+        .id
+        .clone();
+    let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    let id = s.items[0].id.clone();
+    engine.start_wrapper(&w);
+    wait_for(&engine, "both pages to wait", |s| {
+        s.items[0].open_urls.len() == 2
+    })
+    .await;
+    let page = "http://ddownload.com/dd/ddownload-rapidgator";
+    engine.page_later(&id, page, "ddownload: limit", Some(3600));
+    let s = wait_for(&engine, "the person's page", |s| {
+        s.items[0].status == "captcha"
+    })
+    .await;
+    assert_eq!(s.counts.need_you, 1);
+    assert_eq!(
+        engine.page_for(&id).as_deref(),
+        Some("https://rapidgator.net/file/person")
+    );
+}
+
+/// A page that wanted a person is passed again by itself, on the failed
+/// downloads' timer and limit, telling nobody; once the tries are used up it
+/// stays for the person. In between it waits for them as before.
+#[tokio::test]
+async fn a_page_that_wants_a_person_is_tried_again_by_itself() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+    let page = "http://ddownload.com/dd/abc123";
+    let mut events = engine.subscribe();
+    let id = ddownload_waiting_its_pass(&engine, page).await;
+
+    assert!(engine.page_wants_person(&id), "the person is told once");
+    let s = wait_for(&engine, "the row under Needs you", |s| {
+        s.items[0].status == "captcha"
+    })
+    .await;
+    assert_eq!(s.items[0].list, "attention");
+    assert_eq!(s.items[0].open_urls, [page], "Open here has its page");
+    assert!(
+        (890..=900).contains(&s.items[0].retry_in),
+        "{}",
+        s.items[0].retry_in
+    );
+    while events.try_recv().is_ok() {}
+
+    for round in 1..=3 {
+        assert!(engine.debug_retry_now(&id), "try {round}");
+        let s = wait_for(&engine, "the page's next pass", |s| {
+            s.items[0].status == "passing"
+        })
+        .await;
+        assert_eq!(s.items[0].retry_in, 0, "a try under way");
+        assert_eq!(auto_retries(&engine, &id), round);
+        assert!(!engine.page_wants_person(&id), "nobody is told");
+        let s = wait_for(&engine, "the row back under Needs you", |s| {
+            s.items[0].status == "captcha"
+        })
+        .await;
+        assert_eq!(s.items[0].open_urls, [page]);
+        if round < 3 {
+            assert!(s.items[0].retry_in > 0, "try {round} is not the last");
+        }
+    }
+    let s = engine.snapshot();
+    assert_eq!(s.items[0].retry_in, 0, "its tries are used up");
+    assert!(!engine.debug_retry_now(&id));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let s2 = engine.snapshot();
+    assert_eq!(s2.items[0].status, "captcha", "it stays for the person");
+    assert!(
+        !std::iter::from_fn(|| events.try_recv().ok())
+            .any(|e| matches!(e, Event::NeedsUser { .. })),
+        "nobody was told again"
+    );
+}
+
+/// So is a wrapper's page, whose card says when.
+#[tokio::test]
+async fn a_wrappers_page_that_wants_a_person_is_tried_again_by_itself() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.add_text("https://filecrypt.cc/Container/cf-always.html", "");
+    let s = wrapper_settled(&engine, "passing").await;
+    let id = s.wrappers[0].id.clone();
+    assert!(engine.page_wants_person(&id));
+    let s = wrapper_settled(&engine, "captcha").await;
+    assert!(s.wrapper_cards[0].retry_in > 0, "the card says when");
+    assert_eq!(s.wrapper_cards[0].need_you, 1);
+    assert!(engine.debug_retry_now(&id));
+    wrapper_settled(&engine, "passing").await;
+    assert!(!engine.page_wants_person(&id), "nobody is told");
+    let s = wrapper_settled(&engine, "captcha").await;
+    assert!(s.wrappers[0].retry_in > 0);
+}
+
+/// The retries follow the setting: none while it is off, planned when it
+/// comes on.
+#[tokio::test]
+async fn a_page_is_tried_again_only_while_retries_are_on() {
+    let t = Setup::new().await;
+    let mut options = through_stand_in(&t);
+    options.config.as_mut().unwrap().retry_failed_minutes = 0;
+    let engine = Engine::start(options).await.unwrap();
+    engine.set_pages_pass(true);
+    let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
+    assert!(engine.page_wants_person(&id));
+    let s = wait_for(&engine, "the row under Needs you", |s| {
+        s.items[0].status == "captcha"
+    })
+    .await;
+    assert_eq!(s.items[0].retry_in, 0, "turned off");
+    let on = serde_json::json!({"retry_failed_minutes": 1});
+    engine.update_settings(on.as_object().unwrap()).unwrap();
+    let s = engine.snapshot();
+    assert!(
+        (50..=60).contains(&s.items[0].retry_in),
+        "{}",
+        s.items[0].retry_in
+    );
+}
+
+/// What a person does comes first: trying again by hand starts the count
+/// over, a link they hand back ends the retries, and so does removing the row.
+#[tokio::test]
+async fn a_persons_action_ends_a_pages_retries() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+    let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
+    let under_needs_you = |s: &Snapshot| s.items[0].status == "captcha";
+    assert!(engine.page_wants_person(&id));
+    wait_for(&engine, "the row under Needs you", under_needs_you).await;
+    assert!(engine.debug_retry_now(&id));
+    wait_for(&engine, "its pass", |s| s.items[0].status == "passing").await;
+    assert!(!engine.page_wants_person(&id));
+    wait_for(&engine, "the row back", under_needs_you).await;
+    assert_eq!(auto_retries(&engine, &id), 1);
+
+    // Tried again by hand: the page's first pass again, and the person is
+    // told again if it wants them.
+    assert!(engine.item_action(&id, ItemAction::RetryManual));
+    let s = wait_for(&engine, "its pass", |s| s.items[0].status == "passing").await;
+    assert_eq!(s.items[0].retry_in, 0);
+    assert_eq!(auto_retries(&engine, &id), 0);
+    assert!(engine.page_wants_person(&id), "told again");
+
+    // A link handed back.
+    wait_for(&engine, "the row back", under_needs_you).await;
+    let link = format!("{}/files/abc123.rar", t.ip);
+    engine
+        .set_direct(&id, &link, BTreeMap::new(), None)
+        .unwrap();
+    let s = wait_for(&engine, "the file", all_done).await;
+    assert_eq!(s.items[0].retry_in, 0);
+
+    // Removed.
+    let other = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/def456").await;
+    assert!(engine.page_wants_person(&other));
+    wait_for(&engine, "the other row under Needs you", |s| {
+        s.counts.need_you == 1
+    })
+    .await;
+    assert!(engine.item_action(&other, ItemAction::Remove));
+    assert!(!engine.debug_retry_now(&other));
+}
+
+/// A page a person has open is theirs: a try that comes due meanwhile puts
+/// itself off, without using up a try, and the row stays under Needs you.
+#[tokio::test]
+async fn a_page_a_person_has_open_is_not_tried_again() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+    let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
+    assert!(engine.page_wants_person(&id));
+    wait_for(&engine, "the row under Needs you", |s| {
+        s.items[0].status == "captcha"
+    })
+    .await;
+    assert!(engine.debug_retry_now(&id));
+    wait_for(&engine, "the try to come due", |s| {
+        s.items[0].status == "passing"
+    })
+    .await;
+
+    engine.page_with_person(&id);
+    let s = engine.snapshot();
+    assert_eq!(s.items[0].status, "captcha", "back with the person");
+    assert!(s.items[0].retry_in > 800, "{}", s.items[0].retry_in);
+    assert_eq!(auto_retries(&engine, &id), 0, "that try did not count");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(engine.snapshot().items[0].status, "captcha");
+
+    // A row on its first pass is not the person's yet: nothing changes.
+    let other = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/def456").await;
+    engine.page_with_person(&other);
+    let s = engine.snapshot();
+    let row = s.items.iter().find(|i| i.id == other).unwrap();
+    assert_eq!(row.status, "passing");
+}
+
+/// What cannot succeed by itself is not tried again: a page on a host now
+/// off for want of its account, a mirror marked gone, a page only a person
+/// can do, or a page that shows all it will and wants a click on it.
+#[tokio::test]
+async fn a_page_that_cannot_pass_by_itself_is_not_tried_again() {
+    let t = Setup::new().await;
+    let engine = Engine::start(through_stand_in(&t)).await.unwrap();
+    engine.set_pages_pass(true);
+
+    // A host off for want of its account.
+    engine.set_disabled("gofile.io", false).unwrap();
+    engine.add_text("https://gofile.io/d/abc123", "");
+    let s = wait_for(&engine, "the page to wait its turn", |s| {
+        s.items.iter().any(|i| i.status == "passing")
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    assert!(engine.page_wants_person(&id));
+    wait_for(&engine, "the row under Needs you", |s| {
+        s.items[0].status == "captcha" && s.items[0].retry_in > 0
+    })
+    .await;
+    engine.set_disabled("gofile.io", true).unwrap();
+    assert!(engine.debug_retry_now(&id));
+    let s = wait_for(&engine, "the try to be dropped", |s| {
+        s.items[0].retry_in == 0
+    })
+    .await;
+    assert_ne!(s.items[0].status, "passing");
+    assert_eq!(auto_retries(&engine, &id), 0);
+    assert!(engine.item_action(&id, ItemAction::Remove));
+
+    // A mirror marked gone, leaving a page only a person can do.
+    engine.set_disabled("rapidgator.net", false).unwrap();
+    engine.add_text("http://fileguard.cc/vault/ddownload-rapidgator", "");
+    let w = wait_for(&engine, "the wrapper", |s| {
+        s.wrappers.iter().any(|w| w.status == "done")
+    })
+    .await
+    .wrappers[0]
+        .id
+        .clone();
+    let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    let id = s.items[0].id.clone();
+    engine.start_wrapper(&w);
+    wait_for(&engine, "both pages to wait", |s| {
+        s.items[0].open_urls.len() == 2
+    })
+    .await;
+    engine.page_gone(&id, "ddownload: the file was deleted");
+    let s = wait_for(&engine, "the person's page", |s| {
+        s.items[0].open_urls == ["https://rapidgator.net/file/person"]
+            && s.items[0].status == "captcha"
+    })
+    .await;
+    assert_eq!(s.items[0].retry_in, 0);
+    assert!(engine.page_wants_person(&id));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(engine.snapshot().items[0].retry_in, 0, "only a person can");
+    assert!(engine.item_action(&id, ItemAction::Remove));
+
+    // A page that shows all it will and wants a click.
+    let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
+    assert!(engine.page_needs_click(&id), "the person is told");
+    let s = wait_for(&engine, "the row under Needs you", |s| {
+        s.items[0].status == "captcha"
+    })
+    .await;
+    assert_eq!(s.items[0].retry_in, 0, "another look shows the same");
 }
 
 /// Downloads with data on disk start first, the nearest to done first.

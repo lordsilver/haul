@@ -340,6 +340,7 @@ impl Engine {
                         it.not_before = Some(until);
                         it.error = message;
                     }
+                    self.hold_passes(&mut st, now);
                 }
                 Err(Fail::Transient(message))
                     if st
@@ -412,6 +413,11 @@ impl Engine {
     ) -> Option<Event> {
         st.host(host).penalize(Instant::now());
         let it = st.items.get_mut(id)?;
+        // A paste holding no address has nothing to try again on a timer, as
+        // when the desktop app's pass finds so ([`Engine::page_gone`]).
+        if hosts::lists_no_links(&message) {
+            it.gone.insert(url.to_string());
+        }
         it.error = format!("{host}: {message}");
         // The next mirror gets its own retries.
         it.retries = 0;

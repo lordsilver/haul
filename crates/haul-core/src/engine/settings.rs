@@ -600,6 +600,18 @@ impl Engine {
                         self.plan_auto_retry(it, now);
                     }
                 }
+                let asking: Vec<String> = st
+                    .items
+                    .values()
+                    .filter(|it| it.status == Status::Captcha && it.page_wants_person)
+                    .map(|it| it.id.clone())
+                    .collect();
+                for id in asking {
+                    let at = self.page_retry_at(&st, &st.items[&id], now);
+                    if let Some(it) = st.items.get_mut(&id) {
+                        it.retry_at = at;
+                    }
+                }
             }
             self.0.config_version.fetch_add(1, Ordering::Relaxed);
             self.touch(&mut st);
@@ -703,9 +715,38 @@ impl Engine {
             .then(|| now + Duration::from_secs(minutes * 60));
     }
 
-    /// Queues the failed items whose automatic retry is due.
+    /// The pages of row `it` under Needs you that the desktop app could pass
+    /// again by itself: not one marked gone, nor on a host that is off.
+    fn pages_to_pass<'a>(&self, st: &State, it: &'a Item) -> Vec<&'a String> {
+        let cfg = self.cfg();
+        it.manual_urls
+            .iter()
+            .filter(|m| {
+                st.passes(m)
+                    && !cfg.is_off(&hosts::host_of(m))
+                    && !it.failed.contains(*m)
+                    && !it.gone.contains(*m)
+            })
+            .collect()
+    }
+
+    /// When row `it`, under Needs you, has its page passed again, on the same
+    /// timer and limit as a failed download: never when no such try is left,
+    /// or no page could pass without a person.
+    pub(super) fn page_retry_at(&self, st: &State, it: &Item, now: Instant) -> Option<Instant> {
+        let minutes = self.cfg().retry_failed_minutes;
+        (minutes > 0
+            && it.auto_retries < AUTO_RETRIES
+            && self.pages_pass()
+            && !self.pages_to_pass(st, it).is_empty())
+        .then(|| now + Duration::from_secs(minutes * 60))
+    }
+
+    /// Queues the failed items whose automatic retry is due, and passes the
+    /// pages of those under Needs you whose try is.
     pub(super) fn auto_retry(&self, st: &mut State, now: Instant) -> bool {
-        let mut any = false;
+        let mut any = self.retry_pages(st, now);
+        let mut unwrap = Vec::new();
         for it in st.items.values_mut() {
             if it.status == Status::Error && it.retry_at.is_some_and(|t| now >= t) {
                 it.retry_at = None;
@@ -716,10 +757,64 @@ impl Engine {
                 it.retries = 0;
                 it.not_before = None;
                 it.error.clear();
+                // A wrapper is unwrapped at once, as when it was added: its
+                // files only wait for the user, so it takes no download's
+                // turn and waits for none. What this cannot settle is left to
+                // its turn in the queue, as then.
+                if it.wrapper {
+                    it.probed = false;
+                    unwrap.push(it.id.clone());
+                }
                 any = true;
             }
         }
+        for id in unwrap {
+            self.spawn_probe(id);
+        }
         any
+    }
+
+    /// The rows under Needs you whose next try is due go back to passing
+    /// their page, out of sight and telling nobody; `passing.rs` in the
+    /// desktop app opens it in its turn. One whose page's host still asks
+    /// the address to wait waits as long, and one with no page left that
+    /// could pass by itself has no more tries.
+    fn retry_pages(&self, st: &mut State, now: Instant) -> bool {
+        let due: Vec<String> = st
+            .items
+            .values()
+            .filter(|it| {
+                it.status == Status::Captcha
+                    && it.page_wants_person
+                    && it.task.is_none()
+                    && it.retry_at.is_some_and(|t| now >= t)
+            })
+            .map(|it| it.id.clone())
+            .collect();
+        for id in &due {
+            let it = &st.items[id];
+            let pages = self.pages_to_pass(st, it);
+            let usable = self.pages_pass() && !pages.is_empty();
+            let held = pages
+                .iter()
+                .map(|m| self.pass_held_until(st, m, now))
+                .collect::<Option<Vec<Instant>>>()
+                .and_then(|untils| untils.into_iter().min())
+                .filter(|_| usable);
+            let it = st.items.get_mut(id).expect("listed above");
+            if let Some(until) = held {
+                it.retry_at = Some(until);
+            } else if usable {
+                it.retry_at = None;
+                it.auto_retries += 1;
+                it.page_retrying = true;
+                it.page_wants_person = false;
+                tracing::info!(item = %id, "passing its page again on its own ({} of {AUTO_RETRIES})", it.auto_retries);
+            } else {
+                it.retry_at = None;
+            }
+        }
+        !due.is_empty()
     }
 }
 

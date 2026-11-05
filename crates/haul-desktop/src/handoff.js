@@ -28,10 +28,13 @@
 
   // The page passed its check but could not give the link this time (a
   // host's rate limit, an error it shows): Haul tries the page again later.
-  const later = (reason) => {
+  // `seconds`: the page says how long its host limits this address, which
+  // holds for all of that host's pages.
+  const later = (reason, seconds) => {
     if (handed) return;
     handed = true;
-    send({ later: reason }, "https://haul.invalid/later?" + new URLSearchParams({ reason }));
+    const wait = seconds ? { seconds } : {};
+    send({ later: reason, ...wait }, "https://haul.invalid/later?" + new URLSearchParams({ reason, ...wait }));
   };
 
   // The page says the file is gone: the mirror failed, nobody is asked.
@@ -131,7 +134,9 @@
     {
       // A 60-second countdown and Cloudflare's Turnstile in the download
       // form; once the button is enabled and the Turnstile has its answer,
-      // the button sends the form. The page that follows links the file.
+      // the button sends the form. The site answers with the file, which the
+      // browser reports to Haul (`Cdp::take_downloads`); a page that links it
+      // instead is read below.
       site: /(^|\.)(ddownload\.com|ddl\.to)$/,
       watch() {
         let pressed = false;
@@ -140,6 +145,13 @@
           const text = document.body?.innerText ?? "";
           if (/\bFile Not Found\b/.test(text)) return gone("ddownload: the file was deleted");
           const button = document.querySelector("#downloadbtn");
+          // One free download per address, about every two hours: until then
+          // the button only opens a payment dialog, and the page says how
+          // long is left (two hours if it does not).
+          if (button?.classList.contains("dk-btn-blocked")) {
+            const left = Math.ceil(Number(button.getAttribute("data-wait-seconds")));
+            return later("ddownload: one free download per address, and this one's limit is in force", left > 0 ? left : 7200);
+          }
           const answer = document.querySelector('input[name="cf-turnstile-response"]');
           if (button && !pressed) {
             if (!button.disabled && !button.classList.contains("dk-btn-disabled") && answer?.value) {

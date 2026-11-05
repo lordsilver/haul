@@ -50,6 +50,14 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
           echo "version=$(rustc -V | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+      # The target cache unpacks to more than the runner's free disk at times,
+      # which kills the job with "No space left on device".
+      - name: Free disk space
+        if: runner.os == 'Linux'
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Install WebKitGTK
         if: runner.os == 'Linux'
         run: |
