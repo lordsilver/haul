@@ -510,8 +510,16 @@ impl Engine {
         }
         let known_size = self.lock().items.get(id).map(|i| i.size).unwrap_or(0);
         if status == 416 && crossing {
-            // This host's copy is shorter than what is already here.
-            return Err(lost_partial(&part, have, "has less of it").await);
+            // Only a size it states shows this is another file: a link that
+            // has run out answers so too, and says nothing about these bytes.
+            let total = hosts::unsatisfied_total(resp.headers());
+            if let Some(total) = total.filter(|t| *t < have || (part_size > 0 && *t != part_size)) {
+                let why = format!("has it at {total} bytes, not {part_size}");
+                return Err(lost_partial(&part, have, &why).await);
+            }
+            return Err(Fail::Error(
+                "its link answers nothing past the start: run out, or not this file".into(),
+            ));
         }
         if status == 416 && have > 0 {
             // Nothing left to send: the partial file is complete, unless we
@@ -582,7 +590,9 @@ impl Engine {
             };
             // The bytes here stay the other host's until this one's agree.
             let checking = crossing && have > 0;
-            if checking && let Some(total) = total.filter(|t| part_size > 0 && *t != part_size) {
+            // The size it states, not one worked out from a short answer.
+            let stated = range.and_then(|(_, total)| total);
+            if checking && let Some(total) = stated.filter(|t| part_size > 0 && *t != part_size) {
                 let why = format!("has it at {total} bytes, not {part_size}");
                 return Err(lost_partial(&part, have, &why).await);
             }
@@ -594,10 +604,10 @@ impl Engine {
                     it.name = hosts::disposition_name(resp.headers()).map(|n| hosts::tidy_name(&n));
                 }
                 let named_now = unnamed && it.name.is_some();
-                if let Some(total) = total {
-                    it.size = total;
-                }
                 if !checking {
+                    if let Some(total) = total {
+                        it.size = total;
+                    }
                     it.part_size = total.unwrap_or(0);
                     it.part_host = Some(host.to_string());
                 }
@@ -699,7 +709,10 @@ impl Engine {
                         if checked == tail.len()
                             && let Some(it) = self.lock().items.get_mut(id)
                         {
-                            it.part_size = total.unwrap_or(it.part_size);
+                            if let Some(total) = total {
+                                it.size = total;
+                                it.part_size = total;
+                            }
                             it.part_host = Some(host.to_string());
                         }
                         chunk.slice(n..)
@@ -743,9 +756,13 @@ impl Engine {
                 return Err(lost_partial(&part, have, "holds other bytes there").await);
             }
             streamed?;
-            // Its answer ended before it reached the bytes it should add to.
+            // Its answer ended before the bytes could be compared: nothing is
+            // known about them, and they stay.
             if checked < tail.len() {
-                return Err(lost_partial(&part, have, "has less of it").await);
+                return Err(Fail::Transient(format!(
+                    "its answer ended after {checked} of the {} bytes to compare",
+                    tail.len()
+                )));
             }
             if let Some(total) = total
                 && done < total

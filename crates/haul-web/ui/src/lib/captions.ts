@@ -80,6 +80,7 @@ export function archiveCaption(a: ArchiveView): string {
   }
   const summary = partsSummary(a.tally, a.ids.length);
   if (!a.missing.length) return summary;
-  const more = a.missing.length > 1 ? ` and ${a.missing.length - 1} more` : '';
-  return `${summary} · ${a.missing[0]}${more} missing`;
+  // First, since the column cuts the end off; the names are in its tooltip.
+  const count = a.missing.length;
+  return `${count} ${count === 1 ? 'part' : 'parts'} missing · ${summary}`;
 }

@@ -373,6 +373,29 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
           </Button>
         }
       />
+      <Section>Troubleshooting</Section>
+      <SettingCard
+        icon={Wrench}
+        title="Report"
+        description="Saves one file to send when something goes wrong: your downloads and their links, the hosts, the settings and the recent log. Keys and passwords are left out."
+        controls={
+          <>
+            <Button variant="outline" onClick={() => openPlace('log')}>
+              Show log
+            </Button>
+            <Button variant="outline" onClick={() => saveDiagnostics(s.desktop)}>
+              Save report…
+            </Button>
+          </>
+        }
+      >
+        {/* How much the log keeps: only worth more while reproducing. */}
+        <SettingRow
+          title="Detailed log"
+          description="Records every request and retry. Turn it on before reproducing a problem."
+          controls={<SettingSwitch name="detailed_log" on={d.detailed_log} label="Detailed log" />}
+        />
+      </SettingCard>
       <Section>About</Section>
       <SettingCard
         icon={Info}
@@ -381,28 +404,6 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
           s.desktop ? 'Download manager for file hosts, desktop app.' : 'Download manager for file hosts, web UI.'
         }
       />
-      <SettingCard
-        icon={Wrench}
-        title="Diagnostics"
-        description="A report to send along when something goes wrong: every download and wrapper with its links, state and last events, the hosts, the settings and the recent log. Account keys, proxy passwords and the part of a link after # (where mega.nz keeps its keys) are left out."
-        controls={
-          <>
-            <Button variant="outline" onClick={() => openPlace('log')}>
-              Show log
-            </Button>
-            <Button variant="outline" onClick={() => saveDiagnostics(s.desktop)}>
-              Save diagnostics…
-            </Button>
-          </>
-        }
-      >
-        {/* How much the log keeps: only worth more while reproducing. */}
-        <SettingRow
-          title="Detailed log"
-          description="Every request, retry and mirror choice, while you reproduce a problem before saving the report. Off, the log keeps notable events."
-          controls={<SettingSwitch name="detailed_log" on={d.detailed_log} label="Detailed log" />}
-        />
-      </SettingCard>
     </>
   );
 }

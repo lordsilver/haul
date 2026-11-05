@@ -197,7 +197,13 @@ export function ArchiveRow({
               a.extract === 'failed' ? 'text-destructive' : 'text-muted-foreground',
             )}
             title={
-              a.extract === 'failed' ? a.extract_error : a.size ? `${bytes(a.done)} of ${bytes(a.size)}` : undefined
+              a.extract === 'failed'
+                ? a.extract_error
+                : a.missing.length
+                  ? `Missing: ${a.missing.join(', ')}`
+                  : a.size
+                    ? `${bytes(a.done)} of ${bytes(a.size)}`
+                    : undefined
             }
           >
             {archiveCaption(a)}
