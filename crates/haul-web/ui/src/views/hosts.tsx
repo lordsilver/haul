@@ -1,5 +1,6 @@
 import {
   ClipboardList,
+  Clock,
   Folder,
   Gauge,
   Globe,
@@ -16,7 +17,7 @@ import { type FormEvent, type ReactNode, useEffect, useLayoutEffect, useRef, use
 import { ConfirmButton } from '@/components/confirm-button';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
-import { EmptyState, PageHeader, PageScroll } from '@/components/page';
+import { EmptyState, PageHeader, PageScroll, SearchBox } from '@/components/page';
 import { AccountField, SettingCard, SettingRow } from '@/components/setting-card';
 import { Button } from '@/components/ui/button';
 import {
@@ -40,7 +41,7 @@ import type { AccountForm } from '@/lib/bindings/AccountForm';
 import type { HostView } from '@/lib/bindings/HostView';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
-import { bytes, duration, ordinal } from '@/lib/format';
+import { bytes, duration, ordinal, plural } from '@/lib/format';
 import { envNote, useSettings } from '@/lib/settings';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -95,37 +96,48 @@ function Pill({
   );
 }
 
-// What it has done and what a free user gets there, where Haul knows: only
-// what there is to tell, so a host nothing came from yet says nothing.
-function stats(h: HostView): string {
-  // Only links are read from a wrapper, a paste or a site: no speed, files
-  // or allowance to tell.
-  if (h.kind !== 'host') return h.cooldown ? `Waiting ${duration(h.cooldown)}` : '';
-  const out: string[] = [];
-  if (h.speed) out.push(`${bytes(h.speed)}/s per file`);
-  if (h.ok) out.push(`${h.ok} done`);
-  if (h.fails) out.push(`${h.fails} failed`);
-  if (h.bytes) out.push(`${bytes(h.bytes)} total`);
-  if (h.cooldown) out.push(`cooling down ${duration(h.cooldown)}`);
-  if (h.account) out.push('account set');
-  else if (h.free) {
-    const free = [];
-    if (h.free.at_once) free.push(`${h.free.at_once} at a time`);
-    if (h.free.daily_bytes)
-      free.push(
-        `${bytes(h.free.daily_bytes)} a day at full speed${h.free.slowed_to ? `, then ${bytes(h.free.slowed_to)}/s` : ''}`,
-      );
-    if (h.free.per_file) free.push(h.free.per_file);
-    if (free.length) out.push(`free: ${free.join(', ')}`);
+// What a free user gets there, in one form for every host: an account set
+// replaces it, and a host with nothing known says so.
+function freeAccess(h: HostView): string {
+  if (h.account) return 'Account set';
+  const free: string[] = [];
+  if (h.free?.daily_bytes) {
+    const after = h.free.slowed_to ? `, then ${bytes(h.free.slowed_to)}/s` : '';
+    free.push(`${bytes(h.free.daily_bytes)} a day${after}`);
   }
-  // Its own word on what an address may fetch at full speed today.
-  if (h.quota) out.push(`${bytes(h.quota.used)} used today`);
-  return out.join(' · ');
+  if (h.free?.at_once) free.push(`${h.free.at_once} at a time`);
+  if (h.free?.per_file) free.push(h.free.per_file);
+  return free.join(' · ') || 'No limits known';
+}
+
+// What has come from it so far, always in this order.
+function yourDownloads(h: HostView): string {
+  const used: string[] = [];
+  if (h.bytes) used.push(`${bytes(h.bytes)}`);
+  if (h.ok) used.push(plural(h.ok, 'file'));
+  if (h.speed) used.push(`${bytes(h.speed)}/s`);
+  if (h.fails) used.push(`${h.fails} failed`);
+  if (h.quota) used.push(`${bytes(h.quota.used)} today`);
+  return used.join(' · ') || 'Not used yet';
+}
+
+// A wrapper's or a paste's own: pages opened, as they hold no files.
+function yourLinks(h: HostView): string {
+  const used: string[] = [];
+  if (h.ok) used.push(`Opened ${plural(h.ok, 'time')}`);
+  if (h.fails) used.push(`${h.fails} failed`);
+  return used.join(' · ') || 'Not used yet';
 }
 
 function Pills({ h, proxy }: { h: HostView; proxy: boolean }) {
   return (
     <>
+      {h.cooldown ? (
+        <Pill tone="caution" title="It asked this address to wait">
+          <Clock />
+          Waiting {duration(h.cooldown)}
+        </Pill>
+      ) : null}
       {h.kind === 'host' && h.preferred !== null ? (
         <Pill tone="star">
           <Star className="fill-current" />
@@ -390,9 +402,24 @@ function HostCard({
         ) : (
           <Icon aria-hidden className="size-5 shrink-0 text-muted-foreground" />
         )}
-        <div className="min-w-0 flex-[1_1_280px]">
-          <div className="text-sm font-medium">{h.name}</div>
-          <div className="text-sm text-muted-foreground">{stats(h)}</div>
+        <div className="min-w-0 flex-[1_1_280px] text-sm">
+          <div className="truncate font-medium" title={h.name}>
+            {h.name}
+          </div>
+          {/* The same two things on every host, lined up down the list. */}
+          {fileHost ? (
+            <div className="gap-x-4 text-muted-foreground min-[1180px]:grid min-[1180px]:grid-cols-[17rem_minmax(0,1fr)]">
+              <div className="truncate" title={freeAccess(h)}>
+                {freeAccess(h)}
+              </div>
+              <div
+                className={cn('truncate tabular-nums', !h.bytes && !h.ok && !h.fails && 'opacity-60')}
+                title={yourDownloads(h)}
+              >
+                {yourDownloads(h)}
+              </div>
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <Pills h={h} proxy={s.proxy} />
@@ -521,11 +548,16 @@ function LinkSite({ h, s, d }: { h: HostView; s: State; d: SettingsView | null }
     >
       <div className="flex min-h-7 flex-wrap items-center gap-x-2.5 gap-y-1.5">
         <Icon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium" title={h.name}>
+        <div className="min-w-0 flex-1 text-sm">
+          <div className="truncate font-medium" title={h.name}>
             {h.name}
           </div>
-          {stats(h) ? <div className="text-xs text-muted-foreground">{stats(h)}</div> : null}
+          <div className="truncate text-muted-foreground" title={freeAccess(h)}>
+            {freeAccess(h)}
+          </div>
+          <div className={cn('truncate text-muted-foreground tabular-nums', !h.ok && !h.fails && 'opacity-60')}>
+            {yourLinks(h)}
+          </div>
         </div>
         <Pills h={h} proxy={s.proxy} />
         {s.proxy ? (
@@ -587,6 +619,7 @@ function LinkSitesButton({
 
 export function Hosts({ s }: { s: State }) {
   const d = useSettings(s.config_version);
+  const [typed, setTyped] = useState('');
   // A drag keeps the cards still until it ends: the order as it began.
   const [drag, setDrag] = useState<{ name: string; frozen: HostView[] } | null>(null);
   const [drop, setDrop] = useState<Drop>(null);
@@ -622,7 +655,8 @@ export function Hosts({ s }: { s: State }) {
   };
 
   const headings = new Set<string>();
-  const listed = hosts.filter((h) => !isLinkSite(h));
+  const words = typed.trim().toLowerCase();
+  const listed = hosts.filter((h) => !isLinkSite(h) && (!words || h.name.includes(words)));
   const linkSites = LINK_SITES.map((group) => ({ group, sites: hosts.filter((h) => h.group === group) })).filter(
     (kind) => kind.sites.length,
   );
@@ -630,9 +664,14 @@ export function Hosts({ s }: { s: State }) {
     <>
       <PageHeader
         title="Hosts"
-        actions={linkSites.map(({ group, sites }) => (
-          <LinkSitesButton key={group} group={group} sites={sites} s={s} d={d} />
-        ))}
+        actions={
+          <>
+            {linkSites.map(({ group, sites }) => (
+              <LinkSitesButton key={group} group={group} sites={sites} s={s} d={d} />
+            ))}
+            <SearchBox value={typed} label="Search hosts" placeholder="Search hosts" onChange={setTyped} />
+          </>
+        }
       >
         Star the hosts you prefer and drag them into order. A host switched off is never used.
       </PageHeader>
@@ -691,6 +730,7 @@ export function Hosts({ s }: { s: State }) {
               />,
             ];
           })}
+          {listed.length ? null : <p className="text-sm text-muted-foreground">No host matches.</p>}
           <OtherAccounts s={s} d={d} />
         </PageScroll>
       ) : (

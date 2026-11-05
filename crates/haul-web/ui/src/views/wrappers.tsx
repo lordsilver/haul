@@ -1,10 +1,9 @@
-import { Link, Play, Plus, RotateCw, X } from 'lucide-react';
+import { Eraser, Link, Play, RotateCw, X } from 'lucide-react';
 import { useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
 import { HostName, offHosts } from '@/components/host-picker';
-import { EmptyState, PageHeader, PageScroll } from '@/components/page';
+import { EmptyState, PageHeader, PageScroll, SearchBox } from '@/components/page';
 import { Button } from '@/components/ui/button';
-import { openAdd } from '@/lib/add';
 import { act, api, report } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
 import type { WrapperCard } from '@/lib/bindings/WrapperCard';
@@ -161,7 +160,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
             />
           ) : null}
           {waiting ? (
-            <Button onClick={() => startAll(card)}>
+            <Button variant="outline" onClick={() => startAll(card)}>
               <Play />
               Start all
             </Button>
@@ -195,25 +194,56 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
 }
 
 export function Wrappers({ s }: { s: State }) {
+  const [typed, setTyped] = useState('');
+  const cards = s.wrapper_cards;
+  const words = typed.trim().toLowerCase();
+  const shown = cards.filter((c) => !words || [c.name, c.host, ...c.hosts].join(' ').toLowerCase().includes(words));
+  const waiting = cards.filter((c) => c.tally.not_started + c.tally.paused);
+  const failed = cards.filter((c) => c.status === 'error');
+  // Done, with nothing left to start: taking it off the list takes no file.
+  const finished = cards.filter((c) => c.status === 'done' && !c.tally.not_started && !c.tally.paused);
+  const files = waiting.reduce((n, c) => n + c.tally.not_started + c.tally.paused, 0);
   return (
     <>
       <PageHeader
         title="Wrappers"
         actions={
-          <Button onClick={() => openAdd()}>
-            <Plus />
-            Add links
-          </Button>
+          <>
+            {files ? (
+              <Button variant="ghost" onClick={() => Promise.all(waiting.map(startAll))}>
+                <Play />
+                Start {files}
+              </Button>
+            ) : null}
+            <Button
+              variant="ghost"
+              disabled={!failed.length}
+              onClick={() => Promise.all(failed.map((c) => act(c.open_id, 'retry')))}
+            >
+              <RotateCw />
+              Retry failed
+            </Button>
+            <Button
+              variant="ghost"
+              disabled={!finished.length}
+              onClick={() => Promise.all(finished.map(removeAll)).catch(report)}
+            >
+              <Eraser />
+              Clear finished
+            </Button>
+            <SearchBox value={typed} label="Search wrappers" onChange={setTyped} />
+          </>
         }
       >
         A wrapper link holds a set of files, on one host or many. Haul unwraps it when you add it, and its files wait
         for you to start them.
       </PageHeader>
-      {s.wrapper_cards.length ? (
+      {cards.length ? (
         <PageScroll>
-          {s.wrapper_cards.map((card) => (
+          {shown.map((card) => (
             <Card key={card.key} card={card} s={s} />
           ))}
+          {shown.length ? null : <p className="text-sm text-muted-foreground">No wrapper matches.</p>}
         </PageScroll>
       ) : (
         <EmptyState

@@ -8,7 +8,6 @@ import {
   type LucideIcon,
   Pause,
   Play,
-  Plus,
   RotateCw,
   Search,
   Trash2,
@@ -20,10 +19,9 @@ import { ConfirmButton } from '@/components/confirm-button';
 import { HostPicker, offHosts } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
-import { EmptyState, PageHeader } from '@/components/page';
+import { EmptyState, PageHeader, SearchBox } from '@/components/page';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { addOpen, openAdd } from '@/lib/add';
+import { addOpen } from '@/lib/add';
 import { api, bulk, report } from '@/lib/api';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import type { State } from '@/lib/bindings/State';
@@ -238,10 +236,6 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
   const fresh = waiting.length > 0 && waiting.every((i) => i.not_started);
   return (
     <>
-      <Button onClick={() => openAdd()}>
-        <Plus />
-        Add links
-      </Button>
       {/* Starts what waits for the user; the pause switch below does not. */}
       {waiting.length ? (
         <Button
@@ -333,30 +327,12 @@ export function Downloads({
   return (
     <>
       <PageHeader
+        wide
         title={TITLES[view]}
         actions={
           <>
             {pickedItems.length ? <SelectionCommands picked={pickedItems} s={s} /> : <ListCommands s={s} view={view} />}
-            <div className="relative w-56">
-              <Search
-                aria-hidden
-                className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-              />
-              <Input
-                ref={search}
-                type="search"
-                value={typed}
-                placeholder="Search"
-                aria-label="Search downloads"
-                className="pl-9"
-                onChange={(e) => setTyped(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key !== 'Escape') return;
-                  setTyped('');
-                  search.current?.blur();
-                }}
-              />
-            </div>
+            <SearchBox ref={search} value={typed} label="Search downloads" onChange={setTyped} />
           </>
         }
       />

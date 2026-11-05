@@ -893,6 +893,8 @@ async fn a_containers_rows_without_names_stay_separate() {
     })
     .await;
     assert_eq!(s.items.len(), 2, "two links, two rows");
+    let wrapper = s.hosts.iter().find(|h| h.name == "filecrypt.cc").unwrap();
+    assert_eq!(wrapper.ok, 1, "its page served counts for the wrapper");
     assert!(s.items.iter().all(|i| i.name != "n/a"));
     assert!(s.items.iter().all(|i| i.mirrors.len() == 1));
 }

@@ -511,7 +511,7 @@ static KNOWN: &[Known] = &[
         kind: Kind::Gofile,
         accounts: &[field("gofile_token", "Account token", true)],
         free: Free {
-            per_file: Some("only through its page, named late"),
+            per_file: Some("Through its page, named late"),
             ..NO_LIMITS
         },
         page_passes: true,
@@ -528,7 +528,7 @@ static KNOWN: &[Known] = &[
         kind: Kind::OneFichier,
         accounts: &[field("1fichier_key", "API key", true)],
         free: Free {
-            per_file: Some("a wait and a captcha per file"),
+            per_file: Some("Wait and captcha per file"),
             ..NO_LIMITS
         },
         ..HOST
@@ -541,7 +541,7 @@ static KNOWN: &[Known] = &[
             field("rapidgator_pass", "Password", true),
         ],
         free: Free {
-            per_file: Some("a wait and a captcha per file"),
+            per_file: Some("Wait and captcha per file"),
             ..NO_LIMITS
         },
         needs_account: true,
@@ -555,7 +555,7 @@ static KNOWN: &[Known] = &[
             field("nitroflare_key", "Premium key", true),
         ],
         free: Free {
-            per_file: Some("a wait and a captcha per file"),
+            per_file: Some("Wait and captcha per file"),
             ..NO_LIMITS
         },
         needs_account: true,
@@ -570,7 +570,12 @@ static KNOWN: &[Known] = &[
         names: &["ddownload.com", "ddl.to"],
         kind: Kind::Ddownload,
         // A 60-second wait and Cloudflare's Turnstile, which a browser
-        // passes out of sight.
+        // passes out of sight. One free file per address about every two
+        // hours, which held at about 30 KB/s when tried (2026-11-05).
+        free: Free {
+            per_file: Some("1 file per 2 hours, about 30 KB/s"),
+            ..NO_LIMITS
+        },
         page_passes: true,
         ..HOST
     },
@@ -607,11 +612,19 @@ static KNOWN: &[Known] = &[
     Known {
         names: &["fileguard.cc"],
         kind: Kind::Fileguard,
+        free: Free {
+            per_file: Some("Proof of work, answered by Haul"),
+            ..NO_LIMITS
+        },
         ..HOST
     },
     Known {
         names: &["filecrypt.cc"],
         kind: Kind::Filecrypt,
+        free: Free {
+            per_file: Some("Checkbox, answered by Haul"),
+            ..NO_LIMITS
+        },
         ..HOST
     },
     Known {
