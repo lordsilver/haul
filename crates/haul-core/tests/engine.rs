@@ -5009,3 +5009,25 @@ async fn a_password_on_the_page_opens_the_archive_it_lists() {
         "secret stuff\n"
     );
 }
+
+/// Where the desktop app passes pages, a page on a site Haul has no code for
+/// that wants a browser waits for its pass, which looks for its download; one
+/// only seen on the clipboard is never opened on its own.
+#[tokio::test]
+async fn an_unknown_page_is_passed_only_when_the_person_added_it() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    let page = format!("{}/page/added", t.ip);
+    engine.add_text(&page, "");
+    wait_for(&engine, "the page to wait for its pass", |s| {
+        s.items.iter().any(|i| i.status == "passing")
+    })
+    .await;
+    assert!(engine.page_passes(&page));
+
+    let copied = format!("{}/page/copied", t.ip);
+    engine.add_from_clipboard(&copied);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(!engine.page_passes(&copied), "never opened on its own");
+}

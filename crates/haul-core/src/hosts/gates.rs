@@ -24,6 +24,13 @@ pub enum Gate {
 }
 
 impl Gate {
+    /// Whether a real browser gets past it with nobody's help: Turnstile
+    /// usually lets one through, and a proof of work is the browser's to
+    /// compute. A picture or a puzzle needs a person.
+    pub fn passes_in_browser(self) -> bool {
+        matches!(self, Self::Turnstile | Self::Altcha | Self::FriendlyCaptcha)
+    }
+
     /// Its name, as the row says it.
     pub fn name(self) -> &'static str {
         match self {

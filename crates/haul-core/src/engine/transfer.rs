@@ -326,7 +326,8 @@ impl Engine {
                     }
                 }
                 Err(Fail::NeedsUser(message)) => {
-                    st.note_check(url, &message);
+                    let tentative = st.items.get(id).is_some_and(|i| i.tentative);
+                    st.note_check(url, &message, tentative);
                     // A copied page nobody passes for it asks no one: it goes.
                     if !(self.pages_pass() && st.passes(url)) {
                         drop_tentative_row(&mut st, id, "wants a person");

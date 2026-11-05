@@ -793,6 +793,16 @@ impl Cdp {
                 if main && !refuse && site.is_some() {
                     keep.last = site.clone();
                 }
+                // Going to another site for a file (a host's download server,
+                // a CDN) is the file, whichever site the page is on: Haul
+                // takes it, and the page stays where it is.
+                if refuse && hosts::names_a_file(url) {
+                    tracing::info!(url, "the page went on to a file on another site");
+                    self.download = Some(Download {
+                        url: url.to_string(),
+                        name: hosts::guess_name(url),
+                    });
+                }
                 let (method, params) = if refuse {
                     tracing::info!(url, "kept the page on its site: refused going to {url}");
                     haul_core::debug::emit("pass", json!({ "event": "refused", "url": url }));

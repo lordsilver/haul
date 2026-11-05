@@ -78,13 +78,32 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         }
         _ => None,
     };
-    Err(ResolveError::NeedsUser(match gate {
-        Some(gate) => format!("{} shows {}: it wants a browser", host_of(url), gate.name()),
-        None => format!(
-            "{} answers with a web page: it wants a browser (captcha, timer or a click)",
-            host_of(url)
-        ),
-    }))
+    Err(ResolveError::NeedsUser(gated_page(url, gate)))
+}
+
+/// Why a page on a site Haul has no code for wants a browser: the gate it
+/// shows, or no gate Haul knows (a timer, a button). One a browser gets past
+/// by itself, or none, is passed out of sight by the desktop app, which looks
+/// for the page's download there ([`wants_a_browser`]); one that needs a
+/// person goes to them.
+fn gated_page(url: &str, gate: Option<gates::Gate>) -> String {
+    match gate {
+        Some(gate) if gate.passes_in_browser() => {
+            format!("{} shows {}, {BROWSER_PASSES}", host_of(url), gate.name())
+        }
+        Some(gate) => format!("{} shows {}: it wants a person", host_of(url), gate.name()),
+        None => format!("{} {WEB_PAGE}", host_of(url)),
+    }
+}
+
+const BROWSER_PASSES: &str = "which a browser passes by itself";
+const WEB_PAGE: &str = "answers with a web page: it wants a browser (captcha, timer or a click)";
+
+/// Whether a resolver's request for a person is for a page on a site Haul
+/// has no code for that a browser may get through with nobody's help: one
+/// the desktop app passes out of sight, pressing its download itself.
+pub fn wants_a_browser(message: &str) -> bool {
+    message.ends_with(BROWSER_PASSES) || message.ends_with(WEB_PAGE)
 }
 
 /// Whether a site answered with Cloudflare's browser check instead of the
@@ -304,7 +323,7 @@ pub(super) async fn page(
     }
     if urls.is_empty() {
         return Err(ResolveError::NeedsUser(match gates::detect(&page) {
-            Some(gate) => format!("{} shows {}: it wants a browser", host_of(url), gate.name()),
+            Some(gate) => gated_page(url, Some(gate)),
             None => format!(
                 "{} answers with a web page that links no host Haul knows: it wants a browser",
                 host_of(url)
@@ -399,7 +418,7 @@ pub fn pasted_links(shown: &[String], page: &str) -> Vec<String> {
 
 /// Whether link `u` names a file (in its path or after `#`) by an archive's,
 /// a part's or a media extension ([`FILE_EXTENSIONS`]).
-fn names_file(u: &str) -> bool {
+pub(super) fn names_file(u: &str) -> bool {
     guess_name(u).is_some_and(|name| FILE_EXTENSION.is_match(&name))
 }
 

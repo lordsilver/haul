@@ -329,6 +329,73 @@
     }, 1000);
   }
 
+  // A site with no recipe of its own, passed out of sight for its file: the
+  // general way. What a person would press (the page's download, after any
+  // countdown) is pressed, at most four times over the pages it leads to; a
+  // link that names a file is handed over as it is. Nothing here knows a
+  // site: words, links and what can be pressed decide.
+  if (window.__haulLists && window.__haulDevTools && !recipes.some((r) => r.site.test(location.hostname))) {
+    const SAYS_DOWNLOAD =
+      /\b(download|t[ée]l[ée]charger|herunterladen|descargar|scaricare|scarica|baixar|скачать|get (the )?file|free download|slow download|start download|generate (the )?link|continue to (the )?download)\b|下载|ダウンロード/i;
+    const NOT_FREE = /\b(premium|fast(er)? download|high speed|buy|upgrade|vip|torrent|install|extension|register|sign ?up|log ?in|subscribe)\b/i;
+    const FILE = /\.(rar|zip|7z|001|00\d|r\d\d|tar|gz|bz2|xz|zst|iso|img|bin|exe|msi|dmg|apk|mkv|mp4|avi|mov|webm|mp3|flac|pdf|epub)(\?|$)/i;
+    const presses = () => Number(sessionStorage.getItem("__haulPresses") || 0);
+    const pressed = () => sessionStorage.setItem("__haulPresses", String(presses() + 1));
+    const names = (href) => {
+      try {
+        return FILE.test(new URL(href, location.href).pathname);
+      } catch {
+        return false;
+      }
+    };
+    const shown = (e) => {
+      const box = e.getBoundingClientRect();
+      const style = getComputedStyle(e);
+      return box.width > 4 && box.height > 4 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const waiting = (e) =>
+      e.disabled || e.getAttribute("aria-disabled") === "true" || /\b(disabled|wait|countdown)\b/i.test(e.className);
+    // How much an element looks like the page's own way to the file.
+    const score = (e) => {
+      const words = (e.innerText || e.value || e.getAttribute("aria-label") || e.title || "").trim();
+      if (!words || words.length > 60 || NOT_FREE.test(words)) return 0;
+      let points = SAYS_DOWNLOAD.test(words) ? 10 : 0;
+      if (e.tagName === "A") {
+        if (names(e.href)) points += 8;
+        else if (new URL(e.href, location.href).hostname !== location.hostname) points -= 6;
+        if (e.target && e.target !== "_self") points -= 3;
+      }
+      if (e.closest("form")) points += 2;
+      return points;
+    };
+    let rest = 0;
+    window.__haulPressing = false;
+    setInterval(() => {
+      if (handed || Date.now() < rest) return;
+      // A gate only a person passes: nothing to press until they have.
+      if (document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, .h-captcha')) {
+        window.__haulPressing = false;
+        return;
+      }
+      // A link that names a file is the file: Haul fetches it itself.
+      const direct = [...document.querySelectorAll("a[href]")].find(
+        (a) => shown(a) && names(a.href) && !NOT_FREE.test(a.innerText || ""),
+      );
+      if (direct) return hand([{ url: direct.href, name: decodeURIComponent(new URL(direct.href).pathname.split("/").pop()) || undefined }]);
+      const best = [...document.querySelectorAll('a[href], button, input[type="submit"], input[type="button"], [role="button"]')]
+        .filter(shown)
+        .map((e) => ({ e, points: score(e) }))
+        .filter((c) => c.points >= 10)
+        .sort((a, b) => b.points - a.points)[0];
+      window.__haulPressing = Boolean(best) && presses() < 4;
+      if (!best || presses() >= 4 || waiting(best.e)) return;
+      pressed();
+      rest = Date.now() + 5000;
+      if (best.e.tagName === "A" && best.e.target && best.e.target !== "_self") best.e.target = "_self";
+      best.e.click();
+    }, 1500);
+  }
+
   // Out of sight, a page past every check that shows nothing new for five
   // seconds has shown all it will (a paste holding only a host's name), so
   // the pass can end rather than wait out its time for a person.
@@ -341,7 +408,8 @@
         document.getElementById("challenge-form") ||
         document.querySelector('input[name="cf-turnstile-response"], iframe[src*="challenges.cloudflare.com"]');
       const links = (window.__haulHandoff?.links ?? []).join("\n");
-      calm = document.readyState === "complete" && !check && links === seen ? calm + 1 : 0;
+      // Not while the general way still has something to press or wait for.
+      calm = document.readyState === "complete" && !check && !window.__haulPressing && links === seen ? calm + 1 : 0;
       seen = links;
       if (calm === 5) window.__haulHandoff = { links: [], shown: [], settled: true };
     }, 1000);

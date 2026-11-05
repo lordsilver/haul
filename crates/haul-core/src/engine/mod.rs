@@ -458,8 +458,11 @@ impl State {
     /// A resolver asked for a person with `message`: page `url` goes to the
     /// desktop app's browser when a browser usually passes it. A gate past
     /// the site's check takes no clearance: Haul would only read it again.
-    fn note_check(&mut self, url: &str, message: &str) {
-        if hosts::is_guarded(message) {
+    fn note_check(&mut self, url: &str, message: &str, tentative: bool) {
+        // A page on a site Haul has no code for is passed too, for its
+        // download, but only one the person added: a page only seen on the
+        // clipboard is never opened on its own.
+        if hosts::is_guarded(message) || (!tentative && hosts::wants_a_browser(message)) {
             self.guarded.insert(url.to_string());
         }
         if hosts::is_gated(message) {
@@ -1245,7 +1248,8 @@ impl Engine {
             // while downloads are paused.
             Ok(Err(ResolveError::NeedsUser(message))) => {
                 let mut st = self.lock();
-                st.note_check(&url, &message);
+                let tentative = st.items.get(&id).is_some_and(|i| i.tentative);
+                st.note_check(&url, &message, tentative);
                 let mut event = None;
                 if let Some(it) = st.items.get_mut(&id)
                     && !it.running()

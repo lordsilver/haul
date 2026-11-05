@@ -1367,6 +1367,18 @@ pub fn lists_no_links(message: &str) -> bool {
 pub(super) const FREE_ON_PAGE: &str =
     "a free download is on its page (a wait, then a captcha): open it, or set the account";
 
+/// Whether a page on a site Haul has no code for may get through in a
+/// browser with nobody's help ([`generic::wants_a_browser`]).
+pub fn wants_a_browser(message: &str) -> bool {
+    generic::wants_a_browser(message)
+}
+
+/// Whether link `url`'s address names a file (an archive's part, a video):
+/// one the desktop app's browser was sent to is the file itself.
+pub fn names_a_file(url: &str) -> bool {
+    generic::names_file(url)
+}
+
 /// Whether `url` may be a web page that lists links: a host Haul has no
 /// code for.
 pub fn may_list_links(url: &str) -> bool {
