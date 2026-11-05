@@ -1936,8 +1936,8 @@ impl Engine {
         self.lock().items.get(id)?.path.as_ref().map(PathBuf::from)
     }
 
-    /// Looks for a newer Haul shortly after start and every six hours, while
-    /// the settings allow.
+    /// Looks for a newer Haul shortly after start and every hour, while the
+    /// settings allow.
     async fn watch_updates(self) {
         tokio::select! {
             () = self.0.shutdown.cancelled() => return,
@@ -1947,31 +1947,36 @@ impl Engine {
             self.check_update().await;
             tokio::select! {
                 () = self.0.shutdown.cancelled() => return,
-                () = tokio::time::sleep(Duration::from_secs(6 * 3600)) => {}
+                () = tokio::time::sleep(Duration::from_secs(3600)) => {}
             }
         }
     }
 
-    /// Asks GitHub for the latest release once, now.
+    /// The timer's look at GitHub, while the settings allow.
     pub async fn check_update(&self) {
-        let cfg = self.cfg();
-        if !cfg.check_updates {
-            return;
-        }
-        let http = self.clients().on(0);
-        match crate::update::latest(&http, &cfg.endpoints.github_api, env!("CARGO_PKG_VERSION"))
-            .await
+        if self.cfg().check_updates
+            && let Err(e) = self.look_for_update().await
         {
-            Ok(found) => {
-                if let Some(u) = &found {
-                    tracing::info!("Haul {} is out", u.version);
-                }
-                *self.0.update.lock().unwrap_or_else(|e| e.into_inner()) = found;
-                let mut st = self.lock();
-                self.touch(&mut st);
-            }
-            Err(e) => tracing::debug!("looking for an update: {e}"),
+            tracing::debug!("looking for an update: {e}");
         }
+    }
+
+    /// Asks GitHub for the latest release once, now, as a person can whatever
+    /// the setting says. Returns the version when it is newer than this one.
+    pub async fn look_for_update(&self) -> Result<Option<String>, String> {
+        let cfg = self.cfg();
+        let http = self.clients().on(0);
+        let found =
+            crate::update::latest(&http, &cfg.endpoints.github_api, env!("CARGO_PKG_VERSION"))
+                .await?;
+        let version = found.as_ref().map(|u| u.version.clone());
+        if let Some(version) = &version {
+            tracing::info!("Haul {version} is out");
+        }
+        *self.0.update.lock().unwrap_or_else(|e| e.into_inner()) = found;
+        let mut st = self.lock();
+        self.touch(&mut st);
+        Ok(version)
     }
 
     /// Downloads the newer Haul's setup program into the data folder,
