@@ -350,7 +350,7 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         )?;
     }
     if p.keep_to_site {
-        cdp.keep_to_site(&target, s)?;
+        cdp.keep_to_site(p.item, &target, s)?;
     }
     if let Err(e) = cdp.take_downloads() {
         tracing::warn!("the browser will not report downloads: {e}");
@@ -734,6 +734,8 @@ fn download_in(event: &Value) -> Option<Download> {
 /// A page kept on the site it landed on: its main frame is refused any
 /// other site once its first page has loaded there.
 struct Keep {
+    /// The item whose page it is, for the log.
+    item: String,
     /// The page's main frame (the target's id).
     frame: String,
     /// The site of the last page the main frame was let go to.
@@ -774,8 +776,14 @@ impl Cdp {
     /// does, half a second after it shows) is refused that navigation, as
     /// Haul's own window refuses it. Frames inside the page (a check's) and
     /// the way to the first page go as they will.
-    fn keep_to_site(&mut self, frame: &str, session: Option<&str>) -> Result<(), String> {
+    fn keep_to_site(
+        &mut self,
+        item: &str,
+        frame: &str,
+        session: Option<&str>,
+    ) -> Result<(), String> {
         self.keep = Some(Keep {
+            item: item.to_string(),
             frame: frame.to_string(),
             last: None,
             site: None,
@@ -825,8 +833,10 @@ impl Cdp {
                     });
                 }
                 let (method, params) = if refuse {
-                    tracing::info!(url, "kept the page on its site: refused going to {url}");
-                    haul_core::debug::emit("pass", json!({ "event": "refused", "url": url }));
+                    haul_core::debug::emit(
+                        "pass",
+                        json!({ "event": "refused", "id": keep.item, "url": url }),
+                    );
                     (
                         // A navigation answered with no content goes nowhere:
                         // the page stays (failing it shows an error page).
@@ -1007,8 +1017,8 @@ mod taskbar {
 /// What a page showed when it was given up on, for the log.
 #[derive(Debug)]
 pub struct Look {
-    /// Its title, address, frames, Turnstile answers, buttons and first 50
-    /// links, as JSON.
+    /// Its title, address, frames, scripts, Turnstile answers, buttons and
+    /// first 50 links, as JSON.
     pub page: String,
     /// A PNG of it, when the browser gave one.
     pub shot: Option<Vec<u8>>,
@@ -1018,6 +1028,7 @@ const LOOK: &str = r#"JSON.stringify({
   title: document.title,
   url: location.href,
   frames: [...document.querySelectorAll('iframe')].map((f) => f.src.slice(0, 100)),
+  scripts: [...document.scripts].map((s) => s.src).filter((s) => /^https?:/.test(s)).map((s) => s.slice(0, 100)).slice(0, 30),
   turnstile: [...document.querySelectorAll('[name="cf-turnstile-response"]')].map((i) => (i.value ? 'answered' : 'empty')),
   buttons: [...document.querySelectorAll('button, input[type=submit]')]
     .filter((b) => b.offsetParent)

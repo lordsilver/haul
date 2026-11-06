@@ -216,6 +216,12 @@ fn log_signal(kind: &str, s: &Value) {
         ("pass", event) => {
             tracing::info!(target: SIGNAL_TARGET, item, signal = %whole, "pass {event}: {}", text("url"));
         }
+        ("page", "closed") => {
+            tracing::info!(target: SIGNAL_TARGET, item, signal = %whole, "page window closed");
+        }
+        ("page", event) => {
+            tracing::info!(target: SIGNAL_TARGET, item, signal = %whole, "page window {event}: {}", text("url"));
+        }
         ("notification", _) => {
             tracing::info!(target: SIGNAL_TARGET, signal = %whole, "notification: {}: {}", text("title"), text("body"));
         }

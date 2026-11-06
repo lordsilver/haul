@@ -523,7 +523,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     // Another gate than the checkbox (a captcha of another kind): a browser
     // is often let through it, and hands back the page it shows.
     let Some(widget) = WIDGET.find(&html) else {
-        return Err(super::generic::gated(&page));
+        return Err(super::generic::gated(&page, super::gates::detect(&html)));
     };
     let data: Vec<(String, String)> = DATA
         .captures_iter(widget.as_str())

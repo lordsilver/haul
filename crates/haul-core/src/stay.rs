@@ -10,10 +10,17 @@
 //! reach this: they replace no page.
 //!
 //! The host's site is the page's, and wherever its first page lands (a host
-//! may serve its pages from a domain of its own). A wrapper's page leads to
-//! other hosts, so its window is never sent back. A site the page keeps
+//! may serve its pages from a domain of its own). A site the page keeps
 //! going to by itself, three times within half a minute, is taken as part
 //! of the host's flow rather than an ad.
+//!
+//! A wrapper's page is Haul's to read once a person is past its gate, so it
+//! has no flow of its own to follow off its site: once its first page has
+//! loaded, the window is refused any other site before it loads, but for a
+//! host or wrapper Haul knows (a link the person follows) and a file. Ads on
+//! such pages send the window to a new throwaway site each time, which
+//! sending back, and remembering the sites, would not keep up with. A page
+//! that lists links, on a site Haul has no code for, goes where it will.
 //!
 //! A site a window was sent back from is an ad's: for as long as Haul runs,
 //! a page from it is not even loaded, in any window. Only a page that
@@ -25,7 +32,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::hosts::site_of;
+use crate::hosts::{self, site_of};
 
 /// How long a new window on the host's site waits for the page to go on by
 /// itself before it loads in place.
@@ -54,10 +61,34 @@ pub struct SendBack {
     pub history: bool,
 }
 
+/// How a window keeps to its page's site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keep {
+    /// A host's page: a page from another site that replaces it is sent
+    /// back.
+    Host,
+    /// A wrapper's page: another site is refused before it loads.
+    Wrapper,
+    /// A page that lists links, on a site Haul has no code for: it goes
+    /// where it will.
+    Free,
+}
+
+/// What the window may do about a navigation of its page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Go {
+    /// It goes ahead.
+    Let,
+    /// Refused: a site a window was sent back from.
+    Ad,
+    /// Refused: another site, on a wrapper's page.
+    OffSite,
+}
+
 /// One window's way around a host's site.
 #[derive(Debug)]
 pub struct Stay {
-    send_back: bool,
+    keep: Keep,
     sites: HashSet<String>,
     landed: bool,
     last: String,
@@ -71,12 +102,18 @@ fn is_web(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
+/// Whether a wrapper's page going to `url` leads on rather than to an ad: a
+/// host or wrapper Haul knows, or a file (a download, which the window takes
+/// instead of loading).
+fn leads_on(url: &str) -> bool {
+    hosts::known(&hosts::host_of(url)).is_some() || hosts::names_a_file(url)
+}
+
 impl Stay {
-    /// For a window opened at `page`; `send_back` is false for a wrapper's
-    /// page, whose links lead to other hosts.
-    pub fn new(page: &str, send_back: bool) -> Self {
+    /// For a window opened at `page`.
+    pub fn new(page: &str, keep: Keep) -> Self {
         Self {
-            send_back,
+            keep,
             sites: HashSet::from([site_of(page)]),
             landed: false,
             last: page.to_string(),
@@ -91,18 +128,25 @@ impl Stay {
         !is_web(url) || self.sites.contains(&site_of(url))
     }
 
-    /// The page starts to navigate to `url`: false to refuse it, a page of
-    /// a site a window was sent back from. On the host's site it is the page
-    /// going on by itself, so a window it opened is not loaded in place.
-    pub fn navigating(&mut self, url: &str) -> bool {
+    /// The page starts to navigate to `url`: refused when it is a page of
+    /// a site a window was sent back from, or, on a wrapper's page past its
+    /// first, of another site. On the host's site it is the page going on by
+    /// itself, so a window it opened is not loaded in place.
+    pub fn navigating(&mut self, url: &str) -> Go {
         if !is_web(url) {
-            return true;
+            return Go::Let;
         }
         if self.is_home(url) {
             self.opened = None;
-            return true;
+            return Go::Let;
         }
-        !(self.send_back && ads().contains(&site_of(url)))
+        match self.keep {
+            Keep::Free => Go::Let,
+            Keep::Host if ads().contains(&site_of(url)) => Go::Ad,
+            Keep::Host => Go::Let,
+            Keep::Wrapper if !self.landed || leads_on(url) => Go::Let,
+            Keep::Wrapper => Go::OffSite,
+        }
     }
 
     /// A page started loading in the window: where to send the window back
@@ -121,7 +165,7 @@ impl Stay {
             self.sending = None;
             return None;
         }
-        if !self.send_back {
+        if self.keep != Keep::Host {
             return None;
         }
         if self
@@ -189,7 +233,7 @@ mod tests {
     #[test]
     fn an_ad_redirect_is_sent_back() {
         let now = Instant::now();
-        let mut stay = Stay::new(PAGE, true);
+        let mut stay = Stay::new(PAGE, Keep::Host);
         assert_eq!(stay.landed(PAGE, now), None);
         assert_eq!(stay.landed("https://host.example/f/abc?wait=1", now), None);
         let back = stay.landed("https://ads.example/x?z=1", now).unwrap();
@@ -212,28 +256,33 @@ mod tests {
     #[test]
     fn an_ads_site_is_not_loaded_again() {
         let now = Instant::now();
-        let mut first = Stay::new("https://one.example/f/a", true);
+        let mut first = Stay::new("https://one.example/f/a", Keep::Host);
         first.landed("https://one.example/f/a", now);
-        assert!(
+        assert_eq!(
             first.navigating("https://casino-ad.test/x"),
+            Go::Let,
             "not known yet"
         );
         assert!(first.landed("https://casino-ad.test/x", now).is_some());
         // Any window, from then on: refused before it loads.
-        let mut other = Stay::new("https://two.example/f/b", true);
+        let mut other = Stay::new("https://two.example/f/b", Keep::Host);
         other.landed("https://two.example/f/b", now);
-        assert!(!other.navigating("https://www.casino-ad.test/y"));
-        assert!(other.navigating("https://two.example/next"));
-        assert!(other.navigating("https://cdn.elsewhere.test/file.bin"));
-        // A wrapper's window goes where its links lead.
-        let mut wrapper = Stay::new("https://filecrypt.cc/Container/X.html", false);
-        assert!(wrapper.navigating("https://casino-ad.test/z"));
+        assert_eq!(other.navigating("https://www.casino-ad.test/y"), Go::Ad);
+        assert_eq!(other.navigating("https://two.example/next"), Go::Let);
+        assert_eq!(
+            other.navigating("https://cdn.elsewhere.test/file.bin"),
+            Go::Let
+        );
+        // A page that lists links goes where it will.
+        let mut free = Stay::new("https://forum.example/post/1", Keep::Free);
+        free.landed("https://forum.example/post/1", now);
+        assert_eq!(free.navigating("https://casino-ad.test/z"), Go::Let);
     }
 
     #[test]
     fn the_host_is_where_its_first_page_lands() {
         let now = Instant::now();
-        let mut stay = Stay::new("https://vikingfile.com/f/x", true);
+        let mut stay = Stay::new("https://vikingfile.com/f/x", Keep::Host);
         assert_eq!(stay.landed("https://vik1ngfile.site/f/x", now), None);
         assert_eq!(
             stay.landed("https://cdn.vik1ngfile.site/f/x/next", now),
@@ -246,7 +295,7 @@ mod tests {
     #[test]
     fn a_site_the_page_keeps_going_to_is_let_be() {
         let mut now = Instant::now();
-        let mut stay = Stay::new(PAGE, true);
+        let mut stay = Stay::new(PAGE, Keep::Host);
         stay.landed(PAGE, now);
         for _ in 0..TIMES {
             now += SENDING;
@@ -257,7 +306,7 @@ mod tests {
         assert_eq!(stay.landed("https://mirror.example/dl", now), None);
         assert!(stay.is_home("https://mirror.example/other"));
         // Times further apart than that are ads coming back, not a flow.
-        let mut stay = Stay::new(PAGE, true);
+        let mut stay = Stay::new(PAGE, Keep::Host);
         stay.landed(PAGE, now);
         for _ in 0..=TIMES {
             now += WITHIN + Duration::from_secs(1);
@@ -267,12 +316,36 @@ mod tests {
     }
 
     #[test]
-    fn a_wrappers_window_goes_where_its_links_lead() {
+    fn a_wrappers_window_stays_on_its_site() {
         let now = Instant::now();
-        let mut stay = Stay::new("https://filecrypt.cc/Container/X.html", false);
-        stay.landed("https://filecrypt.cc/Container/X.html", now);
-        assert_eq!(stay.landed("https://files.example/abc", now), None);
-        // Its own pages opened in a new window still load in place.
+        let page = "https://filecrypt.cc/Container/ABC123.html";
+        let mut stay = Stay::new(page, Keep::Wrapper);
+        // The way to its first page goes as it will.
+        assert_eq!(stay.navigating("https://check.example/verify"), Go::Let);
+        stay.landed(page, now);
+        // Its own pages, and Cloudflare's check in front of them.
+        assert_eq!(
+            stay.navigating("https://www.filecrypt.cc/Link/1.html"),
+            Go::Let
+        );
+        // Ads, each time on a new site, are refused before they load.
+        for ad in [
+            "https://abcdefghijk.site/ad/visit.php?al=1",
+            "https://lmnopqrstuv.space/ad/visit.php?al=1",
+            "https://checkout.example/offer?cid=1",
+        ] {
+            assert_eq!(stay.navigating(ad), Go::OffSite, "{ad}");
+        }
+        // A link the person follows to a host Haul knows, and a file.
+        assert_eq!(stay.navigating("https://1fichier.com/?abc123"), Go::Let);
+        assert_eq!(
+            stay.navigating("https://cdn.files.example/archive.part1.rar"),
+            Go::Let
+        );
+        // Nothing is sent back: what loads was let go.
+        assert_eq!(stay.landed("https://1fichier.com/?abc123", now), None);
+        // Its own pages opened in a new window still load in place; others
+        // do not open at all.
         assert!(stay.opened("https://filecrypt.cc/Link/1.html", now));
         assert!(!stay.opened("https://ads.example/", now));
     }
@@ -281,7 +354,7 @@ mod tests {
     fn a_new_window_on_the_host_loads_in_place() {
         let now = Instant::now();
         let later = now + GRACE;
-        let mut stay = Stay::new(PAGE, true);
+        let mut stay = Stay::new(PAGE, Keep::Host);
         stay.landed(PAGE, now);
         assert!(!stay.opened("https://ads.example/", now));
         assert!(stay.opened("https://host.example/f/abc/go", now));
