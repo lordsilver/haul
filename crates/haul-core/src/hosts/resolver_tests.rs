@@ -1122,8 +1122,9 @@ async fn vikingfile_checks_the_file_then_wants_a_person() {
     let (http, tokens) = (http(), Tokens::default());
     let cx = context(&http, &cfg, &tokens);
 
-    let probed = probe(&cx, "https://vikingfile.com/f/AbCdE12345")
+    let probed = look(&cx, "https://vikingfile.com/f/AbCdE12345")
         .await
+        .found()
         .unwrap();
     assert_eq!(
         (probed.name.as_str(), probed.size),
@@ -1143,7 +1144,10 @@ async fn vikingfile_checks_the_file_then_wants_a_person() {
         resolve(&cx, "https://vik1ngfile.site/f/AbCdE12345").await,
         Err(ResolveError::NeedsUser(..))
     ));
-    assert!(probe(&cx, "https://vikingfile.com/f/gone").await.is_none());
+    assert!(matches!(
+        look(&cx, "https://vikingfile.com/f/gone").await,
+        Look::Gone(_)
+    ));
     assert!(matches!(
         resolve(&cx, "https://vikingfile.com/f/gone").await,
         Err(ResolveError::Gone(m)) if m.contains("deleted")

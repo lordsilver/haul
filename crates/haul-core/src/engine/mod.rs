@@ -30,6 +30,7 @@ use crate::{
     hosts::{self, Cx, Entry, Http, Need, ResolveError, Tokens},
     item::{Found, Item, Status, Trouble, Verifying},
     limiter::Limiter,
+    logging::unix_now,
     parts, paths, store,
 };
 
@@ -292,18 +293,20 @@ impl Lane {
         self.cap.map_or(limit, |cap| cap.min(limit))
     }
 
-    fn free(&self, limit: usize, now: Instant) -> bool {
+    /// Whether one more download may start here now. With `slowing_too`,
+    /// for a row with nowhere else to go, a host that slows the address
+    /// still serves it; a wait the host asked for stands.
+    fn free(&self, limit: usize, now: Instant, slowing_too: bool) -> bool {
         self.active < self.slots(limit)
-            && !self.cooling(now)
+            && ((slowing_too && self.slowing) || !self.cooling(now))
             && self.settle_until.is_none_or(|t| now >= t)
     }
 
-    /// As [`Lane::free`], but for a row with nowhere else to go: a host that
-    /// slows an address still serves it. A wait the host asked for stands.
-    fn free_while_slowing(&self, limit: usize, now: Instant) -> bool {
-        self.active < self.slots(limit)
-            && (self.slowing || !self.cooling(now))
-            && self.settle_until.is_none_or(|t| now >= t)
+    /// The host no longer slows this address: its cooldown for that ends.
+    fn end_slowing(&mut self) {
+        self.cooldown = None;
+        self.slowing = false;
+        self.slowing_sure = false;
     }
 }
 
@@ -343,12 +346,6 @@ const CAP_RELAX: Duration = Duration::from_secs(600);
 /// day gets measured again.
 const SPEED_MEMORY: u64 = 7 * 24 * 3600;
 
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 impl HostStats {
     fn penalty(&self, now: Instant) -> f64 {
         let age = now.saturating_duration_since(self.penalty_at).as_secs_f64();
@@ -371,6 +368,25 @@ impl HostStats {
         } else {
             self.normal * 0.99 + speed * 0.01
         };
+    }
+
+    /// Takes in one stream's speed over the last second.
+    fn sample(&mut self, speed: f64) {
+        self.ema = if self.ema == 0.0 {
+            speed
+        } else {
+            self.ema * 0.7 + speed * 0.3
+        };
+        self.measured = unix_now();
+    }
+
+    /// A whole window ran well at `speed`: the host is not limiting this
+    /// address, whatever a redial made for it showed.
+    fn ran_well(&mut self, speed: f64) {
+        self.learn_normal(speed);
+        self.redialed_for = false;
+        self.redial_useless = false;
+        self.redial_useless_at = 0;
     }
 
     /// Unknown hosts score high, so each gets tried and the ranking learns;
@@ -508,21 +524,7 @@ impl State {
         cfg: &Config,
         now: Instant,
     ) -> Option<Exit> {
-        // What a free user gets, where it is known, holds from the start.
-        let limit = hosts::known(host)
-            .and_then(|k| k.at_once(cfg))
-            .map_or(AT_ONCE, |at_once| at_once.min(AT_ONCE));
-        // An address the host has slowed for the day comes last.
-        let mut best: Option<(Exit, (bool, usize))> = None;
-        for &exit in exits {
-            let lane = self.lane(host, exit);
-            lane.relax(limit, now);
-            let rank = (lane.slowed(), lane.active);
-            if lane.free(limit, now) && best.is_none_or(|(_, r)| rank < r) {
-                best = Some((exit, rank));
-            }
-        }
-        best.map(|(exit, _)| exit)
+        self.best_exit(host, exits, cfg, now, false)
     }
 
     /// As [`State::open_exit`], for a row that has nowhere else to go than a
@@ -534,14 +536,29 @@ impl State {
         cfg: &Config,
         now: Instant,
     ) -> Option<Exit> {
+        self.best_exit(host, exits, cfg, now, true)
+    }
+
+    fn best_exit(
+        &mut self,
+        host: &str,
+        exits: &[Exit],
+        cfg: &Config,
+        now: Instant,
+        slowing_too: bool,
+    ) -> Option<Exit> {
+        // What a free user gets, where it is known, holds from the start.
         let limit = hosts::known(host)
             .and_then(|k| k.at_once(cfg))
             .map_or(AT_ONCE, |at_once| at_once.min(AT_ONCE));
-        let mut best: Option<(Exit, usize)> = None;
+        // An address the host has slowed for the day comes last.
+        let mut best: Option<(Exit, (bool, usize))> = None;
         for &exit in exits {
             let lane = self.lane(host, exit);
-            if lane.free_while_slowing(limit, now) && best.is_none_or(|(_, a)| lane.active < a) {
-                best = Some((exit, lane.active));
+            lane.relax(limit, now);
+            let rank = (lane.slowed(), lane.active);
+            if lane.free(limit, now, slowing_too) && best.is_none_or(|(_, r)| rank < r) {
+                best = Some((exit, rank));
             }
         }
         best.map(|(exit, _)| exit)
@@ -811,6 +828,14 @@ impl Engine {
         self.0.wake.notify_one();
     }
 
+    /// Waits for `time`; false, at once, when Haul is stopping.
+    async fn idle(&self, time: Duration) -> bool {
+        tokio::select! {
+            () = self.0.shutdown.cancelled() => false,
+            () = tokio::time::sleep(time) => true,
+        }
+    }
+
     /// The settings in effect.
     pub fn cfg(&self) -> Arc<Config> {
         self.0.cfg.read().unwrap_or_else(|e| e.into_inner()).clone()
@@ -839,6 +864,28 @@ impl Engine {
             exits.push(0);
         }
         exits
+    }
+
+    /// Whether every exit `host` may be reached from is cooling down.
+    fn host_cooling(&self, st: &State, host: &str, now: Instant) -> bool {
+        st.cooling(host, &self.exits_for(host, st), now)
+    }
+
+    /// The exit with a free slot for `host`, of those it may be reached from
+    /// ([`State::open_exit`]).
+    fn free_exit(&self, st: &mut State, host: &str, cfg: &Config, now: Instant) -> Option<Exit> {
+        let exits = self.exits_for(host, st);
+        st.open_exit(host, &exits, cfg, now)
+    }
+
+    /// What a resolver may use, through `http`.
+    fn cx<'a>(&'a self, http: &'a Http, cfg: &'a Config, key_service: &'a Http) -> Cx<'a> {
+        Cx {
+            http,
+            cfg,
+            tokens: &self.0.tokens,
+            key_service,
+        }
     }
 
     /// The client for lookups on `host` (a probe, a wrapper's solve): its
@@ -1002,10 +1049,7 @@ impl Engine {
                     added.wrappers += 1;
                     continue;
                 }
-                let name = link
-                    .name
-                    .filter(|n| !n.is_empty())
-                    .or_else(|| hosts::guess_name(&link.url));
+                let name = hosts::name_for(&link.url, link.name);
                 // The same file name on another host is another mirror; a
                 // copied page is not judged by its address, so it joins none.
                 if let Some(name) = &name
@@ -1094,7 +1138,7 @@ impl Engine {
             let url = it
                 .mirrors
                 .iter()
-                .find(|m| !cfg.is_off(&hosts::host_of(m)))
+                .find(|m| !cfg.is_disabled(&hosts::host_of(m)))
                 .cloned();
             let http = self.http_for(&hosts::host_of(url.as_deref().unwrap_or_default()), &st);
             let http = match url.as_deref() {
@@ -1104,12 +1148,7 @@ impl Engine {
             (url, http, self.key_service(&st))
         };
         let cfg = self.cfg();
-        let cx = Cx {
-            http: &http,
-            cfg: &cfg,
-            tokens: &self.0.tokens,
-            key_service: &key_service,
-        };
+        let cx = self.cx(&http, &cfg, &key_service);
         let looked = match &url {
             Some(url) => tokio::time::timeout(Duration::from_secs(25), hosts::look(&cx, url))
                 .await
@@ -1150,9 +1189,7 @@ impl Engine {
                 password,
                 ..hosts::listed(title, links)
             };
-            for id in self.unwrapped(&id, url, found) {
-                self.spawn_probe(id);
-            }
+            self.take_unwrapped(&id, url, found);
             return;
         }
         if found.is_none() && !guarded && self.drop_tentative(&id, "lists no links") {
@@ -1167,15 +1204,7 @@ impl Engine {
             if let Some(found) = found {
                 // A copied link that turns out to be a file is a download.
                 it.tentative = false;
-                if !it.named {
-                    it.name = Some(hosts::tidy_name(&found.name));
-                }
-                if let Some(size) = found.size.filter(|s| *s > 0) {
-                    it.size = size;
-                }
-                if it.checksum.is_none() {
-                    it.checksum = found.checksum;
-                }
+                it.learn(Some(&found.name), true, found.size, found.checksum);
                 if self.dedupe(&mut st, &id) {
                     st.items.shift_remove(&id);
                     self.publish(st);
@@ -1236,7 +1265,7 @@ impl Engine {
             let url = it.mirrors[0].clone();
             // A site the user turned off is not asked: the queue's turn
             // says so, as for a download whose hosts are all off.
-            if self.cfg().is_off(&hosts::host_of(&url)) {
+            if self.cfg().is_disabled(&hosts::host_of(&url)) {
                 it.probed = true;
                 self.publish(st);
                 return;
@@ -1245,19 +1274,10 @@ impl Engine {
             (url, http, self.key_service(&st))
         };
         let cfg = self.cfg();
-        let cx = Cx {
-            http: &http,
-            cfg: &cfg,
-            tokens: &self.0.tokens,
-            key_service: &key_service,
-        };
+        let cx = self.cx(&http, &cfg, &key_service);
         let found = tokio::time::timeout(Duration::from_secs(60), hosts::unwrap(&cx, &url)).await;
         match found {
-            Ok(Ok(found)) => {
-                for id in self.unwrapped(&id, &url, found) {
-                    self.spawn_probe(id);
-                }
-            }
+            Ok(Ok(found)) => self.take_unwrapped(&id, &url, found),
             // A gate for a person (filecrypt.cc's) says so at once, even
             // while downloads are paused.
             Ok(Err(ResolveError::NeedsUser(need, message))) => {
@@ -1454,12 +1474,7 @@ impl Engine {
             it.probed = true;
             it.pre = Some(e);
             it.pre_for = Some(url.to_string());
-            let new_id = it.id.clone();
-            let at_most = at.min(st.items.len());
-            st.items.shift_insert(at_most, new_id.clone(), it);
-            if self.dedupe(&mut st, &new_id) {
-                st.items.shift_remove(&new_id);
-            } else if let Some(i) = st.items.get_index_of(&new_id) {
+            if let Some((_, i)) = self.insert_row(&mut st, at, it) {
                 at = i + 1;
             }
         }
@@ -1511,12 +1526,7 @@ impl Engine {
                         .files
                         .iter()
                         .filter(|e| !hosts::lists(&e.url))
-                        .filter_map(|e| {
-                            e.name
-                                .as_deref()
-                                .map(hosts::tidy_name)
-                                .or_else(|| hosts::guess_name(&e.url))
-                        }),
+                        .filter_map(|e| e.file_name().map(|n| hosts::tidy_name(&n))),
                 );
             let base = best_archive_name(names);
             for row in rows.values() {
@@ -1549,7 +1559,7 @@ impl Engine {
                 }
             }
             let part_row = by_part.as_ref().and_then(|rows| {
-                let name = e.name.clone().or_else(|| hosts::guess_name(&e.url))?;
+                let name = e.file_name()?;
                 rows.get(&parts::PartName::parse(&name)?.number).cloned()
             });
             if let Some(row) = part_row.filter(|_| !nested) {
@@ -1608,16 +1618,12 @@ impl Engine {
             };
             it.source = Some(id.to_string());
             it.extract_password.clone_from(&password);
-            let new_id = it.id.clone();
             let unprobed = !it.probed;
             let at = st
                 .items
                 .get_index_of(&after)
                 .map_or(st.items.len(), |i| i + 1);
-            st.items.shift_insert(at, new_id.clone(), it);
-            if self.dedupe(&mut st, &new_id) {
-                st.items.shift_remove(&new_id);
-            } else {
+            if let Some((new_id, _)) = self.insert_row(&mut st, at, it) {
                 after.clone_from(&new_id);
                 if unprobed {
                     probe.push(new_id);
@@ -1649,6 +1655,29 @@ impl Engine {
         }
         self.touch(&mut st);
         probe
+    }
+
+    /// Puts new row `it` at `at` in the queue, unless it is a file the queue
+    /// holds already ([`Engine::dedupe`]). Returns its id and place when it
+    /// stays.
+    fn insert_row(&self, st: &mut State, at: usize, it: Item) -> Option<(String, usize)> {
+        let id = it.id.clone();
+        st.items
+            .shift_insert(at.min(st.items.len()), id.clone(), it);
+        if self.dedupe(st, &id) {
+            st.items.shift_remove(&id);
+            return None;
+        }
+        let at = st.items.get_index_of(&id)?;
+        Some((id, at))
+    }
+
+    /// Takes what unwrapping wrapper row `id` (from `url`) found, and looks
+    /// its new rows up.
+    fn take_unwrapped(&self, id: &str, url: &str, found: hosts::Unwrapped) {
+        for id in self.unwrapped(id, url, found) {
+            self.spawn_probe(id);
+        }
     }
 
     /// Folds other rows for the same file into `id`. Returns true when `id`
@@ -1692,23 +1721,11 @@ impl Engine {
                 return true;
             }
             let o = st.items.shift_remove(&other).expect("listed above");
-            let it = st.items.get_mut(id).expect("checked above");
-            for m in o.mirrors {
-                if !it.mirrors.contains(&m) {
-                    it.mirrors.push(m);
-                }
-            }
-            it.manual_urls.extend(o.manual_urls);
-            it.merge_wrappers(o.source.as_ref(), &o.also_from);
-            if it.checksum.is_none() {
-                it.checksum = o.checksum;
-            }
-            if it.extract_password.is_none() {
-                it.extract_password = o.extract_password;
-            }
+            let other_size = o.size;
+            st.items.get_mut(id).expect("checked above").absorb(o);
             let (from, to) = (self.part_path(&other), self.part_path(id));
             if from.exists() {
-                if size > 0 && o.size == size && !to.exists() {
+                if size > 0 && other_size == size && !to.exists() {
                     let _ = std::fs::rename(&from, &to);
                 } else {
                     let _ = std::fs::remove_file(&from);
@@ -1721,6 +1738,14 @@ impl Engine {
     /// `max_active_gb` in bytes; 0 when there is no such limit.
     fn size_cap(&self) -> u64 {
         (self.cfg().max_active_gb * 1e9) as u64
+    }
+
+    /// Takes rows `ids` off the list; their partial files are for the caller
+    /// to discard once the lock is let go ([`Engine::discard_parts`]).
+    fn remove_rows(&self, st: &mut State, ids: &[String]) {
+        for id in ids {
+            st.items.shift_remove(id);
+        }
     }
 
     /// Deletes the partial files of rows that are gone for good.
@@ -1906,11 +1931,16 @@ impl Engine {
 
     /// Tries every failed download again; wrappers have their own section.
     pub fn retry_failed(&self) {
+        self.retry_where(|_| true);
+    }
+
+    /// Tries again the failed downloads (not wrappers) `which` picks.
+    fn retry_where(&self, which: impl Fn(&Item) -> bool) {
         let ids: Vec<String> = self
             .lock()
             .items
             .values()
-            .filter(|i| i.status == Status::Error && !i.wrapper)
+            .filter(|i| i.status == Status::Error && !i.wrapper && which(i))
             .map(|i| i.id.clone())
             .collect();
         for id in ids {
@@ -1921,23 +1951,12 @@ impl Engine {
     /// Starts again the downloads that failed for having only hosts the user
     /// turned off, now that `host` is back on and holds one of their links.
     pub(crate) fn retry_turned_on(&self, host: &str) {
-        let ids: Vec<String> = self
-            .lock()
-            .items
-            .values()
-            .filter(|i| {
-                i.status == Status::Error
-                    && !i.wrapper
-                    && i.trouble == Trouble::OnlyOffHosts
-                    && i.mirrors
-                        .iter()
-                        .any(|m| hosts::host_of(m).eq_ignore_ascii_case(host))
-            })
-            .map(|i| i.id.clone())
-            .collect();
-        for id in ids {
-            self.item_action(&id, ItemAction::Retry);
-        }
+        self.retry_where(|i| {
+            i.trouble == Trouble::OnlyOffHosts
+                && i.mirrors
+                    .iter()
+                    .any(|m| hosts::host_of(m).eq_ignore_ascii_case(host))
+        });
     }
 
     /// Clears finished downloads off the list, and an unwrapped wrapper with
@@ -2002,9 +2021,7 @@ impl Engine {
                 })
                 .map(|i| i.id.clone())
                 .collect();
-            for k in &gone {
-                st.items.shift_remove(k);
-            }
+            self.remove_rows(&mut st, &gone);
             st.items.shift_remove(id);
             self.touch(&mut st);
             gone
@@ -2064,9 +2081,7 @@ impl Engine {
                     it.prefer = None;
                 }
             }
-            for k in &gone {
-                st.items.shift_remove(k);
-            }
+            self.remove_rows(&mut st, &gone);
             // The cards no longer name it among their hosts.
             for id in ids {
                 if let Some(w) = st.items.get_mut(id) {
@@ -2084,20 +2099,16 @@ impl Engine {
 
     /// Takes every failed download off the list, with its partial file.
     pub fn clear_failed(&self) {
-        let gone: Vec<String> = {
-            let mut st = self.lock();
-            let gone = st
-                .items
-                .values()
-                .filter(|i| i.status == Status::Error && !i.running() && !i.wrapper)
-                .map(|i| i.id.clone())
-                .collect::<Vec<_>>();
-            for id in &gone {
-                st.items.shift_remove(id);
-            }
-            self.touch(&mut st);
-            gone
-        };
+        let mut st = self.lock();
+        let gone: Vec<String> = st
+            .items
+            .values()
+            .filter(|i| i.status == Status::Error && !i.running() && !i.wrapper)
+            .map(|i| i.id.clone())
+            .collect();
+        self.remove_rows(&mut st, &gone);
+        self.touch(&mut st);
+        drop(st);
         self.discard_parts(gone);
     }
 
@@ -2109,15 +2120,13 @@ impl Engine {
     /// Looks for a newer Haul shortly after start and every hour, while the
     /// settings allow.
     async fn watch_updates(self) {
-        tokio::select! {
-            () = self.0.shutdown.cancelled() => return,
-            () = tokio::time::sleep(Duration::from_secs(20)) => {}
+        if !self.idle(Duration::from_secs(20)).await {
+            return;
         }
         loop {
             self.check_update().await;
-            tokio::select! {
-                () = self.0.shutdown.cancelled() => return,
-                () = tokio::time::sleep(Duration::from_secs(3600)) => {}
+            if !self.idle(Duration::from_secs(3600)).await {
+                return;
             }
         }
     }
@@ -2167,9 +2176,8 @@ impl Engine {
 
     async fn saver(self) {
         loop {
-            tokio::select! {
-                _ = self.0.shutdown.cancelled() => return,
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            if !self.idle(Duration::from_secs(1)).await {
+                return;
             }
             self.save(false);
         }
@@ -2207,18 +2215,28 @@ impl Engine {
     /// queue. The engine does nothing afterwards.
     pub async fn shutdown(&self) {
         self.0.shutdown.cancel();
-        {
-            let mut st = self.lock();
-            st.paused = true;
-            for it in st.items.values() {
-                it.cancel();
-            }
+        self.lock().paused = true;
+        self.stop_all(Duration::from_secs(3)).await;
+        self.save(true);
+    }
+
+    /// Stops every transfer and waits, for `at_most`, for them to end.
+    async fn stop_all(&self, at_most: Duration) {
+        for it in self.lock().items.values() {
+            it.cancel();
         }
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + at_most;
         while Instant::now() < deadline && self.lock().items.values().any(Item::running) {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        self.save(true);
+    }
+
+    /// Puts clients for the exits of `cfg` and `services` (a VPN's servers)
+    /// in effect.
+    fn set_clients(&self, cfg: &Config, services: &[String]) -> Result<(), String> {
+        let clients = Clients::new(cfg, services)?;
+        *self.0.clients.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(clients);
+        Ok(())
     }
 }
 
@@ -2291,13 +2309,13 @@ fn sibling_parts(
         &mut entries
             .iter()
             .filter(|e| !hosts::lists(&e.url))
-            .map(|e| e.name.clone().or_else(|| hosts::guess_name(&e.url))),
+            .map(Entry::file_name),
     )?;
     // What the page shows for each of its parts.
     let listed: HashMap<u32, u64> = entries
         .iter()
         .filter_map(|e| {
-            let name = e.name.clone().or_else(|| hosts::guess_name(&e.url))?;
+            let name = e.file_name()?;
             Some((parts::PartName::parse(&name)?.number, e.listed_size?))
         })
         .collect();

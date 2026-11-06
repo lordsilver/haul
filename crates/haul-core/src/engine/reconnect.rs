@@ -391,7 +391,7 @@ impl Engine {
                 .iter()
                 .filter(|m| !it.failed.contains(*m))
                 .map(|m| hosts::host_of(m))
-                .filter(|h| !cfg.is_off(h))
+                .filter(|h| !cfg.is_disabled(h))
                 .collect();
             let held = |host: &String| {
                 self.exits_for(host, &st).iter().all(|&e| {
@@ -441,9 +441,8 @@ impl Engine {
             if self.cfg().reconnect {
                 self.router().await;
             }
-            tokio::select! {
-                _ = self.0.shutdown.cancelled() => return,
-                _ = tokio::time::sleep(self.cfg().throttling.redial_check) => {}
+            if !self.idle(self.cfg().throttling.redial_check).await {
+                return;
             }
             if let Some(why) = self.wants_new_address() {
                 self.drain(&why).await;
@@ -455,11 +454,7 @@ impl Engine {
     /// One a host is slowing isn't among them, since it could take hours and
     /// loses nothing by stopping.
     fn running_well(&self) -> usize {
-        self.lock()
-            .items
-            .values()
-            .filter(|i| i.running() && i.exit == Some(DIRECT) && i.slowed.is_none())
-            .count()
+        running_well(&self.lock()).count()
     }
 
     /// Whether what runs well on the line should be done within the limit, as
@@ -469,20 +464,17 @@ impl Engine {
         let cfg = self.cfg();
         let now = Instant::now();
         let st = self.lock();
-        st.items
-            .values()
-            .filter(|i| i.running() && i.exit == Some(DIRECT) && i.slowed.is_none())
-            .all(|i| {
-                // Before a row has a speed of its own, what it has shown so far.
-                let speed = i
-                    .pace
-                    .as_ref()
-                    .and_then(|p| p.recent(now, &cfg.throttling))
-                    .unwrap_or(i.speed);
-                speed <= 0.0
-                    || i.size == 0
-                    || i.size.saturating_sub(i.done) as f64 / speed <= limit.as_secs_f64()
-            })
+        running_well(&st).all(|i| {
+            // Before a row has a speed of its own, what it has shown so far.
+            let speed = i
+                .pace
+                .as_ref()
+                .and_then(|p| p.recent(now, &cfg.throttling))
+                .unwrap_or(i.speed);
+            speed <= 0.0
+                || i.size == 0
+                || i.size.saturating_sub(i.done) as f64 / speed <= limit.as_secs_f64()
+        })
     }
 
     /// Gets a new address without cutting off anything that runs well: nothing
@@ -513,9 +505,8 @@ impl Engine {
             if Instant::now() >= deadline {
                 break false;
             }
-            tokio::select! {
-                _ = self.0.shutdown.cancelled() => return,
-                _ = tokio::time::sleep(throttling.tick) => {}
+            if !self.idle(throttling.tick).await {
+                return;
             }
         };
         if !finished {
@@ -561,6 +552,13 @@ impl Engine {
         st.draining = why.map(str::to_string);
         self.publish(st);
     }
+}
+
+/// The downloads on the line that no host is slowing ([`Engine::running_well`]).
+fn running_well(st: &super::State) -> impl Iterator<Item = &crate::item::Item> {
+    st.items
+        .values()
+        .filter(|i| i.running() && i.exit == Some(DIRECT) && i.slowed.is_none())
 }
 
 /// Whether `address` is one the internet routes to: not a private, shared

@@ -46,9 +46,8 @@ impl Engine {
         let mut last = Instant::now();
         loop {
             let tick = self.cfg().throttling.tick;
-            tokio::select! {
-                _ = self.0.shutdown.cancelled() => return,
-                _ = tokio::time::sleep(tick) => {}
+            if !self.idle(tick).await {
+                return;
             }
             // Far later than asked: the process stood still (a stalled machine,
             // a computer asleep), and that time says nothing about any host.
@@ -145,11 +144,7 @@ impl Engine {
             }
             match verdict {
                 Verdict::Fine => {
-                    let h = st.host(&run.host);
-                    h.learn_normal(speed);
-                    h.redialed_for = false;
-                    h.redial_useless = false;
-                    h.redial_useless_at = 0;
+                    st.host(&run.host).ran_well(speed);
                     st.lane(&run.host, run.exit).strikes = 0;
                     changed |= self.not_slowed(&mut st, run, true, now);
                 }
@@ -176,9 +171,7 @@ impl Engine {
         }
         for lane in st.lanes.values_mut() {
             if lane.slowing {
-                lane.cooldown = None;
-                lane.slowing = false;
-                lane.slowing_sure = false;
+                lane.end_slowing();
                 lane.strikes = 0;
                 changed = true;
             }
@@ -205,9 +198,7 @@ impl Engine {
             .any(|i| i.slowed.is_some() && i.host == run.host && i.exit == Some(run.exit));
         let lane = st.lane(&run.host, run.exit);
         if recovered && !still_slowed && lane.slowing && lane.cooling(now) {
-            lane.cooldown = None;
-            lane.slowing = false;
-            lane.slowing_sure = false;
+            lane.end_slowing();
             tracing::info!("{} runs well again: its cooldown ends", run.host);
             changed = true;
         }
@@ -357,7 +348,7 @@ impl Engine {
         let Some(it) = st.items.get(id) else {
             return false;
         };
-        if it.failed.contains(m) || cfg.is_off(&hosts::host_of(m)) {
+        if it.failed.contains(m) || cfg.is_disabled(&hosts::host_of(m)) {
             return false;
         }
         let pages = self.pages_pass();
@@ -379,7 +370,7 @@ impl Engine {
             let name = hosts::host_of(m);
             name != host
                 && self.could_serve(st, &it.id, m, &cfg, now)
-                && !st.cooling(&name, &self.exits_for(&name, st), now)
+                && !self.host_cooling(st, &name, now)
         })
     }
 
@@ -408,7 +399,7 @@ impl Engine {
             .mirrors
             .iter()
             .filter(|m| hosts::host_of(m) != host)
-            .filter(|m| !it.failed.contains(*m) && !cfg.is_off(&hosts::host_of(m)))
+            .filter(|m| !it.failed.contains(*m) && !cfg.is_disabled(&hosts::host_of(m)))
             .collect();
         let now = Instant::now();
         if others.is_empty() {

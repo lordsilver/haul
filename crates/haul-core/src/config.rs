@@ -324,7 +324,9 @@ impl Config {
             .position(|h| h.eq_ignore_ascii_case(host))
     }
 
-    /// Whether the user turned `host` off: its links are never tried.
+    /// Whether the user turned `host` off: its links are never tried. One
+    /// that lacks its account is used, after every other
+    /// ([`crate::hosts::Known::last_resort`]).
     pub fn is_disabled(&self, host: &str) -> bool {
         self.disabled_hosts
             .iter()
@@ -336,13 +338,6 @@ impl Config {
         self.accountless_hosts
             .iter()
             .any(|h| h.eq_ignore_ascii_case(host))
-    }
-
-    /// Whether `host`'s links are left out: the user turned it off. One that
-    /// lacks its account is used, after every other
-    /// ([`crate::hosts::Known::last_resort`]).
-    pub fn is_off(&self, host: &str) -> bool {
-        self.is_disabled(host)
     }
 
     /// Whether `url`'s host is used only when no other host has the file;
@@ -569,7 +564,7 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # Add links copied anywhere (desktop app).
 # watch_clipboard = false
 
-# Look for a newer Haul on GitHub after start and every six hours; the
+# Look for a newer Haul on GitHub after start and every hour; the
 # desktop app offers to install it.
 # check_updates = true
 

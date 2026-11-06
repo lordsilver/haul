@@ -105,15 +105,6 @@ pub async fn nordvpn_servers(http: &reqwest::Client, api: &str) -> Result<Vec<Se
     Ok(servers)
 }
 
-/// The NordVPN servers to use: the least loaded `nordvpn_servers` in the
-/// countries chosen (every country when none is), once the service
-/// credentials are set.
-pub fn nordvpn_pick(cfg: &Config, servers: &[Server]) -> Vec<Server> {
-    let mut picked = nordvpn_candidates(cfg, servers);
-    picked.truncate(cfg.nordvpn_servers);
-    picked
-}
-
 /// Every server in the countries chosen, least loaded first; none until
 /// the service credentials and a number of servers are set.
 pub fn nordvpn_candidates(cfg: &Config, servers: &[Server]) -> Vec<Server> {
@@ -198,6 +189,15 @@ pub fn nordvpn_proxies(cfg: &Config, picked: &[Server]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The NordVPN servers to use: the least loaded `nordvpn_servers` in the
+    /// countries chosen (every country when none is), once the service
+    /// credentials are set.
+    fn nordvpn_pick(cfg: &Config, servers: &[Server]) -> Vec<Server> {
+        let mut picked = nordvpn_candidates(cfg, servers);
+        picked.truncate(cfg.nordvpn_servers);
+        picked
+    }
 
     fn server(host: &str, country: &str, load: u32) -> Server {
         Server {

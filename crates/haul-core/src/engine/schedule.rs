@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Engine, Event, Exit, State, display_name, exit_name, noted_quietly};
 use crate::{
-    hosts::{self, Cx},
+    hosts,
     item::{Status, Trouble},
 };
 
@@ -44,19 +44,14 @@ impl Engine {
                 let due = checked
                     .get(&host)
                     .is_none_or(|t| t.elapsed() >= Duration::from_secs(60));
-                if !due || cfg.is_off(&host) {
+                if !due || cfg.is_disabled(&host) {
                     continue;
                 }
                 checked.insert(host.clone(), Instant::now());
                 let exits = self.exits_for(&host, &self.lock());
                 for exit in exits {
                     let http = self.clients().on(exit);
-                    let cx = Cx {
-                        http: &http,
-                        cfg: &cfg,
-                        tokens: &self.0.tokens,
-                        key_service: &http,
-                    };
+                    let cx = self.cx(&http, &cfg, &http);
                     let quota = hosts::allowance(&cx, &host).await;
                     let mut st = self.lock();
                     let lane = st.lane(&host, exit);
@@ -110,12 +105,7 @@ impl Engine {
             let mut running = st.items.values().filter(|i| i.running()).count();
             // What downloads now against max_active_gb, by full size.
             let size_cap = self.size_cap();
-            let mut busy: u64 = st
-                .items
-                .values()
-                .filter(|i| i.running())
-                .map(|i| i.size)
-                .sum();
+            let mut busy = super::transfer::running_size(&st, None);
             // Downloads with data on disk go first, the nearest to done
             // first; the rest keep the queue's order.
             // (By bytes on disk where the size is not known yet.)
@@ -213,7 +203,7 @@ impl Engine {
     fn pick(&self, st: &mut State, id: &str, now: Instant) -> Option<(String, Exit)> {
         let cfg = self.cfg();
         let pages = self.pages_pass();
-        let off = |m: &String| cfg.is_off(&hosts::host_of(m));
+        let off = |m: &String| cfg.is_disabled(&hosts::host_of(m));
         let it = &st.items[id];
         // A mirror whose page the desktop app passes by itself, waiting its
         // turn in the browser: the file waits for it rather than go to a
@@ -312,9 +302,8 @@ impl Engine {
         let mut elsewhere = Vec::new();
         for m in &candidates {
             let name = hosts::host_of(m);
-            let exits = self.exits_for(&name, st);
             let may_go = !slow_on.contains(m) || picked.as_deref() == Some(name.as_str());
-            if may_go && !st.cooling(&name, &exits, now) {
+            if may_go && !self.host_cooling(st, &name, now) {
                 elsewhere.push(m.clone());
             }
         }
@@ -333,9 +322,8 @@ impl Engine {
         };
         if let Some(m) = handed {
             let name = hosts::host_of(&m);
-            let exits = self.exits_for(&name, st);
-            if !st.cooling(&name, &exits, now) {
-                return st.open_exit(&name, &exits, &cfg, now).map(|exit| (m, exit));
+            if !self.host_cooling(st, &name, now) {
+                return self.free_exit(st, &name, &cfg, now).map(|exit| (m, exit));
             }
         }
         // The host the user picked for this file, while it has it: waited
@@ -344,10 +332,9 @@ impl Engine {
         if let Some(want) = st.items[id].prefer.clone()
             && let Some(m) = candidates.iter().find(|m| hosts::host_of(m) == want)
         {
-            let exits = self.exits_for(&want, st);
-            if !st.cooling(&want, &exits, now) {
-                return st
-                    .open_exit(&want, &exits, &cfg, now)
+            if !self.host_cooling(st, &want, now) {
+                return self
+                    .free_exit(st, &want, &cfg, now)
                     .map(|exit| (m.clone(), exit));
             }
         }
@@ -356,9 +343,8 @@ impl Engine {
         let mut preferred: Vec<(usize, String)> = Vec::new();
         for m in &candidates {
             let name = hosts::host_of(m);
-            let exits = self.exits_for(&name, st);
             if let Some(rank) = cfg.preference(&name)
-                && !st.cooling(&name, &exits, now)
+                && !self.host_cooling(st, &name, now)
             {
                 preferred.push((rank, m.clone()));
             }
@@ -366,9 +352,7 @@ impl Engine {
         if !preferred.is_empty() {
             preferred.sort_by_key(|(rank, _)| *rank);
             for (_, m) in preferred {
-                let name = hosts::host_of(&m);
-                let exits = self.exits_for(&name, st);
-                if let Some(exit) = st.open_exit(&name, &exits, &cfg, now) {
+                if let Some(exit) = self.free_exit(st, &hosts::host_of(&m), &cfg, now) {
                     return Some((m, exit));
                 }
             }
@@ -390,8 +374,7 @@ impl Engine {
                     continue;
                 }
             }
-            let exits = self.exits_for(&name, st);
-            let Some(exit) = st.open_exit(&name, &exits, &cfg, now) else {
+            let Some(exit) = self.free_exit(st, &name, &cfg, now) else {
                 continue;
             };
             let score = st.host(&name).score(now);
@@ -425,12 +408,11 @@ impl Engine {
         cfg: &crate::Config,
         now: Instant,
     ) -> Option<(String, Exit)> {
-        for m in candidates {
-            let name = hosts::host_of(m);
-            let exits = self.exits_for(&name, st);
-            if !st.cooling(&name, &exits, now) {
-                return None;
-            }
+        if candidates
+            .iter()
+            .any(|m| !self.host_cooling(st, &hosts::host_of(m), now))
+        {
+            return None;
         }
         if page_can_pass {
             st.items.get_mut(id)?.status = Status::Captcha;

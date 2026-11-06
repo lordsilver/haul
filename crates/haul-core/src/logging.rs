@@ -204,6 +204,13 @@ impl<S: Subscriber> Layer<S> for DebugLayer {
     }
 }
 
+/// Seconds since 1970, now.
+pub(crate) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// Now, as signals and the log write it: ISO 8601, UTC, to the millisecond.
 pub fn now() -> String {
     let d = SystemTime::now()
@@ -298,8 +305,9 @@ impl Write for Rotating {
 static LINK_FRAGMENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r##"(://[^\s"#]*)#(?:[^\s"\\]|\\[^"])*"##).unwrap());
 
-/// `line` with the `#…` part of every link in it left out.
-fn without_keys(line: &str) -> std::borrow::Cow<'_, str> {
+/// `line` with the `#…` part of every link in it left out: mega.nz keeps its
+/// keys there.
+pub(crate) fn without_keys(line: &str) -> std::borrow::Cow<'_, str> {
     LINK_FRAGMENT.replace_all(line, "$1")
 }
 

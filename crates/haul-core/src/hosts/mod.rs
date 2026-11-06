@@ -154,9 +154,6 @@ impl Checksum {
     }
 
     /// Whether the file at `path` has this checksum. Reads all of it.
-    pub fn matches(&self, path: &Path) -> std::io::Result<bool> {
-        self.matches_steered(path, &|| Steer::Go)
-    }
 
     /// [`Checksum::matches`], asking `steer` before every read whether to go
     /// on, wait (while downloads are paused, say) or give up, which fails
@@ -1160,6 +1157,21 @@ fn last_segment(url: &str) -> Option<String> {
     )
 }
 
+/// The name a link's file goes by: `given` when there is one, else the one
+/// its address suggests ([`guess_name`]).
+pub fn name_for(url: &str, given: Option<String>) -> Option<String> {
+    given
+        .filter(|n| !n.trim().is_empty())
+        .or_else(|| guess_name(url))
+}
+
+impl Entry {
+    /// What its file goes by ([`name_for`]).
+    pub fn file_name(&self) -> Option<String> {
+        name_for(&self.url, self.name.clone())
+    }
+}
+
 /// The file name in a link's path, when it looks like one. File hosts' pages
 /// often add `.html` to the name of the file they offer (`name.rar.html`),
 /// which names `name.rar`; a page of its own (`index.php`) names no file.
@@ -1487,14 +1499,6 @@ pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError>
     }
 }
 
-/// A cheap lookup of the name, size and checksum that does not start a
-/// download, so the same file on several hosts can be merged, and a file
-/// already downloaded recognised, before anything is fetched. `None` when the
-/// host will not say.
-pub async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    look(cx, url).await.found()
-}
-
 /// What a lookup learns of a file without downloading it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Look {
@@ -1552,8 +1556,11 @@ pub fn tells_size(url: &str) -> bool {
     known(&host_of(url)).is_some_and(|k| k.tells_size)
 }
 
-/// [`probe`], from a host that can also say the file was deleted, so a row
-/// knows before its turn that a link is dead.
+/// A cheap lookup of the name, size and checksum that does not start a
+/// download, so the same file on several hosts can be merged, and a file
+/// already downloaded recognised, before anything is fetched; from a host
+/// that can also say the file was deleted, so a row knows before its turn
+/// that a link is dead.
 pub async fn look(cx: &Cx<'_>, url: &str) -> Look {
     match kind_of(url) {
         Some(Kind::Vikingfile) => vikingfile::look(cx, url).await,
@@ -2073,12 +2080,12 @@ mod tests {
             assert!(
                 Checksum::from_hex(algo, hex)
                     .unwrap()
-                    .matches(&file)
+                    .matches_steered(&file, &|| Steer::Go)
                     .unwrap()
             );
         }
         let zeros = Checksum::from_hex(Algo::Sha256, &"0".repeat(64)).unwrap();
-        assert!(!zeros.matches(&file).unwrap());
+        assert!(!zeros.matches_steered(&file, &|| Steer::Go).unwrap());
     }
 
     #[tokio::test]

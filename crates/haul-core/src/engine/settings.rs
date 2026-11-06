@@ -13,7 +13,7 @@ use reqwest::header::HeaderValue;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use super::{AUTO_RETRIES, Clients, Engine, Event, State};
+use super::{AUTO_RETRIES, Engine, Event, State};
 use crate::{
     config::{self, Config, Route, Theme},
     hosts::{self, Http},
@@ -414,7 +414,7 @@ impl Engine {
             return Err("a host needs a name".into());
         }
         let mut cfg = (*self.cfg()).clone();
-        if disabled == cfg.is_off(host) {
+        if disabled == cfg.is_disabled(host) {
             return Ok(());
         }
         if disabled {
@@ -496,14 +496,9 @@ impl Engine {
             || new.proxy_fresh_connections != old.proxy_fresh_connections
             || new.user_agent != old.user_agent
         {
-            match Clients::new(&new, &self.service_proxies()) {
-                Ok(clients) => {
-                    *self.0.clients.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(clients);
-                }
-                Err(e) => {
-                    self.set_config_error(Some(e));
-                    return;
-                }
+            if let Err(e) = self.set_clients(&new, &self.service_proxies()) {
+                self.set_config_error(Some(e));
+                return;
             }
         }
         if new.rate_limit_mbps != old.rate_limit_mbps {
@@ -549,7 +544,7 @@ impl Engine {
             self.touch(&mut st);
         }
         if theme_changed {
-            let _ = self.0.events.send(Event::ThemeChanged(self.theme()));
+            self.emit([Event::ThemeChanged(self.theme())]);
         }
         if let Some(folder) = move_to {
             tokio::spawn(self.clone().move_downloads(folder));
@@ -567,9 +562,8 @@ impl Engine {
             return;
         };
         loop {
-            tokio::select! {
-                _ = self.0.shutdown.cancelled() => return,
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            if !self.idle(Duration::from_secs(1)).await {
+                return;
             }
             let now = stamp(&path);
             {
@@ -605,17 +599,9 @@ impl Engine {
         {
             let mut st = self.lock();
             st.moving = true;
-            for it in st.items.values() {
-                if let Some(task) = &it.task {
-                    task.cancel();
-                }
-            }
             self.touch(&mut st);
         }
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline && self.lock().items.values().any(Item::running) {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        self.stop_all(Duration::from_secs(10)).await;
         let from = self.download_dir().join(".partial");
         let to = folder.join(".partial");
         let moved = tokio::task::spawn_blocking(move || move_partials(&from, &to)).await;
@@ -641,11 +627,17 @@ impl Engine {
 
     /// Schedules the next automatic retry of a failed item, if any is left.
     pub(super) fn plan_auto_retry(&self, it: &mut Item, now: Instant) {
-        let minutes = self.cfg().retry_failed_minutes;
         // Every link is gone for good: another try would find the same.
         let gone = it.mirrors.iter().all(|m| it.gone.contains(m));
-        it.retry_at = (minutes > 0 && it.auto_retries < AUTO_RETRIES && !gone)
-            .then(|| now + Duration::from_secs(minutes * 60));
+        it.retry_at = self.next_try(it, now).filter(|_| !gone);
+    }
+
+    /// When row `it` may be tried again on its own, if it has a try left and
+    /// the setting is on.
+    fn next_try(&self, it: &Item, now: Instant) -> Option<Instant> {
+        let minutes = self.cfg().retry_failed_minutes;
+        (minutes > 0 && it.auto_retries < AUTO_RETRIES)
+            .then(|| now + Duration::from_secs(minutes * 60))
     }
 
     /// The pages of row `it` under Needs you that the desktop app could pass
@@ -656,7 +648,7 @@ impl Engine {
             .iter()
             .filter(|m| {
                 st.passes(m)
-                    && !cfg.is_off(&hosts::host_of(m))
+                    && !cfg.is_disabled(&hosts::host_of(m))
                     && !it.failed.contains(*m)
                     && !it.gone.contains(*m)
             })
@@ -667,12 +659,8 @@ impl Engine {
     /// timer and limit as a failed download: never when no such try is left,
     /// or no page could pass without a person.
     pub(super) fn page_retry_at(&self, st: &State, it: &Item, now: Instant) -> Option<Instant> {
-        let minutes = self.cfg().retry_failed_minutes;
-        (minutes > 0
-            && it.auto_retries < AUTO_RETRIES
-            && self.pages_pass()
-            && !self.pages_to_pass(st, it).is_empty())
-        .then(|| now + Duration::from_secs(minutes * 60))
+        self.next_try(it, now)
+            .filter(|_| self.pages_pass() && !self.pages_to_pass(st, it).is_empty())
     }
 
     /// Queues the failed items whose automatic retry is due, and passes the
@@ -793,19 +781,8 @@ fn check_proxy(proxy: &str, user_agent: &str) -> Result<(), String> {
     if !matches!(scheme, "socks5" | "socks5h" | "http" | "https") || !proxy.contains("://") {
         return Err(format!(
             "{} is not a socks5:// or http:// address",
-            redact_proxy(proxy)
+            super::diagnostics::without_credentials(proxy)
         ));
     }
     Http::new(Some(proxy), user_agent).map(|_| ())
-}
-
-/// A proxy address without its user and password, for messages.
-fn redact_proxy(proxy: &str) -> String {
-    match proxy.rsplit_once('@') {
-        Some((head, host)) => {
-            let scheme = head.split("://").next().unwrap_or_default();
-            format!("{scheme}://…@{host}")
-        }
-        None => proxy.to_string(),
-    }
 }

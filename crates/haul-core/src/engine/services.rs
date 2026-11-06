@@ -10,14 +10,11 @@
 //! shown: downloads meant for the VPN then wait, rather than leave through
 //! the user's own line.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use super::{Clients, Engine};
+use super::Engine;
 use crate::vpn::{self, Server};
 
 /// How old a service's server list may get before it is fetched again.
@@ -97,15 +94,7 @@ impl Engine {
         let cfg = self.cfg();
         let wanted =
             cfg.nordvpn_on && cfg.account("nordvpn_password").is_some() && cfg.nordvpn_servers > 0;
-        let asked = format!(
-            "{:?}|{:?}|{}|{:?}|{}|{}",
-            cfg.account("nordvpn_user"),
-            cfg.account("nordvpn_password"),
-            cfg.nordvpn_servers,
-            cfg.nordvpn_countries,
-            cfg.use_proxy,
-            cfg.nordvpn_on
-        );
+        let asked = asked(&cfg);
         let stale = {
             let s = self.services();
             s.fetched.is_none_or(|t| t.elapsed() >= REFRESH) || s.asked.as_deref() != Some(&asked)
@@ -156,9 +145,8 @@ impl Engine {
             self.touch(&mut self.lock());
             return;
         }
-        match Clients::new(&cfg, &proxies) {
-            Ok(clients) => {
-                *self.0.clients.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(clients);
+        match self.set_clients(&cfg, &proxies) {
+            Ok(()) => {
                 tracing::info!("{} NordVPN servers among the proxies", proxies.len());
                 let mut st = self.lock();
                 // Exits may now be other addresses.
@@ -242,14 +230,7 @@ impl Engine {
         let mut last = Instant::now();
         loop {
             let cfg = self.cfg();
-            let now_asked = (
-                cfg.nordvpn_on,
-                cfg.account("nordvpn_password").is_some(),
-                cfg.nordvpn_servers,
-                cfg.nordvpn_countries.clone(),
-                cfg.use_proxy,
-                cfg.account("nordvpn_user").map(str::to_string),
-            );
+            let now_asked = asked(&cfg);
             if seen.as_ref() != Some(&now_asked) || last.elapsed() >= REFRESH {
                 seen = Some(now_asked);
                 last = Instant::now();
@@ -262,4 +243,18 @@ impl Engine {
             }
         }
     }
+}
+
+/// The settings a pick of NordVPN's servers is for: a change to any of them
+/// fetches and picks again.
+fn asked(cfg: &crate::Config) -> String {
+    format!(
+        "{:?}|{:?}|{}|{:?}|{}|{}",
+        cfg.account("nordvpn_user"),
+        cfg.account("nordvpn_password"),
+        cfg.nordvpn_servers,
+        cfg.nordvpn_countries,
+        cfg.use_proxy,
+        cfg.nordvpn_on
+    )
 }

@@ -147,16 +147,7 @@ impl Engine {
                 let Some(it) = st.items.get_mut(k) else {
                     continue;
                 };
-                for m in gone.mirrors {
-                    if !it.mirrors.contains(&m) {
-                        it.mirrors.push(m);
-                    }
-                }
-                it.manual_urls.extend(gone.manual_urls);
-                it.merge_wrappers(gone.source.as_ref(), &gone.also_from);
-                if it.checksum.is_none() {
-                    it.checksum = gone.checksum;
-                }
+                it.absorb(gone);
                 let _ = std::fs::remove_file(self.part_path(c));
             }
         }
@@ -367,7 +358,7 @@ impl Engine {
             }
             self.touch(&mut st);
         }
-        let _ = self.0.events.send(notice);
+        self.emit([notice]);
 
         if let Ok((_, files)) = result
             && self.cfg().delete_after_extract

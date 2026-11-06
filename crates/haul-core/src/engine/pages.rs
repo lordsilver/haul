@@ -184,12 +184,17 @@ impl Engine {
     /// the address its pass goes out from, the first of the host's, as
     /// [`Engine::proxy_for`] gives it.
     pub(super) fn pass_held_until(&self, st: &State, url: &str, now: Instant) -> Option<Instant> {
-        let host = hosts::host_of(url);
-        let exit = *self.exits_for(&host, st).first()?;
-        st.lanes
-            .get(&(host, exit))?
+        self.pass_lane(st, url)?
             .cooldown
             .filter(|until| now < *until)
+    }
+
+    /// Page `url`'s host as its pass reaches it: through the first of the
+    /// host's exits.
+    fn pass_lane<'a>(&self, st: &'a State, url: &str) -> Option<&'a super::Lane> {
+        let host = hosts::host_of(url);
+        let exit = *self.exits_for(&host, st).first()?;
+        st.lanes.get(&(host, exit))
     }
 
     /// As [`Engine::pass_held_until`], for page `url` of row `it`: a host that
@@ -204,9 +209,7 @@ impl Engine {
         now: Instant,
     ) -> Option<Instant> {
         let until = self.pass_held_until(st, url, now)?;
-        let host = hosts::host_of(url);
-        let exit = *self.exits_for(&host, st).first()?;
-        let slowing = st.lanes.get(&(host, exit)).is_some_and(|l| l.slowing);
+        let slowing = self.pass_lane(st, url).is_some_and(|l| l.slowing);
         (!slowing || self.has_another_way(st, it, url, now)).then_some(until)
     }
 
@@ -220,7 +223,7 @@ impl Engine {
         let cfg = self.cfg();
         it.manual_urls
             .iter()
-            .filter(|m| !cfg.is_off(&hosts::host_of(m)))
+            .filter(|m| !cfg.is_disabled(&hosts::host_of(m)))
             .map(|m| {
                 st.passes(m)
                     .then(|| self.pass_held_for(st, it, m, now))
@@ -348,9 +351,7 @@ impl Engine {
         let count = known.len();
         tracing::info!(item = %id, "{page} links {count} files and wrappers, in its window");
         let title = title.and_then(hosts::short_title);
-        for id in self.unwrapped(id, &page, hosts::listed(title, known)) {
-            self.spawn_probe(id);
-        }
+        self.take_unwrapped(id, &page, hosts::listed(title, known));
         count
     }
 
@@ -369,9 +370,7 @@ impl Engine {
         };
         let count = found.files.len();
         tracing::info!(item = %id, "{page} shows {count} files, in its window");
-        for id in self.unwrapped(id, &page, found) {
-            self.spawn_probe(id);
-        }
+        self.take_unwrapped(id, &page, found);
         count
     }
 
@@ -447,9 +446,7 @@ impl Engine {
             // A file's own link, found on a wrapper's page: one more of the
             // wrapper's files, not started, with what the browser sent.
             let package = it.package.clone();
-            let name = name_hint
-                .filter(|n| !n.is_empty())
-                .or_else(|| hosts::guess_name(url));
+            let name = hosts::name_for(url, name_hint);
             let mut file = Item::new(vec![url.to_string()], name.clone(), package);
             file.status = Status::Paused;
             file.source = Some(id.to_string());
@@ -463,20 +460,13 @@ impl Engine {
                 });
                 file.manual = true;
             }
-            let new_id = file.id.clone();
             let at = st.items.get_index_of(id).map_or(st.items.len(), |i| i + 1);
-            st.items.shift_insert(at, new_id.clone(), file);
-            if self.dedupe(&mut st, &new_id) {
-                st.items.shift_remove(&new_id);
-            }
+            self.insert_row(&mut st, at, file);
             self.touch(&mut st);
             return Ok(());
         }
         if it.name.is_none() && !deferred {
-            it.name = name_hint
-                .filter(|n| !n.is_empty())
-                .or_else(|| hosts::guess_name(url))
-                .map(|n| hosts::tidy_name(&n));
+            it.name = hosts::name_for(url, name_hint).map(|n| hosts::tidy_name(&n));
         }
         it.pre = Some(Entry {
             url: url.into(),

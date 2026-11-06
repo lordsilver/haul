@@ -301,6 +301,48 @@ impl Item {
         }
     }
 
+    /// Takes in another row for the same file: its links and pages for a
+    /// person, the wrappers it came from, and its checksum and archive
+    /// password where this one has none.
+    pub(crate) fn absorb(&mut self, other: Item) {
+        for m in other.mirrors {
+            if !self.mirrors.contains(&m) {
+                self.mirrors.push(m);
+            }
+        }
+        self.manual_urls.extend(other.manual_urls);
+        self.merge_wrappers(other.source.as_ref(), &other.also_from);
+        if self.checksum.is_none() {
+            self.checksum = other.checksum;
+        }
+        if self.extract_password.is_none() {
+            self.extract_password = other.extract_password;
+        }
+    }
+
+    /// Takes in what a host says of its file. Its name stands in for one
+    /// guessed from the link with `replace`, unless the row was named for
+    /// its archive or list ([`Item::named`]); else only for none.
+    pub(crate) fn learn(
+        &mut self,
+        name: Option<&str>,
+        replace: bool,
+        size: Option<u64>,
+        checksum: Option<Checksum>,
+    ) {
+        if self.name.is_none() || (replace && !self.named) {
+            if let Some(name) = name {
+                self.name = Some(tidy_name(name));
+            }
+        }
+        if let Some(size) = size.filter(|s| *s > 0) {
+            self.size = size;
+        }
+        if self.checksum.is_none() {
+            self.checksum = checksum;
+        }
+    }
+
     pub fn new(urls: Vec<String>, name: Option<String>, package: String) -> Self {
         let name = name.map(|n| tidy_name(&n)).filter(|n| !n.is_empty());
         Self {

@@ -30,7 +30,7 @@ use std::{
 use haul_core::{
     Engine,
     bridge::Bridge,
-    hosts,
+    hosts, paths,
     stay::{self, SendBack, Stay},
 };
 use haul_web::Desktop;
@@ -164,12 +164,9 @@ impl Browser {
         let (id, url) = (id.to_string(), url.to_string());
         // One profile per site, kept: a check passed on one of its pages
         // (Cloudflare's clearance cookie) holds for the next.
-        let profile = engine
-            .data_dir()
-            .join("webview")
-            .join("chromium")
-            .join(hosts::site_of(&url));
-        let shot = profile.with_file_name(format!("{}-wants-person.png", hosts::site_of(&url)));
+        let site = hosts::site_of(&url);
+        let profile = paths::pass_profiles(engine.data_dir()).join(&site);
+        let shot = paths::wants_person_shot(engine.data_dir(), &site);
         std::thread::spawn(move || {
             // A page that lists links hands them over as they show; Haul
             // keeps those to hosts it knows, which ends the pass.
