@@ -21,47 +21,19 @@ use crate::{
     paths,
 };
 
-/// Every setting, for the settings view. Unlike the state stream this
-/// carries the account secrets, so it is only sent when asked for.
+/// Every setting, for the settings view, as the file names them. Unlike the
+/// state stream this carries the account secrets, so it is only sent when
+/// asked for.
 #[derive(Debug, Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct SettingsView {
+    #[serde(flatten)]
+    pub config: Config,
+    /// Where downloads go now.
     pub download_dir: String,
     /// Given on the command line, so it cannot change here.
     pub download_dir_fixed: bool,
-    pub max_total: usize,
-    pub rate_limit_mbps: f64,
-    pub max_active_gb: f64,
-    pub theme: Theme,
-    pub watch_clipboard: bool,
-    pub check_updates: bool,
-    pub recycle_on_remove: bool,
-    pub skip_add_dialog: bool,
-    pub verify_existing: bool,
-    pub auto_extract: bool,
-    pub delete_after_extract: bool,
-    pub archive_passwords: Vec<String>,
-    pub detailed_log: bool,
-    pub reconnect: bool,
-    pub reconnect_command: String,
-    pub nordvpn_servers: usize,
-    pub nordvpn_countries: Vec<String>,
-    pub resume_attempts: u32,
-    pub min_speed_kbps: u32,
-    pub min_speed_seconds: u64,
-    pub leave_slow_hosts: bool,
-    pub retry_failed_minutes: u64,
-    pub proxy: String,
-    pub proxies: Vec<String>,
-    pub proxy_with_direct: bool,
-    pub proxy_fresh_connections: bool,
-    pub use_proxy: bool,
-    pub proxies_on: bool,
-    pub nordvpn_on: bool,
-    pub user_agent: String,
     pub default_user_agent: &'static str,
-    /// Account keys by their name in the file; empty when unset.
-    pub accounts: BTreeMap<&'static str, String>,
     /// Keys an environment variable set, with its name; read-only here.
     pub from_env: BTreeMap<String, String>,
     pub config_file: Option<String>,
@@ -106,6 +78,60 @@ fn str_list(list: &[String]) -> toml_edit::Value {
     toml_edit::Value::Array(list.iter().map(String::as_str).collect())
 }
 
+/// A list sent as a list of texts or as text with one entry per line; empty
+/// entries go, and with `trim` the spaces around each.
+fn text_list(value: &Value, key: &str, trim: bool) -> Result<Vec<String>, String> {
+    let list: Vec<String> = match value.as_array() {
+        Some(items) => items
+            .iter()
+            .map(|v| v.as_str().map(str::to_string))
+            .collect::<Option<_>>()
+            .ok_or_else(|| format!("{key} is a list of texts"))?,
+        None => text(value, key)?.lines().map(str::to_string).collect(),
+    };
+    Ok(list
+        .into_iter()
+        .map(|p| {
+            if trim {
+                p.trim().to_string()
+            } else {
+                p.trim_end_matches('\r').to_string()
+            }
+        })
+        .filter(|p| !p.is_empty())
+        .collect())
+}
+
+/// The whole-number settings: name, least, most, and where it goes.
+type Number = (&'static str, u64, u64, fn(&mut Config, u64));
+
+const NUMBERS: &[Number] = &[
+    ("max_total", 1, 64, |c, n| c.max_total = n as usize),
+    ("resume_attempts", 0, 20, |c, n| {
+        c.resume_attempts = n as u32
+    }),
+    ("min_speed_kbps", 0, 1 << 20, |c, n| {
+        c.min_speed_kbps = n as u32
+    }),
+    ("min_speed_seconds", 1, 3600, |c, n| c.min_speed_seconds = n),
+    ("retry_failed_minutes", 0, 24 * 60, |c, n| {
+        c.retry_failed_minutes = n
+    }),
+];
+
+/// The settings that are a number 0 or more: name, what the message calls
+/// it, and where it goes.
+type Decimal = (&'static str, &'static str, fn(&mut Config, f64));
+
+const DECIMALS: &[Decimal] = &[
+    ("rate_limit_mbps", "the speed limit", |c, v| {
+        c.rate_limit_mbps = v
+    }),
+    ("max_active_gb", "the size limit", |c, v| {
+        c.max_active_gb = v
+    }),
+];
+
 type Flag = fn(&mut Config) -> &mut bool;
 
 /// The settings that are simply on or off, by their names in the file.
@@ -133,47 +159,14 @@ impl Engine {
     /// Every setting, for the settings view.
     pub fn settings(&self) -> SettingsView {
         let cfg = self.cfg();
-        let shown = |v: &Option<String>| v.clone().unwrap_or_default();
         SettingsView {
             download_dir: self.download_dir().display().to_string(),
             download_dir_fixed: self.0.download_dir_fixed,
-            max_total: cfg.max_total,
-            rate_limit_mbps: cfg.rate_limit_mbps,
-            max_active_gb: cfg.max_active_gb,
-            theme: cfg.theme,
-            watch_clipboard: cfg.watch_clipboard,
-            check_updates: cfg.check_updates,
-            recycle_on_remove: cfg.recycle_on_remove,
-            skip_add_dialog: cfg.skip_add_dialog,
-            verify_existing: cfg.verify_existing,
-            auto_extract: cfg.auto_extract,
-            delete_after_extract: cfg.delete_after_extract,
-            archive_passwords: cfg.archive_passwords.clone(),
-            detailed_log: cfg.detailed_log,
-            reconnect: cfg.reconnect,
-            reconnect_command: cfg.reconnect_command.clone().unwrap_or_default(),
-            nordvpn_servers: cfg.nordvpn_servers,
-            nordvpn_countries: cfg.nordvpn_countries.clone(),
-            resume_attempts: cfg.resume_attempts,
-            min_speed_kbps: cfg.min_speed_kbps,
-            min_speed_seconds: cfg.min_speed_seconds,
-            leave_slow_hosts: cfg.leave_slow_hosts,
-            retry_failed_minutes: cfg.retry_failed_minutes,
-            proxy: shown(&cfg.proxy),
-            proxies: cfg.proxies.clone(),
-            proxy_with_direct: cfg.proxy_with_direct,
-            proxy_fresh_connections: cfg.proxy_fresh_connections,
-            use_proxy: cfg.use_proxy,
-            proxies_on: cfg.proxies_on,
-            nordvpn_on: cfg.nordvpn_on,
-            user_agent: cfg.user_agent.clone(),
             default_user_agent: config::DEFAULT_USER_AGENT,
-            accounts: config::account_keys()
-                .map(|key| (key, cfg.account(key).unwrap_or_default().to_string()))
-                .collect(),
             from_env: cfg.from_env.clone(),
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
             error: self.config_error(),
+            config: (*cfg).clone(),
         }
     }
 
@@ -228,28 +221,22 @@ impl Engine {
                     "{key} is set by the {variable} environment variable"
                 ));
             }
+            if let Some((_, least, most, set)) = NUMBERS.iter().find(|n| n.0 == key) {
+                let n = number(value, key)?.clamp(*least, *most);
+                set(&mut cfg, n);
+                writes.push(top(key, Some((n as i64).into())));
+                continue;
+            }
+            if let Some((_, what, set)) = DECIMALS.iter().find(|d| d.0 == key) {
+                let v = value
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+                    .ok_or_else(|| format!("{what} must be a number, 0 or more"))?;
+                set(&mut cfg, v);
+                writes.push(top(key, Some(v.into())));
+                continue;
+            }
             match key.as_str() {
-                "max_total" => {
-                    let n = number(value, key)?.clamp(1, 64) as usize;
-                    cfg.max_total = n;
-                    writes.push(top(key, Some((n as i64).into())));
-                }
-                "rate_limit_mbps" => {
-                    let mbps = value
-                        .as_f64()
-                        .filter(|v| v.is_finite() && *v >= 0.0)
-                        .ok_or("the speed limit must be a number, 0 or more")?;
-                    cfg.rate_limit_mbps = mbps;
-                    writes.push(top(key, Some(mbps.into())));
-                }
-                "max_active_gb" => {
-                    let gb = value
-                        .as_f64()
-                        .filter(|v| v.is_finite() && *v >= 0.0)
-                        .ok_or("the size limit must be a number, 0 or more")?;
-                    cfg.max_active_gb = gb;
-                    writes.push(top(key, Some(gb.into())));
-                }
                 "theme" => {
                     let theme: Theme = serde_json::from_value(value.clone())
                         .map_err(|_| "theme is system, light or dark")?;
@@ -257,21 +244,8 @@ impl Engine {
                     writes.push(top(key, Some(theme.as_str().into())));
                 }
                 "archive_passwords" => {
-                    // A list, or text with one password per line. A password
-                    // keeps its spaces: only empty lines go.
-                    let list: Vec<String> = match value.as_array() {
-                        Some(items) => items
-                            .iter()
-                            .map(|v| v.as_str().map(str::to_string))
-                            .collect::<Option<_>>()
-                            .ok_or("archive passwords are text")?,
-                        None => text(value, key)?.lines().map(str::to_string).collect(),
-                    };
-                    let mut list: Vec<String> = list
-                        .into_iter()
-                        .map(|p| p.trim_end_matches('\r').to_string())
-                        .filter(|p| !p.is_empty())
-                        .collect();
+                    // A password keeps its spaces: only empty lines go.
+                    let mut list = text_list(value, key, false)?;
                     let mut seen = std::collections::HashSet::new();
                     list.retain(|p| seen.insert(p.clone()));
                     writes.push(top(key, Some(str_list(&list))));
@@ -286,13 +260,7 @@ impl Engine {
                     writes.push(top(key, Some((n as i64).into())));
                 }
                 "nordvpn_countries" => {
-                    let list: Vec<String> = value
-                        .as_array()
-                        .ok_or("nordvpn_countries is a list")?
-                        .iter()
-                        .map(|v| v.as_str().map(|s| s.trim().to_string()))
-                        .collect::<Option<_>>()
-                        .ok_or("countries are text")?;
+                    let list = text_list(value, key, true)?;
                     writes.push(top(key, Some(str_list(&list))));
                     cfg.nordvpn_countries = list;
                 }
@@ -300,26 +268,6 @@ impl Engine {
                     let (command, write) = optional_text(value, key)?;
                     writes.push(write);
                     cfg.reconnect_command = command;
-                }
-                "resume_attempts" => {
-                    let n = number(value, key)?.min(20) as u32;
-                    cfg.resume_attempts = n;
-                    writes.push(top(key, Some(i64::from(n).into())));
-                }
-                "min_speed_kbps" => {
-                    let n = number(value, key)?.min(1 << 20) as u32;
-                    cfg.min_speed_kbps = n;
-                    writes.push(top(key, Some(i64::from(n).into())));
-                }
-                "min_speed_seconds" => {
-                    let n = number(value, key)?.clamp(1, 3600);
-                    cfg.min_speed_seconds = n;
-                    writes.push(top(key, Some((n as i64).into())));
-                }
-                "retry_failed_minutes" => {
-                    let n = number(value, key)?.min(24 * 60);
-                    cfg.retry_failed_minutes = n;
-                    writes.push(top(key, Some((n as i64).into())));
                 }
                 "proxy" => {
                     let (proxy, write) = optional_text(value, key)?;
@@ -330,19 +278,7 @@ impl Engine {
                     cfg.proxy = proxy;
                 }
                 "proxies" => {
-                    // A list, or text with one proxy per line.
-                    let list: Vec<String> = match value.as_array() {
-                        Some(items) => items
-                            .iter()
-                            .map(|v| v.as_str().map(str::trim).map(str::to_string))
-                            .collect::<Option<_>>()
-                            .ok_or("proxies are text")?,
-                        None => text(value, key)?
-                            .lines()
-                            .map(|l| l.trim().to_string())
-                            .collect(),
-                    };
-                    let list: Vec<String> = list.into_iter().filter(|p| !p.is_empty()).collect();
+                    let list = text_list(value, key, true)?;
                     for proxy in &list {
                         check_proxy(proxy, &cfg.user_agent)?;
                     }

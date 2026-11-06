@@ -25,10 +25,14 @@ pub const DEFAULT_PREFERRED: [&str; 3] = ["pixeldrain.com", "vikingfile.com", "m
 /// User agent for every request a host does not get a browser's for.
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0";
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+/// Serialized for the settings view ([`crate::SettingsView`]), which says
+/// where downloads go itself.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ts_rs::TS)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Where finished files go.
+    #[serde(skip_serializing)]
+    #[ts(skip)]
     pub download_dir: Option<PathBuf>,
     /// Files downloaded at the same time.
     pub max_total: usize,

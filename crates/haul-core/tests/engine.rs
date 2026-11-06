@@ -4120,7 +4120,7 @@ async fn a_password_from_the_settings_opens_an_archive_on_its_own() {
     let list = json!({"archive_passwords": "wrong\nopen sesame\n\nwrong"});
     engine.update_settings(list.as_object().unwrap()).unwrap();
     assert_eq!(
-        engine.settings().archive_passwords,
+        engine.settings().config.archive_passwords,
         ["wrong", "open sesame"]
     );
     engine.add_text(

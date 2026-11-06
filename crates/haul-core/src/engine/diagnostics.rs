@@ -77,11 +77,12 @@ impl Engine {
             .map_or(0, |d| d.as_secs());
         let snapshot = self.snapshot();
         let mut settings = serde_json::to_value(self.settings()).unwrap_or(Value::Null);
-        if let Some(accounts) = settings.get_mut("accounts").and_then(Value::as_object_mut) {
-            for value in accounts.values_mut() {
-                *value = json!(value.as_str().is_some_and(|v| !v.is_empty()));
-            }
-        }
+        // Every account key, saying only whether it is set.
+        let cfg = self.cfg();
+        settings["accounts"] = crate::config::account_keys()
+            .map(|key| (key.to_string(), json!(cfg.account(key).is_some())))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
         if let Some(passwords) = settings.get_mut("archive_passwords") {
             *passwords = json!(passwords.as_array().map_or(0, Vec::len));
         }
@@ -93,7 +94,6 @@ impl Engine {
                 *proxy = json!(without_credentials(proxy.as_str().unwrap_or_default()));
             }
         }
-        let cfg = self.cfg();
         let queue: Vec<Value> = self.lock().items.values().map(item_report).collect();
         json!({
             "haul": env!("CARGO_PKG_VERSION"),
