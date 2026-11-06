@@ -347,30 +347,30 @@ fn visit(user_agent: &str, tz: &str, page: &str) -> String {
 const NOT_FOUND: &str =
     "answered Not Found: the container was deleted, or the site is refusing this browser for now";
 
-/// An answer that is not the page to read: a rate limit to wait out, a
-/// container that is gone, or a refusal a person may get past.
-fn refusal(r: &reqwest::Response, what: &str) -> Option<ResolveError> {
+/// `r` when it is the page to read; else what it is instead: a rate limit to
+/// wait out, a container that is gone, or a refusal a person may get past.
+async fn refusal(r: reqwest::Response, what: &str) -> Result<reqwest::Response, ResolveError> {
     // Cloudflare's check in front of the page (with a 403, or a 503): a
     // browser passes it, which the desktop app does out of sight.
     if super::generic::challenged(r.headers()) {
-        return Some(super::generic::guarded(r.url().as_str()));
+        let url = r.url().to_string();
+        return Err(super::generic::guarded_by(&url, r).await);
     }
-    if let Err(wait) = rate_limited(r) {
-        return Some(wait);
-    }
+    rate_limited(&r)?;
     let status = r.status().as_u16();
     // Past the clearance it may send a client it refuses to its 404 page.
     if matches!(status, 404 | 410) || r.url().path().eq_ignore_ascii_case("/404.html") {
-        return Some(ResolveError::Failed(NOT_FOUND.into()));
+        return Err(ResolveError::Failed(NOT_FOUND.into()));
     }
     if status >= 500 {
-        return Some(ResolveError::Failed(format!("HTTP {status}")));
+        return Err(ResolveError::Failed(format!("HTTP {status}")));
     }
-    (status >= 400).then(|| {
-        ResolveError::person(format!(
+    if status >= 400 {
+        return Err(ResolveError::person(format!(
             "filecrypt.cc answered {what} with HTTP {status}; open the page"
-        ))
-    })
+        )));
+    }
+    Ok(r)
 }
 
 /// The `.dlc` id a solved page's button holds.
@@ -507,9 +507,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     let page = format!("{base}/Container/{id}.html");
     let _one_at_a_time = SOLVING.lock().await;
     let r = cx.http.client.get(&page).send().await?;
-    if let Some(e) = refusal(&r, "its page") {
-        return Err(e);
-    }
+    let r = refusal(r, "its page").await?;
     let html = r.text().await?;
     // A session that passed this container's gate before is shown its links.
     if shows_links(&html) {
@@ -587,9 +585,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         ])
         .send()
         .await?;
-    if let Some(e) = refusal(&r, "for its challenge") {
-        return Err(e);
-    }
+    let r = refusal(r, "for its challenge").await?;
     let answer: serde_json::Value = match r.json().await {
         Ok(answer) => answer,
         Err(e) if e.is_decode() => serde_json::Value::Null,
@@ -649,9 +645,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         ])
         .send()
         .await?;
-    if let Some(e) = refusal(&r, "its form") {
-        return Err(e);
-    }
+    let r = refusal(r, "its form").await?;
     let html = r.text().await?;
     if shows_links(&html) {
         return solved(cx, &html).await;

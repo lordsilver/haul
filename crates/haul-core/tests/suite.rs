@@ -150,6 +150,14 @@ fn cases() -> Vec<Case> {
             file: None,
             says: Some("shows Cloudflare Turnstile"),
         },
+        Case {
+            site: "any site: behind Cloudflare's check",
+            link: |t| format!("{}/cf/managed", t.ip),
+            reach: Direct,
+            expect: NeedsYou,
+            file: None,
+            says: Some("(Cloudflare's, managed)"),
+        },
         // Hosts with code of their own.
         Case {
             site: "pixeldrain.com",

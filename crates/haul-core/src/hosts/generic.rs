@@ -28,21 +28,30 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         .header(ACCEPT_ENCODING, "identity")
         .send()
         .await;
-    let r = match head {
-        Ok(r) if !matches!(r.status().as_u16(), 405 | 501) => r,
-        _ => {
-            cx.http
-                .client
-                .get(url)
-                .header(RANGE, "bytes=0-0")
-                .header(ACCEPT_ENCODING, "identity")
-                .send()
-                .await?
-        }
+    let get = || {
+        cx.http
+            .client
+            .get(url)
+            .header(RANGE, "bytes=0-0")
+            .header(ACCEPT_ENCODING, "identity")
+            .send()
+    };
+    let (r, headed) = match head {
+        Ok(r) if !matches!(r.status().as_u16(), 405 | 501) => (r, true),
+        _ => (get().await?, false),
     };
     let status = r.status().as_u16();
     if challenged(r.headers()) {
-        return Err(guarded(url));
+        // A check answers HEAD with no page, which names its kind.
+        let r = match headed {
+            true => get()
+                .await
+                .ok()
+                .filter(|g| challenged(g.headers()))
+                .unwrap_or(r),
+            false => r,
+        };
+        return Err(guarded_by(url, r).await);
     }
     rate_limited(&r)?;
     if status < 400 && !content_type(r.headers()).contains("text/html") {
@@ -120,12 +129,32 @@ pub(super) fn challenged(headers: &reqwest::header::HeaderMap) -> bool {
 }
 
 /// What a page behind a browser check needs: a browser, which the desktop
-/// app opens out of sight.
-pub(super) fn guarded(url: &str) -> ResolveError {
+/// app opens out of sight. The check's own page `r` says what kind of check
+/// it is ([`challenge_kind`]), which the row names.
+pub(super) async fn guarded_by(url: &str, mut r: reqwest::Response) -> ResolveError {
+    let page = read(&mut r, PEEK).await;
+    let kind = challenge_kind(&String::from_utf8_lossy(&page))
+        .map(|k| format!(", {k}"))
+        .unwrap_or_default();
     ResolveError::NeedsUser(
         Need::Check,
-        format!("{} is behind a browser check (Cloudflare's)", host_of(url)),
+        format!(
+            "{} is behind a browser check (Cloudflare's{kind})",
+            host_of(url)
+        ),
     )
+}
+
+static CHALLENGE_KIND: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"cType:\s*'([A-Za-z][\w-]*)'").unwrap());
+
+/// The kind of check Cloudflare's check page says it is (its `cType`), in
+/// words: "managed", "non interactive" (a wait page), "interactive" (a box
+/// to tick), or another it names, such as filecrypt.cc's "precursor
+/// interstitial" (2026-11-07).
+fn challenge_kind(page: &str) -> Option<String> {
+    let kind = &CHALLENGE_KIND.captures(page)?[1];
+    Some(kind.replace(['_', '-'], " "))
 }
 
 /// What a page needs when it answers with a gate Haul has no code for, past
@@ -293,7 +322,7 @@ pub(super) async fn page(
     let mut r = cx.http.client.get(url).send().await?;
     let status = r.status().as_u16();
     if challenged(r.headers()) {
-        return Err(guarded(url));
+        return Err(guarded_by(url, r).await);
     }
     rate_limited(&r)?;
     if status >= 400 {
@@ -731,6 +760,31 @@ mod password_tests {
         ];
         for (page, want) in cases {
             assert_eq!(password_in(page).as_deref(), want, "{page}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod challenge_tests {
+    use super::challenge_kind;
+
+    #[test]
+    fn a_check_page_names_its_kind() {
+        let cases = [
+            (
+                "window._cf_chl_opt = {cvId: '3', cType: 'managed', cRay: 'abc123'};",
+                Some("managed"),
+            ),
+            ("cType: 'non-interactive',", Some("non interactive")),
+            ("cType:'interactive'", Some("interactive")),
+            (
+                "cType: 'precursor_interstitial',",
+                Some("precursor interstitial"),
+            ),
+            ("<title>Just a moment...</title>", None),
+        ];
+        for (page, want) in cases {
+            assert_eq!(challenge_kind(page).as_deref(), want, "{page}");
         }
     }
 }

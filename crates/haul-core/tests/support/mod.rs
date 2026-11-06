@@ -466,6 +466,18 @@ pub(super) async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/cf/{kind}",
+            // A page behind Cloudflare's check, whose own page names the kind
+            // of check it is.
+            get(|UrlPath(kind): UrlPath<String>| async move {
+                (
+                    StatusCode::FORBIDDEN,
+                    [(header::CONTENT_TYPE, "text/html; charset=UTF-8".to_string()), (header::HeaderName::from_static("cf-mitigated"), "challenge".to_string())],
+                    format!("<html><head><title>Just a moment...</title></head><body><script>window._cf_chl_opt = {{cType: '{kind}'}};</script></body></html>"),
+                )
+            }),
+        )
+        .route(
             "/busy/{name}",
             // Sends at most two files at once and refuses more, saying why.
             get(|State(s): State<Server>, method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {

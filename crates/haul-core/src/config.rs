@@ -33,8 +33,8 @@ pub const DEFAULT_PREFERRED: [&str; 4] =
 pub const DEFAULT_DISABLED: [&str; 2] = ["ddownload.com", "rapidgator.net"];
 
 /// User agent for every request a host does not get a browser's for. Hosts
-/// answered it as they did a current Edge's (2026-11-06): Cloudflare's check
-/// turned both away alike, and every other host gave both the same page.
+/// answered it as they did a current Edge's (2026-11-06), and Cloudflare's
+/// check tells a browser by its TLS handshake, not by its name (2026-11-07).
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0";
 
 /// Serialized for the settings view ([`crate::SettingsView`]), which says
