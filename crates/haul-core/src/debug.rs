@@ -1,15 +1,19 @@
 //! Debug mode: everything Haul does, as it happens, for an agent (or a
 //! person) diagnosing or testing it, rather than a log read afterwards.
 //!
-//! Off unless asked for (`HAUL_DEBUG=1`, or the server's `--debug`). On, a
-//! bus carries one JSON object per signal, each with `t` (ISO 8601, UTC)
-//! and `kind`:
+//! Off unless asked for: the Live connection switch in Settings
+//! (`live_debug`), `HAUL_DEBUG=1`, or the server's `--debug`, and it can be
+//! switched on and off while Haul runs. On, a bus carries one JSON object
+//! per signal, each with `t` (ISO 8601, UTC) and `kind`:
 //!
 //! - `log`: every event the app logs, at every level, with its fields;
 //! - `status`: a download or wrapper changing status (`from`, `to`, its
 //!   `error`);
 //! - and whatever else the app emits with [`emit`] (the desktop app's page
 //!   passes, the notifications it shows).
+//!
+//! Every signal but `log` goes to `haul.log` too, debug mode or not, so a
+//! report holds the same story (target `haul_core::signal`).
 //!
 //! The web server streams the bus and answers questions about Haul's
 //! insides (`/api/debug/…`), to a client on this machine that sends the
@@ -18,8 +22,11 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    path::Path,
-    sync::{Mutex, OnceLock},
+    path::{Path, PathBuf},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use serde_json::{Map, Value, json};
@@ -27,6 +34,9 @@ use tokio::sync::broadcast;
 
 use crate::Engine;
 pub use crate::logging::now;
+
+/// The target the log writes signals under.
+pub const SIGNAL_TARGET: &str = "haul_core::signal";
 
 /// Signals kept for a slow reader before it misses some (it is told).
 const BACKLOG: usize = 8192;
@@ -36,8 +46,13 @@ const RECENT: usize = 2000;
 pub struct Bus {
     tx: broadcast::Sender<Value>,
     recent: Mutex<VecDeque<Value>>,
-    /// What a debug client sends in `X-Haul-Debug`.
-    pub token: String,
+    on: AtomicBool,
+    /// Asked for by the environment or the command line: on for the whole
+    /// run, whatever the settings say.
+    forced: AtomicBool,
+    /// What a debug client sends in `X-Haul-Debug`, while on.
+    token: Mutex<String>,
+    data_dir: PathBuf,
 }
 
 static BUS: OnceLock<Bus> = OnceLock::new();
@@ -48,34 +63,56 @@ pub fn asked() -> bool {
     std::env::var_os("HAUL_DEBUG").is_some_and(|v| !v.is_empty() && v != "0")
 }
 
-/// Turns debug mode on: the bus, and a fresh token in `debug-token` in
-/// `data_dir`. Once per process; later calls change nothing.
-pub fn enable(data_dir: &Path) -> &'static Bus {
+/// Sets the bus up, off, for `data_dir`. Once per process; later calls
+/// change nothing.
+pub fn init(data_dir: &Path) -> &'static Bus {
     BUS.get_or_init(|| {
-        let token = uuid::Uuid::new_v4().simple().to_string();
-        let _ = std::fs::create_dir_all(data_dir);
-        let _ = std::fs::write(token_path(data_dir), &token);
         let (tx, _) = broadcast::channel(BACKLOG);
+        // A token left by a run that ended without taking it away.
+        let _ = std::fs::remove_file(token_path(data_dir));
         Bus {
             tx,
             recent: Mutex::new(VecDeque::with_capacity(RECENT)),
-            token,
+            on: AtomicBool::new(false),
+            forced: AtomicBool::new(false),
+            token: Mutex::new(String::new()),
+            data_dir: data_dir.to_path_buf(),
         }
     })
 }
 
+/// Turns debug mode on for the whole run, whatever the settings say: the
+/// bus, and a fresh token in `debug-token` in `data_dir`.
+pub fn enable(data_dir: &Path) -> &'static Bus {
+    let bus = init(data_dir);
+    bus.forced.store(true, Ordering::Relaxed);
+    bus.set_on(true);
+    bus
+}
+
+/// Puts debug mode on or off, as the Live connection setting says, unless
+/// it was asked for at the start. On writes a fresh token; off takes it
+/// away, and what was kept with it.
+pub fn set_live(on: bool) {
+    if let Some(bus) = BUS.get()
+        && !bus.forced.load(Ordering::Relaxed)
+    {
+        bus.set_on(on);
+    }
+}
+
 /// The file the token is written to.
-pub fn token_path(data_dir: &Path) -> std::path::PathBuf {
+pub fn token_path(data_dir: &Path) -> PathBuf {
     data_dir.join("debug-token")
 }
 
 /// The bus, while debug mode is on.
 pub fn bus() -> Option<&'static Bus> {
-    BUS.get()
+    BUS.get().filter(|b| b.on.load(Ordering::Relaxed))
 }
 
 pub fn enabled() -> bool {
-    BUS.get().is_some()
+    bus().is_some()
 }
 
 impl Bus {
@@ -92,19 +129,62 @@ impl Bus {
             .cloned()
             .collect()
     }
+
+    /// Whether `sent` is the token.
+    pub fn accepts(&self, sent: Option<&str>) -> bool {
+        let token = self.token.lock().unwrap_or_else(|e| e.into_inner());
+        !token.is_empty() && sent == Some(token.as_str())
+    }
+
+    fn set_on(&self, on: bool) {
+        let mut token = self.token.lock().unwrap_or_else(|e| e.into_inner());
+        if on == self.on.load(Ordering::Relaxed) {
+            return;
+        }
+        let path = token_path(&self.data_dir);
+        if on {
+            *token = uuid::Uuid::new_v4().simple().to_string();
+            let _ = std::fs::create_dir_all(&self.data_dir);
+            let _ = std::fs::write(&path, token.as_str());
+        } else {
+            token.clear();
+            let _ = std::fs::remove_file(&path);
+            self.recent
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+        }
+        self.on.store(on, Ordering::Relaxed);
+        drop(token);
+        tracing::info!(on, "live connection {}", if on { "on" } else { "off" });
+    }
 }
 
 /// Sends a signal of `kind` with `fields` (an object) on the bus, when
-/// debug mode is on.
+/// debug mode is on. Every kind but `log` goes to the log too, whatever the
+/// mode: a pass's every page message at the debug level, the rest at info.
 pub fn emit(kind: &str, fields: Value) {
-    let Some(bus) = BUS.get() else { return };
+    let signal = signal_of(kind, fields);
+    if kind != "log" {
+        log_signal(kind, &signal);
+    }
+    send(signal);
+}
+
+/// Signal `kind` with `fields`, stamped now.
+fn signal_of(kind: &str, fields: Value) -> Value {
     let mut signal = Map::new();
     signal.insert("t".into(), json!(now()));
     signal.insert("kind".into(), json!(kind));
     if let Value::Object(fields) = fields {
         signal.extend(fields);
     }
-    let signal = Value::Object(signal);
+    Value::Object(signal)
+}
+
+/// Puts `signal` on the bus, when debug mode is on.
+fn send(signal: Value) {
+    let Some(bus) = bus() else { return };
     {
         let mut recent = bus.recent.lock().unwrap_or_else(|e| e.into_inner());
         if recent.len() == RECENT {
@@ -115,36 +195,76 @@ pub fn emit(kind: &str, fields: Value) {
     let _ = bus.tx.send(signal);
 }
 
-/// Emits a `status` signal whenever a download or wrapper changes status,
-/// by comparing each state the engine publishes with the one before.
-pub fn watch_statuses(engine: Engine) {
-    if !enabled() {
-        return;
+/// Writes signal `s` of `kind` to the log, in a line of its own words and
+/// whole as `signal`.
+fn log_signal(kind: &str, s: &Value) {
+    let text = |k: &str| s.get(k).and_then(Value::as_str).unwrap_or_default();
+    let mut whole = s.clone();
+    if let Some(o) = whole.as_object_mut() {
+        o.remove("t");
     }
+    let whole = whole.to_string();
+    let item = text("id");
+    match (kind, text("event")) {
+        ("status", _) => {
+            let from = s.get("from").and_then(Value::as_str).unwrap_or("new");
+            tracing::info!(target: SIGNAL_TARGET, item, signal = %whole, "{}: {from} -> {}", text("name"), text("to"));
+        }
+        ("pass", "page") => {
+            tracing::debug!(target: SIGNAL_TARGET, signal = %whole, "pass: the page says {}", s["said"]);
+        }
+        ("pass", event) => {
+            tracing::info!(target: SIGNAL_TARGET, item, signal = %whole, "pass {event}: {}", text("url"));
+        }
+        ("notification", _) => {
+            tracing::info!(target: SIGNAL_TARGET, signal = %whole, "notification: {}: {}", text("title"), text("body"));
+        }
+        (kind, _) => {
+            tracing::info!(target: SIGNAL_TARGET, signal = %whole, "{kind}");
+        }
+    }
+}
+
+/// Emits a `status` signal whenever a download or wrapper changes status,
+/// by comparing each state the engine publishes with the one before: rows
+/// added (`from` null) and taken off the list (`to: "removed"`) too. The
+/// rows already there as it starts are one line in the log, how many in
+/// each state, rather than a line each; the bus gets each of them.
+pub fn watch_statuses(engine: Engine) {
     let mut changes = engine.watch();
     tokio::spawn(async move {
-        let mut before: HashMap<String, &'static str> = HashMap::new();
+        let mut before: HashMap<String, (&'static str, String)> = HashMap::new();
+        let mut first = true;
         loop {
             let mut now = HashMap::new();
+            let mut tally: std::collections::BTreeMap<&str, usize> = Default::default();
             for row in engine.row_states() {
-                let was = before.get(&row.id).copied();
+                let was = before.get(&row.id).map(|(s, _)| *s);
                 if was != Some(row.state) {
-                    emit(
-                        "status",
-                        json!({ "row": row.row, "id": row.id, "name": row.name, "from": was, "to": row.state, "error": row.error }),
-                    );
+                    let signal = json!({ "row": row.row, "id": row.id, "name": row.name, "from": was, "to": row.state, "error": row.error });
+                    if first {
+                        *tally.entry(row.state).or_default() += 1;
+                        send(signal_of("status", signal));
+                    } else {
+                        emit("status", signal);
+                    }
                 }
-                now.insert(row.id, row.state);
+                now.insert(row.id, (row.state, row.name));
             }
-            for (id, status) in &before {
+            if first {
+                let rows: usize = tally.values().sum();
+                tracing::info!(target: SIGNAL_TARGET, rows, by_state = %json!(tally), "{rows} rows at start");
+            }
+            for (id, (status, name)) in &before {
                 if !now.contains_key(id) {
                     emit(
                         "status",
-                        json!({ "id": id, "from": status, "to": "removed" }),
+                        json!({ "id": id, "name": name, "from": status, "to": "removed" }),
                     );
                 }
             }
             before = now;
+            first = false;
             if changes.changed().await.is_err() {
                 return;
             }

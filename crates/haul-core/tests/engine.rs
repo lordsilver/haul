@@ -1583,6 +1583,28 @@ async fn a_wrappers_unnamed_file_is_looked_up_through_its_page() {
         .collect();
     assert_eq!(gofile.len(), 3);
     assert!(s.items.iter().all(|i| i.status.as_str() == "paused"));
+    // Until they are looked up, they are in no list, and the card counts
+    // them as links being checked rather than as its files.
+    let looking: Vec<&str> = s
+        .items
+        .iter()
+        .filter(|i| i.looking_up)
+        .map(|i| i.id.as_str())
+        .collect();
+    assert_eq!(looking.len(), 3, "{looking:?}");
+    assert!(
+        s.items
+            .iter()
+            .filter(|i| i.looking_up)
+            .all(|i| i.tentative && i.list.is_none())
+    );
+    assert_eq!((s.counts.all, s.counts.ready), (2, 2));
+    assert_eq!(s.counts.unwrapping, 3);
+    assert_eq!(
+        (s.wrapper_cards[0].files, s.wrapper_cards[0].checking),
+        (2, 3)
+    );
+    assert!(!s.wrapper_cards[0].clearable);
     let idle = Browsing {
         out_of_sight: &[],
         with_person: &|_| false,
@@ -1627,6 +1649,9 @@ async fn a_wrappers_unnamed_file_is_looked_up_through_its_page() {
     );
     let shy = s.items.iter().find(|i| i.id == row("shy")).unwrap();
     assert_eq!(shy.status.as_str(), "paused");
+    // Its page told nothing: it shows as the link it is, to start or remove.
+    assert!(!shy.looking_up && !shy.tentative, "{shy:?}");
+    assert_eq!(s.wrapper_cards[0].checking, 0);
     assert!(shy.error.is_empty(), "{}", shy.error);
     assert!(s.items.iter().all(|i| i.status.as_str() == "paused"));
     assert_eq!(engine.waiting_for_person(), (vec![], vec![]));
@@ -3164,10 +3189,11 @@ async fn clearing_the_default_preference_sticks() {
         [
             ("pixeldrain.com", Some(0), 0),
             ("vikingfile.com", Some(1), 0),
-            ("mega.nz", Some(2), 0)
+            ("mega.nz", Some(2), 0),
+            ("megaup.net", Some(3), 0)
         ]
     );
-    for host in ["pixeldrain.com", "vikingfile.com", "mega.nz"] {
+    for host in ["pixeldrain.com", "vikingfile.com", "mega.nz", "megaup.net"] {
         engine.set_preferred(host, false).unwrap();
     }
     let text = std::fs::read_to_string(&path).unwrap();
@@ -4254,7 +4280,7 @@ async fn a_password_from_the_settings_opens_an_archive_on_its_own() {
         s.items.len() == 2 && s.items.iter().all(|i| i.extract == Extract::Done)
     })
     .await;
-    let report = engine.diagnostics().to_string();
+    let report = engine.diagnostics(serde_json::Value::Null).to_string();
     assert!(!report.contains("open sesame"), "{report}");
 }
 
@@ -4468,6 +4494,32 @@ async fn a_row_does_not_bounce_between_slow_mirrors() {
     assert_eq!(t.server.requests("/paced/40/x.bin").len(), 1);
     assert_eq!(t.server.requests("/paced/41/x.bin").len(), 1);
     assert!(row(&s, "x.bin").slowed.is_some(), "it stays, and says so");
+}
+
+/// A host tried for the first time can be far slower than the one the row
+/// left for slowness: the row goes back to the faster one, its cooldown or
+/// not, rather than crawling on.
+#[tokio::test]
+async fn a_row_goes_back_from_a_host_far_slower_than_the_one_it_left() {
+    let t = Setup::new().await;
+    let engine = t.engine_with(quick_to_judge(&t)).await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/60/x.bin {}/paced/10/x.bin", t.ip, t.name),
+        "",
+    );
+    engine.add_text(&format!("{}/paced/200/h.bin", t.name), "");
+    wait_for(&engine, "the move to the unmeasured host", |s| {
+        row(s, "x.bin").shown_host == "localhost"
+    })
+    .await;
+    wait_for(&engine, "the way back", |s| {
+        row(s, "x.bin").shown_host == "127.0.0.1"
+    })
+    .await;
+    wait_for(&engine, "done", |s| row(s, "x.bin").status == "done").await;
+    assert_eq!(t.downloaded("x.bin"), content("x.bin", SIZE));
+    assert_eq!(t.server.requests("/paced/10/x.bin").len(), 1, "not again");
 }
 
 /// With no mirror a throttled download keeps going, saying why, and a new row
@@ -4989,6 +5041,31 @@ async fn another_hosts_copy_resumes_when_its_bytes_agree() {
     assert_eq!(t.downloaded("x.bin"), content("x.bin", SIZE));
     let want = format!("/files/x.bin bytes={}-", kept - 64 * 1024);
     assert_eq!(asked_for_bytes(&t, "/files/x.bin"), [want]);
+}
+
+/// Picking another host for a download that is running moves it there at
+/// once, keeping what it has, rather than when it next starts.
+#[tokio::test]
+async fn picking_a_host_moves_a_running_download_there() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_preferred("127.0.0.1", true).unwrap();
+    engine.add_text(
+        &format!("{}/paced/400/x.bin {}/files/x.bin", t.ip, t.name),
+        "",
+    );
+    let s = wait_for(&engine, "enough of it", |s| {
+        row(s, "x.bin").done > 100 * 1024
+    })
+    .await;
+    let id = row(&s, "x.bin").id.clone();
+    assert_eq!(row(&s, "x.bin").host, "127.0.0.1");
+    engine.download_from(std::slice::from_ref(&id), Some("localhost"));
+    wait_for(&engine, "done", all_done).await;
+    assert_eq!(t.downloaded("x.bin"), content("x.bin", SIZE));
+    let asked = asked_for_bytes(&t, "/files/x.bin");
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(asked[0].contains("bytes="), "resumed: {asked:?}");
 }
 
 /// A copy by the same name and size that holds other bytes doesn't mix with

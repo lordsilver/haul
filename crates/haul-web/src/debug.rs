@@ -1,7 +1,8 @@
 //! Debug mode's API ([`haul_core::debug`]): the live signal stream, the
 //! engine's and the desktop app's insides, waiting for a signal, and a look
-//! into (or a script run in) a page being passed. Routed only in debug
-//! mode, and answered only with the token in `X-Haul-Debug`.
+//! into (or a script run in) a page being passed. Answered only in debug
+//! mode (404 otherwise, as it can be switched on and off while Haul runs),
+//! and only with the token in `X-Haul-Debug`.
 
 use std::{convert::Infallible, time::Duration};
 
@@ -37,13 +38,16 @@ pub(crate) fn routes(app: &App) -> Router<App> {
 
 async fn token(req: Request, next: Next) -> Response {
     let Some(bus) = debug::bus() else {
-        return error(StatusCode::NOT_FOUND, "debug mode is off");
+        return error(
+            StatusCode::NOT_FOUND,
+            "debug mode is off: switch on Live connection in Settings, About",
+        );
     };
     let sent = req
         .headers()
         .get("x-haul-debug")
         .and_then(|v| v.to_str().ok());
-    if sent != Some(bus.token.as_str()) {
+    if !bus.accepts(sent) {
         return error(
             StatusCode::FORBIDDEN,
             "send the token in debug-token (in the data folder) as X-Haul-Debug",
@@ -116,14 +120,10 @@ async fn recent() -> Response {
 
 /// The state the UI shows, the engine's insides, and the desktop app's.
 async fn inspect(State(app): State<App>) -> Json<Value> {
-    let desktop = app
-        .desktop
-        .as_ref()
-        .map_or(Value::Null, |d| d.debug_inspect());
     Json(json!({
         "state": app.view(),
         "engine": app.engine.debug_inspect(),
-        "desktop": desktop,
+        "desktop": app.desktop_inspect(),
     }))
 }
 

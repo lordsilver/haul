@@ -82,6 +82,12 @@ archive_passwords: Array<string>,
  */
 detailed_log: boolean, 
 /**
+ * Debug mode's live connection ([`crate::debug`]): a client on this
+ * machine with the token Haul writes to `debug-token` follows
+ * everything Haul does as it happens.
+ */
+live_debug: boolean, 
+/**
  * Automatic retries of a mirror after a dropped connection or a
  * network error, before it counts as failed.
  */
@@ -152,7 +158,8 @@ folders: { [key in string]: string },
  */
 preferred_hosts: Array<string>, 
 /**
- * Hosts never downloaded from: their links are left alone.
+ * Hosts never downloaded from: their links are left alone
+ * ([`DEFAULT_DISABLED`] until the list is changed).
  */
 disabled_hosts: Array<string>, 
 /**

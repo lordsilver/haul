@@ -20,6 +20,13 @@ download_from: string | null,
  */
 tentative: boolean, 
 /**
+ * A wrapper's file nothing named yet, whose page the desktop app opens
+ * out of sight to learn what it is ([`Engine::looks_up`]): in no list,
+ * as a page on trial, until it is named (and joins the same file on
+ * other hosts), found gone (and leaves), or its page told nothing.
+ */
+looking_up: boolean, 
+/**
  * Seconds until a waiting item may try again.
  */
 wait: number, 

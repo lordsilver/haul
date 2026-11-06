@@ -6,10 +6,10 @@ It is off unless asked for, because it shows page contents and links and can run
 
 ## Turning it on
 
-- Desktop app: start it with `HAUL_DEBUG=1` in its environment.
-- Server: `haul --debug`, or `HAUL_DEBUG=1`.
+- In the app: **Settings**, **About**, **Live connection** (`live_debug = true` in `config.toml`). It goes on and off at once, no restart needed, so a diagnosing agent can follow the user's own Haul while they use it.
+- For one run: `HAUL_DEBUG=1` in the environment (desktop app or server), or `haul --debug`. This holds whatever the setting says.
 
-Haul then writes a fresh token to `debug-token` in its data folder. Every `/api/debug/…` request must come from this machine (as every API request does) and send that token as `X-Haul-Debug`. Without debug mode, these routes do not exist.
+Haul then writes a fresh token to `debug-token` in its data folder, and takes it away when the connection goes off. Every `/api/debug/…` request must come from this machine (as every API request does) and send that token as `X-Haul-Debug`. While it is off, these routes answer 404.
 
 ```sh
 TOKEN=$(cat "$DATA/debug-token")
@@ -24,12 +24,24 @@ curl -N -H "X-Haul-Debug: $TOKEN" "http://127.0.0.1:$PORT/api/debug/stream?repla
 | -------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `log`          | `level`, `target`, `message`, `fields`                           | Every event Haul logs, at every level (trace and debug included, whatever the detailed log is set to), with its fields (`item`, `url`, `host`…).                                                                                                                                                                                                                                                 |
 | `status`       | `row` (`item` or `wrapper`), `id`, `name`, `from`, `to`, `error` | A download or wrapper changes status; `to: "removed"` when it leaves the list. `from` is `null` for a new row.                                                                                                                                                                                                                                                                                   |
-| `pass`         | `event` (`start`, `page`, `end`), `url`, …                       | The desktop app passing a page out of sight: `start` with the browser's `profile` and `pid`; `page` with what the page's script `said` to Haul (links shown, a file handed over, settled…); `end` with the `outcome` (`listed`, `settled`, `files`, `gone`, `later`, `cleared` with the names of the cookies handed to Haul, `wants_person` with what the page showed, `closed`, or an `error`). |
+| `pass`         | `event` (`start`, `page`, `press`, `end`), `id`, `url`, …        | The desktop app passing row `id`'s page out of sight: `start` with the browser's `profile` and `pid`; `page` with what the page's script `said` to Haul (links shown, a file handed over, settled…); `press` with the words of the download `button` it pressed on a file's page; `end` with the `outcome` (`listed`, `settled`, `files`, `gone`, `later`, `cleared` with the names of the cookies handed to Haul, `wants_person` with what the page showed, `closed`, or an `error`). |
 | `notification` | `title`, `body`, `waiting`                                       | The desktop app shows a system notification.                                                                                                                                                                                                                                                                                                                                                     |
 | `lagged`       | `missed`                                                         | The reader was too slow and missed that many signals.                                                                                                                                                                                                                                                                                                                                            |
 | anything else  | the client's own                                                 | `POST /api/debug/emit` with `{"kind": "note", …}`: a marker for a test's steps.                                                                                                                                                                                                                                                                                                                  |
 
 `GET /api/debug/recent` answers the kept signals as one JSON array.
+
+Every signal but `log` goes to `haul.log` too, debug mode or not (target `haul_core::signal`, the whole signal in its `signal` field): each row's status changes, `looking_up` for a file whose page is opened only to learn what it is, `removed` when it leaves the list, a run's rows at its start counted in one line, each pass's start, presses and end (its page messages only with the detailed log), and each notification. Each run's first line is `Haul <version> starts`.
+
+## The report
+
+**Settings**, **About**, **Save report…** (or `GET /api/diagnostics`) writes one zip, laid out for whoever diagnoses it:
+
+- `timeline.txt`: the last 4 MB of `haul.log` and of the log before it, oldest first, a line per event: `MM-DD HH:MM:SS.mmm L target [row name] message key=value…`, each run headed by `==== … Haul <version> starts (os, pid) ====`. Read it first.
+- `report.json`: `about` (version, system, folders, whether the detailed log and the live connection are on), `settings` (no secrets: keys say only whether they are set), `view` (what `/api/state` answers: every row as the UI shows it, the wrapper cards, the counts), `engine` (what `/api/debug/inspect` answers under `engine`, with each row's last events as `history`) and `desktop` (its passes out of sight and windows).
+- `haul.log` and `haul.1.log`, whole; `pages/<site>-wants-person.png`, the last page of each site that wanted a person.
+
+Links lose their `#…` part (mega.nz keys); a link a page handed back loses its query (tokens).
 
 ## Inside
 

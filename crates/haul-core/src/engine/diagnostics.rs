@@ -1,7 +1,19 @@
-//! A report of what Haul is doing, for the user to save and send along with
-//! a problem, so what happened can be read rather than guessed.
+//! A report of what Haul is doing and did, for the user to save and send
+//! along with a problem, so what happened can be read rather than guessed.
+//! Laid out for whoever diagnoses it (an agent, mostly):
+//!
+//! - `timeline.txt`: every event of the logs, oldest first, one line each,
+//!   its row named, each run of Haul under a line saying its version;
+//! - `report.json`: Haul and its system, the settings without secrets, what
+//!   the UI shows (`view`), what the engine holds beyond that (`engine`: each
+//!   row's links and what became of each, its timers, the hosts and their
+//!   lanes) and the desktop app's (`desktop`: its passes out of sight);
+//! - the logs themselves, and the last picture of each site's page that
+//!   wanted a person (under `pages/`).
 
 use std::{
+    collections::HashMap,
+    fmt::Write as _,
     io::{Read, Seek, SeekFrom},
     path::Path,
 };
@@ -9,26 +21,24 @@ use std::{
 use serde_json::{Value, json};
 
 use super::Engine;
-use crate::{
-    item::Item,
-    logging::{utc, without_keys},
-};
+use crate::logging::{utc, without_keys};
 
-/// How much of each log the report carries, from its end.
-const LOG_TAIL: u64 = 256 * 1024;
+/// How much of each log the timeline reads, from its end.
+const LOG_TAIL: u64 = 4 * 1024 * 1024;
+
+/// The longest a field's value runs in the timeline.
+const FIELD_AT_MOST: usize = 600;
 
 impl Engine {
-    /// The report as one file to send, named for when it was made:
-    /// `report.json` ([`Engine::diagnostics`]), the log and the one before it
-    /// in full, and the last picture of each site's page that wanted a person
-    /// (under `pages/`). The logs keep no part of a link after `#` already.
-    pub fn report_zip(&self) -> Result<(String, Vec<u8>), String> {
+    /// The report as one file to send, named for when it was made. `desktop`:
+    /// the desktop app's insides, `null` elsewhere.
+    pub fn report_zip(&self, desktop: Value) -> Result<(String, Vec<u8>), String> {
         use std::io::{Cursor, Write};
 
         use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
-        let report = self.diagnostics();
-        let stamp: String = report["created"]
+        let report = self.diagnostics(desktop);
+        let stamp: String = report["about"]["created"]
             .as_str()
             .unwrap_or_default()
             .chars()
@@ -40,15 +50,17 @@ impl Engine {
             zip.start_file(name, packed).map_err(|e| e.to_string())?;
             zip.write_all(bytes).map_err(|e| e.to_string())
         };
+        let dir = &self.0.data_dir;
+        let logs: Vec<_> = std::iter::once(crate::logging::path(dir))
+            .chain(crate::logging::older(dir).into_iter().take(1))
+            .collect();
+        add("timeline.txt", self.timeline(&logs).as_bytes())?;
         add(
             "report.json",
             &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
         )?;
-        let dir = &self.0.data_dir;
-        let logs = std::iter::once(crate::logging::path(dir))
-            .chain(crate::logging::older(dir).into_iter().take(1));
-        for log in logs {
-            if let (Some(name), Ok(bytes)) = (log.file_name(), std::fs::read(&log)) {
+        for log in &logs {
+            if let (Some(name), Ok(bytes)) = (log.file_name(), std::fs::read(log)) {
                 add(&name.to_string_lossy(), &bytes)?;
             }
         }
@@ -66,14 +78,13 @@ impl Engine {
         Ok((format!("haul-report-{stamp}.zip"), bytes))
     }
 
-    /// The report: Haul's version and system, the settings with every secret
-    /// left out (an account key says only whether it is set, a proxy loses
-    /// its credentials), each download and wrapper with its links, state and
-    /// error and its last events, the hosts, and the end of the log and of
-    /// the one before it, each line an object.
-    /// Links lose their `#…` part, which holds mega.nz's keys, and a link
-    /// handed back from a browser its query, which can hold a token.
-    pub fn diagnostics(&self) -> Value {
+    /// The report's `report.json`: Haul and its system, the settings with
+    /// every secret left out (an account key says only whether it is set, a
+    /// proxy loses its credentials, archive passwords are counted), what the
+    /// UI shows, the engine's insides and `desktop`'s. Links lose their `#…`
+    /// part, which holds mega.nz's keys, and a link a page handed back its
+    /// query, which can hold a token.
+    pub fn diagnostics(&self, desktop: Value) -> Value {
         let now = crate::logging::unix_now();
         let snapshot = self.snapshot();
         let mut settings = serde_json::to_value(self.settings()).unwrap_or(Value::Null);
@@ -94,68 +105,194 @@ impl Engine {
                 *proxy = json!(without_credentials(proxy.as_str().unwrap_or_default()));
             }
         }
-        let queue: Vec<Value> = self.lock().items.values().map(item_report).collect();
-        json!({
-            "haul": env!("CARGO_PKG_VERSION"),
-            "os": std::env::consts::OS,
-            "arch": std::env::consts::ARCH,
-            "created": utc(now),
-            "paused": snapshot.paused,
-            "speed": snapshot.speed,
-            "download_dir": snapshot.download_dir,
-            "data_dir": snapshot.data_dir,
-            "config_error": snapshot.config_error,
+        let mut engine = self.debug_inspect();
+        // Each row's last events, as the row keeps them.
+        if let Some(items) = engine["items"].as_array_mut() {
+            for it in items {
+                let id = it["id"].as_str().unwrap_or_default().to_string();
+                it["history"] = crate::logging::history(&id)
+                    .into_iter()
+                    .map(|m| json!({"at": m.at, "level": m.level, "message": m.message}))
+                    .collect();
+            }
+        }
+        let mut report = json!({
+            "about": {
+                "haul": env!("CARGO_PKG_VERSION"),
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "created": utc(now),
+                "desktop": !desktop.is_null(),
+                "data_dir": snapshot.data_dir,
+                "download_dir": snapshot.download_dir,
+                "config_error": snapshot.config_error,
+                "detailed_log": cfg.detailed_log,
+                "live_debug": crate::debug::enabled(),
+            },
             "settings": settings,
-            "preferred_hosts": cfg.preferred_hosts,
-            "routes": cfg.routes,
-            "folders": cfg.folders,
-            "queue": queue,
-            "hosts": snapshot.hosts,
-            "detailed_log": cfg.detailed_log,
-            "log": tail(&crate::logging::path(&self.0.data_dir)),
-            "previous_log": crate::logging::older(&self.0.data_dir)
-                .first()
-                .map_or(Value::Null, |p| tail(p)),
-        })
+            "view": snapshot,
+            "engine": engine,
+            "desktop": desktop,
+        });
+        redact(&mut report, false);
+        report
+    }
+
+    /// The logs `logs` (newest first) as one timeline, oldest first: a line
+    /// per event, `MM-DD HH:MM:SS.mmm L target [row] message key=value…`,
+    /// rows named as the queue or the log last named them.
+    fn timeline(&self, logs: &[std::path::PathBuf]) -> String {
+        let lines: Vec<String> = logs.iter().rev().flat_map(|p| tail_lines(p)).collect();
+        let mut names: HashMap<String, String> = HashMap::new();
+        let parsed: Vec<Result<Value, &String>> = lines
+            .iter()
+            .map(|l| serde_json::from_str::<Value>(l).map_err(|_| l))
+            .collect();
+        for line in parsed.iter().flatten() {
+            let signal = line["signal"]
+                .as_str()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok());
+            if let Some(s) = signal
+                && let (Some(id), Some(name)) = (s["id"].as_str(), s["name"].as_str())
+                && !name.is_empty()
+            {
+                names.insert(id.to_string(), name.to_string());
+            }
+        }
+        for it in self.lock().items.values() {
+            names.insert(it.id.clone(), super::display_name(it));
+        }
+        let mut out = String::new();
+        for line in parsed {
+            match line {
+                Ok(v) => timeline_line(&mut out, &v, &names),
+                Err(raw) => {
+                    let _ = writeln!(out, "{}", unkeyed(raw));
+                }
+            }
+        }
+        out
     }
 }
 
-fn item_report(it: &Item) -> Value {
-    let bare = |links: &std::collections::BTreeSet<String>| -> Vec<String> {
-        links.iter().map(|l| unkeyed(l)).collect()
-    };
-    json!({
-        "id": it.id,
-        "wrapper": it.wrapper,
-        "source": it.source,
-        "title": it.title,
-        "found": it.found,
-        "name": it.name,
-        "package": it.package,
-        "status": it.status.as_str(),
-        "probed": it.probed,
-        "error": it.error,
-        "size": it.size,
-        "done": it.done,
-        "host": it.host,
-        "mirrors": it.mirrors.iter().map(|m| unkeyed(m)).collect::<Vec<_>>(),
-        "failed": bare(&it.failed),
-        "needs_you": bare(&it.manual_urls),
-        "handed_back": it.pre.as_ref().filter(|_| it.manual).map(|p| page_only(&p.url)),
-        "retries": it.retries,
-        "auto_retries": it.auto_retries,
-        "page_retrying": it.page_retrying,
-        "busy": it.busy,
-        "existing": it.existing,
-        "path": it.path,
-        "extract": it.extract,
-        "extract_error": it.extract_error,
-        "extract_password": it.extract_password.is_some(),
-        "history": crate::logging::history(&it.id)
-            .into_iter()
-            .map(|m| json!({"at": m.at, "level": m.level, "message": unkeyed(&m.message)}))
-            .collect::<Vec<_>>(),
-    })
+/// One log line `v` in the timeline.
+fn timeline_line(out: &mut String, v: &Value, names: &HashMap<String, String>) {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default();
+    let message = unkeyed(text("message"));
+    // A run's first line heads what it wrote.
+    if text("target") == "haul_core::logging"
+        && message.starts_with("Haul ")
+        && message.ends_with(" starts")
+    {
+        let _ = writeln!(
+            out,
+            "==== {} {message} ({}, pid {}) ====",
+            text("timestamp").get(..19).unwrap_or_default(),
+            text("os"),
+            v["pid"]
+        );
+        return;
+    }
+    let at = text("timestamp");
+    let at: String = at
+        .get(5..)
+        .unwrap_or(at)
+        .trim_end_matches('Z')
+        .chars()
+        .take(18)
+        .collect::<String>()
+        .replace('T', " ");
+    let level = text("level").chars().next().unwrap_or('?');
+    let target = text("target")
+        .trim_start_matches("haul_core::")
+        .trim_start_matches("haul_desktop::")
+        .trim_start_matches("haul_web::")
+        .trim_start_matches("engine::");
+    let id = text("item");
+    let row = (!id.is_empty()).then(|| {
+        let name = names.get(id).map(String::as_str).unwrap_or_default();
+        let short = id.get(..6).unwrap_or(id);
+        let tail: String = {
+            let chars: Vec<char> = name.chars().collect();
+            let from = chars.len().saturating_sub(32);
+            let cut: String = chars[from..].iter().collect();
+            if from > 0 { format!("…{cut}") } else { cut }
+        };
+        (format!("[{short} {tail}] "), name.to_string())
+    });
+    let mut message = message;
+    if let Some((_, name)) = &row
+        && !name.is_empty()
+        && let Some(rest) = message.strip_prefix(&format!("{name}: "))
+    {
+        message = rest.to_string();
+    }
+    let _ = write!(
+        out,
+        "{at} {level} {target:<16} {}{message}",
+        row.as_ref().map_or("", |(label, _)| label.as_str())
+    );
+    let skip = ["timestamp", "level", "target", "message", "item", "signal"];
+    if let Some(fields) = v.as_object() {
+        for (k, value) in fields.iter().filter(|(k, _)| !skip.contains(&k.as_str())) {
+            let shown = match value {
+                Value::String(s) => unkeyed(s),
+                other => other.to_string(),
+            };
+            let _ = write!(out, " {k}={}", clip(&shown));
+        }
+    }
+    // What a pass ended with, which its message leaves out.
+    let signal = v["signal"]
+        .as_str()
+        .and_then(|s| serde_json::from_str::<Value>(s).ok());
+    if let Some(s) = signal {
+        for k in ["outcome", "error", "pid"] {
+            if let Some(value) = s.get(k).filter(|x| !x.is_null() && *x != "") {
+                let _ = write!(out, " {k}={}", clip(&unkeyed(&value.to_string())));
+            }
+        }
+    }
+    out.push('\n');
+}
+
+/// `s`, cut to [`FIELD_AT_MOST`] characters.
+fn clip(s: &str) -> String {
+    match s.char_indices().nth(FIELD_AT_MOST) {
+        Some((cut, _)) => format!("{}…", &s[..cut]),
+        None => s.to_string(),
+    }
+}
+
+/// Takes the `#…` part out of every link in `v`, and the query out of a
+/// link a page handed back (`handed_back`), which can hold a token; a row's
+/// attempt going to that link (its `url`) loses it too.
+fn redact(v: &mut Value, link: bool) {
+    match v {
+        Value::String(s) => {
+            *s = if link { page_only(s) } else { unkeyed(s) };
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| redact(x, link)),
+        Value::Object(o) => {
+            let handed = o
+                .get("handed_back")
+                .and_then(|h| h.get("url"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            for (k, x) in o.iter_mut() {
+                let attempt = k == "url" && handed.is_some() && x.as_str() == handed.as_deref();
+                redact(x, link || attempt);
+            }
+            if let Some(url) = o
+                .get_mut("handed_back")
+                .and_then(|h| h.get_mut("url"))
+                .filter(|u| u.is_string())
+            {
+                *url = json!(page_only(url.as_str().unwrap_or_default()));
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `text` with the `#…` part of every link in it left out.
@@ -163,7 +300,7 @@ fn unkeyed(text: &str) -> String {
     without_keys(text).into_owned()
 }
 
-/// A link without its query or fragment.
+/// A link without its query or fragment; text that is not a link stays.
 fn page_only(link: &str) -> String {
     match url::Url::parse(link) {
         Ok(mut url) => {
@@ -171,7 +308,7 @@ fn page_only(link: &str) -> String {
             url.set_fragment(None);
             url.to_string()
         }
-        Err(_) => String::new(),
+        Err(_) => unkeyed(link),
     }
 }
 
@@ -188,50 +325,27 @@ pub(super) fn without_credentials(proxy: &str) -> String {
     }
 }
 
-/// The last [`LOG_TAIL`] bytes of a log, from a line's start; `null` when
-/// there is no such file.
-fn tail(path: &Path) -> Value {
+/// The lines of the last [`LOG_TAIL`] bytes of a log, from a line's start;
+/// none when there is no such file.
+fn tail_lines(path: &Path) -> Vec<String> {
     let Ok(mut file) = std::fs::File::open(path) else {
-        return Value::Null;
+        return Vec::new();
     };
     let len = file.metadata().map_or(0, |m| m.len());
     let from = len.saturating_sub(LOG_TAIL);
     if file.seek(SeekFrom::Start(from)).is_err() {
-        return Value::Null;
+        return Vec::new();
     }
     let mut bytes = Vec::new();
     if file.read_to_end(&mut bytes).is_err() {
-        return Value::Null;
+        return Vec::new();
     }
     let text = String::from_utf8_lossy(&bytes);
     let text = match (from > 0, text.find('\n')) {
         (true, Some(cut)) => &text[cut + 1..],
         _ => &text,
     };
-    // One object per line, as haul.log writes them; a line that is not one
-    // (a log from before 0.8.1) stays text.
-    Value::Array(
-        text.lines()
-            .map(|line| {
-                serde_json::from_str::<Value>(line)
-                    .map(redact_fragments)
-                    .unwrap_or_else(|_| json!(unkeyed(line)))
-            })
-            .collect(),
-    )
-}
-
-/// A log line with the `#…` part of its links left out: mega.nz keeps its
-/// keys there.
-fn redact_fragments(mut line: Value) -> Value {
-    if let Some(fields) = line.as_object_mut() {
-        for value in fields.values_mut() {
-            if let Some(text) = value.as_str() {
-                *value = json!(unkeyed(text));
-            }
-        }
-    }
-    line
+    text.lines().map(str::to_string).collect()
 }
 
 #[cfg(test)]
@@ -262,14 +376,61 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("haul.log");
-        assert_eq!(tail(&log), Value::Null);
+        assert!(tail_lines(&log).is_empty());
         let long = format!("{}\nlast line\n", "x".repeat(LOG_TAIL as usize + 10));
         std::fs::write(&log, long).unwrap();
-        assert_eq!(tail(&log), json!(["last line"]), "from a line's start");
-        std::fs::write(&log, "{\"message\":\"got https://mega.nz/file/a#key\",\"item\":\"x\"}\nplain https://mega.nz/file/b#k2\n").unwrap();
+        assert_eq!(tail_lines(&log), ["last line"], "from a line's start");
+
+        let mut report = json!({
+            "a": "https://mega.nz/file/a#key",
+            "row": {
+                "url": "https://cdn.example/f/a.bin?token=t",
+                "mirrors": ["https://1fichier.com/?abc123"],
+                "handed_back": {"url": "https://cdn.example/f/a.bin?token=t", "for": "https://1fichier.com/?abc123"},
+            },
+        });
+        redact(&mut report, false);
         assert_eq!(
-            tail(&log),
-            json!([{"message": "got https://mega.nz/file/a", "item": "x"}, "plain https://mega.nz/file/b"])
+            report,
+            json!({
+                "a": "https://mega.nz/file/a",
+                "row": {
+                    "url": "https://cdn.example/f/a.bin",
+                    "mirrors": ["https://1fichier.com/?abc123"],
+                    "handed_back": {"url": "https://cdn.example/f/a.bin", "for": "https://1fichier.com/?abc123"},
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn the_timeline_names_rows_and_heads_each_run() {
+        let names = HashMap::from([("abc123def0".to_string(), "archive.part1.rar".to_string())]);
+        let mut out = String::new();
+        for line in [
+            json!({"timestamp": "2026-11-06T13:42:17.000Z", "level": "INFO", "target": "haul_core::logging", "message": "Haul 0.7.0 starts", "version": "0.7.0", "os": "windows", "pid": 7}),
+            json!({"timestamp": "2026-11-06T13:45:17.123456Z", "level": "INFO", "target": "haul_core::signal", "item": "abc123def0", "message": "archive.part1.rar: paused -> removed", "signal": "{\"kind\":\"status\"}"}),
+            json!({"timestamp": "2026-11-06T13:45:18.5Z", "level": "DEBUG", "target": "haul_core::engine::schedule", "item": "abc123def0", "message": "starting from site.example", "url": "https://mega.nz/file/x#key"}),
+            json!({"timestamp": "2026-11-06T13:45:19.000Z", "level": "INFO", "target": "haul_core::signal", "message": "pass end: https://site.example/f", "signal": "{\"kind\":\"pass\",\"outcome\":\"listed\"}"}),
+        ] {
+            timeline_line(&mut out, &line, &names);
+        }
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines[0],
+            "==== 2026-11-06T13:42:17 Haul 0.7.0 starts (windows, pid 7) ===="
+        );
+        assert_eq!(
+            lines[1],
+            "11-06 13:45:17.123 I signal           [abc123 archive.part1.rar] paused -> removed"
+        );
+        assert_eq!(
+            lines[2],
+            "11-06 13:45:18.5 D schedule         [abc123 archive.part1.rar] starting from site.example url=https://mega.nz/file/x"
+        );
+        assert_eq!(
+            lines[3],
+            "11-06 13:45:19.000 I signal           pass end: https://site.example/f outcome=\"listed\""
         );
     }
 }

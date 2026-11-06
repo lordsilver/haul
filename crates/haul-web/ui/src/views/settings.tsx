@@ -357,7 +357,13 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
                 Save report…
               </Button>
             }
-          />
+          >
+            <SettingRow
+              title="Live connection"
+              description="Lets a diagnosing tool on this computer follow everything Haul does as it happens, with a key Haul writes to its data folder."
+              controls={<SettingSwitch name="live_debug" on={d.live_debug} label="Live connection" />}
+            />
+          </SettingCard>
           <SettingCard icon={FolderOpen} title="Haul's files">
             {d.config_file ? (
               <SettingRow

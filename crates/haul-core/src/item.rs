@@ -1,6 +1,9 @@
 //! One row of the queue: a file and every mirror it can come from.
 
-use std::{collections::BTreeSet, time::Instant};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Instant,
+};
 
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -213,10 +216,15 @@ pub(crate) struct Item {
     /// The host limiting the running transfer, when one is.
     #[serde(skip)]
     pub slowed: Option<Slowed>,
-    /// Mirrors that slowed this row: it goes back to one only when nothing
-    /// else can take it, which beats sitting idle.
+    /// Mirrors that slowed this row, with its speed on each as it left: it
+    /// goes back to one only when nothing else can take it, which beats
+    /// sitting idle, or when the host it went on to is far slower.
     #[serde(skip)]
-    pub slow_on: BTreeSet<String>,
+    pub slow_on: BTreeMap<String, f64>,
+    /// The mirror it left for slowness that it goes back to next, the host
+    /// it went on to being far slower ([`Item::slow_on`]): once.
+    #[serde(skip)]
+    pub back_to: Option<String>,
     /// The host the partial file's last bytes came from; `None` when not known
     /// (a restart, a merged row), which counts as another's.
     #[serde(skip)]
