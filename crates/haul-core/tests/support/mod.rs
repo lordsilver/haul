@@ -749,6 +749,25 @@ pub(super) async fn start_server() -> (Server, u16) {
                             ),
                         );
                     }
+                    if id == "loose-gofile" {
+                        // Two files on pixeldrain, which names them, and
+                        // three links on gofile, which names nothing without
+                        // its account: the counts differ, so each link is a
+                        // row of its own.
+                        return (
+                            [(header::CONTENT_TYPE, "text/html")],
+                            r#"<div class="link-group" data-host="pixeldrain.com">
+                                 <a class="target-link" href="https://pixeldrain.com/u/p1">1</a>
+                                 <a class="target-link" href="https://pixeldrain.com/u/p2">2</a>
+                               </div>
+                               <div class="link-group" data-host="gofile.io">
+                                 <a class="target-link" href="https://gofile.io/d/same">1</a>
+                                 <a class="target-link" href="https://gofile.io/d/dead">2</a>
+                                 <a class="target-link" href="https://gofile.io/d/shy">3</a>
+                               </div>"#
+                                .to_string(),
+                        );
+                    }
                     if id == "parts" {
                         return (
                             [(header::CONTENT_TYPE, "text/html")],

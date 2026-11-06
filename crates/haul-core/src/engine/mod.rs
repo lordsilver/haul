@@ -670,6 +670,9 @@ struct Inner {
     paused_now: Arc<AtomicBool>,
     /// The desktop app passes hosts' pages out of sight ([`Engine::set_pages_pass`]).
     pages_pass: AtomicBool,
+    /// The runtime the engine started in, for tasks started from outside
+    /// it (the desktop app's browser threads).
+    runtime: tokio::runtime::Handle,
     save_lock: Mutex<()>,
     rename_lock: Mutex<()>,
     shutdown: CancellationToken,
@@ -781,6 +784,7 @@ impl Engine {
             unpacking: Mutex::new(None),
             paused_now: Arc::new(AtomicBool::new(paused)),
             pages_pass: AtomicBool::new(false),
+            runtime: tokio::runtime::Handle::current(),
             save_lock: Mutex::new(()),
             rename_lock: Mutex::new(()),
             shutdown: CancellationToken::new(),
@@ -1197,18 +1201,25 @@ impl Engine {
         if found.is_none() && !guarded && self.drop_tentative(&id, "lists no links") {
             return;
         }
+        self.take_found(&id, found).await;
+    }
+
+    /// Takes what a lookup learned of row `id`'s file, if anything: its
+    /// name, size and checksum, which may fold it into a row for the same
+    /// file or find it downloaded already. The row is probed after it.
+    async fn take_found(&self, id: &str, found: Option<hosts::Probed>) {
         let learned = found.is_some();
         {
             let mut st = self.lock();
-            let Some(it) = st.items.get_mut(&id) else {
+            let Some(it) = st.items.get_mut(id) else {
                 return;
             };
             if let Some(found) = found {
                 // A copied link that turns out to be a file is a download.
                 it.tentative = false;
                 it.learn(Some(&found.name), true, found.size, found.checksum);
-                if self.dedupe(&mut st, &id) {
-                    st.items.shift_remove(&id);
+                if self.dedupe(&mut st, id) {
+                    st.items.shift_remove(id);
                     self.publish(st);
                     return;
                 }
@@ -1216,11 +1227,11 @@ impl Engine {
         }
         // The row is not probed yet, so nothing starts it meanwhile.
         let existing = match learned {
-            true => self.existing_file(&id).await,
+            true => self.existing_file(id).await,
             false => None,
         };
         let mut st = self.lock();
-        let Some(it) = st.items.get_mut(&id) else {
+        let Some(it) = st.items.get_mut(id) else {
             return;
         };
         it.probed = true;
@@ -1233,7 +1244,7 @@ impl Engine {
             _ => false,
         };
         if adopted {
-            self.extract_when_complete(&mut st, &id);
+            self.extract_when_complete(&mut st, id);
         }
         // With its size known, this row may complete a copy of another
         // archive.
@@ -1243,7 +1254,7 @@ impl Engine {
         self.touch(&mut st);
         drop(st);
         if adopted {
-            self.discard_parts([id]);
+            self.discard_parts([id.to_string()]);
         }
         self.0.wake.notify_one();
     }

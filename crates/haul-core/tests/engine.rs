@@ -10,7 +10,7 @@ use std::{
 use axum::{Json, Router, routing::get};
 use haul_core::{
     Config, Engine, Event, Extract, Found, ItemAction, Options, Route, Snapshot, StartError,
-    Verifying, config::Endpoints, throttle::Throttling,
+    Verifying, config::Endpoints, hosts, throttle::Throttling,
 };
 use serde_json::json;
 
@@ -1509,6 +1509,129 @@ async fn a_file_waits_for_its_page_before_an_unknown_host() {
 
     engine.page_wants_person(&id);
     wait_for(&engine, "the other mirror", all_done).await;
+}
+
+/// The links a download's host page shows (its ads, its other files) never
+/// stand in for the download: only a row that is the page itself, added on
+/// its own, takes them. A wrapper's file stays that file.
+#[tokio::test]
+async fn a_downloads_host_page_never_turns_it_into_a_list() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.set_disabled("gofile.io", false).unwrap();
+    engine.add_text("https://fileguard.cc/vault/held", "");
+    wrapper_settled(&engine, "done").await;
+    let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    let (id, name, mirrors) = (
+        s.items[0].id.clone(),
+        s.items[0].name.clone(),
+        s.items[0].mirrors.clone(),
+    );
+    // Its link on a site Haul has no code for, as the vault lists it.
+    let unknown = format!("{}/files/held.bin", t.ip);
+    assert!(hosts::may_list_links(&unknown));
+    assert!(!engine.page_lists(&id, &unknown));
+    let shown = ["https://pixeldrain.com/u/adone".to_string()];
+    assert_eq!(engine.page_listed(&id, &shown, &[], None), 0);
+    let s = engine.snapshot();
+    assert_eq!(s.items.len(), 1);
+    assert_eq!(s.items[0].name, name, "still the file");
+    assert_eq!(s.items[0].mirrors, mirrors);
+
+    // The row of a link added on its own, the newest.
+    let added = async |url: &str, count: usize| {
+        engine.add_text(url, "");
+        let s = wait_for(&engine, "its row", |s| s.items.len() == count).await;
+        s.items.last().expect("a row").id.clone()
+    };
+    let page = format!("{}/page/added", t.ip);
+    let row = added(&page, 2).await;
+    assert!(engine.page_lists(&row, &page), "a page added on its own");
+    let named = format!("{}/page/archive.part2.rar", t.ip);
+    let row = added(&named, 3).await;
+    assert!(
+        !engine.page_lists(&row, &named),
+        "a link whose path names a file is that file's page"
+    );
+}
+
+/// A wrapper's file on a host that names nothing without its account
+/// (gofile) is looked up through its page while it waits, not started and
+/// asking nobody: a page that names its file joins it to the same file on
+/// other hosts, one that says it is gone takes it off the list, and one that
+/// tells nothing leaves it as it was, not opened for that again.
+#[tokio::test]
+async fn a_wrappers_unnamed_file_is_looked_up_through_its_page() {
+    use haul_core::Browsing;
+
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.set_disabled("gofile.io", false).unwrap();
+    engine.add_text("https://fileguard.cc/vault/loose-gofile", "");
+    wrapper_settled(&engine, "done").await;
+    let s = wait_for(&engine, "five rows, the pixeldrain ones named", |s| {
+        s.items.len() == 5 && s.items.iter().filter(|i| i.name.ends_with(".bin")).count() == 2
+    })
+    .await;
+    let gofile: Vec<String> = s
+        .items
+        .iter()
+        .filter(|i| i.mirrors == ["gofile.io"])
+        .map(|i| i.id.clone())
+        .collect();
+    assert_eq!(gofile.len(), 3);
+    assert!(s.items.iter().all(|i| i.status.as_str() == "paused"));
+    let idle = Browsing {
+        out_of_sight: &[],
+        with_person: &|_| false,
+        has_page: &|_| false,
+    };
+    let mut planned = Vec::new();
+    for _ in 0..3 {
+        let (id, page) = engine.plan_passes(&idle).start.expect("a lookup");
+        assert!(page.starts_with("https://gofile.io/d/"), "{page}");
+        planned.push((id, page));
+    }
+    assert_eq!(engine.plan_passes(&idle).start, None, "each page once");
+    let row = |name: &str| {
+        planned
+            .iter()
+            .find(|(_, page)| page.ends_with(name))
+            .unwrap()
+            .0
+            .clone()
+    };
+
+    // Named: the same file as pixeldrain's p1.bin, which takes the link.
+    let named = haul_core::hosts::Entry {
+        url: "https://store.gofile.test/download/p1.bin".into(),
+        name: Some("p1.bin".into()),
+        ..Default::default()
+    };
+    engine.set_files(&row("same"), vec![named]).unwrap();
+    // Gone: the row leaves, nobody told.
+    engine.page_gone(&row("dead"), "gofile: the folder was deleted");
+    // Nothing told: the row stays as it was.
+    assert!(!engine.page_wants_person(&row("shy")), "nobody is asked");
+    let s = wait_for(&engine, "the named and the gone row to go", |s| {
+        s.items.len() == 3
+    })
+    .await;
+    let p1 = s.items.iter().find(|i| i.name == "p1.bin").unwrap();
+    assert!(
+        p1.mirrors.contains(&"gofile.io".to_string()),
+        "{:?}",
+        p1.mirrors
+    );
+    let shy = s.items.iter().find(|i| i.id == row("shy")).unwrap();
+    assert_eq!(shy.status.as_str(), "paused");
+    assert!(shy.error.is_empty(), "{}", shy.error);
+    assert!(s.items.iter().all(|i| i.status.as_str() == "paused"));
+    assert_eq!(engine.waiting_for_person(), (vec![], vec![]));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(engine.plan_passes(&idle).start, None, "not looked up again");
 }
 
 /// A page that passed its check but gave no link this time (vikingfile's

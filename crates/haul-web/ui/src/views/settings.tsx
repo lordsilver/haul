@@ -254,35 +254,6 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               }
             />
           </SettingCard>
-          <SettingCard icon={CircleCheck} title="Finished files">
-            <SettingRow
-              title="Compare checksums of files already there"
-              description="A file with the same name and size counts as downloaded. On: it's also read in full and checked. Slow on big files."
-              controls={
-                <SettingSwitch
-                  name="verify_existing"
-                  on={d.verify_existing}
-                  label="Compare checksums of files already there"
-                />
-              }
-            />
-            <SettingRow
-              title={`Move removed files to the ${s.bin}`}
-              description="When you remove a finished download from the list."
-              controls={
-                <SettingSwitch
-                  name="recycle_on_remove"
-                  on={d.recycle_on_remove}
-                  label={`Move removed files to the ${s.bin}`}
-                />
-              }
-            />
-          </SettingCard>
-        </>
-      ) : null}
-      {tab === 'archives' ? archivesCard : null}
-      {tab === 'retries' ? (
-        <>
           <SettingCard icon={Shuffle} title="Slow downloads">
             <SettingRow
               title="Leave hosts that slow you down"
@@ -336,8 +307,33 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               }
             />
           </SettingCard>
+          <SettingCard icon={CircleCheck} title="Finished files">
+            <SettingRow
+              title="Compare checksums of files already there"
+              description="A file with the same name and size counts as downloaded. On: it's also read in full and checked. Slow on big files."
+              controls={
+                <SettingSwitch
+                  name="verify_existing"
+                  on={d.verify_existing}
+                  label="Compare checksums of files already there"
+                />
+              }
+            />
+            <SettingRow
+              title={`Move removed files to the ${s.bin}`}
+              description="When you remove a finished download from the list."
+              controls={
+                <SettingSwitch
+                  name="recycle_on_remove"
+                  on={d.recycle_on_remove}
+                  label={`Move removed files to the ${s.bin}`}
+                />
+              }
+            />
+          </SettingCard>
         </>
       ) : null}
+      {tab === 'archives' ? archivesCard : null}
       {tab === 'about' ? (
         <>
           <SettingCard

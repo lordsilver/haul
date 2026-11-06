@@ -176,7 +176,7 @@ impl Browser {
         std::thread::spawn(move || {
             // A page that lists links hands them over as they show; Haul
             // keeps those to hosts it knows, which ends the pass.
-            let lists = hosts::may_list_links(&url);
+            let lists = engine.page_lists(&id, &url);
             // From this thread, outside the async runtime adding links (and
             // starting their lookups) needs.
             let take = |s: &chromium::Shown| {
@@ -313,7 +313,7 @@ impl Browser {
         // A wrapper's page leads to other hosts, and so does a page on a site
         // Haul has no code for (a post that lists links, a paste): such a window is
         // not sent back, and the page's script hands over the links it shows.
-        let lists = hosts::may_list_links(url);
+        let lists = self.engine.page_lists(id, url);
         let stay = Arc::new(Mutex::new(Stay::new(url, !hosts::wraps(url) && !lists)));
         let capture = Capture {
             app: self.app.clone(),

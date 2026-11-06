@@ -115,9 +115,11 @@ impl Engine {
 
     /// The rows, downloads and wrappers alike, waiting on a page the browser
     /// passes by itself: in their pass's turn, or shown to the person after
-    /// it.
+    /// it. Then the files not started whose page is opened only to look them
+    /// up ([`Engine::looks_up`]), after every row that waits.
     fn waiting_passes(&self, st: &State, now: Instant) -> Vec<Waiting> {
-        st.items
+        let waiting = st
+            .items
             .values()
             .filter(|it| it.status == Status::Captcha)
             .filter_map(|it| {
@@ -132,7 +134,18 @@ impl Engine {
                     turn: self.passing(st, it, now),
                     clearance: takes_clearance(st, page),
                 })
+            });
+        let looked_up = st.items.values().filter_map(|it| {
+            let page = self
+                .look_up_page(st, it)
+                .filter(|m| self.passes_now(st, m, now))?;
+            Some(Waiting {
+                id: it.id.clone(),
+                page: page.clone(),
+                turn: true,
+                clearance: takes_clearance(st, page),
             })
-            .collect()
+        });
+        waiting.chain(looked_up).collect()
     }
 }

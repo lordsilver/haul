@@ -34,10 +34,150 @@ impl Engine {
         self.0.pages_pass.load(Ordering::Relaxed)
     }
 
+    /// Whether row `it` is a wrapper's file, not started, that nothing named
+    /// (its host tells nothing without its account, as gofile's): the
+    /// desktop app opens its page out of sight to learn its name and size,
+    /// so it joins the same file on other hosts, or that it is gone
+    /// ([`Engine::look_up_page`]). It stays as it is meanwhile, and a pass
+    /// for it asks nobody.
+    pub(crate) fn looks_up(&self, it: &Item) -> bool {
+        self.pages_pass()
+            && !it.wrapper
+            && !it.tentative
+            && it.status == Status::Paused
+            && !it.running()
+            && it.done == 0
+            && it.probed
+            && it.name.is_none()
+            && it.source.is_some()
+    }
+
+    /// The page the desktop app opens to look row `it` up
+    /// ([`Engine::looks_up`]): its first one the browser passes, not yet
+    /// looked at and not failed.
+    pub(super) fn look_up_page<'a>(&self, st: &State, it: &'a Item) -> Option<&'a String> {
+        if !self.looks_up(it) {
+            return None;
+        }
+        let cfg = self.cfg();
+        it.mirrors.iter().find(|m| {
+            st.passes(m)
+                && !it.failed.contains(*m)
+                && !it.looked.contains(*m)
+                && !cfg.is_disabled(&hosts::host_of(m))
+        })
+    }
+
+    /// Row `id`'s page being looked up, when its pass is for that.
+    fn looking_up(&self, st: &State, id: &str) -> Option<String> {
+        self.look_up_page(st, st.items.get(id)?).cloned()
+    }
+
+    /// The page looked up for row `id` told nothing this time: it is not
+    /// opened for that again, and the row stays as it was. False when the
+    /// pass was not a lookup.
+    fn looked_up_nothing(&self, id: &str) -> bool {
+        let mut st = self.lock();
+        let Some(page) = self.looking_up(&st, id) else {
+            return false;
+        };
+        tracing::info!(item = %id, "{page} told nothing of its file");
+        if let Some(it) = st.items.get_mut(id) {
+            it.looked.insert(page);
+        }
+        self.publish(st);
+        true
+    }
+
+    /// What the page looked up for row `id` handed back: one file names the
+    /// row, which then joins the same file on other hosts or is found on
+    /// disk; a folder of several becomes a row each, not started either.
+    /// Their links stay the page, passed again when they start. The files
+    /// come back when the pass was not a lookup.
+    fn looked_up(&self, id: &str, files: Vec<Entry>) -> Result<(), Vec<Entry>> {
+        let mut st = self.lock();
+        let Some(page) = self.looking_up(&st, id) else {
+            return Err(files);
+        };
+        let named: Vec<hosts::Probed> = files
+            .into_iter()
+            .filter_map(|f| {
+                Some(hosts::Probed {
+                    name: f.file_name()?,
+                    size: f.size,
+                    checksum: f.checksum,
+                })
+            })
+            .collect();
+        let Some(it) = st.items.get_mut(id) else {
+            return Ok(());
+        };
+        it.looked.insert(page.clone());
+        if named.is_empty() {
+            tracing::info!(item = %id, "{page} named no file");
+            self.publish(st);
+            return Ok(());
+        }
+        tracing::info!(item = %id, "{page} holds {} file(s)", named.len());
+        let mut rows = vec![(id.to_string(), named[0].clone())];
+        if named.len() > 1 {
+            let after = st.items.get_index_of(id).map_or(st.items.len(), |i| i + 1);
+            for (at, found) in (after..).zip(&named[1..]) {
+                let it = &st.items[id];
+                let mut row = Item::new(it.mirrors.clone(), None, it.package.clone());
+                row.status = Status::Paused;
+                row.probed = true;
+                row.source.clone_from(&it.source);
+                row.also_from.clone_from(&it.also_from);
+                row.extract_password.clone_from(&it.extract_password);
+                row.looked.insert(page.clone());
+                rows.push((row.id.clone(), found.clone()));
+                let at_most = st.items.len();
+                st.items.shift_insert(at.min(at_most), row.id.clone(), row);
+            }
+        }
+        self.touch(&mut st);
+        drop(st);
+        for (row, found) in rows {
+            let engine = self.clone();
+            self.0
+                .runtime
+                .spawn(async move { engine.take_found(&row, Some(found)).await });
+        }
+        Ok(())
+    }
+
+    /// The page looked up for row `id` says its file is gone: that link is
+    /// dead, and a row left with no other goes, never having been started.
+    /// False when the pass was not a lookup.
+    fn looked_up_gone(&self, id: &str, reason: &str) -> bool {
+        let mut st = self.lock();
+        let Some(page) = self.looking_up(&st, id) else {
+            return false;
+        };
+        let Some(it) = st.items.get_mut(id) else {
+            return true;
+        };
+        tracing::info!(item = %id, "{page}: {reason}");
+        it.gone.insert(page.clone());
+        it.failed.insert(page);
+        if it.mirrors.iter().all(|m| it.gone.contains(m)) {
+            tracing::info!(item = %id, "every link of this file is gone: it leaves the list");
+            st.items.shift_remove(id);
+            super::drop_spent_wrappers(&mut st.items);
+        }
+        self.publish(st);
+        true
+    }
+
     /// What a host's page handed back for item `id`: its file's link, or a
     /// folder's files, each row with its own. One file keeps the row and its
     /// other mirrors ([`Engine::set_direct`]); several take its place.
     pub fn set_files(&self, id: &str, files: Vec<Entry>) -> Result<(), String> {
+        // A file not started, looked up, only learns what it is.
+        let Err(files) = self.looked_up(id, files) else {
+            return Ok(());
+        };
         match files.len() {
             0 => Err("the page handed back no file".into()),
             1 => {
@@ -68,7 +208,7 @@ impl Engine {
     /// run out. False when nobody is to be told: a copied page, which goes
     /// instead, or a try of its own, the person having been told before.
     pub fn page_wants_person(&self, id: &str) -> bool {
-        if self.drop_tentative(id, "wants a person") {
+        if self.looked_up_nothing(id) || self.drop_tentative(id, "wants a person") {
             return false;
         }
         let mut st = self.lock();
@@ -99,6 +239,9 @@ impl Engine {
     /// shows all it will: only a click from the person leads on, so it is
     /// not passed again on a timer.
     pub fn page_needs_click(&self, id: &str) -> bool {
+        if self.looked_up_nothing(id) {
+            return false;
+        }
         let tell = self.page_wants_person(id);
         let mut st = self.lock();
         if let Some(it) = st.items.get_mut(id) {
@@ -152,6 +295,7 @@ impl Engine {
     /// `page` said how long, which is its host's limit on this address rather
     /// than this file's ([`Engine::hold_passes`]).
     pub fn page_later(&self, id: &str, page: &str, reason: &str, seconds: Option<u64>) {
+        let looked_up = self.looked_up_nothing(id);
         let mut st = self.lock();
         let now = Instant::now();
         let said = seconds.map(|s| Duration::from_secs(s).min(PAGE_LIMIT_AT_MOST));
@@ -162,7 +306,7 @@ impl Engine {
                 st.lane(&host, exit).asked_to_wait(now + wait);
             }
         }
-        if let Some(it) = st.items.get_mut(id) {
+        if let Some(it) = st.items.get_mut(id).filter(|_| !looked_up) {
             tracing::info!(item = %id, "page later: {reason}");
             it.set_error(reason, Trouble::Other);
             if it.status == Status::Captcha && it.task.is_none() {
@@ -339,6 +483,9 @@ impl Engine {
         let Some(page) = self.page_for(id) else {
             return 0;
         };
+        if !self.page_lists(id, &page) {
+            return 0;
+        }
         let mut known = hosts::listed_links(&links.join("\n"), &page);
         for link in hosts::pasted_links(shown, &page) {
             if !known.contains(&link) {
@@ -353,6 +500,24 @@ impl Engine {
         let title = title.and_then(hosts::short_title);
         self.take_unwrapped(id, &page, hosts::listed(title, known));
         count
+    }
+
+    /// Whether the links page `url` shows may stand in for row `id`
+    /// ([`Engine::page_listed`]): the row is that page, a wrapper or a link
+    /// added on its own that turned out to be a page, on a site Haul has no
+    /// code for. A download's host page is passed for its file, whatever
+    /// links it shows besides (its ads, its other files): a part of an
+    /// archive stays that part, and so does a link whose path names a file.
+    pub fn page_lists(&self, id: &str, url: &str) -> bool {
+        let st = self.lock();
+        let Some(it) = st.items.get(id) else {
+            return false;
+        };
+        let added_page = it.mirrors == [url]
+            && it.source.is_none()
+            && it.size == 0
+            && hosts::guess_name(url).is_none();
+        hosts::may_list_links(url) && (it.wrapper || it.tentative || added_page)
     }
 
     /// Wrapper `id`'s page as the desktop app's browser shows it (`html`,
@@ -390,7 +555,11 @@ impl Engine {
     }
 
     fn page_ended(&self, id: &str, reason: &str, for_good: bool) {
-        if self.drop_tentative(id, reason) {
+        let looked_up = match for_good {
+            true => self.looked_up_gone(id, reason),
+            false => self.looked_up_nothing(id),
+        };
+        if looked_up || self.drop_tentative(id, reason) {
             return;
         }
         let Some(page) = self.page_for(id) else {

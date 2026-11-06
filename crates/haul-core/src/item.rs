@@ -146,6 +146,11 @@ pub(crate) struct Item {
     /// Mirrors that need a person before they can be used.
     #[serde(skip)]
     pub manual_urls: BTreeSet<String>,
+    /// Pages the desktop app opened out of sight only to learn what this
+    /// file, not started, is ([`crate::Engine::looks_up`]), which told
+    /// nothing: not opened for that again until a restart.
+    #[serde(skip)]
+    pub looked: BTreeSet<String>,
     /// The desktop app tried this item's page out of sight and it wants a
     /// person after all (its window came forward, or was closed).
     #[serde(skip)]
