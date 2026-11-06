@@ -11,7 +11,7 @@ use regex::Regex;
 use reqwest::header::{ACCEPT_ENCODING, RANGE};
 
 use super::{
-    Cx, Entry, FILE_EXTENSIONS, Look, Probed, ResolveError, content_length, content_range,
+    Cx, Entry, FILE_EXTENSIONS, Look, Need, Probed, ResolveError, content_length, content_range,
     content_type, disposition_name, gates, gone_or_broken, guess_name, header_checksum, host_of,
     known, rate_limited, site_of, wraps,
 };
@@ -78,32 +78,37 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         }
         _ => None,
     };
-    Err(ResolveError::NeedsUser(gated_page(url, gate)))
+    Err(gated_page(url, gate))
 }
 
 /// Why a page on a site Haul has no code for wants a browser: the gate it
 /// shows, or no gate Haul knows (a timer, a button). One a browser gets past
 /// by itself, or none, is passed out of sight by the desktop app, which looks
-/// for the page's download there ([`wants_a_browser`]); one that needs a
-/// person goes to them.
-fn gated_page(url: &str, gate: Option<gates::Gate>) -> String {
+/// for the page's download there ([`Need::Page`]); one that needs a person
+/// goes to them.
+fn gated_page(url: &str, gate: Option<gates::Gate>) -> ResolveError {
     match gate {
-        Some(gate) if gate.passes_in_browser() => {
-            format!("{} shows {}, {BROWSER_PASSES}", host_of(url), gate.name())
-        }
-        Some(gate) => format!("{} shows {}: it wants a person", host_of(url), gate.name()),
-        None => format!("{} {WEB_PAGE}", host_of(url)),
+        Some(gate) if gate.passes_in_browser() => ResolveError::NeedsUser(
+            Need::Page,
+            format!(
+                "{} shows {}, which a browser passes by itself",
+                host_of(url),
+                gate.name()
+            ),
+        ),
+        Some(gate) => ResolveError::person(format!(
+            "{} shows {}: it wants a person",
+            host_of(url),
+            gate.name()
+        )),
+        None => ResolveError::NeedsUser(
+            Need::Page,
+            format!(
+                "{} answers with a web page: it wants a browser (captcha, timer or a click)",
+                host_of(url)
+            ),
+        ),
     }
-}
-
-const BROWSER_PASSES: &str = "which a browser passes by itself";
-const WEB_PAGE: &str = "answers with a web page: it wants a browser (captcha, timer or a click)";
-
-/// Whether a resolver's request for a person is for a page on a site Haul
-/// has no code for that a browser may get through with nobody's help: one
-/// the desktop app passes out of sight, pressing its download itself.
-pub fn wants_a_browser(message: &str) -> bool {
-    message.ends_with(BROWSER_PASSES) || message.ends_with(WEB_PAGE)
 }
 
 /// Whether a site answered with Cloudflare's browser check instead of the
@@ -115,32 +120,24 @@ pub(super) fn challenged(headers: &reqwest::header::HeaderMap) -> bool {
 }
 
 /// What a page behind a browser check needs: a browser, which the desktop
-/// app opens out of sight ([`is_guarded`]).
+/// app opens out of sight.
 pub(super) fn guarded(url: &str) -> ResolveError {
-    ResolveError::NeedsUser(format!("{} {GUARD}", host_of(url)))
+    ResolveError::NeedsUser(
+        Need::Check,
+        format!("{} is behind a browser check (Cloudflare's)", host_of(url)),
+    )
 }
-
-const GUARD: &str = "is behind a browser check (Cloudflare's)";
 
 /// What a page needs when it answers with a gate Haul has no code for, past
 /// any check in front of its site: a browser, which may be let through.
 pub(super) fn gated(url: &str) -> ResolveError {
-    ResolveError::NeedsUser(format!("{} {GATE}", host_of(url)))
-}
-
-const GATE: &str = "shows a gate Haul cannot answer; open the page";
-
-/// Whether a resolver's request for a person is for a page behind a
-/// browser check a browser usually passes by itself (Cloudflare's).
-pub fn is_guarded(message: &str) -> bool {
-    message.ends_with(GUARD) || is_gated(message)
-}
-
-/// Whether a resolver's request for a person is for a gate past the check in
-/// front of the site: the browser has to read the page, as a clearance
-/// handed to Haul would only bring it back to the same gate.
-pub fn is_gated(message: &str) -> bool {
-    message.ends_with(GATE)
+    ResolveError::NeedsUser(
+        Need::Gate,
+        format!(
+            "{} shows a gate Haul cannot answer; open the page",
+            host_of(url)
+        ),
+    )
 }
 
 const PEEK: usize = 64 * 1024;
@@ -315,20 +312,20 @@ pub(super) async fn page(
             }
         }
         if urls.is_empty() {
-            return Err(ResolveError::failed(format!(
-                "the paste on {} lists no links",
-                host_of(url)
-            )));
+            return Err(ResolveError::gone(super::lists_nothing(url)));
         }
     }
     if urls.is_empty() {
-        return Err(ResolveError::NeedsUser(match gates::detect(&page) {
+        return Err(match gates::detect(&page) {
             Some(gate) => gated_page(url, Some(gate)),
-            None => format!(
-                "{} answers with a web page that links no host Haul knows: it wants a browser",
-                host_of(url)
+            None => ResolveError::NeedsUser(
+                Need::Page,
+                format!(
+                    "{} answers with a web page that links no host Haul knows: it wants a browser",
+                    host_of(url)
+                ),
             ),
-        }));
+        });
     }
     Ok((page_title(&page), urls, password_in(&page)))
 }

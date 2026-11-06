@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use super::{Engine, Exit, schedule::ASKED_TO_WAIT};
+use super::{Engine, Exit};
 use crate::{
     config::secret,
     hosts,
-    item::Status,
-    router::{self, Router},
+    item::{Status, Trouble},
+    router::{self, RedialError, Router},
 };
 
 /// A host's wait for this address worth a redial.
@@ -40,6 +40,15 @@ pub(super) struct Reconnects {
     keeps_address: bool,
     router: Option<Router>,
     looked: bool,
+}
+
+impl Reconnects {
+    /// What the last attempt came to, for the settings view, from now on.
+    fn note(&mut self, note: String, failed: bool) {
+        self.note = Some(note);
+        self.note_at = super::unix_now();
+        self.failed = failed;
+    }
 }
 
 /// What the settings view shows about getting a new address.
@@ -141,9 +150,7 @@ impl Engine {
             }
             // One that cannot work stops no download.
             if let Some(why_not) = blocker(&self.cfg(), &r) {
-                r.note = Some(format!("No new address: {why_not}"));
-                r.note_at = super::unix_now();
-                r.failed = true;
+                r.note(format!("No new address: {why_not}"), true);
                 drop(r);
                 self.touch(&mut self.lock());
                 return Err(why_not);
@@ -160,9 +167,7 @@ impl Engine {
         match &result {
             Ok(address) => {
                 tracing::info!("new address {address}");
-                r.note = Some(format!("Got a new address ({why})"));
-                r.note_at = super::unix_now();
-                r.failed = false;
+                r.note(format!("Got a new address ({why})"), false);
                 drop(r);
                 let mut st = self.lock();
                 for ((_, exit), lane) in st.lanes.iter_mut() {
@@ -174,7 +179,7 @@ impl Engine {
                 // Rows waiting out a limit on the old address go again now;
                 // one still held elsewhere is parked again on its turn.
                 for it in st.items.values_mut() {
-                    if it.status == Status::Waiting && it.error.ends_with(ASKED_TO_WAIT) {
+                    if it.status == Status::Waiting && it.trouble == Trouble::AskedToWait {
                         it.not_before = None;
                     }
                     it.slow_on.clear();
@@ -183,26 +188,24 @@ impl Engine {
             }
             Err(e) => {
                 tracing::warn!("no new address: {e}");
-                r.keeps_address |= e.contains("same address");
-                r.note = Some(format!("No new address: {e}"));
-                r.note_at = super::unix_now();
-                r.failed = true;
+                r.keeps_address |= matches!(e, RedialError::SameAddress(_));
+                r.note(format!("No new address: {e}"), true);
                 // Learned: this router redials only with its login.
-                if e.contains("give Haul its login")
+                if matches!(e, RedialError::NeedsLogin(_))
                     && let Some(router) = r.router.as_mut()
                 {
                     router.upnp_refused = true;
                 }
                 drop(r);
                 self.touch(&mut self.lock());
-                let _ = self.0.events.send(super::Event::Notice {
+                self.emit([super::Event::Notice {
                     title: "Could not get a new IP".into(),
-                    body: e.clone(),
-                });
+                    body: e.to_string(),
+                }]);
             }
         }
         self.0.wake.notify_one();
-        result
+        result.map_err(|e| e.to_string())
     }
 
     /// Stops new starts and the downloads on this machine's own line, or
@@ -244,7 +247,7 @@ impl Engine {
     /// the address the internet sees, before and after, that it changed:
     /// a router's own address can change behind a carrier's shared one
     /// that does not, and a command proves nothing by itself.
-    async fn redial(&self) -> Result<String, String> {
+    async fn redial(&self) -> Result<String, RedialError> {
         // The stopped downloads let go of the line first.
         for _ in 0..50 {
             if !self.lock().items.values().any(|i| i.exit == Some(DIRECT)) {
@@ -272,17 +275,19 @@ impl Engine {
             // see: this machine's traffic leaves some other way, which a
             // redial can't change. A private or shared one is the carrier's
             // network in between, as before.
-            Some(after) if is_public(&reported) && reported != after => Err(format!(
-                "downloads leave through something other than the router, such as a VPN on this PC: hosts see {after}, the router's own address is {reported}, so a new one changes nothing for them"
-            )),
-            Some(after) => Err(format!(
+            Some(after) if is_public(&reported) && reported != after => {
+                Err(RedialError::Other(format!(
+                    "downloads leave through something other than the router, such as a VPN on this PC: hosts see {after}, the router's own address is {reported}, so a new one changes nothing for them"
+                )))
+            }
+            Some(after) => Err(RedialError::SameAddress(format!(
                 "the same address came back: the internet still sees {after} (the router reported {reported})"
-            )),
+            ))),
             None => Ok(reported),
         }
     }
 
-    async fn redial_line(&self) -> Result<String, String> {
+    async fn redial_line(&self) -> Result<String, RedialError> {
         let cfg = self.cfg();
         let http = self.clients().on(DIRECT).client;
         if let Some(command) = secret(&cfg.reconnect_command) {
@@ -297,10 +302,11 @@ impl Engine {
                 None => Ok("unknown (no router to ask)".into()),
             };
         }
-        let router = self
-            .router()
-            .await
-            .ok_or("no router answered on this network; set a reconnect command instead")?;
+        let router = self.router().await.ok_or_else(|| {
+            RedialError::Other(
+                "no router answered on this network; set a reconnect command instead".into(),
+            )
+        })?;
         let login = match (secret(&cfg.router_user), secret(&cfg.router_password)) {
             (user, Some(password)) => Some((user.unwrap_or_default(), password)),
             _ => None,
@@ -520,11 +526,10 @@ impl Engine {
             {
                 let mut r = self.reconnects();
                 r.last = Some(Instant::now());
-                r.note = Some(format!(
-                    "Put off a new address ({why}): downloads still running"
-                ));
-                r.note_at = super::unix_now();
-                r.failed = false;
+                r.note(
+                    format!("Put off a new address ({why}): downloads still running"),
+                    false,
+                );
             }
             self.set_draining(None);
             return;

@@ -9,15 +9,11 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
-use super::{Engine, Event, Exit, OFF_ONLY, State, display_name, exit_name, noted_quietly};
+use super::{Engine, Event, Exit, State, display_name, exit_name, noted_quietly};
 use crate::{
     hosts::{self, Cx},
-    item::Status,
+    item::{Status, Trouble},
 };
-
-/// Why a row waits when every page it could go to is on a host that asked
-/// this address to wait.
-pub(super) const ASKED_TO_WAIT: &str = "asks this address to wait";
 
 impl Engine {
     // ---- scheduler
@@ -208,9 +204,7 @@ impl Engine {
                 self.touch(&mut st);
             }
         }
-        for e in events {
-            let _ = self.0.events.send(e);
-        }
+        self.emit(events);
     }
 
     /// The best mirror whose host has a free slot, ranked by measured speed.
@@ -281,25 +275,31 @@ impl Engine {
                 // person: its page would say the same to them.
                 it.status = Status::Waiting;
                 it.not_before = Some(until);
-                it.error = format!("{host}: {ASKED_TO_WAIT}");
+                it.set_error(
+                    format!("{host}: asks this address to wait"),
+                    Trouble::AskedToWait,
+                );
             } else if asks && it.status != Status::Error {
                 it.status = Status::Captcha;
                 it.retry_at = retry_at;
                 // Said while it held, and it no longer does.
-                if it.error.ends_with(ASKED_TO_WAIT) {
-                    it.error.clear();
+                if it.trouble == Trouble::AskedToWait {
+                    it.clear_error();
                 }
             } else if !only_off.is_empty() {
                 // Nothing to retry until the user turns a host back on.
                 let mut names = only_off;
                 names.dedup();
                 it.status = Status::Error;
-                it.error = format!("{OFF_ONLY}{}", names.join(", "));
+                it.set_error(
+                    format!("only on hosts that are off: {}", names.join(", ")),
+                    Trouble::OnlyOffHosts,
+                );
                 tracing::info!(item = %it.id, "{}", it.error);
             } else {
                 it.status = Status::Error;
                 if it.error.is_empty() {
-                    it.error = "all mirrors failed".into();
+                    it.set_error("all mirrors failed", Trouble::Other);
                 }
                 self.plan_auto_retry(it, now);
             }

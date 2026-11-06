@@ -12,7 +12,7 @@ use super::{
 use crate::{
     config::{Route, Theme},
     hosts,
-    item::{Extract, Found, Item, Status, Verifying},
+    item::{Extract, Found, Item, Status, Trouble, Verifying},
 };
 
 /// The addresses in use: this machine's line, proxies of the settings and
@@ -141,6 +141,8 @@ pub struct ItemView {
     /// The hosts whose link failed for it, or says the file is gone: not among
     /// the hosts that could take over.
     pub failed_hosts: Vec<String>,
+    /// Every one of its hosts says the file is no more: not tried again.
+    pub gone: bool,
     /// The host limiting its download and why it stays there, for the row to
     /// say instead of a time left that means nothing.
     pub slowed: Option<String>,
@@ -185,6 +187,10 @@ pub struct WrapperView {
     pub hosts: Vec<String>,
     /// The wrapper it was found on (a paste a download page links).
     pub source: Option<String>,
+    /// A paste that lists no links: on a card with others, a note.
+    pub lists_nothing: bool,
+    /// Its host says what it stands for is no more: not tried again.
+    pub gone: bool,
 }
 
 /// A host's daily allowance at full speed, over the addresses it was asked
@@ -344,6 +350,8 @@ impl Engine {
                     other => other.as_str(),
                 },
                 source: it.source.clone(),
+                lists_nothing: it.trouble == Trouble::ListsNothing,
+                gone: all_gone(it),
                 error: it.error.clone(),
                 wait: wait(it),
                 retry_in: retry_in(it),
@@ -397,6 +405,7 @@ impl Engine {
                     .chain(&it.gone)
                     .map(|m| hosts::host_of(m))
                     .collect(),
+                gone: all_gone(it),
                 slowed: it.slowed.as_ref().map(|s| {
                     let by = if s.sure { "Slowed by" } else { "Slow from" };
                     format!("{by} {}: {}", s.host, s.why)
@@ -552,6 +561,11 @@ impl Engine {
                 .map(crate::update::Update::view),
         }
     }
+}
+
+/// Whether every link of `it` is gone for good.
+fn all_gone(it: &Item) -> bool {
+    !it.mirrors.is_empty() && it.mirrors.iter().all(|m| it.gone.contains(m))
 }
 
 /// Whether `it` is a pasted web page not read yet: it may turn out a wrapper

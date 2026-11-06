@@ -23,6 +23,8 @@ use super::{Cx, Entry, Look, Probed, ResolveError, retry_after};
 /// The least time between two `check-file` lookups.
 const SPACING: Duration = Duration::from_millis(400);
 
+const DELETED: &str = "vikingfile: the file was deleted";
+
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/f/([A-Za-z0-9]+)").unwrap());
 
 #[derive(Deserialize)]
@@ -90,10 +92,10 @@ async fn check(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     if !check(cx, url).await?.exist {
-        return Err(ResolveError::failed("vikingfile: the file was deleted"));
+        return Err(ResolveError::gone(DELETED));
     }
-    Err(ResolveError::NeedsUser(
-        "vikingfile wants its Cloudflare check passed in a browser: the desktop app does it on its own and shows the page only if it wants a box ticked".into(),
+    Err(ResolveError::person(
+        "vikingfile wants its Cloudflare check passed in a browser: the desktop app does it on its own and shows the page only if it wants a box ticked",
     ))
 }
 
@@ -104,7 +106,7 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
             size: file.size,
             checksum: None,
         }),
-        Ok(_) => Look::Gone("vikingfile: the file was deleted".into()),
+        Ok(_) => Look::Gone(DELETED.into()),
         Err(_) => Look::Unknown,
     }
 }

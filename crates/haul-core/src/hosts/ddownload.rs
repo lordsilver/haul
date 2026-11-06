@@ -16,35 +16,31 @@ static NAME: LazyLock<Regex> =
 
 const DELETED: &str = "ddownload: the file was deleted";
 
-/// What the page says: the file's name (when it gives it), or that it was
-/// deleted (`None`).
-async fn page(cx: &Cx<'_>, url: &str) -> Result<Option<Option<String>>, ResolveError> {
+/// The file's name, when its page gives it; [`ResolveError::Gone`] when the
+/// page says it was deleted.
+async fn page(cx: &Cx<'_>, url: &str) -> Result<Option<String>, ResolveError> {
     let page = cx.http.client.get(url).send().await?.text().await?;
     if page.contains("File Not Found") {
-        return Ok(None);
+        return Err(ResolveError::gone(DELETED));
     }
-    Ok(Some(
-        NAME.captures(&page).map(|c| c[1].replace("&amp;", "&")),
-    ))
+    Ok(NAME.captures(&page).map(|c| c[1].replace("&amp;", "&")))
 }
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
-    if page(cx, url).await?.is_none() {
-        return Err(ResolveError::failed(DELETED));
-    }
-    Err(ResolveError::NeedsUser(
-        "ddownload wants a 60-second wait and Cloudflare's check passed in a browser: the desktop app does both on its own".into(),
+    page(cx, url).await?;
+    Err(ResolveError::person(
+        "ddownload wants a 60-second wait and Cloudflare's check passed in a browser: the desktop app does both on its own",
     ))
 }
 
 pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
     match page(cx, url).await {
-        Ok(Some(Some(name))) => Look::Found(Probed {
+        Ok(Some(name)) => Look::Found(Probed {
             name,
             size: None,
             checksum: None,
         }),
-        Ok(None) => Look::Gone(DELETED.into()),
+        Err(ResolveError::Gone(m)) => Look::Gone(m),
         _ => Look::Unknown,
     }
 }

@@ -262,7 +262,7 @@ impl Browser {
                 Ok(chromium::Outcome::Settled)
                     if hosts::is_paste(&url) || engine.is_tentative(&id) =>
                 {
-                    engine.page_gone(&id, &format!("the paste on {host} lists no links"));
+                    engine.page_gone(&id, &hosts::lists_nothing(&url));
                 }
                 Ok(chromium::Outcome::Settled) => {
                     tracing::info!(item = %id, "{url} passed its check but shows no links Haul takes");

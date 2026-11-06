@@ -95,6 +95,10 @@ error_shown: string,
  */
 failed_hosts: Array<string>, 
 /**
+ * Every one of its hosts says the file is no more: not tried again.
+ */
+gone: boolean, 
+/**
  * The host limiting its download and why it stays there, for the row to
  * say instead of a time left that means nothing.
  */

@@ -98,7 +98,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     }
     let file: File = r.json().await?;
     if file.availability.contains("captcha") {
-        return Err(ResolveError::NeedsUser(format!(
+        return Err(ResolveError::person(format!(
             "pixeldrain: {}",
             file.availability
         )));

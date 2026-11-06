@@ -61,11 +61,11 @@ async fn lookup(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
     }
     let d = &answer["data"];
     if d["status"] == "deleted" {
-        return Err(ResolveError::failed(DELETED));
+        return Err(ResolveError::gone(DELETED));
     }
     if d["passwordProtected"] == true {
-        return Err(ResolveError::NeedsUser(
-            "rootz: the file wants a password: open its page".into(),
+        return Err(ResolveError::person(
+            "rootz: the file wants a password: open its page",
         ));
     }
     match (
@@ -100,7 +100,7 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
             size: Some(file.size),
             checksum: None,
         }),
-        Err(ResolveError::Failed(m)) if m == DELETED => Look::Gone(m),
+        Err(ResolveError::Gone(m)) => Look::Gone(m),
         Err(_) => Look::Unknown,
     }
 }

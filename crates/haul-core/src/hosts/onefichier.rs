@@ -125,7 +125,7 @@ const GONE: &str = "1fichier: the file was deleted";
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     let clean = clean(url);
     if check(cx, url).await == Some(Checked::Gone) {
-        return Err(ResolveError::failed(GONE));
+        return Err(ResolveError::gone(GONE));
     }
     if let Some(key) = secret(&cx.cfg.onefichier_key) {
         let base = &cx.cfg.endpoints.onefichier;
@@ -170,7 +170,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     }
     // The checker did not answer, and the page says the file is not there.
     if html.contains("File not found") || html.contains("Fichier introuvable") {
-        return Err(ResolveError::failed(GONE));
+        return Err(ResolveError::gone(GONE));
     }
     let minutes = WAIT
         .iter()
@@ -182,8 +182,8 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             message: "1fichier free cooldown".into(),
         });
     }
-    Err(ResolveError::NeedsUser(
-        "1fichier: captcha (or set 1fichier_key)".into(),
+    Err(ResolveError::person(
+        "1fichier: captcha (or set 1fichier_key)",
     ))
 }
 

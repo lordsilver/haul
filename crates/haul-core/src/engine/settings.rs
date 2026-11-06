@@ -750,7 +750,7 @@ impl Engine {
                 it.failed.clear();
                 it.retries = 0;
                 it.not_before = None;
-                it.error.clear();
+                it.clear_error();
                 // A wrapper is unwrapped at once, as when it was added: its
                 // files only wait for the user, so it takes no download's
                 // turn and waits for none. What this cannot settle is left to

@@ -213,14 +213,11 @@ fn cases() -> Vec<Case> {
 
 /// Where `snapshot` has left the case's one row or wrapper, once it settled.
 fn outcome(s: &Snapshot) -> Option<Outcome> {
-    let gone = |e: &str| {
-        e.contains("deleted") || e.contains("gone") || haul_core::hosts::lists_no_links(e)
-    };
     if let Some(w) = s.wrappers.first() {
         return match w.status {
             "done" => Some(Outcome::Listed(w.found.map_or(0, |f| f.files))),
             "captcha" => Some(Outcome::NeedsYou),
-            "error" if gone(&w.error) => Some(Outcome::Gone),
+            "error" if w.gone => Some(Outcome::Gone),
             "error" => Some(Outcome::Failed),
             _ => None,
         };
@@ -230,7 +227,7 @@ fn outcome(s: &Snapshot) -> Option<Outcome> {
         "done" => Some(Outcome::File),
         "captcha" => Some(Outcome::NeedsYou),
         "waiting" if it.wait > 0 => Some(Outcome::Waits),
-        "error" if gone(&it.error) => Some(Outcome::Gone),
+        "error" if it.gone => Some(Outcome::Gone),
         "error" => Some(Outcome::Failed),
         _ => None,
     }

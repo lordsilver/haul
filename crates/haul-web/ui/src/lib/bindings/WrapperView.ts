@@ -44,4 +44,12 @@ hosts: Array<string>,
 /**
  * The wrapper it was found on (a paste a download page links).
  */
-source: string | null, };
+source: string | null, 
+/**
+ * A paste that lists no links: on a card with others, a note.
+ */
+lists_nothing: boolean, 
+/**
+ * Its host says what it stands for is no more: not tried again.
+ */
+gone: boolean, };

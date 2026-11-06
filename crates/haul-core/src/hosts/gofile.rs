@@ -14,8 +14,8 @@ use crate::config::secret;
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     let Some(token) = secret(&cx.cfg.gofile_token).map(str::to_string) else {
-        return Err(ResolveError::NeedsUser(
-            "gofile lets only premium accounts and its own website fetch links: open the page, or set a premium gofile_token".into(),
+        return Err(ResolveError::person(
+            "gofile lets only premium accounts and its own website fetch links: open the page, or set a premium gofile_token",
         ));
     };
     let id = url
@@ -38,7 +38,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         // A free account is turned away as a guest is, and passwords are
         // typed in the browser; either way a person has to open the page.
         status @ ("error-notPremium" | "error-passwordRequired") => {
-            return Err(ResolveError::NeedsUser(format!("gofile: {status}")));
+            return Err(ResolveError::person(format!("gofile: {status}")));
         }
         status => return Err(ResolveError::Failed(format!("gofile: {status}"))),
     }

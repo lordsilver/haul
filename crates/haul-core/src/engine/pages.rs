@@ -11,7 +11,7 @@ use std::{
 use super::{AUTO_RETRIES, Engine, State};
 use crate::{
     hosts::{self, Entry},
-    item::{Item, Status},
+    item::{Item, Status, Trouble},
 };
 
 /// How long a file waits before its host's page is passed again, after the
@@ -158,7 +158,7 @@ impl Engine {
         }
         if let Some(it) = st.items.get_mut(id) {
             tracing::info!(item = %id, "page later: {reason}");
-            it.error = reason.to_string();
+            it.set_error(reason, Trouble::Other);
             if it.status == Status::Captcha && it.task.is_none() {
                 if said.is_some() {
                     it.status = Status::Queued;
@@ -290,8 +290,8 @@ impl Engine {
             for m in &cleared {
                 it.manual_urls.remove(m);
             }
-            if hosts::is_guarded(&it.error) {
-                it.error.clear();
+            if it.trouble.is_guarded() {
+                it.clear_error();
             }
             if it.status == Status::Captcha && it.task.is_none() {
                 it.status = Status::Queued;
@@ -398,8 +398,14 @@ impl Engine {
             if for_good {
                 it.gone.insert(page.clone());
             }
+            // A paste the pass found empty is a note beside a card's others.
+            let trouble = if for_good && hosts::is_paste(&page) {
+                Trouble::ListsNothing
+            } else {
+                Trouble::Other
+            };
             it.failed.insert(page);
-            it.error = reason.to_string();
+            it.set_error(reason, trouble);
             if it.status == Status::Captcha {
                 it.status = Status::Queued;
             }

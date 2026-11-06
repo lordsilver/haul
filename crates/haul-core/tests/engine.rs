@@ -1610,11 +1610,7 @@ async fn a_paste_that_lists_no_links_is_not_retried_on_a_timer() {
     let engine = Engine::start(through_stand_in(&t)).await.unwrap();
     engine.add_text("http://paste2.org/paste/abc123", "");
     let s = wrapper_settled(&engine, "error").await;
-    assert!(
-        haul_core::hosts::lists_no_links(&s.wrappers[0].error),
-        "{}",
-        s.wrappers[0].error
-    );
+    assert!(s.wrappers[0].lists_nothing, "{}", s.wrappers[0].error);
     assert_eq!(s.wrappers[0].retry_in, 0, "not tried again on a timer");
     engine.shutdown().await;
     drop(engine);
@@ -1622,6 +1618,7 @@ async fn a_paste_that_lists_no_links_is_not_retried_on_a_timer() {
     let engine = start_when_free(|| through_stand_in(&t)).await;
     let s = engine.snapshot();
     assert_eq!(s.wrappers[0].status, "error");
+    assert!(s.wrappers[0].lists_nothing, "after a restart too");
     assert_eq!(s.wrappers[0].retry_in, 0, "nor after a restart");
 }
 

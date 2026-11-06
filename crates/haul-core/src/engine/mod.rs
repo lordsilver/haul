@@ -27,8 +27,8 @@ use crate::{
     config::{self, Config, Route, Theme},
     container::{self, Link},
     extract,
-    hosts::{self, Cx, Entry, Http, ResolveError, Tokens},
-    item::{Found, Item, Status, Verifying},
+    hosts::{self, Cx, Entry, Http, Need, ResolveError, Tokens},
+    item::{Found, Item, Status, Trouble, Verifying},
     limiter::Limiter,
     parts, paths, store,
 };
@@ -137,11 +137,6 @@ fn drop_spent_wrappers(items: &mut IndexMap<String, Item>) {
         .collect();
     items.retain(|id, i| !(i.wrapper && i.status == Status::Done && !sources.contains(id)));
 }
-
-/// How a download whose links are all on hosts that are off fails, before
-/// their names; turning one of them on (or setting its account) tries it
-/// again.
-const OFF_ONLY: &str = "only on hosts that are off: ";
 
 /// Things worth telling the user about outside the queue view.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -455,17 +450,17 @@ impl State {
         hosts::page_passes(url) || self.guarded.contains(url)
     }
 
-    /// A resolver asked for a person with `message`: page `url` goes to the
-    /// desktop app's browser when a browser usually passes it. A gate past
-    /// the site's check takes no clearance: Haul would only read it again.
-    fn note_check(&mut self, url: &str, message: &str, tentative: bool) {
+    /// A resolver said page `url` needs `need`: it goes to the desktop app's
+    /// browser when a browser usually passes it. A gate past the site's check
+    /// takes no clearance: Haul would only read it again.
+    fn note_check(&mut self, url: &str, need: Need, tentative: bool) {
         // A page on a site Haul has no code for is passed too, for its
         // download, but only one the person added: a page only seen on the
         // clipboard is never opened on its own.
-        if hosts::is_guarded(message) || (!tentative && hosts::wants_a_browser(message)) {
+        if matches!(need, Need::Check | Need::Gate) || (!tentative && need == Need::Page) {
             self.guarded.insert(url.to_string());
         }
-        if hosts::is_gated(message) {
+        if need == Need::Gate {
             self.cleared.insert(url.to_string());
         }
     }
@@ -1093,20 +1088,7 @@ impl Engine {
         // found on its turn, and the row goes on to its other hosts.
         if let (hosts::Look::Gone(message), Some(url)) = (&looked, &url) {
             drop(permit);
-            let mut st = self.lock();
-            let mut event = None;
-            if let Some(it) = st.items.get_mut(&id)
-                && !it.running()
-            {
-                it.probed = true;
-                it.gone.insert(url.clone());
-                event = self.fail_mirror(&mut st, &id, url, &hosts::host_of(url), message.clone());
-            }
-            self.touch(&mut st);
-            drop(st);
-            if let Some(e) = event {
-                let _ = self.0.events.send(e);
-            }
+            self.fail_unstarted(&id, url, message.clone(), true);
             self.0.wake.notify_one();
             return;
         }
@@ -1246,17 +1228,17 @@ impl Engine {
             }
             // A gate for a person (filecrypt.cc's) says so at once, even
             // while downloads are paused.
-            Ok(Err(ResolveError::NeedsUser(message))) => {
+            Ok(Err(ResolveError::NeedsUser(need, message))) => {
                 let mut st = self.lock();
                 let tentative = st.items.get(&id).is_some_and(|i| i.tentative);
-                st.note_check(&url, &message, tentative);
+                st.note_check(&url, need, tentative);
                 let mut event = None;
                 if let Some(it) = st.items.get_mut(&id)
                     && !it.running()
                 {
                     it.probed = true;
                     it.manual_urls.insert(url.clone());
-                    it.error = message;
+                    it.set_error(message, Trouble::Needs(need));
                     it.status = Status::Captcha;
                     event = Some(Event::NeedsUser {
                         id: id.clone(),
@@ -1265,27 +1247,15 @@ impl Engine {
                 }
                 self.touch(&mut st);
                 drop(st);
-                if let Some(e) = event {
-                    let _ = self.0.events.send(e);
-                }
+                self.emit(event);
             }
             // So does a link that is dead (a vault gone, 404), failing as a
-            // download's dead mirror does: retried later on its own if set.
+            // download's dead mirror does: retried later on its own if set,
+            // unless the host said it is no more.
             Ok(Err(ResolveError::Failed(message))) => {
-                let mut st = self.lock();
-                let mut event = None;
-                if let Some(it) = st.items.get_mut(&id)
-                    && !it.running()
-                {
-                    it.probed = true;
-                    event = self.fail_mirror(&mut st, &id, &url, &hosts::host_of(&url), message);
-                }
-                self.touch(&mut st);
-                drop(st);
-                if let Some(e) = event {
-                    let _ = self.0.events.send(e);
-                }
+                self.fail_unstarted(&id, &url, message, false)
             }
+            Ok(Err(ResolveError::Gone(message))) => self.fail_unstarted(&id, &url, message, true),
             _ => {
                 let mut st = self.lock();
                 if let Some(it) = st.items.get_mut(&id) {
@@ -1295,6 +1265,29 @@ impl Engine {
             }
         }
         self.0.wake.notify_one();
+    }
+
+    /// Fails mirror `url` of row `id` from outside an attempt (a lookup, an
+    /// unwrapping as it is added), unless an attempt has started meanwhile.
+    fn fail_unstarted(&self, id: &str, url: &str, message: String, gone: bool) {
+        let mut st = self.lock();
+        let mut event = None;
+        if let Some(it) = st.items.get_mut(id)
+            && !it.running()
+        {
+            it.probed = true;
+            event = self.fail_mirror(&mut st, id, url, &hosts::host_of(url), message, gone);
+        }
+        self.touch(&mut st);
+        drop(st);
+        self.emit(event);
+    }
+
+    /// Tells whoever listens, when there is something to tell.
+    fn emit(&self, event: impl IntoIterator<Item = Event>) {
+        for e in event {
+            let _ = self.0.events.send(e);
+        }
     }
 
     /// A file already in the download folder that row `id` would fetch again,
@@ -1907,7 +1900,7 @@ impl Engine {
             .filter(|i| {
                 i.status == Status::Error
                     && !i.wrapper
-                    && i.error.starts_with(OFF_ONLY)
+                    && i.trouble == Trouble::OnlyOffHosts
                     && i.mirrors
                         .iter()
                         .any(|m| hosts::host_of(m).eq_ignore_ascii_case(host))
@@ -2327,12 +2320,12 @@ fn noted_quietly(st: &State, it: &Item) -> bool {
         return false;
     };
     it.wrapper
-        && hosts::lists_no_links(&it.error)
+        && it.trouble == Trouble::ListsNothing
         && st.items.values().any(|o| {
             o.wrapper
                 && o.id != it.id
                 && o.source.as_deref() == Some(source)
-                && !hosts::lists_no_links(&o.error)
+                && o.trouble != Trouble::ListsNothing
         })
 }
 

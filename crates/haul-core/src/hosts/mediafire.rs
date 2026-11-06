@@ -56,7 +56,7 @@ async fn info(cx: &Cx<'_>, key: &str) -> Result<Info, ResolveError> {
                 .as_str()
                 .and_then(|h| Checksum::from_hex(Algo::Sha256, h)),
         }),
-        _ => Err(ResolveError::failed("mediafire: the file was deleted")),
+        _ => Err(ResolveError::gone("mediafire: the file was deleted")),
     }
 }
 
@@ -106,7 +106,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     }
     let page = page.text().await?;
     let address = button(&page).ok_or_else(|| {
-        ResolveError::NeedsUser("mediafire: its page gave no download button: open it".into())
+        ResolveError::person("mediafire: its page gave no download button: open it")
     })?;
     Ok(vec![Entry {
         url: address,

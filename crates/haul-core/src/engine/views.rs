@@ -531,8 +531,7 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
             // A paste that lists no links (a description) is a
             // note on a card that has anything else going on or found,
             // not the card's failure.
-            let lists_nothing =
-                |x: &WrapperView| x.status == "error" && crate::hosts::lists_no_links(&x.error);
+            let lists_nothing = |x: &WrapperView| x.status == "error" && x.lists_nothing;
             let quiet = ws.iter().any(|x| !lists_nothing(x));
             let set_aside = |x: &WrapperView| quiet && lists_nothing(x);
             // The card shows what needs attention first among them.
@@ -897,6 +896,7 @@ mod tests {
             other_hosts: 0,
             error_shown: String::new(),
             failed_hosts: Vec::new(),
+            gone: false,
             slowed: None,
             commands: Vec::new(),
             archive: None,
@@ -948,6 +948,8 @@ mod tests {
             found: None,
             hosts: vec![format!("{id}.example")],
             source: None,
+            lists_nothing: false,
+            gone: false,
         }
     }
 
@@ -1227,6 +1229,7 @@ mod tests {
         let mut empty = wrapper("paste", "error", None);
         empty.source = Some("page".into());
         empty.error = "zpaste.net: the paste on zpaste.net lists no links".into();
+        empty.lists_nothing = true;
         let wrappers = [page, empty];
         let mut file = item("f", "paused");
         file.source = Some("page".into());
@@ -1242,6 +1245,7 @@ mod tests {
         // Only pastes that list nothing: the page found no files.
         let mut alone = wrapper("alone", "error", None);
         alone.error = "the paste on zpaste.net lists no links".into();
+        alone.lists_nothing = true;
         let wrappers = [alone];
         let cards = wrapper_cards(&wrappers, &[]);
         assert_eq!((cards[0].status, cards[0].empty), ("error", 0));
@@ -1260,6 +1264,7 @@ mod tests {
         let mut empty = wrapper("paste", "error", None);
         empty.source = Some("page".into());
         empty.error = "paste2.org: the paste on paste2.org lists no links".into();
+        empty.lists_nothing = true;
         let mut wrappers = vec![page, empty];
         for n in 0..6 {
             let mut c = wrapper(&format!("container{n}"), "captcha", None);

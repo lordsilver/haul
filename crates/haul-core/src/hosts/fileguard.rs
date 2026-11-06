@@ -140,7 +140,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     gone_or_broken(&r)?;
     let status = r.status().as_u16();
     if status >= 400 {
-        return Err(ResolveError::NeedsUser(format!(
+        return Err(ResolveError::person(format!(
             "fileguard.cc answered HTTP {status}; open the page"
         )));
     }
@@ -155,8 +155,8 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         });
     }
     let Some(csrf) = CSRF.captures(&html).map(|c| c[1].to_string()) else {
-        return Err(ResolveError::NeedsUser(
-            "fileguard.cc answered without its proof-of-work form; open the page".into(),
+        return Err(ResolveError::person(
+            "fileguard.cc answered without its proof-of-work form; open the page",
         ));
     };
     // Where the page's own widget asks, and where fileguard.cc has it otherwise.
@@ -178,7 +178,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     gone_or_broken(&r)?;
     let status = r.status().as_u16();
     if status >= 400 {
-        return Err(ResolveError::NeedsUser(format!(
+        return Err(ResolveError::person(format!(
             "fileguard.cc challenge answered HTTP {status}; open the page"
         )));
     }
@@ -186,15 +186,15 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         Ok(challenge) => challenge,
         // A page where the challenge should be, a browser check say.
         Err(e) if e.is_decode() => {
-            return Err(ResolveError::NeedsUser(
-                "fileguard.cc answered without its proof-of-work challenge; open the page".into(),
+            return Err(ResolveError::person(
+                "fileguard.cc answered without its proof-of-work challenge; open the page",
             ));
         }
         Err(e) => return Err(e.into()),
     };
     // A challenge Haul cannot work is still one a browser can.
     let unsolved = |why: &str| {
-        ResolveError::NeedsUser(format!("fileguard.cc's proof of work {why}; open the page"))
+        ResolveError::person(format!("fileguard.cc's proof of work {why}; open the page"))
     };
     let Some(search) = search_for(&challenge.algorithm) else {
         return Err(unsolved(&format!(

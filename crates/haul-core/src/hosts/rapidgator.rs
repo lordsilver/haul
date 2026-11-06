@@ -25,7 +25,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         secret(&cx.cfg.rapidgator_user),
         secret(&cx.cfg.rapidgator_pass),
     ) else {
-        return Err(ResolveError::NeedsUser(super::FREE_ON_PAGE.into()));
+        return Err(ResolveError::person(super::FREE_ON_PAGE));
     };
     let id = FILE_ID
         .captures(url)

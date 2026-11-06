@@ -367,7 +367,7 @@ fn refusal(r: &reqwest::Response, what: &str) -> Option<ResolveError> {
         return Some(ResolveError::Failed(format!("HTTP {status}")));
     }
     (status >= 400).then(|| {
-        ResolveError::NeedsUser(format!(
+        ResolveError::person(format!(
             "filecrypt.cc answered {what} with HTTP {status}; open the page"
         ))
     })
@@ -499,9 +499,8 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         return from_dlc(cx, &id).await;
     }
     let Some(id) = container_id(url) else {
-        return Err(ResolveError::NeedsUser(
-            "filecrypt.cc needs a browser for this link: open it, then add the .dlc link the page offers"
-                .into(),
+        return Err(ResolveError::person(
+            "filecrypt.cc needs a browser for this link: open it, then add the .dlc link the page offers",
         ));
     };
     let base = &cx.cfg.endpoints.filecrypt;
@@ -517,8 +516,8 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         return solved(cx, &html).await;
     }
     if PASSWORD.is_match(&COMMENT.replace_all(&html, "")) {
-        return Err(ResolveError::NeedsUser(
-            "filecrypt.cc asks for this container's password; open the page".into(),
+        return Err(ResolveError::person(
+            "filecrypt.cc asks for this container's password; open the page",
         ));
     }
     // Another gate than the checkbox (a captcha of another kind): a browser
@@ -537,8 +536,8 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     };
     let resolve = |link: &str| url::Url::parse(&page).ok()?.join(link.trim()).ok();
     let Some(session) = attr("session").and_then(resolve) else {
-        return Err(ResolveError::NeedsUser(
-            "filecrypt.cc's checkbox says nowhere to ask; open the page".into(),
+        return Err(ResolveError::person(
+            "filecrypt.cc's checkbox says nowhere to ask; open the page",
         ));
     };
 
@@ -600,8 +599,8 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     let (Some(challenge_id), Some(challenge_hex)) =
         (challenge["id"].as_str(), challenge["challenge"].as_str())
     else {
-        return Err(ResolveError::NeedsUser(
-            "filecrypt.cc answered without its challenge; open the page".into(),
+        return Err(ResolveError::person(
+            "filecrypt.cc answered without its challenge; open the page",
         ));
     };
     // The page reads it as `parseInt`: a number, or one in a string.
@@ -611,8 +610,8 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         .and_then(|d| u32::try_from(d).ok())
         .filter(|d| *d <= 160)
         .ok_or_else(|| {
-            ResolveError::NeedsUser(
-                "filecrypt.cc asks for a proof of work SHA-1 cannot give; open the page".into(),
+            ResolveError::person(
+                "filecrypt.cc asks for a proof of work SHA-1 cannot give; open the page",
             )
         })?;
     let found = {
@@ -658,8 +657,8 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
         return solved(cx, &html).await;
     }
     if WIDGET.is_match(&html) {
-        return Err(ResolveError::NeedsUser(
-            "filecrypt.cc turned Haul's answer to its checkbox away; open the page".into(),
+        return Err(ResolveError::person(
+            "filecrypt.cc turned Haul's answer to its checkbox away; open the page",
         ));
     }
     Err(ResolveError::failed(
@@ -680,14 +679,13 @@ async fn from_dlc(cx: &Cx<'_>, id: &str) -> Result<Unwrapped, ResolveError> {
     gone_or_broken(&r)?;
     let status = r.status().as_u16();
     if status >= 400 {
-        return Err(ResolveError::NeedsUser(format!(
+        return Err(ResolveError::person(format!(
             "filecrypt.cc answered HTTP {status} on its .dlc link; solve its gate in a browser"
         )));
     }
     if content_type(r.headers()).contains("text/html") {
-        return Err(ResolveError::NeedsUser(
-            "filecrypt.cc answered its .dlc link with a web page; solve its gate in a browser"
-                .into(),
+        return Err(ResolveError::person(
+            "filecrypt.cc answered its .dlc link with a web page; solve its gate in a browser",
         ));
     }
     let bytes = r.bytes().await?;

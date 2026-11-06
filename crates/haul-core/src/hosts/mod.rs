@@ -27,7 +27,7 @@ mod rapidgator;
 mod rootz;
 mod vikingfile;
 
-pub use generic::{is_gated, is_guarded, is_paste, pasted_links, short_title};
+pub use generic::{is_paste, pasted_links, short_title};
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -256,19 +256,50 @@ pub enum ResolveError {
     /// The host asked for a pause (rate limit or free-tier timer).
     #[error("{message}")]
     Wait { seconds: u64, message: String },
-    /// The host needs a person (captcha or browser step).
-    #[error("{0}")]
-    NeedsUser(String),
+    /// The link needs a person, or a browser, before it gives its file.
+    #[error("{1}")]
+    NeedsUser(Need, String),
     /// The host could not be reached; worth trying again shortly.
     #[error("{0}")]
     Network(String),
     #[error("{0}")]
     Failed(String),
+    /// The host says the file is no more (deleted, taken down, a paste that
+    /// lists nothing): no use trying the link again on a timer.
+    #[error("{0}")]
+    Gone(String),
+}
+
+/// What a link that needs someone needs: a person, or a browser that may get
+/// past by itself, which the desktop app opens out of sight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Need {
+    /// A captcha, a click, an account: a person.
+    Person,
+    /// A browser check in front of the site (Cloudflare's), which a browser
+    /// usually passes by itself.
+    Check,
+    /// A gate past that check that Haul cannot answer: the browser reads the
+    /// page, since a clearance handed to Haul would only bring it back here.
+    Gate,
+    /// A page on a site Haul has no code for, which a browser may get through
+    /// by itself, pressing its download.
+    Page,
 }
 
 impl ResolveError {
     pub(crate) fn failed(message: impl Into<String>) -> Self {
         Self::Failed(message.into())
+    }
+
+    /// A link that needs a person.
+    pub(crate) fn person(message: impl Into<String>) -> Self {
+        Self::NeedsUser(Need::Person, message.into())
+    }
+
+    pub(crate) fn gone(message: impl Into<String>) -> Self {
+        Self::Gone(message.into())
     }
 }
 
@@ -1356,22 +1387,16 @@ pub fn lists(url: &str) -> bool {
     wraps(url) || is_paste(url)
 }
 
-/// Whether a wrapper's error says its page lists no links: a paste Haul
-/// read itself, or one the desktop app passed out of sight.
-pub fn lists_no_links(message: &str) -> bool {
-    message.ends_with(" lists no links")
+/// What a paste that lists no links says of itself, whether Haul read it or
+/// the desktop app passed it out of sight.
+pub fn lists_nothing(url: &str) -> String {
+    format!("the paste on {} lists no links", host_of(url))
 }
 
 /// What a host whose free download is its page's (a wait, then a captcha)
 /// asks of a person without its account.
 pub(super) const FREE_ON_PAGE: &str =
     "a free download is on its page (a wait, then a captcha): open it, or set the account";
-
-/// Whether a page on a site Haul has no code for may get through in a
-/// browser with nobody's help ([`generic::wants_a_browser`]).
-pub fn wants_a_browser(message: &str) -> bool {
-    generic::wants_a_browser(message)
-}
 
 /// Whether link `url`'s address names a file (an archive's part, a video):
 /// one the desktop app's browser was sent to is the file itself.

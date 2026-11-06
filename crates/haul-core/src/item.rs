@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    hosts::{Checksum, Entry, guess_name, name_key, tidy_name},
+    hosts::{Checksum, Entry, Need, guess_name, name_key, tidy_name},
     throttle::Pace,
 };
 
@@ -90,6 +90,34 @@ pub(crate) struct Slowed {
     pub why: &'static str,
 }
 
+/// What a row's error is about, where the engine acts on it rather than only
+/// shows it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trouble {
+    #[default]
+    Other,
+    /// Only hosts the user turned off have it: turning one on tries it again.
+    OnlyOffHosts,
+    /// Every page it could go to is on a host that asked this address to wait.
+    AskedToWait,
+    /// Its page wants a person, or a browser that may get past by itself.
+    Needs(Need),
+    /// A paste that lists no links: on a card with others that do, a note.
+    ListsNothing,
+}
+
+impl Trouble {
+    fn is_other(&self) -> bool {
+        *self == Trouble::Other
+    }
+
+    /// A browser check, or a gate past it, stands in the way.
+    pub fn is_guarded(self) -> bool {
+        matches!(self, Trouble::Needs(Need::Check | Need::Gate))
+    }
+}
+
 /// What unwrapping a wrapper found on its page.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
@@ -128,7 +156,10 @@ pub(crate) struct Item {
     pub probed: bool,
     pub verifying: Verifying,
     pub status: Status,
+    /// What went wrong last, in words; set with [`Item::set_error`].
     pub error: String,
+    /// What `error` is about.
+    pub trouble: Trouble,
     pub size: u64,
     pub done: u64,
     pub speed: f64,
@@ -239,6 +270,7 @@ impl Item {
             pre_for: None,
             status: Status::Queued,
             error: String::new(),
+            trouble: Trouble::Other,
             size: 0,
             done: 0,
             speed: 0.0,
@@ -289,9 +321,20 @@ impl Item {
         }
     }
 
+    /// Says what went wrong, and what that is about.
+    pub(crate) fn set_error(&mut self, text: impl Into<String>, trouble: Trouble) {
+        self.error = text.into();
+        self.trouble = trouble;
+    }
+
+    pub(crate) fn clear_error(&mut self) {
+        self.error.clear();
+        self.trouble = Trouble::Other;
+    }
+
     /// Starts its retry counts over and forgets what went wrong.
     pub(crate) fn reset_retries(&mut self) {
-        self.error.clear();
+        self.clear_error();
         self.retries = 0;
         self.auto_retries = 0;
         self.retry_at = None;
@@ -326,6 +369,7 @@ impl Item {
             package: self.package.clone(),
             status: self.status,
             error: self.error.clone(),
+            trouble: self.trouble,
             pre: self.pre.clone(),
             size: self.size,
             pre_for: self.pre_for.clone(),
@@ -385,7 +429,7 @@ impl Item {
         it.manual = s.manual;
         it.size = s.size;
         it.part_size = s.size;
-        it.error = s.error;
+        it.set_error(s.error, s.trouble);
         it.path = s.path;
         it.checksum = s.checksum;
         it.existing = s.existing;
@@ -426,6 +470,8 @@ pub(crate) struct Saved {
     pub package: String,
     pub status: Status,
     pub error: String,
+    #[serde(default, skip_serializing_if = "Trouble::is_other")]
+    pub trouble: Trouble,
     pub pre: Option<Entry>,
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

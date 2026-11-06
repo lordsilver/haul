@@ -149,6 +149,26 @@ fn field(xml: &str, name: &str) -> Option<String> {
     Some(xml[start..end].trim().to_string())
 }
 
+/// Why a redial brought no new address.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RedialError {
+    /// The line came back with the address it had: this line keeps it, and
+    /// redials on their own stop.
+    #[error("{0}")]
+    SameAddress(String),
+    /// The router redials only with its login.
+    #[error("{0}")]
+    NeedsLogin(String),
+    #[error("{0}")]
+    Other(String),
+}
+
+impl From<String> for RedialError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
 impl Router {
     async fn call(&self, http: &reqwest::Client, action: &str) -> Result<String, String> {
         let r = http
@@ -195,7 +215,7 @@ impl Router {
         &self,
         http: &reqwest::Client,
         before: Option<String>,
-    ) -> Result<String, String> {
+    ) -> Result<String, RedialError> {
         wait_for_new(before, || async {
             (self.connected(http).await, self.address(http).await)
         })
@@ -209,18 +229,18 @@ impl Router {
         &self,
         http: &reqwest::Client,
         login: Option<(&str, &str)>,
-    ) -> Result<String, String> {
+    ) -> Result<String, RedialError> {
         let before = self.address(http).await;
         let asked = match self.call(http, "ForceTermination").await {
             Ok(_) => Ok(()),
             Err(upnp) => match (login, &self.tr064) {
                 (Some((user, password)), Some(desc)) => tr064_redial(http, desc, user, password)
                     .await
-                    .map_err(|e| format!("{upnp}; TR-064: {e}")),
-                _ => Err(format!(
+                    .map_err(|e| RedialError::Other(format!("{upnp}; TR-064: {e}"))),
+                _ => Err(RedialError::NeedsLogin(format!(
                     "{} refused to redial over UPnP ({upnp}); give Haul its login",
                     self.model
-                )),
+                ))),
             },
         };
         asked?;
@@ -232,7 +252,7 @@ impl Router {
 }
 
 /// Waits until the line is up with an address other than `before`.
-async fn wait_for_new<F, Fut>(before: Option<String>, mut check: F) -> Result<String, String>
+async fn wait_for_new<F, Fut>(before: Option<String>, mut check: F) -> Result<String, RedialError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = (bool, Option<String>)>,
@@ -243,16 +263,18 @@ where
     while tokio::time::Instant::now() < until {
         if let (true, Some(now)) = check().await {
             return if Some(&now) == before.as_ref() {
-                Err(format!(
+                Err(RedialError::SameAddress(format!(
                     "the line came back with the same address ({now}): this line keeps it"
-                ))
+                )))
             } else {
                 Ok(now)
             };
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
-    Err("the line did not come back within two minutes".into())
+    Err(RedialError::Other(
+        "the line did not come back within two minutes".into(),
+    ))
 }
 
 /// TR-064's WAN service: PPP (DSL) when the router has it, else IP.
@@ -427,7 +449,7 @@ mod tests {
             (true, Some("1.1.1.1".to_string()))
         })
         .await;
-        assert!(same.unwrap_err().contains("same address"));
+        assert!(matches!(same, Err(RedialError::SameAddress(_))));
         let new = wait_for_new(Some("1.1.1.1".into()), || async {
             (true, Some("2.2.2.2".to_string()))
         })
