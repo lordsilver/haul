@@ -2,16 +2,14 @@
 
 use std::path::{Path, PathBuf};
 
-/// The desktop app's identifier, as in `tauri.conf.json`.
-pub const APP_ID: &str = "io.github.lordsilver.haul";
-
 /// `$HAUL_DATA_DIR`, else Haul's folder in the platform's local data
-/// directory: `%LOCALAPPDATA%\io.github.lordsilver.haul` on Windows, named
-/// after the app identifier like the WebView2 data next to it, and
-/// `~/.local/share/haul` on Linux. It holds `config.toml`, the queue and the
-/// instance lock.
+/// directory: `%LOCALAPPDATA%\Haul` on Windows, which is also the folder the
+/// uninstaller deletes when asked to remove the app's data (a per-user install
+/// puts the program in `%LOCALAPPDATA%\Programs\Haul`), and
+/// `~/.local/share/haul` on Linux. It holds `config.toml`, the queue, the logs,
+/// the instance lock and every browser profile ([`webview`]).
 pub fn data_dir() -> PathBuf {
-    let name = if cfg!(windows) { APP_ID } else { "haul" };
+    let name = if cfg!(windows) { "Haul" } else { "haul" };
     std::env::var_os("HAUL_DATA_DIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
@@ -19,13 +17,23 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("haul-data"))
 }
 
-/// The system's Downloads folder, where a report Haul makes is saved; its
-/// data folder when the system has none.
+/// Where the desktop app keeps its browser data: the main window's under
+/// `main`, and the profiles it passes pages in under `chromium`
+/// ([`pass_profiles`]).
+pub fn webview(data_dir: &Path) -> PathBuf {
+    data_dir.join("webview")
+}
+
+/// The main window's browser data.
+pub fn main_webview(data_dir: &Path) -> PathBuf {
+    webview(data_dir).join("main")
+}
+
 /// Where the desktop app keeps the browser profiles it passes pages in, one
 /// per site, beside the last picture of each site's page that wanted a person
 /// ([`wants_person_shot`]), which a report carries.
 pub fn pass_profiles(data_dir: &Path) -> PathBuf {
-    data_dir.join("webview").join("chromium")
+    webview(data_dir).join("chromium")
 }
 
 /// The picture of `site`'s last page that wanted a person, among the
@@ -37,6 +45,8 @@ pub fn wants_person_shot(data_dir: &Path, site: &str) -> PathBuf {
 /// How such a picture's file name ends.
 pub const WANTS_PERSON: &str = "-wants-person.png";
 
+/// The system's Downloads folder, where a report Haul makes is saved; its
+/// data folder when the system has none.
 pub fn downloads_folder() -> PathBuf {
     dirs::download_dir().unwrap_or_else(data_dir)
 }

@@ -74,7 +74,7 @@ Haul looks for its own updates on GitHub (the latest release of `lordsilver/haul
 
 ## The data folder on Windows
 
-The data folder is `%LOCALAPPDATA%\io.github.lordsilver.haul`, not `%LOCALAPPDATA%\Haul`: that is where a per-user install puts the program, and the uninstaller's option to delete the app's data removes `%LOCALAPPDATA%\<identifier>`, which is also where WebView2 already keeps the app's browser data. On Linux nothing shares `~/.local/share/haul`, so it stays there.
+Haul follows Windows' per-user convention: a per-user install puts the program in `%LOCALAPPDATA%\Programs\Haul` and the data folder is `%LOCALAPPDATA%\Haul`, as other apps do (Zed, for one). Both are Local, not Roaming: the settings belong to the machine (download folder, router, proxies), so roaming them gains nothing. Tauri would name WebView2's data folder after the app identifier, so the desktop app points its own folders (`appDirectoriesOverride`) and the main window's browser data (`webview\main`) into the data folder, and no folder anywhere carries the identifier. A per-user install already went to `%LOCALAPPDATA%\Programs\Haul` (MultiUser.nsh's default for an installer that offers both modes); the uninstaller's option to delete the app's data now removes `%LOCALAPPDATA%\Haul` (a `Haul:` comment in `installer.nsi`). On Linux the data folder is `~/.local/share/haul`.
 
 ## Browser hand-off and proxy routing
 

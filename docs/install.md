@@ -2,7 +2,7 @@
 
 ## Windows desktop app
 
-Download the installer from the [latest release](https://github.com/lordsilver/haul/releases/latest) (`haul-desktop-v<version>-windows-x64-setup.exe`). It asks whether to install for you alone, in `%LOCALAPPDATA%\Haul` without administrator rights, or for everyone on the computer, in Program Files; on an administrator account Windows asks for permission as it starts. For a silent install, pass `/S` with `/CurrentUser` or `/AllUsers`. The `.msi` always installs for everyone.
+Download the installer from the [latest release](https://github.com/lordsilver/haul/releases/latest) (`haul-desktop-v<version>-windows-x64-setup.exe`). It asks whether to install for you alone, in `%LOCALAPPDATA%\Programs\Haul` without administrator rights, or for everyone on the computer, in Program Files; on an administrator account Windows asks for permission as it starts. For a silent install, pass `/S` with `/CurrentUser` or `/AllUsers`. The `.msi` always installs for everyone.
 
 The installer is not code-signed yet, so SmartScreen asks once: **More info**, then **Run anyway**. Windows 10 and 11 ship the WebView2 runtime the app needs.
 

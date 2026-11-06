@@ -25,7 +25,7 @@ use haul_core::{Engine, Event, Options, Theme, paths};
 use haul_web::Desktop;
 use tauri::{
     AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
-    webview::NewWindowResponse,
+    utils::config::AppDirectoriesOverride, webview::NewWindowResponse,
 };
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use tauri_plugin_notification::NotificationExt;
@@ -41,6 +41,11 @@ const PORT: u16 = 8765;
 
 fn main() {
     let data_dir = paths::data_dir();
+    let mut context = tauri::generate_context!();
+    // Tauri names its own folders after the app identifier (WebView2's data
+    // among them); keep anything it or a plugin stores in Haul's data folder.
+    context.config_mut().app.app_directories_override =
+        Some(AppDirectoriesOverride::Root(data_dir.clone()));
     let app = tauri::Builder::default()
         // First, so a second launch hands over its arguments and quits early.
         .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
@@ -75,7 +80,7 @@ fn main() {
                 let _ = window.hide();
             }
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("building the app");
     app.run(|app, event| {
         if let RunEvent::Exit = event
@@ -122,7 +127,7 @@ async fn start(app: &AppHandle, data_dir: PathBuf) -> Result<(), String> {
     ));
     passing::spawn(engine.clone(), browser);
     app.manage(engine.clone());
-    main_window(app, port, engine.theme()).map_err(|e| e.to_string())?;
+    main_window(app, port, engine.theme(), engine.data_dir()).map_err(|e| e.to_string())?;
     tray::create(app, &engine).map_err(|e| e.to_string())?;
     spawn_notification_actions(app.clone());
     spawn_notifications(app.clone(), &engine);
@@ -142,7 +147,7 @@ pub fn window_theme(theme: Theme) -> Option<tauri::Theme> {
     }
 }
 
-fn main_window(app: &AppHandle, port: u16, theme: Theme) -> tauri::Result<()> {
+fn main_window(app: &AppHandle, port: u16, theme: Theme, data_dir: &Path) -> tauri::Result<()> {
     let home = format!("http://127.0.0.1:{port}/");
     let own = home.clone();
     WebviewWindowBuilder::new(
@@ -154,6 +159,7 @@ fn main_window(app: &AppHandle, port: u16, theme: Theme) -> tauri::Result<()> {
     .theme(window_theme(theme))
     .inner_size(1180.0, 820.0)
     .min_inner_size(640.0, 480.0)
+    .data_directory(paths::main_webview(data_dir))
     // Lets the page take dropped .dlc files and links itself.
     .disable_drag_drop_handler()
     // Anything that is not the UI opens in the user's own browser.
@@ -490,13 +496,16 @@ mod tests {
         assert!(out.iter().any(|(title, _, _)| title == "Downloaded"));
     }
 
+    // The uninstaller's "delete app data" removes $LOCALAPPDATA\${PRODUCTNAME}.
+    #[cfg(windows)]
     #[test]
-    fn the_data_folder_follows_the_app_identifier() {
+    fn the_data_folder_is_named_after_the_product() {
         let conf = include_str!("../tauri.conf.json");
-        let id = format!("\"identifier\": \"{}\"", haul_core::paths::APP_ID);
+        let name = paths::data_dir();
+        let name = name.file_name().and_then(|n| n.to_str()).unwrap();
         assert!(
-            conf.contains(&id),
-            "tauri.conf.json and paths::APP_ID disagree"
+            conf.contains(&format!("\"productName\": \"{name}\"")),
+            "tauri.conf.json's productName and paths::data_dir disagree"
         );
     }
 }

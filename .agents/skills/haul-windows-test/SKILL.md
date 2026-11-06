@@ -7,7 +7,7 @@ description: Test Haul's desktop app on this machine's Windows from WSL — get 
 
 Debug mode (`docs/debugging.md`) is the way in: a live stream of every signal, the insides, waits instead of polling, and a look into a page being passed. Read that page first.
 
-Never touch the user's own Haul (`%LOCALAPPDATA%\Haul`, its data folder or its queue): the test copy lives in `%TEMP%\haul-test` with a data folder and port of its own, and is stopped by its command line.
+Never touch the user's own Haul (the program in `%LOCALAPPDATA%\Programs\Haul`, its data folder `%LOCALAPPDATA%\Haul` or its queue): the test copy lives in `%TEMP%\haul-test` with a data folder and port of its own, and is stopped by its command line.
 
 ## A Windows build of a branch
 

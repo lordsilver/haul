@@ -70,6 +70,6 @@ What each download setting does is in [How downloads behave](downloading.md).
 
 ## The data folder
 
-The data folder is `%LOCALAPPDATA%\io.github.lordsilver.haul` on Windows, which the uninstaller deletes when you ask it to remove the app's data, and `~/.local/share/haul` on Linux.
+The data folder is `%LOCALAPPDATA%\Haul` on Windows, which the uninstaller deletes when you ask it to remove the app's data, and `~/.local/share/haul` on Linux.
 
-It holds `config.toml`, the queue (`queue.json`), what Haul measured per host (`hosts.json`), the desktop app's log (`haul.log`, started afresh at 10 MB with the five before it kept as `haul.1.log`, the newest, to `haul.5.log`), the in-app browser's profiles (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish, and move along when you change the download folder.
+It holds `config.toml`, the queue (`queue.json`), what Haul measured per host (`hosts.json`), the desktop app's log (`haul.log`, started afresh at 10 MB with the five before it kept as `haul.1.log`, the newest, to `haul.5.log`), the browser data of the main window and of each site the desktop app passes pages for (`webview\`) and `haul.lock`, which stops a second Haul from loading and rewriting the same queue. Partial downloads sit in `.partial` inside the download folder until they finish, and move along when you change the download folder.
