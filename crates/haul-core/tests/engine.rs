@@ -52,7 +52,7 @@ async fn downloads_a_direct_link() {
         assert!(engine.item_action(&id, action));
         let s = engine.snapshot();
         assert_eq!(
-            (s.items[0].status, s.items[0].existing),
+            (s.items[0].status.as_str(), s.items[0].existing),
             ("done", false),
             "{action:?}"
         );
@@ -269,7 +269,9 @@ async fn a_deleted_file_fails_when_it_is_looked_up() {
     engine.set_paused(true);
     engine.add_text("https://1fichier.com/?gone123", "");
     let s = wait_for(&engine, "the deleted file to fail", |s| {
-        s.items.first().is_some_and(|i| i.status == "error")
+        s.items
+            .first()
+            .is_some_and(|i| i.status.as_str() == "error")
     })
     .await;
     assert!(s.items[0].error.contains("deleted"), "{}", s.items[0].error);
@@ -282,7 +284,7 @@ async fn resumes_after_a_broken_connection() {
     let engine = t.engine().await;
     engine.add_text(&format!("{}/flaky/b.bin", t.ip), "");
     let s = wait_for(&engine, "a retry", |s| {
-        s.items[0].status == "waiting" && !s.items[0].error.is_empty()
+        s.items[0].status.as_str() == "waiting" && !s.items[0].error.is_empty()
     })
     .await;
     assert!(
@@ -328,7 +330,7 @@ async fn probe_merges_links_that_hide_the_name() {
     let added = engine.add_text(&format!("{}/hidden/one {}/hidden/two", t.ip, t.name), "");
     assert_eq!(added.added, 2, "nothing to merge on before probing");
     let s = wait_for(&engine, "probes", |s| {
-        s.items.iter().all(|i| i.status != "checking")
+        s.items.iter().all(|i| i.status.as_str() != "checking")
     })
     .await;
     assert_eq!(s.items.len(), 1, "{s:#?}");
@@ -366,7 +368,10 @@ async fn rate_limited_host_cools_down() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     engine.add_text(&format!("{}/limited/d.bin", t.ip), "");
-    let s = wait_for(&engine, "cooldown", |s| s.items[0].status == "waiting").await;
+    let s = wait_for(&engine, "cooldown", |s| {
+        s.items[0].status.as_str() == "waiting"
+    })
+    .await;
     assert!(s.items[0].error.contains("429"), "{}", s.items[0].error);
     wait_for(&engine, "done", all_done).await;
     assert_eq!(t.downloaded("d.bin"), content("d.bin", SIZE));
@@ -383,7 +388,9 @@ async fn a_preferred_host_shows_its_wait_before_any_download_finished() {
         .unwrap();
     engine.add_text(&format!("{}/limited-long/d.bin", t.ip), "");
     let s = wait_for(&engine, "cooldown", |s| {
-        s.items.first().is_some_and(|i| i.status == "waiting")
+        s.items
+            .first()
+            .is_some_and(|i| i.status.as_str() == "waiting")
     })
     .await;
     let host = s.hosts.iter().find(|h| h.name == "127.0.0.1").unwrap();
@@ -396,7 +403,10 @@ async fn page_needs_a_person_then_their_link_is_used() {
     let engine = t.engine().await;
     let page = format!("{}/page/getfile", t.ip);
     engine.add_text(&page, "");
-    let s = wait_for(&engine, "captcha", |s| s.items[0].status == "captcha").await;
+    let s = wait_for(&engine, "captcha", |s| {
+        s.items[0].status.as_str() == "captcha"
+    })
+    .await;
     assert_eq!(s.items[0].open_urls, std::slice::from_ref(&page));
     assert_eq!(
         engine.page_for(&s.items[0].id).as_deref(),
@@ -428,7 +438,7 @@ async fn pause_resume_and_remove() {
     assert!(engine.item_action(&f, ItemAction::Pause));
     // Paused once its attempt has let go of the host slot and the file.
     let s = wait_for(&engine, "pause", |s| {
-        s.items[0].status == "paused" && active(s, "127.0.0.1") == 1
+        s.items[0].status.as_str() == "paused" && active(s, "127.0.0.1") == 1
     })
     .await;
     let kept = std::fs::metadata(t.partial(&f)).unwrap().len();
@@ -532,7 +542,7 @@ async fn queue_and_settings_survive_restart_and_a_second_instance_is_refused() {
     assert_eq!(
         (
             s.items[0].id.as_str(),
-            s.items[0].status,
+            s.items[0].status.as_str(),
             s.items[0].package.as_str()
         ),
         (id.as_str(), "paused", "keep")
@@ -624,7 +634,10 @@ async fn failed_downloads_retry_on_their_own() {
     config.retry_failed_minutes = 0;
     let engine = t.engine_with(config).await;
     engine.add_text(&format!("{}/missing/o.bin", t.ip), "");
-    let s = wait_for(&engine, "failure", |s| s.items[0].status == "error").await;
+    let s = wait_for(&engine, "failure", |s| {
+        s.items[0].status.as_str() == "error"
+    })
+    .await;
     assert_eq!(s.items[0].retry_in, 0, "turned off");
 
     let on = serde_json::json!({"retry_failed_minutes": 1});
@@ -677,7 +690,9 @@ async fn an_empty_folder_fails_instead_of_vanishing() {
     let engine = t.engine().await;
     engine.add_text("https://pixeldrain.com/l/empty", "");
     let s = wait_for(&engine, "failure", |s| {
-        s.items.first().is_some_and(|i| i.status == "error")
+        s.items
+            .first()
+            .is_some_and(|i| i.status.as_str() == "error")
     })
     .await;
     assert!(
@@ -696,7 +711,8 @@ async fn pause_all_pauses_running_transfers() {
     engine.set_paused(true);
     let s = wait_for(&engine, "a stop", |s| active(s, "127.0.0.1") == 0).await;
     assert_eq!(
-        s.items[0].status, "queued",
+        s.items[0].status.as_str(),
+        "queued",
         "it resumes with everything else"
     );
     let kept = s.items[0].done;
@@ -724,7 +740,7 @@ async fn a_folder_row_fails_over_without_reusing_the_folder_link() {
         "",
     );
     wait_for(&engine, "probes", |s| {
-        s.items.iter().all(|i| i.status != "checking")
+        s.items.iter().all(|i| i.status.as_str() != "checking")
     })
     .await;
     engine.set_paused(false);
@@ -743,7 +759,7 @@ async fn a_folder_row_fails_over_without_reusing_the_folder_link() {
 /// The wrapper in the snapshot once it is unwrapped (or waits for a person).
 async fn wrapper_settled(engine: &Engine, status: &str) -> Snapshot {
     wait_for(engine, &format!("the wrapper to be {status}"), |s| {
-        s.wrappers.len() == 1 && s.wrappers[0].status == status
+        s.wrappers.len() == 1 && s.wrappers[0].status.as_str() == status
     })
     .await
 }
@@ -763,7 +779,10 @@ async fn a_wrapper_unwraps_into_files_that_wait_to_be_started() {
     // One file, every host a mirror, waiting for the user.
     let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
     let it = &s.items[0];
-    assert_eq!((it.name.as_str(), it.status), ("kept.bin", "paused"));
+    assert_eq!(
+        (it.name.as_str(), it.status.as_str()),
+        ("kept.bin", "paused")
+    );
     assert_eq!(it.source.as_deref(), Some(w.id.as_str()));
     let mut hosts = it.mirrors.clone();
     hosts.sort();
@@ -826,11 +845,11 @@ async fn a_page_of_links_is_a_wrapper_of_them() {
     .await;
     assert_eq!(s.wrappers.len(), 1, "the page is a wrapper");
     assert_eq!(s.wrappers[0].title.as_deref(), Some("Example R"));
-    assert_eq!(s.wrappers[0].status, "done");
+    assert_eq!(s.wrappers[0].status.as_str(), "done");
     let mut rows: Vec<(&str, &str, &str)> = s
         .items
         .iter()
-        .map(|i| (i.name.as_str(), i.package.as_str(), i.status))
+        .map(|i| (i.name.as_str(), i.package.as_str(), i.status.as_str()))
         .collect();
     rows.sort();
     assert_eq!(
@@ -848,7 +867,7 @@ async fn a_page_of_links_is_a_wrapper_of_them() {
 
     engine.add_text(&format!("{}/blog/empty", t.ip), "");
     wait_for(&engine, "the page without links", |s| {
-        s.items.iter().any(|i| i.status == "captcha")
+        s.items.iter().any(|i| i.status.as_str() == "captcha")
     })
     .await;
 }
@@ -863,8 +882,8 @@ async fn a_page_being_read_is_in_no_list_until_it_shows_what_it_is() {
     engine.add_text(&format!("{}/blog/links", t.ip), "");
     let s = engine.snapshot();
     assert_eq!(s.items.len(), 1, "added, and not read yet");
-    assert_eq!(s.items[0].status, "checking");
-    assert_eq!(s.items[0].list, "", "in no list while it is read");
+    assert_eq!(s.items[0].status.as_str(), "checking");
+    assert_eq!(s.items[0].list, None, "in no list while it is read");
     assert_eq!(s.counts.all, 0, "not counted among the downloads");
     assert_eq!(
         s.counts.unwrapping, 1,
@@ -878,7 +897,10 @@ async fn a_page_being_read_is_in_no_list_until_it_shows_what_it_is() {
     engine.add_text(&format!("{}/files/report.bin", t.ip), "");
     let s = engine.snapshot();
     let file = s.items.iter().find(|i| i.name == "report.bin").unwrap();
-    assert_ne!(file.list, "", "a file's link is a download from the start");
+    assert!(
+        file.list.is_some(),
+        "a file's link is a download from the start"
+    );
 }
 
 /// `n/a` in a container's table is no file's name: its links are not one file
@@ -889,7 +911,10 @@ async fn a_containers_rows_without_names_stay_separate() {
     let engine = t.engine().await;
     engine.add_text("https://filecrypt.cc/Container/unnamed.html", "");
     let s = wait_for(&engine, "the container's links", |s| {
-        s.wrappers.first().is_some_and(|w| w.status == "done") && !s.items.is_empty()
+        s.wrappers
+            .first()
+            .is_some_and(|w| w.status.as_str() == "done")
+            && !s.items.is_empty()
     })
     .await;
     assert_eq!(s.items.len(), 2, "two links, two rows");
@@ -910,10 +935,10 @@ async fn a_wrappers_file_only_on_a_host_without_its_account_starts_with_the_othe
     let engine = t.engine().await;
     engine.add_text("https://filecrypt.cc/Container/for-account.html", "");
     let s = wait_for(&engine, "the container's links", |s| {
-        s.items.len() == 3 && s.items.iter().all(|i| i.status == "paused")
+        s.items.len() == 3 && s.items.iter().all(|i| i.status.as_str() == "paused")
     })
     .await;
-    assert!(s.items.iter().all(|i| !i.list.is_empty()), "all listed");
+    assert!(s.items.iter().all(|i| i.list.is_some()), "all listed");
     assert_eq!(s.counts.all, 3);
     assert_eq!(s.wrapper_cards[0].files, 3);
     let id = s.wrappers[0].id.clone();
@@ -929,14 +954,14 @@ async fn a_page_linking_files_elsewhere_is_a_wrapper_of_them() {
     let engine = t.engine().await;
     engine.add_text(&format!("{}/blog/elsewhere", t.ip), "");
     let s = wait_for(&engine, "the page's files", |s| {
-        s.wrappers.iter().any(|w| w.status == "done") && s.items.len() == 2
+        s.wrappers.iter().any(|w| w.status.as_str() == "done") && s.items.len() == 2
     })
     .await;
     assert_eq!(s.wrappers.len(), 1, "the page is a wrapper");
     let mut rows: Vec<(&str, &str)> = s
         .items
         .iter()
-        .map(|i| (i.name.as_str(), i.status))
+        .map(|i| (i.name.as_str(), i.status.as_str()))
         .collect();
     rows.sort();
     assert_eq!(
@@ -962,8 +987,8 @@ async fn a_pages_card_shows_hosts_once_its_wrappers_unwrap() {
     engine.add_text(&format!("{}/blog/trailer", t.ip), "");
     let s = wait_for(&engine, "the page read, its container waiting", |s| {
         s.wrappers.len() == 2
-            && s.wrappers.iter().any(|w| w.status == "done")
-            && s.wrappers.iter().any(|w| w.status == "captcha")
+            && s.wrappers.iter().any(|w| w.status.as_str() == "done")
+            && s.wrappers.iter().any(|w| w.status.as_str() == "captcha")
     })
     .await;
     assert!(s.items.is_empty(), "{:?}", s.items);
@@ -980,7 +1005,11 @@ async fn a_pages_card_shows_hosts_once_its_wrappers_unwrap() {
     );
     // The container unwrapped (its link handed back, as by the in-app
     // browser): its files' hosts show on the card.
-    let container = s.wrappers.iter().find(|w| w.status == "captcha").unwrap();
+    let container = s
+        .wrappers
+        .iter()
+        .find(|w| w.status.as_str() == "captcha")
+        .unwrap();
     engine
         .set_direct(
             &container.id,
@@ -990,7 +1019,7 @@ async fn a_pages_card_shows_hosts_once_its_wrappers_unwrap() {
         )
         .unwrap();
     let s = wait_for(&engine, "the container's files", |s| {
-        s.items.len() == 2 && s.wrappers.iter().all(|w| w.status == "done")
+        s.items.len() == 2 && s.wrappers.iter().all(|w| w.status.as_str() == "done")
     })
     .await;
     let mut hosts: Vec<String> = s.items.iter().flat_map(|i| i.mirrors.clone()).collect();
@@ -1029,9 +1058,9 @@ async fn two_files_from_a_wrapper(engine: &Engine) {
     })
     .await;
     assert_eq!(s.wrappers.len(), 1);
-    assert_eq!(s.wrappers[0].status, "done");
+    assert_eq!(s.wrappers[0].status.as_str(), "done");
     assert!(
-        s.items.iter().all(|i| i.status == "paused"),
+        s.items.iter().all(|i| i.status.as_str() == "paused"),
         "{:?}",
         s.items
     );
@@ -1044,7 +1073,7 @@ async fn a_copied_page_costs_one_request() {
     let engine = t.engine().await;
     engine.add_from_clipboard(&format!("{}/blog/links", t.ip));
     wait_for(&engine, "the page unwrapped", |s| {
-        s.wrappers.iter().any(|w| w.status == "done") && s.items.len() == 2
+        s.wrappers.iter().any(|w| w.status.as_str() == "done") && s.items.len() == 2
     })
     .await;
     let asked: Vec<String> = t
@@ -1069,7 +1098,7 @@ async fn a_second_page_with_the_same_links_shares_their_files() {
     .await;
     engine.add_text(&format!("{}/blog/links-copy", t.ip), "");
     let s = wait_for(&engine, "both pages unwrapped", |s| {
-        s.wrappers.len() == 2 && s.wrappers.iter().all(|w| w.status == "done")
+        s.wrappers.len() == 2 && s.wrappers.iter().all(|w| w.status.as_str() == "done")
     })
     .await;
     let id_of = |post: &str| {
@@ -1103,7 +1132,7 @@ async fn a_guarded_page_takes_the_links_its_window_shows() {
     let page = format!("{}/blog/guarded", t.ip);
     engine.add_text(&page, "Pkg");
     let s = wait_for(&engine, "the guarded page to need a person", |s| {
-        s.items.iter().any(|i| i.status == "captcha")
+        s.items.iter().any(|i| i.status.as_str() == "captcha")
     })
     .await;
     let id = s.items[0].id.clone();
@@ -1140,13 +1169,13 @@ async fn a_page_that_lists_nothing_fails_without_asking() {
     engine.set_pages_pass(true);
     engine.add_text(&format!("{}/blog/guarded", t.ip), "");
     let s = wait_for(&engine, "the page passed out of sight", |s| {
-        s.items.iter().any(|i| i.status == "passing")
+        s.items.iter().any(|i| i.status.as_str() == "passing")
     })
     .await;
     let id = s.items[0].id.clone();
     engine.page_gone(&id, "the paste on zpaste.net lists no links");
     let s = wait_for(&engine, "the page to fail", |s| {
-        s.items.iter().all(|i| i.status == "error")
+        s.items.iter().all(|i| i.status.as_str() == "error")
     })
     .await;
     assert_eq!(s.items[0].error, "the paste on zpaste.net lists no links");
@@ -1162,13 +1191,13 @@ async fn a_gone_download_is_not_retried_after_a_restart() {
     engine.set_pages_pass(true);
     engine.add_text(&format!("{}/blog/guarded", t.ip), "");
     let s = wait_for(&engine, "the page passed out of sight", |s| {
-        s.items.iter().any(|i| i.status == "passing")
+        s.items.iter().any(|i| i.status.as_str() == "passing")
     })
     .await;
     let id = s.items[0].id.clone();
     engine.page_gone(&id, "the folder was deleted");
     let s = wait_for(&engine, "the download to fail", |s| {
-        s.items.iter().all(|i| i.status == "error")
+        s.items.iter().all(|i| i.status.as_str() == "error")
     })
     .await;
     assert_eq!(s.items[0].retry_in, 0, "not tried again on a timer");
@@ -1178,7 +1207,7 @@ async fn a_gone_download_is_not_retried_after_a_restart() {
     let engine = start_when_free(|| t.options()).await;
     engine.set_pages_pass(true);
     let s = engine.snapshot();
-    assert_eq!(s.items[0].status, "error");
+    assert_eq!(s.items[0].status.as_str(), "error");
     assert_eq!(s.items[0].retry_in, 0, "nor after a restart");
 }
 
@@ -1192,7 +1221,7 @@ async fn a_copied_page_is_kept_only_if_it_lists_links() {
     let added = engine.add_from_clipboard(&format!("{0}/blog/links {0}/blog/plain {0}/", t.ip));
     assert_eq!((added.added, added.pages), (0, 2));
     let s = wait_for(&engine, "the page unwrapped, the plain page gone", |s| {
-        s.wrappers.iter().any(|w| w.status == "done")
+        s.wrappers.iter().any(|w| w.status.as_str() == "done")
             && s.items.len() == 2
             && s.items.iter().all(|i| !i.tentative)
     })
@@ -1213,7 +1242,7 @@ async fn a_copied_one_time_link_is_left_alone() {
     // A page copied after it is looked at, so the engine had its chance.
     engine.add_from_clipboard(&format!("{}/blog/links", t.ip));
     wait_for(&engine, "the page unwrapped", |s| {
-        s.wrappers.iter().any(|w| w.status == "done") && s.items.len() == 2
+        s.wrappers.iter().any(|w| w.status.as_str() == "done") && s.items.len() == 2
     })
     .await;
     assert!(t.server.requests("/blog/confirm").is_empty());
@@ -1228,7 +1257,7 @@ async fn a_copied_guarded_page_goes_if_it_wants_a_person() {
     engine.set_pages_pass(true);
     engine.add_from_clipboard(&format!("{}/blog/guarded", t.ip));
     let s = wait_for(&engine, "the page waiting for its pass", |s| {
-        s.items.iter().any(|i| i.status == "passing")
+        s.items.iter().any(|i| i.status.as_str() == "passing")
     })
     .await;
     let id = s.items[0].id.clone();
@@ -1254,7 +1283,7 @@ async fn a_copied_page_named_like_a_file_is_still_judged() {
     ));
     assert_eq!(added.pages, 2);
     let s = wait_for(&engine, "the page unwrapped, the plain page gone", |s| {
-        s.wrappers.iter().any(|w| w.status == "done")
+        s.wrappers.iter().any(|w| w.status.as_str() == "done")
             && s.items.len() == 2
             && s.items
                 .iter()
@@ -1279,7 +1308,7 @@ async fn a_copied_page_that_hands_back_a_file_is_a_download() {
     engine.set_pages_pass(true);
     engine.add_from_clipboard(&format!("{}/blog/guarded", t.ip));
     let s = wait_for(&engine, "the page waiting for its pass", |s| {
-        s.items.iter().any(|i| i.status == "passing")
+        s.items.iter().any(|i| i.status.as_str() == "passing")
     })
     .await;
     let id = s.items[0].id.clone();
@@ -1292,7 +1321,7 @@ async fn a_copied_page_that_hands_back_a_file_is_a_download() {
     let s = wait_for(&engine, "the file downloaded", all_done).await;
     let it = &s.items[0];
     assert!(!it.tentative);
-    assert_eq!(it.list, "done");
+    assert_eq!(it.list.map(|l| l.as_str()), Some("done"));
     assert_eq!((s.counts.all, s.counts.unwrapping), (1, 0));
 }
 
@@ -1332,10 +1361,14 @@ async fn a_host_without_its_account_goes_last() {
 
     engine.add_text("https://rapidgator.net/file/def/y.rar.html", "");
     let s = wait_for(&engine, "the file to ask for its page", |s| {
-        s.items.iter().any(|i| i.status == "captcha")
+        s.items.iter().any(|i| i.status.as_str() == "captcha")
     })
     .await;
-    let y = s.items.iter().find(|i| i.status == "captcha").unwrap();
+    let y = s
+        .items
+        .iter()
+        .find(|i| i.status.as_str() == "captcha")
+        .unwrap();
     assert!(
         y.error.contains("a free download is on its page"),
         "{}",
@@ -1370,14 +1403,14 @@ async fn a_page_the_desktop_passes_stands_in_for_an_account_once_switched_on() {
     engine.add_text("https://gofile.io/d/folder", "");
     // Waiting for the desktop app to pass its page: nothing for the person.
     let s = wait_for(&engine, "the page to wait its turn", |s| {
-        s.items.iter().any(|i| i.status == "passing")
+        s.items.iter().any(|i| i.status.as_str() == "passing")
     })
     .await;
     let id = s.items[0].id.clone();
     // Its window came forward: now it needs the person.
     assert!(engine.page_wants_person(&id), "the download stays");
     wait_for(&engine, "the page to want a person", |s| {
-        s.items.iter().any(|i| i.status == "captcha")
+        s.items.iter().any(|i| i.status.as_str() == "captcha")
     })
     .await;
     let file = |name: &str| haul_core::hosts::Entry {
@@ -1397,7 +1430,7 @@ async fn a_page_the_desktop_passes_stands_in_for_an_account_once_switched_on() {
     engine.set_pages_pass(false);
     engine.add_text("https://gofile.io/d/other", "");
     wait_for(&engine, "the person asked", |s| {
-        s.items.iter().any(|i| i.status == "captcha")
+        s.items.iter().any(|i| i.status.as_str() == "captcha")
     })
     .await;
 }
@@ -1412,7 +1445,7 @@ async fn wrappers_listing_the_same_file_share_it() {
     wrapper_settled(&engine, "done").await;
     engine.add_text("https://fileguard.cc/twin/copy", "");
     wait_for(&engine, "both wrappers", |s| {
-        s.wrappers.len() == 2 && s.wrappers.iter().all(|w| w.status == "done")
+        s.wrappers.len() == 2 && s.wrappers.iter().all(|w| w.status.as_str() == "done")
     })
     .await;
     let s = wait_for(&engine, "one file, its mirrors joined", |s| {
@@ -1464,7 +1497,7 @@ async fn a_file_waits_for_its_page_before_an_unknown_host() {
     let id = s.items[0].id.clone();
     engine.start_wrapper(&w);
     wait_for(&engine, "the file held for its page", |s| {
-        s.items[0].status == "passing"
+        s.items[0].status.as_str() == "passing"
     })
     .await;
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -1495,7 +1528,7 @@ async fn a_page_without_its_link_is_passed_again_later() {
     let id = s.items[0].id.clone();
     engine.start_wrapper(&w);
     wait_for(&engine, "the file held for its page", |s| {
-        s.items[0].status == "passing"
+        s.items[0].status.as_str() == "passing"
     })
     .await;
     engine.page_later(
@@ -1505,7 +1538,7 @@ async fn a_page_without_its_link_is_passed_again_later() {
         None,
     );
     let s = engine.snapshot();
-    assert_eq!(s.items[0].status, "waiting");
+    assert_eq!(s.items[0].status.as_str(), "waiting");
     assert!(s.items[0].wait > 0, "it counts down to the next pass");
     assert_eq!(s.items[0].error, "vikingfile: too many requests");
 }
@@ -1537,7 +1570,9 @@ async fn ddownload_waiting_its_pass(engine: &Engine, page: &str) -> String {
     engine.add_text(page, "");
     let links = |i: &haul_core::ItemView| engine.debug_links(&i.id).contains(&page.to_string());
     let s = wait_for(engine, "the page to wait its turn", |s| {
-        s.items.iter().any(|i| links(i) && i.status == "passing")
+        s.items
+            .iter()
+            .any(|i| links(i) && i.status.as_str() == "passing")
     })
     .await;
     s.items.iter().find(|i| links(i)).unwrap().id.clone()
@@ -1588,7 +1623,7 @@ async fn a_wrapper_retry_does_not_wait_behind_downloads() {
     let engine = t.engine_with(config).await;
     engine.add_text(&format!("{}/files/long.bin", t.ip), "");
     wait_for(&engine, "the download to take the only slot", |s| {
-        s.items.iter().any(|i| i.status == "downloading")
+        s.items.iter().any(|i| i.status.as_str() == "downloading")
     })
     .await;
     engine.add_text("https://filecrypt.cc/Container/missing-busy.html", "");
@@ -1597,7 +1632,7 @@ async fn a_wrapper_retry_does_not_wait_behind_downloads() {
     wrapper_settled(&engine, "done").await;
     let s = engine.snapshot();
     assert!(
-        s.items.iter().any(|i| i.status == "downloading"),
+        s.items.iter().any(|i| i.status.as_str() == "downloading"),
         "the download still has the slot"
     );
 }
@@ -1617,7 +1652,7 @@ async fn a_paste_that_lists_no_links_is_not_retried_on_a_timer() {
 
     let engine = start_when_free(|| through_stand_in(&t)).await;
     let s = engine.snapshot();
-    assert_eq!(s.wrappers[0].status, "error");
+    assert_eq!(s.wrappers[0].status.as_str(), "error");
     assert!(s.wrappers[0].lists_nothing, "after a restart too");
     assert_eq!(s.wrappers[0].retry_in, 0, "nor after a restart");
 }
@@ -1630,7 +1665,7 @@ async fn a_failed_download_without_a_name_retries_after_a_restart() {
     let engine = t.engine().await;
     engine.add_text(&format!("{}/missing/", t.ip), "");
     let s = wait_for(&engine, "the failure", |s| {
-        s.items.iter().any(|i| i.status == "error")
+        s.items.iter().any(|i| i.status.as_str() == "error")
     })
     .await;
     let id = s.items[0].id.clone();
@@ -1640,7 +1675,7 @@ async fn a_failed_download_without_a_name_retries_after_a_restart() {
     let engine = start_when_free(|| t.options()).await;
     assert!(engine.debug_retry_now(&id));
     wait_for(&engine, "the retry to fail again", |s| {
-        auto_retries(&engine, &id) == 1 && s.items[0].status == "error"
+        auto_retries(&engine, &id) == 1 && s.items[0].status.as_str() == "error"
     })
     .await;
 }
@@ -1657,16 +1692,20 @@ async fn a_host_limit_waits_and_goes_again_by_itself() {
 
     engine.page_later(&id, page, "ddownload: limit", Some(2));
     let s = wait_for(&engine, "the row to wait", |s| {
-        s.items[0].status == "waiting"
+        s.items[0].status.as_str() == "waiting"
     })
     .await;
     assert!(s.items[0].wait <= 2, "as long as the page said");
-    assert_eq!(s.items[0].list, "active", "not under Needs you");
+    assert_eq!(
+        s.items[0].list.map(|l| l.as_str()),
+        Some("active"),
+        "not under Needs you"
+    );
     assert_eq!(s.counts.need_you, 0);
     assert!(!engine.page_passes(page), "no pass while it holds");
 
     let s = wait_for(&engine, "the row to go again", |s| {
-        s.items[0].status == "passing"
+        s.items[0].status.as_str() == "passing"
     })
     .await;
     assert_eq!(s.items[0].open_urls, [page]);
@@ -1695,7 +1734,7 @@ async fn a_host_limit_holds_every_row_on_that_host() {
 
     engine.page_later(&id, page, "ddownload: limit", Some(3600));
     let s = wait_for(&engine, "every row to wait", |s| {
-        s.items.iter().all(|i| i.status == "waiting")
+        s.items.iter().all(|i| i.status.as_str() == "waiting")
     })
     .await;
     assert_eq!(s.counts.need_you, 0);
@@ -1715,7 +1754,7 @@ async fn a_host_limit_holds_every_row_on_that_host() {
     // One added since waits too, and opens no page either.
     engine.add_text("http://ddownload.com/dd/jkl012", "");
     wait_for(&engine, "the new row, looked up", |s| {
-        s.items.len() == 4 && s.items.iter().all(|i| i.status != "checking")
+        s.items.len() == 4 && s.items.iter().all(|i| i.status.as_str() != "checking")
     })
     .await;
     tokio::time::sleep(Duration::from_millis(600)).await;
@@ -1723,9 +1762,12 @@ async fn a_host_limit_holds_every_row_on_that_host() {
     assert!(
         !s.items
             .iter()
-            .any(|i| matches!(i.status, "passing" | "captcha")),
+            .any(|i| matches!(i.status.as_str(), "passing" | "captcha")),
         "{:?}",
-        s.items.iter().map(|i| i.status).collect::<Vec<_>>()
+        s.items
+            .iter()
+            .map(|i| i.status.as_str())
+            .collect::<Vec<_>>()
     );
     assert_eq!(s.counts.need_you, 0);
 }
@@ -1740,17 +1782,57 @@ async fn a_hosts_rate_limit_holds_its_pages_passes() {
     let page = format!("{}/blog/guarded", t.ip);
     engine.add_text(&page, "");
     wait_for(&engine, "the page to wait its turn", |s| {
-        s.items.iter().any(|i| i.status == "passing")
+        s.items.iter().any(|i| i.status.as_str() == "passing")
     })
     .await;
     assert!(engine.page_passes(&page));
     engine.add_text(&format!("{}/limited-long/d.bin", t.ip), "");
     let s = wait_for(&engine, "both to wait", |s| {
-        s.items.len() == 2 && s.items.iter().all(|i| i.status == "waiting")
+        s.items.len() == 2 && s.items.iter().all(|i| i.status.as_str() == "waiting")
     })
     .await;
     assert_eq!(s.counts.need_you, 0, "no moment under Needs you");
     assert!(!engine.page_passes(&page), "no pass meanwhile");
+}
+
+/// The desktop app passes one page at a time, each once per wait: the engine
+/// plans the next pass, holds it while another runs or a person has the
+/// page, and stops a pass whose row stopped waiting.
+#[tokio::test]
+async fn passes_go_one_at_a_time_and_once_each() {
+    use haul_core::Browsing;
+
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    let page = format!("{}/blog/guarded", t.ip);
+    engine.add_text(&page, "");
+    let s = wait_for(&engine, "the page to wait its turn", |s| {
+        s.items.iter().any(|i| i.status.as_str() == "passing")
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    fn idle(out: &[String]) -> Browsing<'_> {
+        Browsing {
+            out_of_sight: out,
+            with_person: &|_| false,
+            has_page: &|_| false,
+        }
+    }
+    let plan = engine.plan_passes(&idle(&[]));
+    assert_eq!(plan.start, Some((id.clone(), page.clone())));
+    assert_eq!(engine.plan_passes(&idle(&[])).start, None, "once per wait");
+    let running = [id.clone()];
+    assert!(
+        engine.plan_passes(&idle(&running)).abandon.is_empty(),
+        "its row still waits"
+    );
+    assert!(engine.item_action(&id, ItemAction::Pause));
+    assert_eq!(
+        engine.plan_passes(&idle(&running)).abandon,
+        running,
+        "paused: its pass stops"
+    );
 }
 
 /// A new address from the router ends the limit on the old one: the row goes
@@ -1763,18 +1845,18 @@ async fn a_new_address_ends_a_host_limit() {
     let page = format!("{}/blog/guarded", t.ip);
     engine.add_text(&page, "");
     let s = wait_for(&engine, "the page to wait its turn", |s| {
-        s.items.iter().any(|i| i.status == "passing")
+        s.items.iter().any(|i| i.status.as_str() == "passing")
     })
     .await;
     engine.page_later(&s.items[0].id, &page, "a limit", Some(3600));
     wait_for(&engine, "the row to wait", |s| {
-        s.items[0].status == "waiting"
+        s.items[0].status.as_str() == "waiting"
     })
     .await;
     engine.find_router().await;
     engine.reconnect("a test").await.unwrap();
     wait_for(&engine, "the row to go again", |s| {
-        s.items[0].status == "passing"
+        s.items[0].status.as_str() == "passing"
     })
     .await;
     assert!(engine.page_passes(&page));
@@ -1790,7 +1872,7 @@ async fn a_host_limit_is_a_day_at_most() {
     let id = ddownload_waiting_its_pass(&engine, page).await;
     engine.page_later(&id, page, "ddownload: limit", Some(u64::MAX));
     let s = wait_for(&engine, "the row to wait", |s| {
-        s.items[0].status == "waiting"
+        s.items[0].status.as_str() == "waiting"
     })
     .await;
     assert!(
@@ -1816,7 +1898,7 @@ async fn a_host_limit_sends_the_row_to_its_other_mirror() {
     let id = s.items[0].id.clone();
     engine.start_wrapper(&w);
     wait_for(&engine, "the file held for its page", |s| {
-        s.items[0].status == "passing"
+        s.items[0].status.as_str() == "passing"
     })
     .await;
     assert!(t.server.requests("/files/held.bin").is_empty());
@@ -1843,7 +1925,7 @@ async fn a_host_limit_leaves_the_rows_other_page_to_pass() {
     let id = s.items[0].id.clone();
     engine.start_wrapper(&w);
     let s = wait_for(&engine, "both pages to wait", |s| {
-        s.items[0].status == "passing" && s.items[0].open_urls.len() == 2
+        s.items[0].status.as_str() == "passing" && s.items[0].open_urls.len() == 2
     })
     .await;
     let page = "http://ddownload.com/dd/ddownload-gofile";
@@ -1852,7 +1934,12 @@ async fn a_host_limit_leaves_the_rows_other_page_to_pass() {
     engine.page_later(&id, page, "ddownload: limit", Some(3600));
     tokio::time::sleep(Duration::from_millis(600)).await;
     let s = engine.snapshot();
-    assert_eq!(s.items[0].status, "passing", "{}", s.items[0].error);
+    assert_eq!(
+        s.items[0].status.as_str(),
+        "passing",
+        "{}",
+        s.items[0].error
+    );
     assert!(!engine.page_passes(page));
     assert!(engine.page_passes("https://gofile.io/d/both"));
     assert_eq!(
@@ -1887,7 +1974,7 @@ async fn a_host_limit_leaves_a_page_for_a_person_under_needs_you() {
     let page = "http://ddownload.com/dd/ddownload-rapidgator";
     engine.page_later(&id, page, "ddownload: limit", Some(3600));
     let s = wait_for(&engine, "the person's page", |s| {
-        s.items[0].status == "captcha"
+        s.items[0].status.as_str() == "captcha"
     })
     .await;
     assert_eq!(s.counts.need_you, 1);
@@ -1911,10 +1998,10 @@ async fn a_page_that_wants_a_person_is_tried_again_by_itself() {
 
     assert!(engine.page_wants_person(&id), "the person is told once");
     let s = wait_for(&engine, "the row under Needs you", |s| {
-        s.items[0].status == "captcha"
+        s.items[0].status.as_str() == "captcha"
     })
     .await;
-    assert_eq!(s.items[0].list, "attention");
+    assert_eq!(s.items[0].list.map(|l| l.as_str()), Some("attention"));
     assert_eq!(s.items[0].open_urls, [page], "Open here has its page");
     assert!(
         (890..=900).contains(&s.items[0].retry_in),
@@ -1926,14 +2013,14 @@ async fn a_page_that_wants_a_person_is_tried_again_by_itself() {
     for round in 1..=3 {
         assert!(engine.debug_retry_now(&id), "try {round}");
         let s = wait_for(&engine, "the page's next pass", |s| {
-            s.items[0].status == "passing"
+            s.items[0].status.as_str() == "passing"
         })
         .await;
         assert_eq!(s.items[0].retry_in, 0, "a try under way");
         assert_eq!(auto_retries(&engine, &id), round);
         assert!(!engine.page_wants_person(&id), "nobody is told");
         let s = wait_for(&engine, "the row back under Needs you", |s| {
-            s.items[0].status == "captcha"
+            s.items[0].status.as_str() == "captcha"
         })
         .await;
         assert_eq!(s.items[0].open_urls, [page]);
@@ -1986,7 +2073,7 @@ async fn a_page_is_tried_again_only_while_retries_are_on() {
     let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
     assert!(engine.page_wants_person(&id));
     let s = wait_for(&engine, "the row under Needs you", |s| {
-        s.items[0].status == "captcha"
+        s.items[0].status.as_str() == "captcha"
     })
     .await;
     assert_eq!(s.items[0].retry_in, 0, "turned off");
@@ -2008,11 +2095,14 @@ async fn a_persons_action_ends_a_pages_retries() {
     let engine = Engine::start(through_stand_in(&t)).await.unwrap();
     engine.set_pages_pass(true);
     let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
-    let under_needs_you = |s: &Snapshot| s.items[0].status == "captcha";
+    let under_needs_you = |s: &Snapshot| s.items[0].status.as_str() == "captcha";
     assert!(engine.page_wants_person(&id));
     wait_for(&engine, "the row under Needs you", under_needs_you).await;
     assert!(engine.debug_retry_now(&id));
-    wait_for(&engine, "its pass", |s| s.items[0].status == "passing").await;
+    wait_for(&engine, "its pass", |s| {
+        s.items[0].status.as_str() == "passing"
+    })
+    .await;
     assert!(!engine.page_wants_person(&id));
     wait_for(&engine, "the row back", under_needs_you).await;
     assert_eq!(auto_retries(&engine, &id), 1);
@@ -2020,7 +2110,10 @@ async fn a_persons_action_ends_a_pages_retries() {
     // Tried again by hand: the page's first pass again, and the person is
     // told again if it wants them.
     assert!(engine.item_action(&id, ItemAction::RetryManual));
-    let s = wait_for(&engine, "its pass", |s| s.items[0].status == "passing").await;
+    let s = wait_for(&engine, "its pass", |s| {
+        s.items[0].status.as_str() == "passing"
+    })
+    .await;
     assert_eq!(s.items[0].retry_in, 0);
     assert_eq!(auto_retries(&engine, &id), 0);
     assert!(engine.page_wants_person(&id), "told again");
@@ -2055,18 +2148,22 @@ async fn a_page_a_person_has_open_is_not_tried_again() {
     let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
     assert!(engine.page_wants_person(&id));
     wait_for(&engine, "the row under Needs you", |s| {
-        s.items[0].status == "captcha"
+        s.items[0].status.as_str() == "captcha"
     })
     .await;
     assert!(engine.debug_retry_now(&id));
     wait_for(&engine, "the try to come due", |s| {
-        s.items[0].status == "passing"
+        s.items[0].status.as_str() == "passing"
     })
     .await;
 
     engine.page_with_person(&id);
     let s = engine.snapshot();
-    assert_eq!(s.items[0].status, "captcha", "back with the person");
+    assert_eq!(
+        s.items[0].status.as_str(),
+        "captcha",
+        "back with the person"
+    );
     assert!(s.items[0].retry_in > 800, "{}", s.items[0].retry_in);
     assert_eq!(auto_retries(&engine, &id), 0, "that try did not count");
     tokio::time::sleep(Duration::from_millis(600)).await;
@@ -2077,7 +2174,7 @@ async fn a_page_a_person_has_open_is_not_tried_again() {
     engine.page_with_person(&other);
     let s = engine.snapshot();
     let row = s.items.iter().find(|i| i.id == other).unwrap();
-    assert_eq!(row.status, "passing");
+    assert_eq!(row.status.as_str(), "passing");
 }
 
 /// What cannot succeed by itself is not tried again: a page on a host now
@@ -2098,13 +2195,13 @@ async fn a_page_that_cannot_pass_by_itself_is_not_tried_again() {
     engine.set_disabled("gofile.io", false).unwrap();
     engine.add_text("https://gofile.io/d/abc123", "");
     let s = wait_for(&engine, "the page to wait its turn", |s| {
-        s.items.iter().any(|i| i.status == "passing")
+        s.items.iter().any(|i| i.status.as_str() == "passing")
     })
     .await;
     let id = s.items[0].id.clone();
     assert!(engine.page_wants_person(&id));
     wait_for(&engine, "the row under Needs you", |s| {
-        s.items[0].status == "captcha" && s.items[0].retry_in > 0
+        s.items[0].status.as_str() == "captcha" && s.items[0].retry_in > 0
     })
     .await;
     engine.set_disabled("gofile.io", true).unwrap();
@@ -2113,14 +2210,14 @@ async fn a_page_that_cannot_pass_by_itself_is_not_tried_again() {
         s.items[0].retry_in == 0
     })
     .await;
-    assert_ne!(s.items[0].status, "passing");
+    assert_ne!(s.items[0].status.as_str(), "passing");
     assert_eq!(auto_retries(&engine, &id), 0);
     assert!(engine.item_action(&id, ItemAction::Remove));
 
     // A mirror marked gone, leaving a page only a person can do.
     engine.add_text("http://fileguard.cc/vault/ddownload-rapidgator", "");
     let w = wait_for(&engine, "the wrapper", |s| {
-        s.wrappers.iter().any(|w| w.status == "done")
+        s.wrappers.iter().any(|w| w.status.as_str() == "done")
     })
     .await
     .wrappers[0]
@@ -2136,7 +2233,7 @@ async fn a_page_that_cannot_pass_by_itself_is_not_tried_again() {
     engine.page_gone(&id, "ddownload: the file was deleted");
     let s = wait_for(&engine, "the person's page", |s| {
         s.items[0].open_urls == ["https://rapidgator.net/file/person"]
-            && s.items[0].status == "captcha"
+            && s.items[0].status.as_str() == "captcha"
     })
     .await;
     assert_eq!(s.items[0].retry_in, 0);
@@ -2149,7 +2246,7 @@ async fn a_page_that_cannot_pass_by_itself_is_not_tried_again() {
     let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
     assert!(engine.page_needs_click(&id), "the person is told");
     let s = wait_for(&engine, "the row under Needs you", |s| {
-        s.items[0].status == "captcha"
+        s.items[0].status.as_str() == "captcha"
     })
     .await;
     assert_eq!(s.items[0].retry_in, 0, "another look shows the same");
@@ -2167,7 +2264,7 @@ async fn the_nearest_to_done_resumes_first() {
         engine.add_text(&format!("{}/slow/{name}.bin", t.ip), "");
     }
     let s = wait_for(&engine, "three probed", |s| {
-        s.items.len() == 3 && s.items.iter().all(|i| i.status == "queued")
+        s.items.len() == 3 && s.items.iter().all(|i| i.status.as_str() == "queued")
     })
     .await;
     let id = |n: &str| {
@@ -2184,13 +2281,13 @@ async fn the_nearest_to_done_resumes_first() {
     let s = wait_for(&engine, "one started", |s| {
         s.items
             .iter()
-            .any(|i| i.status == "downloading" || i.status == "resolving")
+            .any(|i| i.status.as_str() == "downloading" || i.status.as_str() == "resolving")
     })
     .await;
     let started: Vec<&str> = s
         .items
         .iter()
-        .filter(|i| i.status == "downloading" || i.status == "resolving")
+        .filter(|i| i.status.as_str() == "downloading" || i.status.as_str() == "resolving")
         .map(|i| i.name.as_str())
         .collect();
     assert_eq!(started, ["most.bin"]);
@@ -2216,7 +2313,7 @@ async fn a_release_in_parts_unwraps_into_one_row_per_part() {
             .iter()
             .map(|i| (
                 i.name.as_str(),
-                i.status,
+                i.status.as_str(),
                 i.mirrors.len(),
                 i.package.as_str()
             ))
@@ -2288,7 +2385,11 @@ async fn a_wrapper_file_joins_a_download_already_queued() {
         s.items.len() == 1 && s.items[0].mirrors.len() == 4
     })
     .await;
-    assert_eq!(s.items[0].status, "queued", "still the user's download");
+    assert_eq!(
+        s.items[0].status.as_str(),
+        "queued",
+        "still the user's download"
+    );
     assert_eq!(s.items[0].source, None);
 }
 
@@ -2314,7 +2415,7 @@ async fn removing_a_wrapper_takes_its_files_that_never_started() {
     assert_eq!(
         s.items
             .iter()
-            .map(|i| (i.name.as_str(), i.status))
+            .map(|i| (i.name.as_str(), i.status.as_str()))
             .collect::<Vec<_>>(),
         [("r.part1.rar", "queued")]
     );
@@ -2345,7 +2446,7 @@ async fn a_filecrypt_gate_hands_back_its_dlc_that_unpacks() {
     assert_eq!(s.wrappers[0].title.as_deref(), Some("My Package"));
     assert_eq!(s.wrappers[0].url, page, "still the container's page");
     let s = wait_for(&engine, "the container's files", |s| {
-        s.items.len() == 2 && s.items.iter().all(|i| i.status == "paused")
+        s.items.len() == 2 && s.items.iter().all(|i| i.status.as_str() == "paused")
     })
     .await;
     assert!(s.items.iter().all(|i| i.package == "My Package"));
@@ -2375,7 +2476,7 @@ async fn a_dead_container_link_asks_for_the_page_again() {
         )
         .unwrap();
     let s = wait_for(&engine, "the gate again", |s| {
-        s.wrappers[0].status == "captcha" && s.wrappers[0].error.contains("404")
+        s.wrappers[0].status.as_str() == "captcha" && s.wrappers[0].error.contains("404")
     })
     .await;
     assert_eq!(s.wrappers[0].open_urls, std::slice::from_ref(&page));
@@ -2404,7 +2505,7 @@ async fn a_dlc_link_is_a_wrapper_that_unpacks_its_container() {
     let s = wrapper_settled(&engine, "done").await;
     assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 2 }));
     let s = wait_for(&engine, "the container's files", |s| s.items.len() == 2).await;
-    assert!(s.items.iter().all(|i| i.status == "paused"));
+    assert!(s.items.iter().all(|i| i.status.as_str() == "paused"));
 }
 
 /// A container whose gate Haul cannot answer waits for a person; the page
@@ -2434,7 +2535,7 @@ async fn a_container_page_the_browser_shows_unpacks() {
     assert_eq!(s.wrappers[0].title.as_deref(), Some("Example.Set"));
     assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 2 }));
     wait_for(&engine, "the container's files", |s| {
-        s.items.len() == 2 && s.items.iter().all(|i| i.status == "paused")
+        s.items.len() == 2 && s.items.iter().all(|i| i.status.as_str() == "paused")
     })
     .await;
 }
@@ -2451,7 +2552,7 @@ async fn a_filecrypt_container_answers_its_checkbox_and_unpacks() {
     assert_eq!(s.wrappers[0].title.as_deref(), Some("Open Example"));
     assert_eq!(s.wrappers[0].found, Some(Found { files: 2, links: 2 }));
     let s = wait_for(&engine, "the container's files", |s| {
-        s.items.len() == 2 && s.items.iter().all(|i| i.status == "paused")
+        s.items.len() == 2 && s.items.iter().all(|i| i.status.as_str() == "paused")
     })
     .await;
     assert_eq!(engine.start_wrapper(&s.wrappers[0].id), Some(2));
@@ -2478,7 +2579,7 @@ async fn a_clearance_lets_haul_read_the_sites_waiting_containers() {
     );
     engine.add_text(&format!("{once}\n{always}"), "");
     let s = wait_for(&engine, "both containers passed out of sight", |s| {
-        s.wrappers.len() == 2 && s.wrappers.iter().all(|w| w.status == "passing")
+        s.wrappers.len() == 2 && s.wrappers.iter().all(|w| w.status.as_str() == "passing")
     })
     .await;
     assert!(engine.takes_clearance(once) && engine.takes_clearance(always));
@@ -2497,10 +2598,10 @@ async fn a_clearance_lets_haul_read_the_sites_waiting_containers() {
     let s = wait_for(&engine, "the cleared container unpacked", |s| {
         s.wrappers
             .iter()
-            .any(|w| w.url == once && w.status == "done")
+            .any(|w| w.url == once && w.status.as_str() == "done")
             && s.wrappers
                 .iter()
-                .any(|w| w.url == always && w.status == "passing")
+                .any(|w| w.url == always && w.status.as_str() == "passing")
     })
     .await;
     let opened = s.wrappers.iter().find(|w| w.url == once).unwrap();
@@ -2577,12 +2678,12 @@ async fn a_page_that_fails_for_now_is_not_gone_for_good() {
     engine.set_pages_pass(true);
     engine.add_text(&format!("{}/blog/guarded", t.ip), "");
     let s = wait_for(&engine, "the page passed out of sight", |s| {
-        s.items.iter().any(|i| i.status == "passing")
+        s.items.iter().any(|i| i.status.as_str() == "passing")
     })
     .await;
     engine.page_failed(&s.items[0].id, "answered Not Found");
     let s = wait_for(&engine, "the download to fail", |s| {
-        s.items.iter().all(|i| i.status == "error")
+        s.items.iter().all(|i| i.status.as_str() == "error")
     })
     .await;
     assert!(s.items[0].error.contains("answered Not Found"));
@@ -2601,9 +2702,12 @@ async fn a_wrapper_site_turned_off_is_not_unwrapped() {
         s.wrappers.len() == 1 && s.wrappers[0].error.contains("filecrypt.cc")
     })
     .await;
-    assert_ne!(s.wrappers[0].status, "done", "{:?}", s.wrappers[0]);
+    assert_ne!(s.wrappers[0].status.as_str(), "done", "{:?}", s.wrappers[0]);
     let site = s.hosts.iter().find(|h| h.name == "filecrypt.cc").unwrap();
-    assert_eq!((site.kind, site.group), ("wrapper", "wrapper"));
+    assert_eq!(
+        (site.kind.as_str(), site.group.as_str()),
+        ("wrapper", "wrapper")
+    );
 }
 
 /// Dropping a host from a wrapper's card takes its links off the files the
@@ -2660,7 +2764,7 @@ async fn a_page_site_is_listed_only_when_switched_off() {
     let s = engine.snapshot();
     assert!(listed(&s));
     let h = s.hosts.iter().find(|h| h.name == site).unwrap();
-    assert_eq!((h.kind, h.group), ("site", "site"));
+    assert_eq!((h.kind.as_str(), h.group.as_str()), ("site", "site"));
 }
 
 /// A page that links a container per host, each host naming the
@@ -2676,7 +2780,7 @@ async fn containers_per_host_merge_their_parts_by_number() {
     let s = wait_for(&engine, "both containers unwrapped", |s| {
         s.wrappers
             .iter()
-            .filter(|w| w.host == "filecrypt.cc" && w.status == "done")
+            .filter(|w| w.host == "filecrypt.cc" && w.status.as_str() == "done")
             .count()
             == 2
     })
@@ -2709,7 +2813,7 @@ async fn containers_of_the_same_sizes_merge() {
     let s = wait_for(&engine, "both containers unwrapped", |s| {
         s.wrappers
             .iter()
-            .filter(|w| w.host == "filecrypt.cc" && w.status == "done")
+            .filter(|w| w.host == "filecrypt.cc" && w.status.as_str() == "done")
             .count()
             == 2
     })
@@ -2733,7 +2837,7 @@ async fn containers_of_other_sizes_stay_apart() {
     let s = wait_for(&engine, "both containers unwrapped", |s| {
         s.wrappers
             .iter()
-            .filter(|w| w.host == "filecrypt.cc" && w.status == "done")
+            .filter(|w| w.host == "filecrypt.cc" && w.status.as_str() == "done")
             .count()
             == 2
     })
@@ -2768,7 +2872,7 @@ async fn containers_per_host_named_by_ids_keep_one_on_disk() {
     let s = wait_for(&engine, "both containers unwrapped", |s| {
         s.wrappers
             .iter()
-            .filter(|w| w.host == "filecrypt.cc" && w.status == "done")
+            .filter(|w| w.host == "filecrypt.cc" && w.status.as_str() == "done")
             .count()
             == 2
     })
@@ -2803,7 +2907,7 @@ async fn every_known_site_is_listed() {
         s.hosts
             .iter()
             .find(|h| h.name == name && h.listed)
-            .map(|h| h.kind)
+            .map(|h| h.kind.as_str())
     };
     assert_eq!(kind("filecrypt.cc"), Some("wrapper"));
     assert_eq!(kind("zpaste.net"), Some("paste"));
@@ -3207,7 +3311,7 @@ async fn a_busy_host_is_capped_instead_of_failing() {
     assert!(
         s.items
             .iter()
-            .any(|i| i.status == "waiting" && i.error.contains("at a time")),
+            .any(|i| i.status.as_str() == "waiting" && i.error.contains("at a time")),
         "{:#?}",
         s.items
     );
@@ -3229,7 +3333,10 @@ async fn a_refusal_says_why() {
     let t = Setup::new().await;
     let engine = t.engine().await;
     engine.add_text(&format!("{}/refuse/r.bin", t.ip), "");
-    let s = wait_for(&engine, "the failure", |s| s.items[0].status == "error").await;
+    let s = wait_for(&engine, "the failure", |s| {
+        s.items[0].status.as_str() == "error"
+    })
+    .await;
     assert!(
         s.items[0].error.contains("HTTP 403: this link has expired"),
         "{}",
@@ -3278,14 +3385,21 @@ async fn clearing_failed_downloads_keeps_the_rest() {
     );
     wait_for(&engine, "two failures and one file", |s| {
         s.items.len() == 3
-            && s.items.iter().filter(|i| i.status == "error").count() == 2
-            && s.items.iter().any(|i| i.status == "done")
+            && s.items
+                .iter()
+                .filter(|i| i.status.as_str() == "error")
+                .count()
+                == 2
+            && s.items.iter().any(|i| i.status.as_str() == "done")
     })
     .await;
     engine.clear_failed();
     let s = engine.snapshot();
     assert_eq!(
-        s.items.iter().map(|i| i.status).collect::<Vec<_>>(),
+        s.items
+            .iter()
+            .map(|i| i.status.as_str())
+            .collect::<Vec<_>>(),
         ["done"],
         "only the finished download is left"
     );
@@ -3328,7 +3442,7 @@ async fn a_slow_mirror_gives_way() {
     let s = wait_for(&engine, "the failure", |s| {
         s.items
             .iter()
-            .any(|i| i.name == "u.bin" && i.status == "error")
+            .any(|i| i.name == "u.bin" && i.status.as_str() == "error")
     })
     .await;
     let error = &s.items.iter().find(|i| i.name == "u.bin").unwrap().error;
@@ -3350,7 +3464,11 @@ async fn the_size_cap_spaces_out_big_files() {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let s = engine.snapshot();
-        let downloading = s.items.iter().filter(|i| i.status == "downloading").count();
+        let downloading = s
+            .items
+            .iter()
+            .filter(|i| i.status.as_str() == "downloading")
+            .count();
         assert!(downloading <= 1, "two files at once: {:#?}", s.items);
         if s.items.len() == 3 && all_done(&s) {
             break;
@@ -3476,10 +3594,14 @@ async fn hosts_turned_off_are_never_tried() {
         "",
     );
     let s = wait_for(&engine, "the file to fail", |s| {
-        s.items.iter().any(|i| i.status == "error")
+        s.items.iter().any(|i| i.status.as_str() == "error")
     })
     .await;
-    let failed = s.items.iter().find(|i| i.status == "error").unwrap();
+    let failed = s
+        .items
+        .iter()
+        .find(|i| i.status.as_str() == "error")
+        .unwrap();
     assert!(
         failed.error.contains("only on hosts that are off"),
         "{}",
@@ -3512,7 +3634,7 @@ async fn downloads_from_one_host_spread_over_the_proxies() {
         "",
     );
     wait_for(&engine, "both probed", |s| {
-        s.items.len() == 2 && s.items.iter().all(|i| i.status == "queued")
+        s.items.len() == 2 && s.items.iter().all(|i| i.status.as_str() == "queued")
     })
     .await;
     engine.set_paused(false);
@@ -3806,7 +3928,7 @@ async fn an_archive_in_parts_unpacks_when_its_last_part_is_done() {
         files_in(&t.root.join("bin")),
         ["R5.part1.rar", "R5.part2.rar", "R5.part3.rar"]
     );
-    assert!(s.items.iter().all(|i| i.status == "done"));
+    assert!(s.items.iter().all(|i| i.status.as_str() == "done"));
     let notice = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let Ok(Event::Notice { title, body }) = events.recv().await {
@@ -4285,7 +4407,10 @@ async fn a_mirror_that_needs_a_person_is_not_an_improvement() {
         it.slowed.as_deref(),
         Some("Slowed by 127.0.0.1: its other hosts need you")
     );
-    assert_eq!((it.status, it.list), ("downloading", "active"));
+    assert_eq!(
+        (it.status.as_str(), it.list.map(|l| l.as_str())),
+        ("downloading", Some("active"))
+    );
     assert_eq!(it.other_hosts, 1);
     assert_eq!(s.counts.need_you, 0);
     // Never left, rather than turned away there and come back.
@@ -4308,7 +4433,7 @@ async fn a_row_goes_back_when_its_next_mirror_wants_a_person() {
     .await;
     let it = row(&s, "x.bin");
     assert_eq!(it.shown_host, "127.0.0.1");
-    assert_eq!(it.list, "active");
+    assert_eq!(it.list.map(|l| l.as_str()), Some("active"));
     assert_eq!(it.open_urls.len(), 1, "the page stays there for a person");
 }
 
@@ -4339,7 +4464,7 @@ async fn a_row_leaving_a_slow_host_gets_its_page_passed() {
     .await;
     engine.add_text("http://files.example/paced/200/h.bin", "");
     let s = wait_for(&engine, "the page's turn", |s| {
-        s.items[0].status == "passing"
+        s.items[0].status.as_str() == "passing"
     })
     .await;
     assert_eq!(s.items[0].shown_host, "ddownload.com");
@@ -4619,7 +4744,7 @@ async fn a_handed_file_shows_under_the_host_it_came_from() {
     let id = s.items[0].id.clone();
     engine.start_wrapper(&w);
     wait_for(&engine, "both pages to wait", |s| {
-        s.items[0].status == "passing" && s.items[0].open_urls.len() == 2
+        s.items[0].status.as_str() == "passing" && s.items[0].open_urls.len() == 2
     })
     .await;
     assert_eq!(
@@ -4628,7 +4753,7 @@ async fn a_handed_file_shows_under_the_host_it_came_from() {
     );
     engine.page_gone(&id, "the file was deleted");
     let s = wait_for(&engine, "its other page", |s| {
-        s.items[0].status == "passing" && s.items[0].open_urls.len() == 1
+        s.items[0].status.as_str() == "passing" && s.items[0].open_urls.len() == 1
     })
     .await;
     assert_eq!(s.items[0].shown_host, "ddownload.com");
@@ -4639,7 +4764,7 @@ async fn a_handed_file_shows_under_the_host_it_came_from() {
     };
     engine.set_files(&id, vec![file]).unwrap();
     let s = wait_for(&engine, "the transfer", |s| {
-        s.items[0].status == "downloading"
+        s.items[0].status.as_str() == "downloading"
     })
     .await;
     let it = &s.items[0];
@@ -4701,7 +4826,7 @@ async fn a_slow_handed_file_is_blamed_on_the_host_it_came_from() {
     let s = wait_for(&engine, "the other page's turn", |s| {
         s.items
             .iter()
-            .any(|i| i.name == "ddownload-gofile.rar" && i.status == "passing")
+            .any(|i| i.name == "ddownload-gofile.rar" && i.status.as_str() == "passing")
     })
     .await;
     let both = row(&s, "ddownload-gofile.rar");
@@ -4817,7 +4942,7 @@ async fn a_host_picked_again_is_used_though_it_slowed_the_row() {
     );
     let s = wait_for(&engine, "it to leave", |s| {
         let it = row(s, "x.bin");
-        it.status == "downloading" && it.shown_host == "localhost" && it.speed > 0.0
+        it.status.as_str() == "downloading" && it.shown_host == "localhost" && it.speed > 0.0
     })
     .await;
     let id = row(&s, "x.bin").id.clone();
@@ -4993,7 +5118,7 @@ async fn a_password_on_the_page_opens_the_archive_it_lists() {
         .await;
     engine.add_text(&format!("{}/blog/with-password", t.ip), "");
     let s = wait_for(&engine, "the post's parts", |s| {
-        s.items.len() == 2 && s.items.iter().all(|i| i.status == "paused")
+        s.items.len() == 2 && s.items.iter().all(|i| i.status.as_str() == "paused")
     })
     .await;
     assert_eq!(engine.start_wrapper(&s.wrappers[0].id), Some(2));
@@ -5018,7 +5143,7 @@ async fn an_unknown_page_is_passed_only_when_the_person_added_it() {
     let page = format!("{}/page/added", t.ip);
     engine.add_text(&page, "");
     wait_for(&engine, "the page to wait for its pass", |s| {
-        s.items.iter().any(|i| i.status == "passing")
+        s.items.iter().any(|i| i.status.as_str() == "passing")
     })
     .await;
     assert!(engine.page_passes(&page));

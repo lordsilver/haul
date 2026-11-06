@@ -332,6 +332,21 @@ impl Item {
         self.trouble = Trouble::Other;
     }
 
+    /// Waits until `until` before its next try, saying why.
+    pub(crate) fn wait_until(&mut self, until: Instant, why: impl Into<String>, trouble: Trouble) {
+        self.status = Status::Waiting;
+        self.not_before = Some(until);
+        self.set_error(why, trouble);
+    }
+
+    /// Back in the queue for its next turn, unless an attempt is running
+    /// (which settles where it stands when it ends).
+    pub(crate) fn queue_if_idle(&mut self) {
+        if !self.running() {
+            self.status = Status::Queued;
+        }
+    }
+
     /// Starts its retry counts over and forgets what went wrong.
     pub(crate) fn reset_retries(&mut self) {
         self.clear_error();

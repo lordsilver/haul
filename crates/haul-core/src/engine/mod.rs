@@ -36,6 +36,7 @@ use crate::{
 mod diagnostics;
 mod inspect;
 mod pages;
+mod passes;
 mod reconnect;
 mod schedule;
 mod services;
@@ -46,12 +47,16 @@ mod transfer;
 mod unpack;
 mod views;
 
+pub use passes::{Browsing, PassPlan};
 pub use reconnect::ReconnectView;
 pub use services::ServicesView;
 
 pub use settings::SettingsView;
 pub use snapshot::{HostView, ItemView, PoolView, QuotaView, Snapshot, WrapperView};
-pub use views::{ArchiveView, Command, Counts, PoolSource, PoolSummary, Tally, WrapperCard};
+pub use views::{
+    Alert, ArchiveView, Command, Counts, HostGroup, List, PoolSource, PoolSummary, RowState,
+    SiteKind, Tally, WrapperCard, WrapperState,
+};
 
 /// Automatic retries of a failed download, when `retry_failed_minutes` is on.
 const AUTO_RETRIES: u32 = 3;
@@ -161,6 +166,15 @@ pub enum Event {
         title: String,
         body: String,
     },
+}
+
+/// What is downloading ([`Engine::activity`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Activity {
+    pub downloading: usize,
+    /// Bytes per second over them.
+    pub speed: f64,
+    pub paused: bool,
 }
 
 /// What adding links did.
@@ -442,6 +456,8 @@ struct State {
     /// it is passed the usual way, so a clearance that does not hold is not
     /// handed over and over.
     cleared: HashSet<String>,
+    /// Pages the desktop app passed during their rows' current waits.
+    tried: passes::Tried,
 }
 
 impl State {
@@ -721,6 +737,7 @@ impl Engine {
                 dirty: false,
                 guarded: HashSet::new(),
                 cleared: HashSet::new(),
+                tried: passes::Tried::new(),
             }),
             limiter: Limiter::new(cfg.rate_limit_mbps * 1e6),
             config_seen: Mutex::new(config_path.as_deref().and_then(settings::stamp)),
@@ -868,6 +885,21 @@ impl Engine {
     /// Whether downloads are paused.
     pub fn paused(&self) -> bool {
         self.lock().paused
+    }
+
+    /// What is downloading, for a glance (the tray's tooltip) without a
+    /// whole [`Snapshot`].
+    pub fn activity(&self) -> Activity {
+        let st = self.lock();
+        let running = st
+            .items
+            .values()
+            .filter(|i| i.status == Status::Downloading);
+        Activity {
+            downloading: running.clone().count(),
+            speed: running.map(|i| i.speed).sum(),
+            paused: st.paused,
+        }
     }
 
     /// A counter that moves whenever the queue changes.
@@ -1735,17 +1767,13 @@ impl Engine {
                 it.cancel();
             }
             ItemAction::Resume | ItemAction::Retry => {
-                if !it.running() {
-                    it.status = Status::Queued;
-                }
+                it.queue_if_idle();
                 it.reset_retries();
                 it.failed.clear();
                 it.not_before = None;
             }
             ItemAction::RetryManual => {
-                if !it.running() {
-                    it.status = Status::Queued;
-                }
+                it.queue_if_idle();
                 it.manual_urls.clear();
                 it.page_wants_person = false;
                 // The person's own try: the page's first pass again.
@@ -2449,6 +2477,7 @@ mod exit_tests {
             dirty: false,
             guarded: HashSet::new(),
             cleared: HashSet::new(),
+            tried: passes::Tried::new(),
         }
     }
 

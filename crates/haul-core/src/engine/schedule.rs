@@ -273,9 +273,8 @@ impl Engine {
             if let Some((until, host)) = held {
                 // Nothing to do but wait for the host, and no use asking a
                 // person: its page would say the same to them.
-                it.status = Status::Waiting;
-                it.not_before = Some(until);
-                it.set_error(
+                it.wait_until(
+                    until,
                     format!("{host}: asks this address to wait"),
                     Trouble::AskedToWait,
                 );

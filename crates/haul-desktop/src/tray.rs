@@ -53,12 +53,15 @@ pub fn create(app: &AppHandle, engine: &Engine) -> tauri::Result<()> {
         let mut shown = (String::new(), paused);
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            let s = engine.snapshot();
-            let active = s.items.iter().filter(|i| i.status == "downloading").count();
-            let tip = if active == 0 {
+            let s = engine.activity();
+            let tip = if s.downloading == 0 {
                 "Haul".to_string()
             } else {
-                format!("Haul: {active} downloading at {:.1} MB/s", s.speed / 1e6)
+                format!(
+                    "Haul: {} downloading at {:.1} MB/s",
+                    s.downloading,
+                    s.speed / 1e6
+                )
             };
             if tip != shown.0 {
                 let _ = tray.set_tooltip(Some(&tip));

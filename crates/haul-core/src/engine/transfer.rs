@@ -347,9 +347,7 @@ impl Engine {
                     // The wait is asked of this address.
                     st.lane(host, exit).asked_to_wait(until);
                     if let Some(it) = st.items.get_mut(id) {
-                        it.status = Status::Waiting;
-                        it.not_before = Some(until);
-                        it.set_error(message, Trouble::Other);
+                        it.wait_until(until, message, Trouble::Other);
                     }
                     self.hold_passes(&mut st, now);
                 }
@@ -363,10 +361,12 @@ impl Engine {
                     let it = st.items.get_mut(id).expect("checked by the guard");
                     it.retries += 1;
                     let wait = (2u64 << (it.retries - 1).min(5)).min(60);
-                    it.status = Status::Waiting;
-                    it.not_before = Some(now + Duration::from_secs(wait));
                     // The views count the wait down themselves.
-                    it.set_error(format!("{host}: {message}"), Trouble::Other);
+                    it.wait_until(
+                        now + Duration::from_secs(wait),
+                        format!("{host}: {message}"),
+                        Trouble::Other,
+                    );
                 }
                 Err(Fail::Busy { allowed, .. })
                     if st.items.get(id).is_some_and(|it| it.busy < BUSY_REFUSALS) =>
@@ -376,9 +376,11 @@ impl Engine {
                     lane.cap_since = Some(now);
                     let it = st.items.get_mut(id).expect("checked by the guard");
                     it.busy += 1;
-                    it.status = Status::Waiting;
-                    it.not_before = Some(now + Duration::from_secs(BUSY_PAUSE));
-                    it.set_error(format!("{host} takes {allowed} at a time"), Trouble::Other);
+                    it.wait_until(
+                        now + Duration::from_secs(BUSY_PAUSE),
+                        format!("{host} takes {allowed} at a time"),
+                        Trouble::Other,
+                    );
                 }
                 Err(
                     Fail::Error(message) | Fail::Transient(message) | Fail::Busy { message, .. },

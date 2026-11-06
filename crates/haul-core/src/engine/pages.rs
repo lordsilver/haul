@@ -114,30 +114,36 @@ impl Engine {
     /// and one just come due goes back to them without using up a try.
     pub fn page_with_person(&self, id: &str) {
         let mut st = self.lock();
+        // Without one coming due, the desktop app asks again every few
+        // seconds: nothing for the views to redraw.
+        if self.with_person(&mut st, id) {
+            self.touch(&mut st);
+        }
+    }
+
+    /// [`Engine::page_with_person`] under the lock; whether a try of its own
+    /// had come due.
+    pub(super) fn with_person(&self, st: &mut State, id: &str) -> bool {
         let Some(it) = st.items.get(id) else {
-            return;
+            return false;
         };
         let came_due = it.page_retrying
             && !it.page_wants_person
             && it.status == Status::Captcha
             && it.task.is_none();
         if !came_due && it.retry_at.is_none() {
-            return;
+            return false;
         }
         if came_due && let Some(it) = st.items.get_mut(id) {
             tracing::info!(item = %id, "its page is open with a person: its try on its own waits");
             it.page_wants_person = true;
             it.auto_retries = it.auto_retries.saturating_sub(1);
         }
-        let at = self.page_retry_at(&st, &st.items[id], Instant::now());
+        let at = self.page_retry_at(st, &st.items[id], Instant::now());
         if let Some(it) = st.items.get_mut(id) {
             it.retry_at = at;
         }
-        // Without one, the desktop app asks again every few seconds: nothing
-        // for the views to redraw.
-        if came_due {
-            self.touch(&mut st);
-        }
+        came_due
     }
 
     /// A host's page passed out of sight could not hand out its link this
@@ -251,7 +257,7 @@ impl Engine {
     /// ([`hosts::reads_past_check`]), unless a clearance was handed for it
     /// before and Haul was turned away all the same.
     pub fn takes_clearance(&self, url: &str) -> bool {
-        hosts::reads_past_check(url) && !self.lock().cleared.contains(url)
+        takes_clearance(&self.lock(), url)
     }
 
     /// The browser passed the check in front of item `id`'s page (its
@@ -484,9 +490,7 @@ impl Engine {
         it.probed = true;
         // A copied page that hands back a file is a download.
         it.tentative = false;
-        if !it.running() {
-            it.status = Status::Queued;
-        }
+        it.queue_if_idle();
         it.reset_retries();
         it.not_before = None;
         it.manual_urls.clear();
@@ -536,15 +540,29 @@ impl Engine {
     /// out useless. A host only slowing the address holds it back unless a row
     /// has nowhere else to go.
     pub fn page_passes(&self, url: &str) -> bool {
-        let st = self.lock();
-        let now = Instant::now();
+        self.passes_now(&self.lock(), url, Instant::now())
+    }
+
+    /// [`Engine::page_passes`] under the lock.
+    pub(super) fn passes_now(&self, st: &State, url: &str, now: Instant) -> bool {
         let free = || {
-            self.pass_held_until(&st, url, now).is_none()
+            self.pass_held_until(st, url, now).is_none()
                 || st.items.values().any(|it| {
-                    it.manual_urls.contains(url) && self.pass_held_for(&st, it, url, now).is_none()
+                    it.manual_urls.contains(url) && self.pass_held_for(st, it, url, now).is_none()
                 })
         };
         st.draining.is_none() && st.passes(url) && free()
+    }
+
+    /// Whether row `it`, waiting for a person, has the desktop app pass one
+    /// of its pages by itself, in turn, first: nothing for the person yet.
+    pub(super) fn passing(&self, st: &State, it: &Item, now: Instant) -> bool {
+        self.pages_pass()
+            && !it.page_wants_person
+            && it
+                .manual_urls
+                .iter()
+                .any(|u| st.passes(u) && self.pass_held_for(st, it, u, now).is_none())
     }
 
     /// The page a person should open for this item: not one whose host asked
@@ -560,4 +578,10 @@ impl Engine {
             .or_else(|| it.mirrors.first())
             .cloned()
     }
+}
+
+/// Whether the desktop app, passing page `url`, hands Haul the clearance
+/// ([`Engine::takes_clearance`]).
+pub(super) fn takes_clearance(st: &State, url: &str) -> bool {
+    hosts::reads_past_check(url) && !st.cleared.contains(url)
 }

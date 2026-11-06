@@ -1289,7 +1289,7 @@ pub(super) async fn wait_for(
 }
 
 pub(super) fn all_done(s: &Snapshot) -> bool {
-    !s.items.is_empty() && s.items.iter().all(|i| i.status == "done")
+    !s.items.is_empty() && s.items.iter().all(|i| i.status.as_str() == "done")
 }
 
 /// Downloads under way from `host`.

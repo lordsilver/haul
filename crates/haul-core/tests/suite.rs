@@ -214,7 +214,7 @@ fn cases() -> Vec<Case> {
 /// Where `snapshot` has left the case's one row or wrapper, once it settled.
 fn outcome(s: &Snapshot) -> Option<Outcome> {
     if let Some(w) = s.wrappers.first() {
-        return match w.status {
+        return match w.status.as_str() {
             "done" => Some(Outcome::Listed(w.found.map_or(0, |f| f.files))),
             "captcha" => Some(Outcome::NeedsYou),
             "error" if w.gone => Some(Outcome::Gone),
@@ -223,7 +223,7 @@ fn outcome(s: &Snapshot) -> Option<Outcome> {
         };
     }
     let it = s.items.first()?;
-    match it.status {
+    match it.status.as_str() {
         "done" => Some(Outcome::File),
         "captcha" => Some(Outcome::NeedsYou),
         "waiting" if it.wait > 0 => Some(Outcome::Waits),
@@ -268,11 +268,14 @@ async fn run(case: &Case) -> Result<(Outcome, String), String> {
             break (got, said(&s));
         }
         if Instant::now() > deadline {
-            let row = s.items.first().map(|i| format!("{} {}", i.status, i.error));
+            let row = s
+                .items
+                .first()
+                .map(|i| format!("{} {}", i.status.as_str(), i.error));
             let wrapper = s
                 .wrappers
                 .first()
-                .map(|w| format!("{} {}", w.status, w.error));
+                .map(|w| format!("{} {}", w.status.as_str(), w.error));
             engine.shutdown().await;
             return Err(format!("never settled: {row:?} {wrapper:?}"));
         }
