@@ -10,10 +10,9 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::{Algo, Checksum, Cx, Entry, ResolveError};
-use crate::config::secret;
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
-    let Some(token) = secret(&cx.cfg.gofile_token).map(str::to_string) else {
+    let Some(token) = cx.cfg.account("gofile_token").map(str::to_string) else {
         return Err(ResolveError::person(
             "gofile lets only premium accounts and its own website fetch links: open the page, or set a premium gofile_token",
         ));

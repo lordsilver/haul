@@ -18,10 +18,7 @@ use std::{
 use serde::Serialize;
 
 use super::{Clients, Engine};
-use crate::{
-    config::secret,
-    vpn::{self, Server},
-};
+use crate::vpn::{self, Server};
 
 /// How old a service's server list may get before it is fetched again.
 const REFRESH: Duration = Duration::from_secs(3600);
@@ -99,11 +96,11 @@ impl Engine {
     async fn refresh_services(&self) {
         let cfg = self.cfg();
         let wanted =
-            cfg.nordvpn_on && secret(&cfg.nordvpn_password).is_some() && cfg.nordvpn_servers > 0;
+            cfg.nordvpn_on && cfg.account("nordvpn_password").is_some() && cfg.nordvpn_servers > 0;
         let asked = format!(
             "{:?}|{:?}|{}|{:?}|{}|{}",
-            secret(&cfg.nordvpn_user),
-            secret(&cfg.nordvpn_password),
+            cfg.account("nordvpn_user"),
+            cfg.account("nordvpn_password"),
             cfg.nordvpn_servers,
             cfg.nordvpn_countries,
             cfg.use_proxy,
@@ -247,11 +244,11 @@ impl Engine {
             let cfg = self.cfg();
             let now_asked = (
                 cfg.nordvpn_on,
-                secret(&cfg.nordvpn_password).is_some(),
+                cfg.account("nordvpn_password").is_some(),
                 cfg.nordvpn_servers,
                 cfg.nordvpn_countries.clone(),
                 cfg.use_proxy,
-                secret(&cfg.nordvpn_user).map(str::to_string),
+                cfg.account("nordvpn_user").map(str::to_string),
             );
             if seen.as_ref() != Some(&now_asked) || last.elapsed() >= REFRESH {
                 seen = Some(now_asked);

@@ -3178,7 +3178,7 @@ async fn a_name_that_comes_with_the_download_is_checked_first() {
     let t = Setup::new().await;
     let engine = t
         .engine_with(Config {
-            onefichier_key: Some("key".into()),
+            accounts: [("1fichier_key".to_string(), "key".to_string())].into(),
             endpoints: Endpoints {
                 onefichier: t.ip.clone(),
                 ..t.config().endpoints
@@ -3826,8 +3826,9 @@ async fn nordvpn_servers_join_the_proxies() {
     let start = |password: &str, data: &str| {
         let mut cfg = t.config();
         cfg.endpoints.nordvpn = api_at.clone();
-        cfg.nordvpn_user = Some("svc".into());
-        cfg.nordvpn_password = Some(password.into());
+        cfg.accounts.insert("nordvpn_user".into(), "svc".into());
+        cfg.accounts
+            .insert("nordvpn_password".into(), password.into());
         cfg.nordvpn_servers = 2;
         cfg.nordvpn_countries = vec!["Sweden".into(), "Netherlands".into()];
         Engine::start(Options {

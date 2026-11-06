@@ -307,7 +307,7 @@ impl Engine {
                 "no router answered on this network; set a reconnect command instead".into(),
             )
         })?;
-        let login = match (secret(&cfg.router_user), secret(&cfg.router_password)) {
+        let login = match (cfg.account("router_user"), cfg.account("router_password")) {
             (user, Some(password)) => Some((user.unwrap_or_default(), password)),
             _ => None,
         };
@@ -616,7 +616,7 @@ fn blocker(cfg: &crate::Config, r: &Reconnects) -> Option<String> {
             Some("no router answered on this network: set a reconnect command".into())
         }
         None => None,
-        Some(router) if router.needs_login() && secret(&cfg.router_password).is_none() => {
+        Some(router) if router.needs_login() && cfg.account("router_password").is_none() => {
             Some(format!(
                 "the {} redials only with its login: set it under Router login",
                 router.model

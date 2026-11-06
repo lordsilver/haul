@@ -11,7 +11,6 @@ use regex::Regex;
 use serde_json::{Value, json};
 
 use super::{Cx, Entry, Look, Probed, ResolveError};
-use crate::config::secret;
 
 static OK_LINK: LazyLock<[Regex; 2]> = LazyLock::new(|| {
     [
@@ -127,7 +126,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     if check(cx, url).await == Some(Checked::Gone) {
         return Err(ResolveError::gone(GONE));
     }
-    if let Some(key) = secret(&cx.cfg.onefichier_key) {
+    if let Some(key) = cx.cfg.account("1fichier_key") {
         let base = &cx.cfg.endpoints.onefichier;
         let j: Value = cx
             .http

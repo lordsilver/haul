@@ -416,6 +416,27 @@ pub struct Known {
     /// until the user sets one or switches it on without one
     /// ([`Known::last_resort`]).
     pub needs_account: bool,
+    /// What a file of it asks of a person when its account is not set.
+    pub free_asks: Asks,
+    /// It says what a file is (its size, whether it is still there) through
+    /// an API, without a download or its page ([`tells_size`]).
+    pub tells_size: bool,
+    /// How long its page, passed by itself, takes on its own before it could
+    /// want a person ([`page_takes`]).
+    pub page_takes: Duration,
+    /// What its account does for it, as the Hosts view says it; empty for
+    /// the usual words.
+    pub account_note: &'static str,
+}
+
+/// What a host's file asks of a person without the host's account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asks {
+    Nothing,
+    /// A captcha or a wait for every file.
+    Always,
+    /// A step on its page, unless the desktop app is there to pass it.
+    OnItsPage,
 }
 
 impl Known {
@@ -430,10 +451,10 @@ impl Known {
     /// Whether the user set every account setting this host takes.
     pub fn has_account(&self, cfg: &Config) -> bool {
         !self.accounts.is_empty()
-            && self.accounts.iter().all(|field| {
-                cfg.account(field.key)
-                    .is_some_and(|v| crate::config::secret(v).is_some())
-            })
+            && self
+                .accounts
+                .iter()
+                .all(|field| cfg.account(field.key).is_some())
     }
 
     /// It needs an account the user has not set.
@@ -489,14 +510,11 @@ pub fn account_forms(cfg: &Config) -> Vec<AccountForm> {
         .filter(|k| !k.accounts.is_empty())
         .map(|k| AccountForm {
             host: k.names[0].to_string(),
-            note: match k.kind {
-                Kind::OneFichier => "Its API key: no free-mode wait or captcha.",
-                Kind::Pixeldrain => "Its API key.",
-                Kind::Gofile => {
-                    "A premium account's token: without one, gofile's files come only through its page."
+            note: match k.account_note {
+                "" if k.needs_account => {
+                    "A premium account: without one, every file asks for a captcha."
                 }
-                _ if k.needs_account => "A premium account: without one, every file asks for a captcha.",
-                _ => "",
+                note => note,
             },
             fields: k.accounts.to_vec(),
             set: k.has_account(cfg),
@@ -522,6 +540,10 @@ const HOST: Known = Known {
     tells_allowance: false,
     page_passes: false,
     needs_account: false,
+    free_asks: Asks::Nothing,
+    tells_size: false,
+    page_takes: Duration::ZERO,
+    account_note: "",
 };
 
 const fn field(key: &'static str, label: &'static str, secret: bool) -> AccountField {
@@ -544,6 +566,8 @@ static KNOWN: &[Known] = &[
             ..NO_LIMITS
         },
         tells_allowance: true,
+        tells_size: true,
+        account_note: "Its API key.",
         ..HOST
     },
     Known {
@@ -556,6 +580,8 @@ static KNOWN: &[Known] = &[
         },
         page_passes: true,
         needs_account: true,
+        free_asks: Asks::OnItsPage,
+        account_note: "A premium account's token: without one, gofile's files come only through its page.",
         ..HOST
     },
     Known {
@@ -571,6 +597,9 @@ static KNOWN: &[Known] = &[
             per_file: Some("Wait and captcha per file"),
             ..NO_LIMITS
         },
+        free_asks: Asks::Always,
+        tells_size: true,
+        account_note: "Its API key: no free-mode wait or captcha.",
         ..HOST
     },
     Known {
@@ -585,6 +614,7 @@ static KNOWN: &[Known] = &[
             ..NO_LIMITS
         },
         needs_account: true,
+        free_asks: Asks::Always,
         ..HOST
     },
     Known {
@@ -599,11 +629,13 @@ static KNOWN: &[Known] = &[
             ..NO_LIMITS
         },
         needs_account: true,
+        free_asks: Asks::Always,
         ..HOST
     },
     Known {
         names: &["mega.nz", "mega.co.nz", "transfer.it"],
         kind: Kind::Mega,
+        tells_size: true,
         ..HOST
     },
     Known {
@@ -617,6 +649,9 @@ static KNOWN: &[Known] = &[
             ..NO_LIMITS
         },
         page_passes: true,
+        free_asks: Asks::OnItsPage,
+        // Everyone waits a minute first.
+        page_takes: Duration::from_secs(75),
         ..HOST
     },
     Known {
@@ -626,6 +661,7 @@ static KNOWN: &[Known] = &[
         // does not let Haul's own requests through: the browser that passes
         // it takes the address on the page's download button.
         page_passes: true,
+        tells_size: true,
         ..HOST
     },
     Known {
@@ -636,12 +672,18 @@ static KNOWN: &[Known] = &[
             at_once: Some(1),
             ..NO_LIMITS
         },
+        tells_size: true,
         ..HOST
     },
     Known {
         names: &["vikingfile.com", "vik1ngfile.site"],
         kind: Kind::Vikingfile,
         page_passes: true,
+        free_asks: Asks::OnItsPage,
+        tells_size: true,
+        // It may take its time generating the link, which its page's
+        // recipe gives 45 seconds before it tries again later.
+        page_takes: Duration::from_secs(30),
         ..HOST
     },
     Known {
@@ -699,15 +741,9 @@ pub fn known(host: &str) -> Option<&'static Known> {
 }
 
 /// How long a page that passes by itself takes on its own before it could
-/// want a person: ddownload's makes everyone wait a minute first, and
-/// vikingfile's may take its time generating the link, which its page's
-/// recipe gives 45 seconds before it tries again later.
-pub fn page_takes(url: &str) -> std::time::Duration {
-    match kind_of(url) {
-        Some(Kind::Ddownload) => std::time::Duration::from_secs(75),
-        Some(Kind::Vikingfile) => std::time::Duration::from_secs(30),
-        _ => std::time::Duration::ZERO,
-    }
+/// want a person ([`Known::page_takes`]).
+pub fn page_takes(url: &str) -> Duration {
+    known(&host_of(url)).map_or(Duration::ZERO, |k| k.page_takes)
 }
 
 /// Whether `url`'s page passes its check by itself (see
@@ -726,10 +762,10 @@ pub fn asks_a_person(url: &str, cfg: &Config, pages: bool) -> bool {
     if k.has_account(cfg) {
         return false;
     }
-    match k.kind {
-        Kind::OneFichier | Kind::Rapidgator | Kind::Nitroflare => true,
-        Kind::Gofile | Kind::Vikingfile | Kind::Ddownload => !pages,
-        _ => false,
+    match k.free_asks {
+        Asks::Always => true,
+        Asks::OnItsPage => !pages,
+        Asks::Nothing => false,
     }
 }
 
@@ -1513,17 +1549,7 @@ impl From<Option<Probed>> for Look {
 /// looked up as it is added even when it names its file, so its size counts
 /// in its archive's total before it downloads.
 pub fn tells_size(url: &str) -> bool {
-    matches!(
-        kind_of(url),
-        Some(
-            Kind::Vikingfile
-                | Kind::Rootz
-                | Kind::OneFichier
-                | Kind::Mega
-                | Kind::Pixeldrain
-                | Kind::Mediafire
-        )
-    )
+    known(&host_of(url)).is_some_and(|k| k.tells_size)
 }
 
 /// [`probe`], from a host that can also say the file was deleted, so a row
@@ -1719,12 +1745,12 @@ mod tests {
         let pixeldrain = known("pixeldrain.com").unwrap();
         let mut cfg = Config::default();
         assert_eq!(pixeldrain.at_once(&cfg), Some(5));
-        cfg.pixeldrain_key = Some("key".into());
+        cfg.accounts.insert("pixeldrain_key".into(), "key".into());
         assert_eq!(pixeldrain.at_once(&cfg), None);
         assert!(pixeldrain.has_account(&cfg));
         // Both halves of a login, or it is none.
         let rapidgator = known("rapidgator.net").unwrap();
-        cfg.rapidgator_user = Some("me".into());
+        cfg.accounts.insert("rapidgator_user".into(), "me".into());
         assert!(!rapidgator.has_account(&cfg));
         assert!(
             !known("mega.nz").unwrap().has_account(&cfg),

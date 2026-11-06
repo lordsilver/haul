@@ -114,22 +114,10 @@ pub struct Config {
     /// the user wants used like any other without one. The others are used
     /// only when no other host has the file, until their account is set.
     pub accountless_hosts: Vec<String>,
-    #[serde(rename = "1fichier_key")]
-    pub onefichier_key: Option<String>,
-    pub pixeldrain_key: Option<String>,
-    pub rapidgator_user: Option<String>,
-    pub rapidgator_pass: Option<String>,
-    pub nitroflare_user: Option<String>,
-    pub nitroflare_key: Option<String>,
-    pub gofile_token: Option<String>,
-    /// The router's login, for one that redials only for it (a FRITZ!Box
-    /// over TR-064).
-    pub router_user: Option<String>,
-    pub router_password: Option<String>,
-    /// NordVPN's service credentials (not the account's login), for its
-    /// SOCKS5 servers.
-    pub nordvpn_user: Option<String>,
-    pub nordvpn_password: Option<String>,
+    /// Account keys by their name ([`account_keys`]): the hosts' (whose
+    /// [`crate::hosts::Known::accounts`] name them), the router's login and
+    /// NordVPN's service credentials.
+    pub accounts: BTreeMap<String, String>,
     /// How many of NordVPN's SOCKS5 servers join the proxies, least loaded
     /// first; 0 for none.
     pub nordvpn_servers: usize,
@@ -148,7 +136,7 @@ pub struct Config {
     pub throttling: crate::throttle::Throttling,
     /// Keys an environment variable set, with the variable's name.
     #[serde(skip)]
-    pub from_env: BTreeMap<&'static str, &'static str>,
+    pub from_env: BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -186,17 +174,7 @@ impl Default for Config {
             preferred_hosts: DEFAULT_PREFERRED.iter().map(|h| h.to_string()).collect(),
             disabled_hosts: Vec::new(),
             accountless_hosts: Vec::new(),
-            onefichier_key: None,
-            pixeldrain_key: None,
-            rapidgator_user: None,
-            rapidgator_pass: None,
-            nitroflare_user: None,
-            nitroflare_key: None,
-            gofile_token: None,
-            router_user: None,
-            router_password: None,
-            nordvpn_user: None,
-            nordvpn_password: None,
+            accounts: BTreeMap::new(),
             nordvpn_servers: 0,
             nordvpn_countries: Vec::new(),
             reconnect: false,
@@ -208,20 +186,28 @@ impl Default for Config {
     }
 }
 
-/// Account keys, by their name in the file and their environment variable.
-pub const ACCOUNTS: [(&str, &str); 11] = [
-    ("1fichier_key", "HAUL_1FICHIER_KEY"),
-    ("pixeldrain_key", "HAUL_PIXELDRAIN_KEY"),
-    ("rapidgator_user", "HAUL_RAPIDGATOR_USER"),
-    ("rapidgator_pass", "HAUL_RAPIDGATOR_PASS"),
-    ("nitroflare_user", "HAUL_NITROFLARE_USER"),
-    ("nitroflare_key", "HAUL_NITROFLARE_KEY"),
-    ("gofile_token", "HAUL_GOFILE_TOKEN"),
-    ("router_user", "HAUL_ROUTER_USER"),
-    ("router_password", "HAUL_ROUTER_PASSWORD"),
-    ("nordvpn_user", "HAUL_NORDVPN_USER"),
-    ("nordvpn_password", "HAUL_NORDVPN_PASSWORD"),
+/// The account keys that are no host's: the router's login, for one that
+/// redials only with it (a FRITZ!Box over TR-064), and NordVPN's service
+/// credentials (not the account's login), for its SOCKS5 servers.
+const SERVICE_ACCOUNTS: [&str; 4] = [
+    "router_user",
+    "router_password",
+    "nordvpn_user",
+    "nordvpn_password",
 ];
+
+/// Every account key `[accounts]` takes: the hosts', then the services'.
+pub fn account_keys() -> impl Iterator<Item = &'static str> {
+    crate::hosts::all()
+        .flat_map(|k| k.accounts.iter().map(|f| f.key))
+        .chain(SERVICE_ACCOUNTS)
+}
+
+/// The environment variable that fills account key `key` when it is unset:
+/// `HAUL_` and the key in capitals (`HAUL_1FICHIER_KEY`).
+fn env_var(key: &str) -> String {
+    format!("HAUL_{}", key.to_ascii_uppercase())
+}
 
 impl Config {
     /// Reads `path` (a missing file means defaults), then fills unset account
@@ -239,6 +225,13 @@ impl Config {
     /// Parses the file's text; an error names the line it is on.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut cfg: Self = toml::from_str(text).map_err(|e| e.to_string().trim().to_string())?;
+        if let Some(key) = cfg
+            .accounts
+            .keys()
+            .find(|k| !account_keys().any(|a| a == *k))
+        {
+            return Err(format!("unknown account key `{key}` in [accounts]"));
+        }
         cfg.hosts_by_main_name();
         Ok(cfg)
     }
@@ -275,54 +268,27 @@ impl Config {
 
     fn apply_env(&mut self, var: impl Fn(&str) -> Option<String>) {
         let get = |k: &str| var(k).filter(|v| !v.is_empty());
-        for (key, variable) in ACCOUNTS {
-            let slot = self.account_mut(key).expect("listed account");
-            if secret(slot).is_none()
-                && let Some(value) = get(variable)
+        for key in account_keys() {
+            let variable = env_var(key);
+            if self.account(key).is_none()
+                && let Some(value) = get(&variable)
             {
-                *slot = Some(value);
-                self.from_env.insert(key, variable);
+                self.accounts.insert(key.to_string(), value);
+                self.from_env.insert(key.to_string(), variable);
             }
         }
         if let Some(proxy) = get("HAUL_PROXY") {
             self.proxy = Some(proxy);
-            self.from_env.insert("proxy", "HAUL_PROXY");
+            self.from_env.insert("proxy".into(), "HAUL_PROXY".into());
         }
     }
 
-    /// An account key's value, by its name in the file.
-    pub fn account(&self, key: &str) -> Option<&Option<String>> {
-        Some(match key {
-            "1fichier_key" => &self.onefichier_key,
-            "pixeldrain_key" => &self.pixeldrain_key,
-            "rapidgator_user" => &self.rapidgator_user,
-            "rapidgator_pass" => &self.rapidgator_pass,
-            "nitroflare_user" => &self.nitroflare_user,
-            "nitroflare_key" => &self.nitroflare_key,
-            "gofile_token" => &self.gofile_token,
-            "router_user" => &self.router_user,
-            "router_password" => &self.router_password,
-            "nordvpn_user" => &self.nordvpn_user,
-            "nordvpn_password" => &self.nordvpn_password,
-            _ => return None,
-        })
-    }
-
-    pub fn account_mut(&mut self, key: &str) -> Option<&mut Option<String>> {
-        Some(match key {
-            "1fichier_key" => &mut self.onefichier_key,
-            "pixeldrain_key" => &mut self.pixeldrain_key,
-            "rapidgator_user" => &mut self.rapidgator_user,
-            "rapidgator_pass" => &mut self.rapidgator_pass,
-            "nitroflare_user" => &mut self.nitroflare_user,
-            "nitroflare_key" => &mut self.nitroflare_key,
-            "gofile_token" => &mut self.gofile_token,
-            "router_user" => &mut self.router_user,
-            "router_password" => &mut self.router_password,
-            "nordvpn_user" => &mut self.nordvpn_user,
-            "nordvpn_password" => &mut self.nordvpn_password,
-            _ => return None,
-        })
+    /// An account key's value, when it is set and not empty.
+    pub fn account(&self, key: &str) -> Option<&str> {
+        self.accounts
+            .get(key)
+            .map(String::as_str)
+            .filter(|v| !v.is_empty())
     }
 
     /// The first proxy in use: configured, and not switched off.
@@ -672,21 +638,9 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # false keeps the proxies and VPN servers but connects every host directly.
 # use_proxy = true
 
-# Accounts. HAUL_<KEY> environment variables (HAUL_1FICHIER_KEY, ...) fill
-# the keys left unset here.
-# 1fichier_key = ""
-# pixeldrain_key = ""
-# rapidgator_user = ""
-# rapidgator_pass = ""
-# nitroflare_user = ""
-# nitroflare_key = ""
-# gofile_token = ""
-
-# NordVPN's SOCKS5 servers as more proxies: its service credentials (Nord
-# Account › NordVPN › manual setup, not the account's login), how many servers
-# (least loaded first) and from which countries (every one when empty).
-# nordvpn_user = ""
-# nordvpn_password = ""
+# NordVPN's SOCKS5 servers as more proxies: how many servers (least loaded
+# first) and from which countries (every one when empty). Its service
+# credentials are under [accounts].
 # nordvpn_servers = 3
 # nordvpn_countries = ["Sweden", "Netherlands"]
 # false keeps all of the above but leaves NordVPN's servers out.
@@ -697,10 +651,9 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # it). Haul finds the router itself and asks it to redial over UPnP; a router
 # that wants its login for that (a FRITZ!Box over TR-064) takes it here. Or a
 # command of your own gets the new address. Every redial cuts the line for a
-# few seconds, so it is off unless you switch it on.
+# few seconds, so it is off unless you switch it on. The router's login is
+# under [accounts].
 # reconnect = false
-# router_user = ""
-# router_password = ""
 # reconnect_command = "my-router-cli reconnect"
 
 # Hosts a file with mirrors downloads from first, in this order (default:
@@ -730,6 +683,20 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # Subfolders of the download folder for the files from these hosts.
 # [folders]
 # "pixeldrain.com" = "pixeldrain"
+
+# Accounts: the hosts' keys and logins, the router's login (router_user,
+# router_password) and NordVPN's service credentials (nordvpn_user,
+# nordvpn_password: Nord Account › NordVPN › manual setup, not the account's
+# login). HAUL_<KEY> environment variables (HAUL_1FICHIER_KEY, ...) fill the
+# keys left unset here.
+# [accounts]
+# 1fichier_key = ""
+# pixeldrain_key = ""
+# rapidgator_user = ""
+# rapidgator_pass = ""
+# nitroflare_user = ""
+# nitroflare_key = ""
+# gofile_token = ""
 "#;
 
 /// A configured, non-empty value.
@@ -812,8 +779,9 @@ mod tests {
             archive_passwords = ["one", "two"]
             retry_failed_minutes = 0
             proxy = "socks5://u:p@host:1080"
-            1fichier_key = "k1"
             preferred_hosts = ["B.example", "a.example"]
+            [accounts]
+            1fichier_key = "k1"
             [routes]
             "a.example" = "direct"
             [folders]
@@ -825,7 +793,7 @@ mod tests {
             (cfg.max_total, cfg.watch_clipboard, cfg.retry_failed_minutes),
             (4, true, 0)
         );
-        assert_eq!(cfg.onefichier_key.as_deref(), Some("k1"));
+        assert_eq!(cfg.account("1fichier_key"), Some("k1"));
         assert_eq!(cfg.routes.get("a.example"), Some(&Route::Direct));
         assert!(cfg.recycle_on_remove && cfg.skip_add_dialog && cfg.verify_existing);
         assert!(cfg.auto_extract && cfg.delete_after_extract);
@@ -840,6 +808,8 @@ mod tests {
         assert_eq!(cfg.user_agent, DEFAULT_USER_AGENT);
         let typo = Config::parse("max_totl = 3").unwrap_err();
         assert!(typo.contains("max_totl"), "{typo}");
+        let typo = Config::parse("[accounts]\npixeldrain = \"k\"").unwrap_err();
+        assert!(typo.contains("pixeldrain"), "{typo}");
         assert_eq!(Config::parse(TEMPLATE).unwrap(), Config::default());
     }
 
@@ -881,7 +851,7 @@ mod tests {
     #[test]
     fn env_fills_gaps_and_proxy_wins() {
         let mut cfg = Config {
-            pixeldrain_key: Some("file".into()),
+            accounts: BTreeMap::from([("pixeldrain_key".into(), "file".into())]),
             proxy: Some("socks5://file:1".into()),
             ..Config::default()
         };
@@ -891,11 +861,14 @@ mod tests {
             "HAUL_PROXY" => Some("socks5://env:2".into()),
             _ => None,
         });
-        assert_eq!(cfg.pixeldrain_key.as_deref(), Some("file"));
-        assert_eq!(cfg.onefichier_key.as_deref(), Some("env1f"));
+        assert_eq!(cfg.account("pixeldrain_key"), Some("file"));
+        assert_eq!(cfg.account("1fichier_key"), Some("env1f"));
         assert_eq!(cfg.proxy(), Some("socks5://env:2"));
         assert_eq!(
-            cfg.from_env.into_iter().collect::<Vec<_>>(),
+            cfg.from_env
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<Vec<_>>(),
             [
                 ("1fichier_key", "HAUL_1FICHIER_KEY"),
                 ("proxy", "HAUL_PROXY")
@@ -947,7 +920,7 @@ mod tests {
         write_key(&fresh, &["routes", "127.0.0.1"], Some("direct".into())).unwrap();
         write_key(&fresh, &["theme"], Some("light".into())).unwrap();
         write_key(&fresh, &["max_total"], Some(5.into())).unwrap();
-        write_key(&fresh, &["1fichier_key"], Some("k".into())).unwrap();
+        write_key(&fresh, &["accounts", "1fichier_key"], Some("k".into())).unwrap();
         let text = std::fs::read_to_string(&fresh).unwrap();
         assert!(
             text.starts_with("# Haul settings"),
@@ -958,13 +931,17 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("\ntheme = \"light\"\n"), "{text}");
-        assert!(text.contains("\n1fichier_key = \"k\"\n"), "{text}");
+        assert!(
+            text.contains("\n[accounts]\n1fichier_key = \"k\"\n"),
+            "{text}"
+        );
         assert!(
             text.contains("\n[routes]\n\"127.0.0.1\" = \"direct\"\n"),
             "{text}"
         );
         let cfg = Config::parse(&text).unwrap();
         assert_eq!((cfg.theme, cfg.max_total), (Theme::Light, 5));
+        assert_eq!(cfg.account("1fichier_key"), Some("k"));
         ensure_file(&fresh).unwrap();
         assert!(
             std::fs::read_to_string(&fresh)

@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 
 use super::{AUTO_RETRIES, Clients, Engine, Event, State};
 use crate::{
-    config::{self, ACCOUNTS, Config, Route, Theme},
+    config::{self, Config, Route, Theme},
     hosts::{self, Http},
     item::{Item, Status},
     paths,
@@ -63,7 +63,7 @@ pub struct SettingsView {
     /// Account keys by their name in the file; empty when unset.
     pub accounts: BTreeMap<&'static str, String>,
     /// Keys an environment variable set, with its name; read-only here.
-    pub from_env: BTreeMap<&'static str, &'static str>,
+    pub from_env: BTreeMap<String, String>,
     pub config_file: Option<String>,
     /// Why the file on disk is not in effect.
     pub error: Option<String>,
@@ -168,9 +168,8 @@ impl Engine {
             nordvpn_on: cfg.nordvpn_on,
             user_agent: cfg.user_agent.clone(),
             default_user_agent: config::DEFAULT_USER_AGENT,
-            accounts: ACCOUNTS
-                .iter()
-                .map(|(key, _)| (*key, shown(cfg.account(key).expect("listed account"))))
+            accounts: config::account_keys()
+                .map(|key| (key, cfg.account(key).unwrap_or_default().to_string()))
                 .collect(),
             from_env: cfg.from_env.clone(),
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
@@ -372,10 +371,14 @@ impl Engine {
                     writes.push(write);
                     cfg.download_dir = dir.map(PathBuf::from);
                 }
-                account if cfg.account(account).is_some() => {
-                    let (secret, write) = optional_text(value, key)?;
-                    *cfg.account_mut(account).expect("checked") = secret;
-                    writes.push(write);
+                account if config::account_keys().any(|k| k == account) => {
+                    let secret = Some(text(value, key)?).filter(|t| !t.is_empty());
+                    let write = vec!["accounts".to_string(), key.clone()];
+                    match &secret {
+                        Some(s) => cfg.accounts.insert(key.clone(), s.clone()),
+                        None => cfg.accounts.remove(key),
+                    };
+                    writes.push((write, secret.map(Into::into)));
                 }
                 _ => {
                     let Some((_, flag)) = FLAGS.iter().find(|(name, _)| name == key) else {

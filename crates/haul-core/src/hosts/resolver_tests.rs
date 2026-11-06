@@ -94,7 +94,8 @@ async fn pixeldrain_file_list_and_captcha() {
         );
     let base = serve(app).await;
     let mut cfg = config(&base);
-    cfg.pixeldrain_key = Some("secret".into());
+    cfg.accounts
+        .insert("pixeldrain_key".into(), "secret".into());
     let (http, tokens) = (http(), Tokens::default());
     let cx = context(&http, &cfg, &tokens);
 
@@ -186,7 +187,7 @@ async fn gofile_asks_nothing_without_an_account_and_lists_folders_with_one() {
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0, "gofile was not asked");
 
-    cfg.gofile_token = Some("premium".into());
+    cfg.accounts.insert("gofile_token".into(), "premium".into());
     let cx = context(&http, &cfg, &tokens);
     let entries = gofile::resolve(&cx, "https://gofile.io/d/abc")
         .await
@@ -335,7 +336,7 @@ async fn onefichier_api_key_and_free_mode() {
         None
     );
 
-    cfg.onefichier_key = Some("key".into());
+    cfg.accounts.insert("1fichier_key".into(), "key".into());
     let cx = context(&http, &cfg, &tokens);
     let e = onefichier::resolve(&cx, "https://1fichier.com/?abc&af=1")
         .await
@@ -379,8 +380,8 @@ async fn rapidgator_logs_in_once_and_relogs_after_errors() {
             "without the account, its page's free download"
         );
     }
-    cfg.rapidgator_user = Some("me".into());
-    cfg.rapidgator_pass = Some("pw".into());
+    cfg.accounts.insert("rapidgator_user".into(), "me".into());
+    cfg.accounts.insert("rapidgator_pass".into(), "pw".into());
     let cx = context(&http, &cfg, &tokens);
     let good =
         "https://rapidgator.net/file/abcdefabcdefabcdefabcdefabcdefab/archive.part1.rar.html";
@@ -421,8 +422,8 @@ async fn nitroflare_premium_link() {
     );
     let base = serve(app).await;
     let mut cfg = config(&base);
-    cfg.nitroflare_user = Some("me".into());
-    cfg.nitroflare_key = Some("k".into());
+    cfg.accounts.insert("nitroflare_user".into(), "me".into());
+    cfg.accounts.insert("nitroflare_key".into(), "k".into());
     let (http, tokens) = (http(), Tokens::default());
     let cx = context(&http, &cfg, &tokens);
     let e = nitroflare::resolve(&cx, "https://nitroflare.com/view/ABC123/n.zip")

@@ -8,14 +8,13 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::{Cx, Entry, ResolveError, guess_name};
-use crate::config::secret;
 
 static FILE_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/view/(\w+)").unwrap());
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     let (Some(user), Some(key)) = (
-        secret(&cx.cfg.nitroflare_user),
-        secret(&cx.cfg.nitroflare_key),
+        cx.cfg.account("nitroflare_user"),
+        cx.cfg.account("nitroflare_key"),
     ) else {
         return Err(ResolveError::person(super::FREE_ON_PAGE));
     };

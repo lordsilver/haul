@@ -8,7 +8,6 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::{Cx, Entry, ResolveError, guess_name};
-use crate::config::secret;
 
 static FILE_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/file/([0-9a-f]{32})").unwrap());
 
@@ -22,8 +21,8 @@ fn details(j: &Value) -> String {
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     let (Some(user), Some(pass)) = (
-        secret(&cx.cfg.rapidgator_user),
-        secret(&cx.cfg.rapidgator_pass),
+        cx.cfg.account("rapidgator_user"),
+        cx.cfg.account("rapidgator_pass"),
     ) else {
         return Err(ResolveError::person(super::FREE_ON_PAGE));
     };

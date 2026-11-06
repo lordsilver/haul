@@ -8,7 +8,6 @@ use regex::Regex;
 use serde::Deserialize;
 
 use super::{Algo, Checksum, Cx, Entry, Probed, ResolveError};
-use crate::config::secret;
 
 static LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/(u|l)/([\w-]+)").unwrap());
 
@@ -39,7 +38,7 @@ struct List {
 
 fn auth(cx: &Cx<'_>) -> BTreeMap<String, String> {
     let mut headers = BTreeMap::new();
-    if let Some(key) = secret(&cx.cfg.pixeldrain_key) {
+    if let Some(key) = cx.cfg.account("pixeldrain_key") {
         headers.insert(
             "Authorization".into(),
             format!("Basic {}", STANDARD.encode(format!(":{key}"))),

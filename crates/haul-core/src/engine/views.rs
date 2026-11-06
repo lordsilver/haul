@@ -906,10 +906,7 @@ pub(super) fn pool(cfg: &Config, p: super::PoolView, vpn: VpnFound) -> PoolSumma
         }
     };
     let proxies = usize::from(cfg.proxy.is_some()) + cfg.proxies.len();
-    let nord = cfg
-        .account("nordvpn_password")
-        .and_then(Option::as_deref)
-        .is_some_and(|s| !s.is_empty());
+    let nord = cfg.account("nordvpn_password").is_some();
     let paused = !cfg.use_proxy;
     let mut sources = Vec::new();
     if proxies > 0 {
@@ -1527,7 +1524,7 @@ mod tests {
         assert_eq!(p.sources[1].status, "2 in use");
 
         let cfg = Config {
-            nordvpn_password: Some("pw".into()),
+            accounts: std::collections::BTreeMap::from([("nordvpn_password".into(), "pw".into())]),
             nordvpn_servers: 0,
             ..Config::default()
         };
