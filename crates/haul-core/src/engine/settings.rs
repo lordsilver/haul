@@ -145,6 +145,7 @@ const FLAGS: &[(&str, Flag)] = &[
     ("reconnect", |c| &mut c.reconnect),
     ("leave_slow_hosts", |c| &mut c.leave_slow_hosts),
     ("detailed_log", |c| &mut c.detailed_log),
+    ("live_debug", |c| &mut c.live_debug),
     ("skip_add_dialog", |c| &mut c.skip_add_dialog),
     ("proxies_on", |c| &mut c.proxies_on),
     ("nordvpn_on", |c| &mut c.nordvpn_on),
@@ -488,6 +489,9 @@ impl Engine {
         }
         if new.detailed_log != old.detailed_log {
             crate::logging::set_detailed(new.detailed_log);
+        }
+        if new.live_debug != old.live_debug {
+            crate::debug::set_live(new.live_debug);
         }
         // The switch also takes the VPN servers in or out, which the pool of
         // the settings does not show.

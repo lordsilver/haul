@@ -46,6 +46,17 @@ impl Engine {
                     "gone": it.gone,
                     "manual_urls": it.manual_urls,
                     "page_wants_person": it.page_wants_person,
+                    // A link a page or a person handed back, used first, and
+                    // the mirror it stands for.
+                    "handed_back": it.pre.as_ref().map(|p| json!({
+                        "url": p.url,
+                        "for": it.pre_for,
+                        "manual": it.manual,
+                    })),
+                    // Pages opened only to learn what it is, that told nothing.
+                    "looked": it.looked,
+                    "looking_up": self.look_up_page(&st, it),
+                    "named": it.named,
                     "page_retrying": it.page_retrying,
                     "prefer": it.prefer,
                     "error": it.error,

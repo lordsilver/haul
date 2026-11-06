@@ -385,6 +385,7 @@ async fn reorders_the_preferred_hosts() {
             "pixeldrain.com",
             "vikingfile.com",
             "mega.nz",
+            "megaup.net",
             "1fichier.com"
         ]
     );
@@ -578,18 +579,25 @@ async fn diagnostics_tell_what_happened_without_secrets() {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
     let names: Vec<String> = zip.file_names().map(|n| n.unwrap().to_string()).collect();
     assert!(names.contains(&"report.json".to_string()), "{names:?}");
+    assert!(names.contains(&"timeline.txt".to_string()), "{names:?}");
+    let mut timeline = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("timeline.txt").unwrap(), &mut timeline)
+        .unwrap();
+    assert!(!timeline.contains("s3cret"), "{timeline}");
     let mut text = String::new();
     std::io::Read::read_to_string(&mut zip.by_name("report.json").unwrap(), &mut text).unwrap();
     assert!(!text.contains("s3cret"), "{text}");
     let report: Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(report["haul"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(report["about"]["haul"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(report["about"]["desktop"], false);
+    assert!(report["view"]["items"].is_array(), "what the UI shows");
     assert_eq!(report["settings"]["accounts"]["1fichier_key"], true);
     assert_eq!(report["settings"]["accounts"]["pixeldrain_key"], false);
     assert_eq!(
         report["settings"]["proxy"],
         "socks5://proxy.example:1080 (with credentials)"
     );
-    let links: Vec<&str> = report["queue"]
+    let links: Vec<&str> = report["engine"]["items"]
         .as_array()
         .unwrap()
         .iter()

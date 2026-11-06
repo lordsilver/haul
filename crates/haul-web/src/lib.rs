@@ -119,6 +119,14 @@ impl App {
             .into()
     }
 
+    /// The desktop app's insides, for debug mode and the report; `null`
+    /// on the server.
+    pub(crate) fn desktop_inspect(&self) -> serde_json::Value {
+        self.desktop
+            .as_ref()
+            .map_or(serde_json::Value::Null, |d| d.debug_inspect())
+    }
+
     fn view(&self) -> View {
         View {
             snapshot: self.engine.snapshot(),
@@ -191,11 +199,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/diagnostics", get(diagnostics))
         .route("/api/diagnostics/save", post(save_diagnostics))
         .route("/api/open/{place}", post(open_place))
-        .merge(if haul_core::debug::enabled() {
-            debug::routes(&app)
-        } else {
-            Router::new()
-        })
+        .merge(debug::routes(&app))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .layer(middleware::map_response(json_errors))
         .with_state(app)
@@ -732,7 +736,8 @@ async fn pick_download_dir(State(app): State<App>) -> Response {
 /// with account keys and proxy credentials left out, and its logs.
 async fn diagnostics(State(app): State<App>) -> Response {
     let engine = app.engine.clone();
-    match blocking(move || engine.report_zip()).await {
+    let desktop = app.desktop_inspect();
+    match blocking(move || engine.report_zip(desktop)).await {
         Ok((name, body)) => (
             [
                 (header::CONTENT_TYPE, "application/zip".to_string()),
@@ -757,8 +762,9 @@ async fn save_diagnostics(State(app): State<App>) -> Response {
         return *answer;
     }
     let engine = app.engine.clone();
+    let desktop = app.desktop_inspect();
     let saved = blocking(move || -> Result<std::path::PathBuf, String> {
-        let (name, body) = engine.report_zip()?;
+        let (name, body) = engine.report_zip(desktop)?;
         let folder = haul_core::paths::downloads_folder();
         std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
         let path = haul_core::paths::unused_name(&folder, &name);

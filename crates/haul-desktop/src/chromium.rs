@@ -158,6 +158,8 @@ pub enum Outcome {
 
 pub struct Pass<'a> {
     pub exe: &'a Path,
+    /// The row whose page it is, for the signals.
+    pub item: &'a str,
     pub url: &'a str,
     /// The site's own folder, kept for its next pages.
     pub profile: PathBuf,
@@ -175,6 +177,10 @@ pub struct Pass<'a> {
     /// The pass ends as soon as the page settles past its checks without
     /// links Haul takes: on a paste, nothing more is coming.
     pub ends_settled: bool,
+    /// The page is a file's page on a host Haul has no recipe for: its
+    /// download button is pressed, as a person would, page after page, until
+    /// the file comes ([`press_download`]).
+    pub press_download: bool,
     /// The page is kept on the site it lands on ([`Cdp::keep_to_site`]): a
     /// page that is no host's own (a wrapper's, one behind a check), whose
     /// files are read off it rather than reached by going elsewhere.
@@ -248,7 +254,7 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
     });
     haul_core::debug::emit(
         "pass",
-        json!({ "event": "start", "url": p.url, "profile": p.profile.display().to_string(), "pid": browser.child.id() }),
+        json!({ "event": "start", "id": p.item, "url": p.url, "profile": p.profile.display().to_string(), "pid": browser.child.id() }),
     );
     // Its windows stay off the taskbar from the first moment, not only once
     // the page is driven.
@@ -265,8 +271,9 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
     let result = drive(&mut browser, port, &p);
     hiding.store(false, Ordering::Relaxed);
     drop(browser);
-    if haul_core::debug::enabled() {
-        // The outcome without the cookies a file carries.
+    {
+        // The outcome without the cookies a file carries: to the log too,
+        // debug mode or not.
         let outcome = match &result {
             Ok(Outcome::Files { files, .. }) => {
                 json!({ "files": files.iter().map(|f| &f.url).collect::<Vec<_>>() })
@@ -291,7 +298,7 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
         };
         haul_core::debug::emit(
             "pass",
-            json!({ "event": "end", "url": p.url, "outcome": outcome, "started": p.handle.info.lock().unwrap_or_else(|e| e.into_inner()).get("started").cloned() }),
+            json!({ "event": "end", "id": p.item, "url": p.url, "outcome": outcome, "started": p.handle.info.lock().unwrap_or_else(|e| e.into_inner()).get("started").cloned() }),
         );
     }
     result
@@ -353,6 +360,9 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
     // The addresses the page last offered: a new page with as many (a
     // paste's list after its gate) is offered too.
     let mut offered: Vec<String> = Vec::new();
+    // Download buttons pressed, and when last.
+    let mut presses = 0;
+    let mut pressed_at = start;
     loop {
         if p.handle.stop.load(Ordering::Relaxed)
             || browser.child.try_wait().ok().flatten().is_some()
@@ -443,6 +453,18 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         if start.elapsed() >= p.show_after {
             return Ok(Outcome::WantsPerson(look(&mut cdp, s)));
         }
+        if p.press_download
+            && presses < PRESSES_AT_MOST
+            && pressed_at.elapsed() >= PRESS_EVERY
+            && let Some(text) = press_download(&mut cdp, s)
+        {
+            presses += 1;
+            pressed_at = Instant::now();
+            haul_core::debug::emit(
+                "pass",
+                json!({ "event": "press", "id": p.item, "url": p.url, "button": text }),
+            );
+        }
         let answer = match cdp.call(
             "Runtime.evaluate",
             json!({ "expression": "JSON.stringify(window.__haulHandoff || null)", "returnByValue": true }),
@@ -459,14 +481,13 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         else {
             continue;
         };
-        // Each new message from the page, for debug mode.
-        if haul_core::debug::enabled()
-            && p.handle.info.lock().unwrap_or_else(|e| e.into_inner())["page_said"] != sent
-        {
+        // Each new message from the page, for debug mode and the detailed
+        // log.
+        if p.handle.info.lock().unwrap_or_else(|e| e.into_inner())["page_said"] != sent {
             p.handle.note("page_said", sent.clone());
             haul_core::debug::emit(
                 "pass",
-                json!({ "event": "page", "url": p.url, "said": sent }),
+                json!({ "event": "page", "id": p.item, "url": p.url, "said": sent }),
             );
         }
         if let Some(reason) = sent["gone"].as_str() {
@@ -1004,6 +1025,84 @@ const LOOK: &str = r#"JSON.stringify({
   links: [...document.querySelectorAll('a[href]')].map((a) => a.href).filter((h) => /^https?:/.test(h)).slice(0, 50),
 })"#;
 
+/// How often a file's page gets its download button pressed, at most: the
+/// page's next step (a short countdown, a link being made) comes first.
+const PRESS_EVERY: Duration = Duration::from_secs(3);
+
+/// The most presses in one pass: past that the page wants more than a
+/// button (a captcha a person solves).
+const PRESSES_AT_MOST: u32 = 12;
+
+/// Finds the button a person would press to download the file on a host's
+/// page Haul has no recipe for, and gives its middle and its words: shown,
+/// enabled, saying "download" (but not a paid tier's, an app's or a
+/// countdown's), in the page itself rather than a layer an ad floats over
+/// it, and leading nowhere off the site (an ad's link does). Each button is
+/// pressed three times at most.
+const FIND_DOWNLOAD: &str = r#"(() => {
+  if (document.readyState === 'loading') return null;
+  const site = (host) => host.split('.').slice(-2).join('.');
+  const here = site(location.hostname);
+  const says = /download/i;
+  const not = /premium|fast(er)?\s*download|\bvip\b|install|extension|\bapp\b|torrent|manager|browser|register|sign\s*up|log\s*in|creating|generating|please\s+wait|\bwait\b/i;
+  const floats = (el) => {
+    for (let e = el; e && e !== document.body; e = e.parentElement) {
+      if (getComputedStyle(e).position === 'fixed') return true;
+    }
+    return false;
+  };
+  const offSite = (el) => {
+    const href = el.getAttribute('href');
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return false;
+    try { return site(new URL(href, location.href).hostname) !== here; } catch { return true; }
+  };
+  const words = (el) => (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+  const found = [...document.querySelectorAll('a, button, input[type=submit], input[type=button]')].find((el) => {
+    const text = words(el);
+    if (!says.test(text) || not.test(text) || text.length > 60) return false;
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    if (!el.offsetParent || floats(el) || offSite(el)) return false;
+    if (Number(el.dataset.haulPressed || 0) >= 3) return false;
+    const box = el.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
+  });
+  if (!found) return null;
+  found.dataset.haulPressed = String(Number(found.dataset.haulPressed || 0) + 1);
+  found.scrollIntoView({ block: 'center' });
+  const box = found.getBoundingClientRect();
+  return { text: words(found).slice(0, 40), x: box.x + box.width / 2, y: box.y + box.height / 2 };
+})()"#;
+
+/// Presses the download button on the page ([`FIND_DOWNLOAD`]), as a person
+/// would; the button's words, when there was one.
+fn press_download(cdp: &mut Cdp, s: Option<&str>) -> Option<String> {
+    let found = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({ "expression": FIND_DOWNLOAD, "returnByValue": true }),
+            s,
+        )
+        .ok()?["result"]["value"]
+        .clone();
+    let (Some(x), Some(y)) = (found["x"].as_f64(), found["y"].as_f64()) else {
+        return None;
+    };
+    click_at(cdp, s, x, y).ok()?;
+    Some(found["text"].as_str().unwrap_or_default().to_string())
+}
+
+/// Clicks at `x`, `y` with the mouse events a person's click makes.
+fn click_at(cdp: &mut Cdp, s: Option<&str>, x: f64, y: f64) -> Result<(), String> {
+    for (kind, buttons) in [("mouseMoved", 0), ("mousePressed", 1), ("mouseReleased", 0)] {
+        cdp.call(
+            "Input.dispatchMouseEvent",
+            json!({ "type": kind, "x": x, "y": y, "button": "left", "buttons": buttons, "clickCount": 1 }),
+            s,
+        )?;
+    }
+    Ok(())
+}
+
 /// Clicks the middle of the first element `selector` finds, with the
 /// mouse events a person's click makes (DevTools' input, which the page
 /// cannot tell from a person's).
@@ -1021,13 +1120,7 @@ fn click(cdp: &mut Cdp, s: Option<&str>, selector: &str) -> Result<Value, String
     let (Some(x), Some(y)) = (at[0].as_f64(), at[1].as_f64()) else {
         return Err(format!("nothing on the page matches {selector}"));
     };
-    for (kind, buttons) in [("mouseMoved", 0), ("mousePressed", 1), ("mouseReleased", 0)] {
-        cdp.call(
-            "Input.dispatchMouseEvent",
-            json!({ "type": kind, "x": x, "y": y, "button": "left", "buttons": buttons, "clickCount": 1 }),
-            s,
-        )?;
-    }
+    click_at(cdp, s, x, y)?;
     Ok(json!({ "clicked": [x, y] }))
 }
 

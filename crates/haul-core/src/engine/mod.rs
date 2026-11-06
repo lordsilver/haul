@@ -705,6 +705,9 @@ impl Engine {
         if cfg.detailed_log {
             crate::logging::set_detailed(true);
         }
+        if cfg.live_debug {
+            crate::debug::set_live(true);
+        }
         let download_dir_fixed = opts.download_dir.is_some();
         let download_dir = opts
             .download_dir
@@ -1876,6 +1879,28 @@ impl Engine {
             if has && !it.wrapper {
                 it.prefer = host.map(str::to_string);
                 n += 1;
+                let Some(h) = host else { continue };
+                // A link another host's page handed back is not used before
+                // the host picked: it would go on from that host again.
+                let handed_for = it
+                    .pre_for
+                    .clone()
+                    .or_else(|| it.pre.as_ref().map(|p| p.url.clone()));
+                if it.manual && handed_for.is_some_and(|u| hosts::host_of(&u) != h) {
+                    it.pre = None;
+                    it.pre_for = None;
+                    it.manual = false;
+                }
+                // Downloading from another host: it goes on from the one
+                // picked now, keeping its bytes, as when it leaves a host
+                // that slows it.
+                if it.running() && !it.host.is_empty() && it.host != h {
+                    tracing::info!(item = %id, "going on from {h}, as picked, keeping its {} bytes", it.done);
+                    it.slowed = None;
+                    it.pace = None;
+                    it.host.clear();
+                    it.cancel();
+                }
             }
         }
         self.publish(st);

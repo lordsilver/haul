@@ -637,6 +637,10 @@ pub struct WrapperCard {
     pub found: Option<Found>,
     /// The files its wrappers added, counted once.
     pub files: usize,
+    /// Links its wrappers added that the desktop app is still looking up,
+    /// out of sight, to learn which file they are
+    /// ([`ItemView::looking_up`]): not among its files yet.
+    pub checking: usize,
     /// Its pastes that list no links (a description, say), set
     /// aside while anything else on the card goes on or found files: a
     /// note, not a failure. 0 when the card failed for them.
@@ -689,7 +693,7 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
         .into_iter()
         .map(|(key, ws)| {
             let w = ws[0];
-            let files: Vec<&ItemView> = items
+            let of_card: Vec<&ItemView> = items
                 .iter()
                 .filter(|it| {
                     ws.iter().any(|x| {
@@ -697,6 +701,9 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                     })
                 })
                 .collect();
+            // A link still being looked up is not a file of the card yet.
+            let (checking, files): (Vec<&ItemView>, Vec<&ItemView>) =
+                of_card.into_iter().partition(|it| it.looking_up);
             // A paste that lists no links (a description) is a
             // note on a card that has anything else going on or found,
             // not the card's failure.
@@ -742,12 +749,14 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 },
                 to_start: card_tally.not_started + card_tally.paused,
                 clearable: urgent.status == WrapperState::Done
-                    && card_tally.not_started + card_tally.paused == 0,
+                    && card_tally.not_started + card_tally.paused == 0
+                    && checking.is_empty(),
                 wait: urgent.wait,
                 retry_in: urgent.retry_in,
                 open_urls: urgent.open_urls.clone(),
                 found: w.found,
                 files: files.len(),
+                checking: checking.len(),
                 empty,
                 open_id: urgent.id.clone(),
                 need_you: ws
@@ -831,6 +840,7 @@ pub(super) fn counts(
                 .iter()
                 .filter(|i| {
                     i.status == RowState::Passing
+                        || i.looking_up
                         // A page on trial or being read, while it is looked at.
                         || (i.tentative
                             && matches!(
@@ -880,20 +890,28 @@ pub(super) fn site_kind(name: &str) -> SiteKind {
 /// be moved in the preferred order. Wrappers, pastes and sites are grouped
 /// by their kind, and have no order that matters.
 pub(super) fn hosts(hosts: &mut [HostView]) {
-    let preferred = hosts
-        .iter()
-        .filter(|h| h.kind == SiteKind::Host && h.preferred.is_some())
-        .count();
+    let preferred = hosts.iter().filter(|h| prefers(h)).count();
     for h in hosts {
         h.group = match h.kind {
-            SiteKind::Host if h.preferred.is_some() => HostGroup::Preferred,
+            _ if prefers(h) => HostGroup::Preferred,
             SiteKind::Host => HostGroup::Other,
             SiteKind::Wrapper => HostGroup::Wrapper,
             SiteKind::Paste => HostGroup::Paste,
             SiteKind::Site => HostGroup::Site,
         };
-        h.movable = h.kind == SiteKind::Host && h.preferred.is_some() && preferred > 1;
+        h.movable = prefers(h) && preferred > 1;
     }
+}
+
+/// Whether `h` is among the preferred hosts: a file host, whether Haul has
+/// code for it or downloads from it as from any web server (megaup.net).
+fn prefers(h: &HostView) -> bool {
+    h.preferred.is_some() && matches!(h.kind, SiteKind::Host | SiteKind::Site)
+}
+
+/// The kind `h` is sorted with: a preferred site with the hosts.
+pub(super) fn group_kind(h: &HostView) -> SiteKind {
+    if prefers(h) { SiteKind::Host } else { h.kind }
 }
 
 /// One source of addresses and where it stands.
@@ -1097,6 +1115,7 @@ mod tests {
             source_name: None,
             download_from: None,
             tentative: false,
+            looking_up: false,
         }
     }
 
@@ -1536,10 +1555,18 @@ mod tests {
             h.speed = 9.0;
         }
         hs[4].disabled = true;
+        hs[4].preferred = None;
         hosts(&mut hs);
         let groups: Vec<&str> = hs.iter().map(|h| h.group.as_str()).collect();
         assert_eq!(groups, ["preferred", "other", "wrapper", "paste", "site"]);
         assert!(!hs[0].movable, "only one host is preferred");
+
+        // A site Haul has no code for, downloaded from as from any web
+        // server, is preferred like a host.
+        hs[4].preferred = Some(1);
+        hosts(&mut hs);
+        assert_eq!(hs[4].group.as_str(), "preferred");
+        assert!(hs[0].movable && hs[4].movable);
     }
 
     #[test]

@@ -50,6 +50,12 @@ clearable: boolean, wait: number, retry_in: number, open_urls: Array<string>, fo
  */
 files: number, 
 /**
+ * Links its wrappers added that the desktop app is still looking up,
+ * out of sight, to learn which file they are
+ * ([`ItemView::looking_up`]): not among its files yet.
+ */
+checking: number, 
+/**
  * Its pastes that list no links (a description, say), set
  * aside while anything else on the card goes on or found files: a
  * note, not a failure. 0 when the card failed for them.

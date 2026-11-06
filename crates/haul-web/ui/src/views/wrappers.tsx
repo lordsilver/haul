@@ -109,7 +109,10 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
   // Pastes that list nothing, beside wrappers that found their files: a
   // quiet note, not a failure.
   const empty = card.empty ? `${plural(card.empty, 'paste lists', 'pastes list')} no links` : '';
-  const line = [card.host, state, empty].filter(Boolean).join(' · ');
+  // Links Haul still opens out of sight to learn which file they are: no
+  // file of the card until then.
+  const checking = card.checking ? `checking ${plural(card.checking, 'link')}` : '';
+  const line = [card.host, state, checking, empty].filter(Boolean).join(' · ');
   const reason = card.reason;
   // When a failed one, or the page of one waiting for a person, is tried
   // again on its own, after its reason.

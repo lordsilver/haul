@@ -258,7 +258,7 @@ impl Engine {
         let left = run.left.map_or("?".to_string(), mb);
         let it = st.items.get_mut(&run.id).expect("found above");
         // It may come back here if nothing else works out.
-        it.slow_on.insert(url.clone());
+        it.slow_on.insert(url.clone(), speed);
         if let Some(next) = next {
             tracing::info!(
                 item = %run.id,
@@ -327,6 +327,11 @@ impl Engine {
             if !same && known > 0.0 && known < speed * 2.0 {
                 continue;
             }
+            // What this row saw there itself, when it left it, outweighs what
+            // the host does for other files.
+            if !same && left_at(st, id, &m).is_some_and(|there| there < speed * 2.0) {
+                continue;
+            }
             let exits = self.exits_for(&name, st);
             match st.open_exit(&name, &exits, &cfg, now) {
                 Some(open) if !same || open != exit => {
@@ -337,6 +342,19 @@ impl Engine {
                     });
                 }
                 _ => {}
+            }
+            // A host it left for slowness, where it ran at least twice as
+            // fast as here: back to it, its cooldown for slowness or not,
+            // rather than crawling on (a host tried for the first time can
+            // turn out far slower than the one it took over from).
+            if !same
+                && left_at(st, id, &m).is_some_and(|there| there >= speed * 2.0)
+                && st.exit_while_slowing(&name, &exits, &cfg, now).is_some()
+            {
+                if let Some(it) = st.items.get_mut(id) {
+                    it.back_to = Some(m.clone());
+                }
+                return Some(name);
             }
         }
         None
@@ -444,4 +462,9 @@ fn remember_slowing(
     }
     lane.cooldown = Some(until);
     lane.slowing_sure |= sure;
+}
+
+/// Row `id`'s speed on mirror `m` as it left it, its host slowing it.
+fn left_at(st: &State, id: &str, m: &str) -> Option<f64> {
+    st.items.get(id)?.slow_on.get(m).copied()
 }

@@ -188,6 +188,10 @@ struct DebugLayer;
 
 impl<S: Subscriber> Layer<S> for DebugLayer {
     fn on_event(&self, event: &Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        // Off, or a signal the bus carries already.
+        if !crate::debug::enabled() || event.metadata().target() == crate::debug::SIGNAL_TARGET {
+            return;
+        }
         let mut fields = JsonFields::default();
         event.record(&mut fields);
         let meta = event.metadata();
@@ -376,6 +380,7 @@ pub fn older(data_dir: &Path) -> Vec<PathBuf> {
 /// whose bus gets every event of Haul's own at every level. Once per
 /// process; later calls do nothing.
 pub fn init(data_dir: &Path, console: bool, debug: bool) {
+    crate::debug::init(data_dir);
     if debug {
         crate::debug::enable(data_dir);
     }
@@ -405,12 +410,12 @@ pub fn init(data_dir: &Path, console: bool, debug: bool) {
     );
     // The history sees debug events whatever the log writes; each layer
     // filters for itself, so neither limits the other.
-    let debug = crate::debug::enabled().then(|| {
-        DebugLayer.with_filter(
-            EnvFilter::new("haul_core=trace,haul_web=trace,haul_desktop=trace")
-                .add_directive(LevelFilter::INFO.into()),
-        )
-    });
+    // Always there, since debug mode can be switched on later; it does
+    // nothing while off.
+    let debug = DebugLayer.with_filter(
+        EnvFilter::new("haul_core=trace,haul_web=trace,haul_desktop=trace")
+            .add_directive(LevelFilter::INFO.into()),
+    );
     let started = tracing_subscriber::registry()
         .with(Layer::and_then(file, console).with_filter(shown))
         .with(history)
@@ -420,6 +425,15 @@ pub fn init(data_dir: &Path, console: bool, debug: bool) {
         let _ = RELOAD.set(Box::new(move |filter| {
             let _ = handle.reload(filter);
         }));
+        // Each run's first line, so a log that spans updates says which
+        // version wrote what.
+        tracing::info!(
+            version = env!("CARGO_PKG_VERSION"),
+            os = std::env::consts::OS,
+            pid = std::process::id(),
+            "Haul {} starts",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 }
 

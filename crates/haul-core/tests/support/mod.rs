@@ -1249,6 +1249,8 @@ impl Setup {
                 nordvpn: self.ip.clone(),
                 ..Endpoints::default()
             },
+            // Every host on, whatever the defaults turn off.
+            disabled_hosts: Vec::new(),
             ..Config::default()
         }
     }

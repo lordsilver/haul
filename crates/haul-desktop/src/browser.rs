@@ -186,6 +186,7 @@ impl Browser {
             };
             let pass = chromium::Pass {
                 exe: &exe,
+                item: &id,
                 url: &url,
                 profile,
                 proxy,
@@ -200,6 +201,9 @@ impl Browser {
                 // A page that lists links has shown all it will once it
                 // settles past its checks.
                 ends_settled: lists,
+                // A file's page on a host Haul has no recipe for: its
+                // download button is pressed, as a person would.
+                press_download: !lists && !hosts::page_passes(&url),
                 // A host's own page may lead to its file elsewhere; any
                 // other page shows what it has where it is.
                 keep_to_site: !hosts::page_passes(&url),

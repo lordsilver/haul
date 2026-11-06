@@ -302,9 +302,21 @@ impl Engine {
         let mut elsewhere = Vec::new();
         for m in &candidates {
             let name = hosts::host_of(m);
-            let may_go = !slow_on.contains(m) || picked.as_deref() == Some(name.as_str());
+            let may_go = !slow_on.contains_key(m) || picked.as_deref() == Some(name.as_str());
             if may_go && !self.host_cooling(st, &name, now) {
                 elsewhere.push(m.clone());
+            }
+        }
+        // Going back to a mirror it left, the one it went on to being far
+        // slower: that one, though its host slows the address.
+        if let Some(m) = st.items.get_mut(id).and_then(|it| it.back_to.take())
+            && candidates.contains(&m)
+        {
+            let name = hosts::host_of(&m);
+            let exits = self.exits_for(&name, st);
+            if let Some(exit) = st.exit_while_slowing(&name, &exits, &cfg, now) {
+                tracing::info!(item = %id, "back to {name}: where it went was far slower");
+                return Some((m, exit));
             }
         }
         if !elsewhere.is_empty() {
@@ -418,8 +430,10 @@ impl Engine {
             return None;
         }
         let slow_on = st.items.get(id)?.slow_on.clone();
-        let (before, others): (Vec<&String>, Vec<&String>) =
-            candidates.iter().partition(|m| slow_on.contains(*m));
+        let (mut before, others): (Vec<&String>, Vec<&String>) =
+            candidates.iter().partition(|m| slow_on.contains_key(*m));
+        // Of those, where it ran fastest first.
+        before.sort_by(|a, b| slow_on[*b].total_cmp(&slow_on[*a]));
         for m in before.into_iter().chain(others) {
             let name = hosts::host_of(m);
             let exits = self.exits_for(&name, st);

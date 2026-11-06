@@ -19,8 +19,16 @@ use crate::{paths, store};
 pub const FILE: &str = "config.toml";
 
 /// The hosts a file downloads from first until the user says otherwise:
-/// those that hand a free file over fastest, without an account.
-pub const DEFAULT_PREFERRED: [&str; 3] = ["pixeldrain.com", "vikingfile.com", "mega.nz"];
+/// those that hand a free file over fastest, without an account. megaup.net
+/// gave about 9 MB/s once the desktop app pressed its buttons (2026-11-06),
+/// against 1fichier's 1 MB/s for the same file.
+pub const DEFAULT_PREFERRED: [&str; 4] =
+    ["pixeldrain.com", "vikingfile.com", "mega.nz", "megaup.net"];
+
+/// The hosts turned off until the user turns them on: those whose free
+/// download is too slow to be worth having (ddownload's, about 30 KB/s after
+/// its wait, measured 2026-11-06), so no file waits on them.
+pub const DEFAULT_DISABLED: [&str; 1] = ["ddownload.com"];
 
 /// User agent for every request a host does not get a browser's for.
 pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0";
@@ -68,6 +76,10 @@ pub struct Config {
     /// Haul's debug events in the log too: every request, retry and mirror
     /// choice, for reproducing a problem.
     pub detailed_log: bool,
+    /// Debug mode's live connection ([`crate::debug`]): a client on this
+    /// machine with the token Haul writes to `debug-token` follows
+    /// everything Haul does as it happens.
+    pub live_debug: bool,
     /// Automatic retries of a mirror after a dropped connection or a
     /// network error, before it counts as failed.
     pub resume_attempts: u32,
@@ -112,7 +124,8 @@ pub struct Config {
     /// Hosts a file with mirrors downloads from first, in this order
     /// ([`DEFAULT_PREFERRED`] until the list is changed).
     pub preferred_hosts: Vec<String>,
-    /// Hosts never downloaded from: their links are left alone.
+    /// Hosts never downloaded from: their links are left alone
+    /// ([`DEFAULT_DISABLED`] until the list is changed).
     pub disabled_hosts: Vec<String>,
     /// Hosts that need an account ([`crate::hosts::Known::needs_account`])
     /// the user wants used like any other without one. The others are used
@@ -160,6 +173,7 @@ impl Default for Config {
             delete_after_extract: false,
             archive_passwords: Vec::new(),
             detailed_log: true,
+            live_debug: false,
             resume_attempts: 5,
             min_speed_kbps: 0,
             min_speed_seconds: 60,
@@ -176,7 +190,7 @@ impl Default for Config {
             routes: BTreeMap::new(),
             folders: BTreeMap::new(),
             preferred_hosts: DEFAULT_PREFERRED.iter().map(|h| h.to_string()).collect(),
-            disabled_hosts: Vec::new(),
+            disabled_hosts: DEFAULT_DISABLED.iter().map(|h| h.to_string()).collect(),
             accountless_hosts: Vec::new(),
             accounts: BTreeMap::new(),
             nordvpn_servers: 0,
@@ -598,6 +612,11 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # choice), so a problem is on record the first time; false keeps notable events.
 # detailed_log = true
 
+# Lets a diagnosing tool on this computer follow everything Haul does as it
+# happens, with the key Haul then writes to debug-token in its data folder
+# (debug mode, docs/debugging.md). HAUL_DEBUG=1 turns it on for one run.
+# live_debug = false
+
 # Retries of a mirror after a dropped connection or a network error. An attempt
 # that gets data in before it stops starts the count over.
 # resume_attempts = 5
@@ -656,13 +675,14 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # reconnect_command = "my-router-cli reconnect"
 
 # Hosts a file with mirrors downloads from first, in this order (default:
-# pixeldrain.com, vikingfile.com, mega.nz); the rest follow by measured speed. A file waits for a free
+# pixeldrain.com, vikingfile.com, mega.nz, megaup.net); the rest follow by measured speed. A file waits for a free
 # slot on a preferred host rather than starting on another one, unless the
 # preferred host is cooling down or has failed for that file.
 # preferred_hosts = ["rapidgator.net", "pixeldrain.com"]
 
 # Hosts never downloaded from: their links are left alone, and a file whose
-# links are all on these hosts fails until one of them is turned back on.
+# links are all on these hosts fails until one of them is turned back on
+# (default: ddownload.com, whose free downloads crawl).
 # disabled_hosts = ["mediafire.com"]
 
 # Hosts that give no decent download without an account (gofile.io,
@@ -826,10 +846,21 @@ mod tests {
     }
 
     #[test]
+    fn hosts_too_slow_for_free_are_off_until_told_otherwise() {
+        assert_eq!(Config::default().disabled_hosts, ["ddownload.com"]);
+        assert!(
+            Config::parse("disabled_hosts = []")
+                .unwrap()
+                .disabled_hosts
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn the_fast_free_hosts_are_preferred_until_told_otherwise() {
         assert_eq!(
             Config::default().preferred_hosts,
-            ["pixeldrain.com", "vikingfile.com", "mega.nz"]
+            ["pixeldrain.com", "vikingfile.com", "mega.nz", "megaup.net"]
         );
         // An explicit empty list means no preference, not the default.
         assert!(

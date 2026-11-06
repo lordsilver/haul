@@ -97,6 +97,11 @@ pub struct ItemView {
     /// A copied page being looked at for links: in no list until it shows
     /// some ([`Engine::add_from_clipboard`]).
     pub tentative: bool,
+    /// A wrapper's file nothing named yet, whose page the desktop app opens
+    /// out of sight to learn what it is ([`Engine::looks_up`]): in no list,
+    /// as a page on trial, until it is named (and joins the same file on
+    /// other hosts), found gone (and leaves), or its page told nothing.
+    pub looking_up: bool,
     /// Seconds until a waiting item may try again.
     pub wait: u64,
     /// Seconds until a failed item, or the page of one under Needs you, is
@@ -321,6 +326,9 @@ impl Engine {
                     },
                     state: if it.wrapper {
                         wrapper_state(it, passing).as_str()
+                    } else if self.look_up_page(&st, it).is_some() {
+                        // In no list until its page says what it is.
+                        "looking_up"
                     } else {
                         row_state(it, passing).as_str()
                     },
@@ -377,6 +385,7 @@ impl Engine {
                 .collect()
         };
         let passing = |it: &Item| self.passing(&st, it, now);
+        let looking_up = |it: &Item| self.look_up_page(&st, it).is_some();
         let wrappers: Vec<WrapperView> = st
             .items
             .values()
@@ -453,7 +462,8 @@ impl Engine {
                 archive: None,
                 source_name: None,
                 download_from: it.prefer.clone(),
-                tentative: it.tentative || being_read(it),
+                tentative: it.tentative || being_read(it) || looking_up(it),
+                looking_up: looking_up(it),
             })
             .collect();
         let route = |name: &str| {
@@ -542,12 +552,16 @@ impl Engine {
                 h.kind != SiteKind::Site || h.disabled || h.preferred.is_some() || set(&h.name);
         }
         // File hosts first: the preferred ones in their order, then the rest
-        // by name, on and off alike; then the other groups by their names.
+        // by name, those used only when no other has the file after them and
+        // those turned off last; then the other groups by their names, those
+        // turned off last.
         hosts.sort_by(|a, b| {
             let rank = |h: &HostView| h.preferred.unwrap_or(usize::MAX);
-            a.kind
-                .cmp(&b.kind)
+            views::group_kind(a)
+                .cmp(&views::group_kind(b))
                 .then_with(|| rank(a).cmp(&rank(b)))
+                .then_with(|| a.disabled.cmp(&b.disabled))
+                .then_with(|| a.needs_account.cmp(&b.needs_account))
                 .then_with(|| a.name.cmp(&b.name))
         });
         let mut items = items;
