@@ -590,14 +590,35 @@ async fn diagnostics_tell_what_happened_without_secrets() {
     let report: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(report["about"]["haul"], env!("CARGO_PKG_VERSION"));
     assert_eq!(report["about"]["desktop"], false);
-    assert!(report["view"]["items"].is_array(), "what the UI shows");
+    // Each row once, with what the UI shows of it beside the engine's
+    // fields, and each host once, with its measures.
+    let rows = report["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        rows.iter().all(|r| r["view"]["list"].is_string()),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().all(|r| r["view"].get("mirrors").is_some()),
+        "host names, not links"
+    );
+    assert!(
+        rows.iter().all(|r| r["view"].get("done").is_none()),
+        "said once"
+    );
+    let hosts = report["hosts"].as_array().unwrap();
+    let names: Vec<&str> = hosts.iter().filter_map(|h| h["name"].as_str()).collect();
+    let mut unique = names.clone();
+    unique.dedup();
+    assert_eq!(names.len(), unique.len(), "{names:?}");
+    assert!(report.get("view").is_none());
     assert_eq!(report["settings"]["accounts"]["1fichier_key"], true);
     assert_eq!(report["settings"]["accounts"]["pixeldrain_key"], false);
     assert_eq!(
         report["settings"]["proxy"],
         "socks5://proxy.example:1080 (with credentials)"
     );
-    let links: Vec<&str> = report["engine"]["items"]
+    let links: Vec<&str> = report["rows"]
         .as_array()
         .unwrap()
         .iter()
