@@ -29,6 +29,12 @@ PAGES = {
   document.getElementById('a').href = 'http://localhost:{PORT}/files/Ex.part1.rar';
   document.getElementById('b').href = 'http://localhost:{PORT}/files/Ex.part2.rar';
 }}, 4000);</script>""",
+    # A file host's page for one file (its path names it, as
+    # /guard/filepage-a/Ex.part3.rar) that also links two other files: the
+    # download stays itself, never a list of those.
+    "/guard/filepage": f"""<title>Ex.part3.rar</title><h1>Ex.part3.rar</h1>
+<p>More files:</p><a href='http://localhost:{PORT}/files/Ex.part1.rar'>Ex.part1.rar</a>
+<a href='http://localhost:{PORT}/files/Ex.part2.rar'>Ex.part2.rar</a>""",
     # A Turnstile that never answers: the pass runs until its time is up.
     "/guard/stuck": "<title>Just a moment...</title><form><input type=hidden name=cf-turnstile-response value=''></form>",
 }
