@@ -474,6 +474,10 @@ struct State {
     cleared: HashSet<String>,
     /// Pages the desktop app passed during their rows' current waits.
     tried: passes::Tried,
+    /// Getting a new address from the router.
+    reconnects: reconnect::Reconnects,
+    /// VPN services whose servers join the proxies.
+    services: services::Services,
 }
 
 impl State {
@@ -669,8 +673,6 @@ struct Inner {
     save_lock: Mutex<()>,
     rename_lock: Mutex<()>,
     shutdown: CancellationToken,
-    reconnects: Mutex<reconnect::Reconnects>,
-    services: Mutex<services::Services>,
     /// A newer Haul, when GitHub has one.
     update: Mutex<Option<crate::update::Update>>,
     _lock: File,
@@ -755,6 +757,8 @@ impl Engine {
                 guarded: HashSet::new(),
                 cleared: HashSet::new(),
                 tried: passes::Tried::new(),
+                reconnects: reconnect::Reconnects::default(),
+                services: services::Services::default(),
             }),
             limiter: Limiter::new(cfg.rate_limit_mbps * 1e6),
             config_seen: Mutex::new(config_path.as_deref().and_then(settings::stamp)),
@@ -780,8 +784,6 @@ impl Engine {
             save_lock: Mutex::new(()),
             rename_lock: Mutex::new(()),
             shutdown: CancellationToken::new(),
-            reconnects: Mutex::new(reconnect::Reconnects::default()),
-            services: Mutex::new(services::Services::default()),
             update: Mutex::new(None),
             _lock: lock,
         }));
@@ -2496,6 +2498,8 @@ mod exit_tests {
             guarded: HashSet::new(),
             cleared: HashSet::new(),
             tried: passes::Tried::new(),
+            reconnects: reconnect::Reconnects::default(),
+            services: services::Services::default(),
         }
     }
 

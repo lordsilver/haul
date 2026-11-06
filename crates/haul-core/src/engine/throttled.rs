@@ -60,10 +60,9 @@ impl Engine {
     fn judge_speeds(&self, frozen: bool) {
         let cfg = self.cfg();
         let t = &cfg.throttling;
-        // Before the state's lock: the two are always taken in this order.
-        let may_redial = self.redials_on_its_own(&cfg);
         let rate = self.0.limiter.rate();
         let mut st = self.lock();
+        let may_redial = self.redials_on_its_own(&st, &cfg);
         if !cfg.leave_slow_hosts {
             self.forget_slowness(&mut st);
             return;

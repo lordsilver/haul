@@ -325,15 +325,15 @@ impl Engine {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        // Before the state's lock: the two are always taken in this order.
-        let mut reconnect = self.reconnect_view();
-        let services = self.services_view();
+        let st = self.lock();
+        let reconnect = self.reconnect_view_in(&st);
+        let services = self.services_view_in(&st);
         let pages = self.pages_pass();
         let pool = {
             let cfg = self.cfg();
             let proxies = cfg.proxy_pool().len();
             let vpn = if cfg.use_proxy {
-                self.service_proxies().len()
+                st.services.proxies.len()
             } else {
                 0
             };
@@ -352,8 +352,6 @@ impl Engine {
                 error: services.error.clone(),
             },
         );
-        let st = self.lock();
-        reconnect.draining.clone_from(&st.draining);
         let now = Instant::now();
         let has_proxy = self.clients().exits.len() > 1;
         let cfg = self.cfg();

@@ -29,7 +29,7 @@ pub(super) struct Services {
     asked: Option<String>,
     /// The servers in use, and their proxy addresses.
     picked: Vec<Server>,
-    proxies: Vec<String>,
+    pub(super) proxies: Vec<String>,
     error: Option<String>,
 }
 
@@ -45,17 +45,17 @@ pub struct ServicesView {
 }
 
 impl Engine {
-    fn services(&self) -> std::sync::MutexGuard<'_, Services> {
-        self.0.services.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     /// The proxy addresses VPN services add to the pool.
     pub(super) fn service_proxies(&self) -> Vec<String> {
-        self.services().proxies.clone()
+        self.lock().services.proxies.clone()
     }
 
     pub fn services_view(&self) -> ServicesView {
-        let s = self.services();
+        self.services_view_in(&self.lock())
+    }
+
+    pub(super) fn services_view_in(&self, st: &super::State) -> ServicesView {
+        let s = &st.services;
         let mut countries: Vec<(String, usize)> = Vec::new();
         for server in &s.nordvpn {
             match countries.iter_mut().find(|(c, _)| *c == server.country) {
@@ -78,7 +78,8 @@ impl Engine {
         let list = vpn::nordvpn_servers(&self.clients().on(0).client, &api).await?;
         let n = list.len();
         {
-            let mut s = self.services();
+            let mut st = self.lock();
+            let s = &mut st.services;
             s.nordvpn = list;
             s.fetched = Some(Instant::now());
             s.asked = None;
@@ -96,7 +97,8 @@ impl Engine {
             cfg.nordvpn_on && cfg.account("nordvpn_password").is_some() && cfg.nordvpn_servers > 0;
         let asked = asked(&cfg);
         let stale = {
-            let s = self.services();
+            let st = self.lock();
+            let s = &st.services;
             s.fetched.is_none_or(|t| t.elapsed() >= REFRESH) || s.asked.as_deref() != Some(&asked)
         };
         let mut checked = None;
@@ -104,21 +106,23 @@ impl Engine {
             let api = cfg.endpoints.nordvpn.clone();
             match vpn::nordvpn_servers(&self.clients().on(0).client, &api).await {
                 Ok(list) => {
-                    let mut s = self.services();
+                    let mut st = self.lock();
+                    let s = &mut st.services;
                     s.nordvpn = list;
                     s.fetched = Some(Instant::now());
                     s.error = None;
                 }
                 Err(e) => {
                     tracing::warn!("{e}");
-                    self.services().error = Some(e);
+                    self.lock().services.error = Some(e);
                 }
             }
-            let candidates = vpn::nordvpn_candidates(&cfg, &self.services().nordvpn);
+            let candidates = vpn::nordvpn_candidates(&cfg, &self.lock().services.nordvpn);
             checked = Some(self.check_servers(candidates).await);
         }
         let (picked, proxies) = {
-            let mut s = self.services();
+            let mut st = self.lock();
+            let s = &mut st.services;
             let picked = match checked {
                 Some((picked, error)) => {
                     if error.is_some() {
@@ -134,7 +138,8 @@ impl Engine {
             (picked, proxies)
         };
         let changed = {
-            let mut s = self.services();
+            let mut st = self.lock();
+            let s = &mut st.services;
             s.asked = Some(asked);
             let changed = s.proxies != proxies;
             s.picked = picked;
@@ -154,7 +159,7 @@ impl Engine {
                 self.touch(&mut st);
             }
             Err(e) => {
-                self.services().error = Some(e);
+                self.lock().services.error = Some(e);
                 self.touch(&mut self.lock());
             }
         }

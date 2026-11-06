@@ -1386,7 +1386,7 @@ async fn a_host_without_its_account_goes_last() {
     wait_for(&engine, "the file tried with the account", |s| {
         s.items
             .iter()
-            .any(|i| i.id == id && i.error.ends_with("bad rapidgator url"))
+            .any(|i| i.id == id && i.error.contains("not a file link"))
     })
     .await;
 }

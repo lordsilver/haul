@@ -75,12 +75,12 @@ pub struct ReconnectView {
 }
 
 impl Engine {
-    fn reconnects(&self) -> std::sync::MutexGuard<'_, Reconnects> {
-        self.0.reconnects.lock().unwrap_or_else(|e| e.into_inner())
+    pub fn reconnect_view(&self) -> ReconnectView {
+        self.reconnect_view_in(&self.lock())
     }
 
-    pub fn reconnect_view(&self) -> ReconnectView {
-        let r = self.reconnects();
+    pub(super) fn reconnect_view_in(&self, st: &super::State) -> ReconnectView {
+        let r = &st.reconnects;
         let cfg = self.cfg();
         let blocked = blocker(&cfg, &r);
         ReconnectView {
@@ -91,33 +91,33 @@ impl Engine {
             auto: cfg.reconnect && !r.keeps_address && blocked.is_none(),
             blocked,
             failed: r.failed,
-            draining: None,
+            draining: st.draining.clone(),
         }
     }
 
     /// Whether a redial could come on its own, as things are set.
-    pub(super) fn redials_on_its_own(&self, cfg: &crate::Config) -> bool {
-        let r = self.reconnects();
-        cfg.reconnect && !r.keeps_address && blocker(cfg, &r).is_none()
+    pub(super) fn redials_on_its_own(&self, st: &super::State, cfg: &crate::Config) -> bool {
+        let r = &st.reconnects;
+        cfg.reconnect && !r.keeps_address && blocker(cfg, r).is_none()
     }
 
     /// Why no redial can work as things are set, if none can.
     pub fn redial_blocker(&self, cfg: &crate::Config) -> Option<String> {
-        blocker(cfg, &self.reconnects())
+        blocker(cfg, &self.lock().reconnects)
     }
 
     /// Looks for the router again, as the settings do when shown.
     pub async fn find_router(&self) -> Option<Router> {
-        self.reconnects().looked = false;
+        self.lock().reconnects.looked = false;
         self.router().await
     }
 
     /// The router on this network, looked for once and remembered.
     pub async fn router(&self) -> Option<Router> {
         {
-            let r = self.reconnects();
-            if r.looked {
-                return r.router.clone();
+            let st = self.lock();
+            if st.reconnects.looked {
+                return st.reconnects.router.clone();
             }
         }
         let found = router::find(
@@ -128,14 +128,10 @@ impl Engine {
         if let Some(found) = &found {
             tracing::info!("router: {}", found.model);
         }
-        {
-            let mut r = self.reconnects();
-            r.looked = true;
-            r.router = found.clone();
-        }
-        // Never with the reconnect lock held: a snapshot takes the two
-        // the other way round.
-        self.touch(&mut self.lock());
+        let mut st = self.lock();
+        st.reconnects.looked = true;
+        st.reconnects.router = found.clone();
+        self.touch(&mut st);
         found
     }
 
@@ -144,32 +140,31 @@ impl Engine {
     /// and lets them go on. Returns the new address, or why there is none.
     pub async fn reconnect(&self, why: &str) -> Result<String, String> {
         {
-            let mut r = self.reconnects();
-            if r.busy {
+            let mut st = self.lock();
+            if st.reconnects.busy {
                 return Err("already getting a new address".into());
             }
             // One that cannot work stops no download.
-            if let Some(why_not) = blocker(&self.cfg(), &r) {
-                r.note(format!("No new address: {why_not}"), true);
-                drop(r);
-                self.touch(&mut self.lock());
+            if let Some(why_not) = blocker(&self.cfg(), &st.reconnects) {
+                st.reconnects
+                    .note(format!("No new address: {why_not}"), true);
+                self.touch(&mut st);
                 return Err(why_not);
             }
-            r.busy = true;
+            st.reconnects.busy = true;
         }
         tracing::info!("getting a new address: {why}");
         self.hold_direct(true);
         let result = self.redial().await;
         self.hold_direct(false);
-        let mut r = self.reconnects();
-        r.busy = false;
-        r.last = Some(Instant::now());
+        let mut st = self.lock();
+        st.reconnects.busy = false;
+        st.reconnects.last = Some(Instant::now());
         match &result {
             Ok(address) => {
                 tracing::info!("new address {address}");
-                r.note(format!("Got a new address ({why})"), false);
-                drop(r);
-                let mut st = self.lock();
+                st.reconnects
+                    .note(format!("Got a new address ({why})"), false);
                 for ((_, exit), lane) in st.lanes.iter_mut() {
                     if *exit == DIRECT {
                         lane.fresh_start();
@@ -188,6 +183,7 @@ impl Engine {
             }
             Err(e) => {
                 tracing::warn!("no new address: {e}");
+                let r = &mut st.reconnects;
                 r.keeps_address |= matches!(e, RedialError::SameAddress(_));
                 r.note(format!("No new address: {e}"), true);
                 // Learned: this router redials only with its login.
@@ -196,8 +192,8 @@ impl Engine {
                 {
                     router.upnp_refused = true;
                 }
-                drop(r);
-                self.touch(&mut self.lock());
+                self.touch(&mut st);
+                drop(st);
                 self.emit([super::Event::Notice {
                     title: "Could not get a new IP".into(),
                     body: e.to_string(),
@@ -325,18 +321,16 @@ impl Engine {
         if !cfg.reconnect {
             return None;
         }
-        {
-            let r = self.reconnects();
-            if r.busy
-                || r.keeps_address
-                || blocker(&cfg, &r).is_some()
-                || r.last
-                    .is_some_and(|t| t.elapsed() < cfg.throttling.redial_gap)
-            {
-                return None;
-            }
-        }
         let st = self.lock();
+        let r = &st.reconnects;
+        if r.busy
+            || r.keeps_address
+            || blocker(&cfg, r).is_some()
+            || r.last
+                .is_some_and(|t| t.elapsed() < cfg.throttling.redial_gap)
+        {
+            return None;
+        }
         let now = Instant::now();
         // The line can help this host, or it no longer needs to: the host is
         // reached through it, no proxy is free for it, and a redial made for
@@ -515,7 +509,8 @@ impl Engine {
                 throttling.drain_limit.as_secs() / 60
             );
             {
-                let mut r = self.reconnects();
+                let mut st = self.lock();
+                let r = &mut st.reconnects;
                 r.last = Some(Instant::now());
                 r.note(
                     format!("Put off a new address ({why}): downloads still running"),
