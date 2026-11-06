@@ -2202,11 +2202,20 @@ async fn a_wrappers_page_that_wants_a_person_is_tried_again_by_itself() {
     let s = wrapper_settled(&engine, "captcha").await;
     assert!(s.wrapper_cards[0].retry_in > 0, "the card says when");
     assert_eq!(s.wrapper_cards[0].need_you, 1);
-    assert!(engine.debug_retry_now(&id));
-    wrapper_settled(&engine, "passing").await;
-    assert!(!engine.page_wants_person(&id), "nobody is told");
-    let s = wrapper_settled(&engine, "captcha").await;
-    assert!(s.wrappers[0].retry_in > 0);
+    for round in 1..=3 {
+        assert!(engine.debug_retry_now(&id), "try {round}");
+        wrapper_settled(&engine, "passing").await;
+        assert_eq!(auto_retries(&engine, &id), round);
+        assert!(!engine.page_wants_person(&id), "nobody is told");
+        let s = wrapper_settled(&engine, "captcha").await;
+        if round < 3 {
+            assert!(s.wrappers[0].retry_in > 0, "try {round} is not the last");
+        }
+    }
+    let s = engine.snapshot();
+    assert_eq!(s.wrappers[0].retry_in, 0, "its tries are used up");
+    assert_eq!(s.wrapper_cards[0].retry_in, 0, "the card says none");
+    assert!(!engine.debug_retry_now(&id));
 }
 
 /// The retries follow the setting: none while it is off, planned when it

@@ -12,8 +12,12 @@
 //!
 //! A host's page stays on the host's site ([`Stay`]): an ad that sends it
 //! elsewhere on a click is sent back, and a window it opens on its own site
-//! loads in place, since the window has no tabs to open it in. A layer an
-//! ad lays over the page to catch the first click is taken off it.
+//! loads in place, since the window has no tabs to open it in. A wrapper's
+//! page is refused other sites before they load. A layer an ad lays over the
+//! page to catch the first click is taken off it. The window's menu takes it
+//! back to the page it was opened on, should anything still lead it away.
+//! The log says what the window did, by item: opened, each page it loaded,
+//! what it refused, and closed.
 //!
 //! Pages passed out of sight go to a full browser where there is one to
 //! drive (Edge on Windows, [`chromium`]): Cloudflare Turnstile asks for its
@@ -31,11 +35,13 @@ use haul_core::{
     Engine,
     bridge::Bridge,
     hosts, paths,
-    stay::{self, SendBack, Stay},
+    stay::{self, Go, Keep, SendBack, Stay},
 };
 use haul_web::Desktop;
+use serde_json::json;
 use tauri::{
-    AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Wry,
+    AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent, Wry,
+    menu::{Menu, MenuItem, Submenu},
     webview::{DownloadEvent, NewWindowResponse, PageLoadEvent},
 };
 
@@ -265,17 +271,23 @@ impl Browser {
                     }
                 }
                 Ok(chromium::Outcome::WantsPerson(look)) => {
-                    tracing::info!(item = %id, page = %look.page, "{host} wants a person for its check");
+                    // The gate it shows, when Haul knows it by its marks.
+                    let gate = hosts::gates::detect(&look.page);
+                    let named = gate.map_or("its check", |g| g.name());
+                    tracing::info!(item = %id, page = %look.page, "{host} wants a person for {named}");
                     // The last such page of each site, to see what it asked.
                     if let Some(png) = look.shot {
                         let _ = std::fs::write(&shot, png);
                     }
                     if engine.page_wants_person(&id) && first_ask_in_a_while(&host) {
-                        crate::notify_waiting(
-                            &app,
-                            &format!("{host} wants you"),
-                            "Its check did not pass by itself: open it in Haul, tick the box, and the download goes on.",
-                        );
+                        let body = match gate {
+                            Some(g) => format!(
+                                "It shows {}, which did not pass by itself: open it in Haul, solve it, and the download goes on.",
+                                g.name()
+                            ),
+                            None => "Its check did not pass by itself: open it in Haul, tick the box, and the download goes on.".into(),
+                        };
+                        crate::notify_waiting(&app, &format!("{host} wants you"), &body);
                     }
                 }
                 // Stopped because the row went or stopped waiting: nobody
@@ -314,11 +326,18 @@ impl Browser {
                 .data_dir()
                 .join("webview")
                 .join(if proxied { "proxy" } else { "direct" });
-        // A wrapper's page leads to other hosts, and so does a page on a site
-        // Haul has no code for (a post that lists links, a paste): such a window is
-        // not sent back, and the page's script hands over the links it shows.
+        // A page on a site Haul has no code for (a post that lists links, a
+        // paste) leads to other hosts: such a window goes where it will, and
+        // the page's script hands over the links it shows.
         let lists = self.engine.page_lists(id, url);
-        let stay = Arc::new(Mutex::new(Stay::new(url, !hosts::wraps(url) && !lists)));
+        let keep = if hosts::wraps(url) {
+            Keep::Wrapper
+        } else if lists {
+            Keep::Free
+        } else {
+            Keep::Host
+        };
+        let stay = Arc::new(Mutex::new(Stay::new(url, keep)));
         let capture = Capture {
             app: self.app.clone(),
             engine: self.engine.clone(),
@@ -331,8 +350,11 @@ impl Browser {
         let on_download = capture.clone();
         let on_handoff = capture.clone();
         let on_navigation = stay.clone();
+        let item = id.to_string();
+        let (on_load, loaded) = (item.clone(), page.clone());
         let mut builder = WebviewWindowBuilder::new(&self.app, &label, WebviewUrl::External(page))
             .title(format!("{host}: solve the page to start the download"))
+            .menu(page_menu(&self.app, id).map_err(|e| e.to_string())?)
             .inner_size(1100.0, 800.0)
             .data_directory(profile)
             .initialization_script(OVERLAYS)
@@ -357,13 +379,31 @@ impl Browser {
                     on_handoff.later(&reason, seconds);
                     false
                 }
-                None => lock(&on_navigation).navigating(url.as_str()),
+                None => {
+                    let go = lock(&on_navigation).navigating(url.as_str());
+                    if go != Go::Let {
+                        refused(&item, url.as_str(), go);
+                    }
+                    go == Go::Let
+                }
             })
             .on_page_load(move |window, load| {
                 // A page, not a download, is taking the window's place.
-                if load.event() == PageLoadEvent::Started
-                    && let Some(back) = lock(&stay).landed(load.url().as_str(), Instant::now())
-                {
+                if load.event() != PageLoadEvent::Started {
+                    return;
+                }
+                let url = load.url().as_str();
+                if url != "about:blank" {
+                    haul_core::debug::emit(
+                        "page",
+                        json!({ "event": "loads", "id": on_load, "url": url }),
+                    );
+                }
+                if let Some(back) = lock(&stay).landed(url, Instant::now()) {
+                    haul_core::debug::emit(
+                        "page",
+                        json!({ "event": "sent back", "id": on_load, "url": url, "to": back.page }),
+                    );
                     send_back(window, back, stay.clone());
                 }
             });
@@ -392,12 +432,64 @@ impl Browser {
                 features.to_string()
             });
         }
-        builder
+        let window = builder
             .theme(crate::window_theme(self.engine.theme()))
             .build()
             .map_err(|e| e.to_string())?;
+        haul_core::debug::emit(
+            "page",
+            json!({ "event": "opened", "id": id, "url": url, "quiet": quiet, "keep": format!("{keep:?}") }),
+        );
+        let (back, reload) = (format!("back-{id}"), format!("reload-{id}"));
+        let (on_menu, start) = (window.clone(), loaded);
+        window.on_menu_event(move |_, event| {
+            let to = if event.id.as_ref() == back.as_str() {
+                start.clone()
+            } else if event.id.as_ref() == reload.as_str() {
+                match on_menu.url() {
+                    Ok(url) => url,
+                    Err(_) => return,
+                }
+            } else {
+                return;
+            };
+            let _ = on_menu.navigate(to);
+        });
+        let closed = id.to_string();
+        window.on_window_event(move |event| {
+            if matches!(event, WindowEvent::Destroyed) {
+                haul_core::debug::emit("page", json!({ "event": "closed", "id": closed }));
+            }
+        });
         Ok(())
     }
+}
+
+/// The page window's menu: back to the page it was opened on, and the page
+/// it shows loaded again.
+fn page_menu(app: &AppHandle, id: &str) -> tauri::Result<Menu<Wry>> {
+    let back = MenuItem::with_id(
+        app,
+        format!("back-{id}"),
+        "Back to the page",
+        true,
+        Some("Alt+Home"),
+    )?;
+    let reload = MenuItem::with_id(app, format!("reload-{id}"), "Reload", true, Some("F5"))?;
+    let page = Submenu::with_items(app, "Page", true, &[&back, &reload])?;
+    Menu::with_items(app, &[&page])
+}
+
+/// Logs a navigation of item `id`'s page window that was refused.
+fn refused(id: &str, url: &str, why: Go) {
+    let why = match why {
+        Go::Ad => "a site a window was sent back from",
+        _ => "another site than the wrapper's",
+    };
+    haul_core::debug::emit(
+        "page",
+        json!({ "event": "refused", "id": id, "url": url, "why": why }),
+    );
 }
 
 impl Desktop for Browser {
@@ -785,7 +877,12 @@ impl Capture {
             return NewWindowResponse::Deny;
         }
         let at = Instant::now();
-        if lock(&self.stay).opened(url.as_str(), at) {
+        let in_place = lock(&self.stay).opened(url.as_str(), at);
+        haul_core::debug::emit(
+            "page",
+            json!({ "event": "popup", "id": self.id, "url": url.as_str(), "in_place": in_place }),
+        );
+        if in_place {
             let this = self.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(stay::GRACE);

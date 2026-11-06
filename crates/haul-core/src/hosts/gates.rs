@@ -21,6 +21,8 @@ pub enum Gate {
     FriendlyCaptcha,
     /// GeeTest's puzzle.
     Geetest,
+    /// CutCaptcha's puzzle.
+    Cutcaptcha,
 }
 
 impl Gate {
@@ -40,6 +42,7 @@ impl Gate {
             Self::Altcha => "an ALTCHA proof of work",
             Self::FriendlyCaptcha => "Friendly Captcha",
             Self::Geetest => "a GeeTest puzzle",
+            Self::Cutcaptcha => "a CutCaptcha puzzle",
         }
     }
 }
@@ -70,6 +73,7 @@ const MARKS: &[(Gate, &[&str])] = &[
     ),
     (Gate::FriendlyCaptcha, &["frc-captcha", "friendlycaptcha"]),
     (Gate::Geetest, &["geetest", "gt4.js", "initgeetest"]),
+    (Gate::Cutcaptcha, &["cutcaptcha"]),
 ];
 
 /// The gate `page` shows, when it shows one Haul knows.
@@ -110,6 +114,14 @@ mod tests {
                 Gate::FriendlyCaptcha,
             ),
             (r#"<script>initGeetest({})</script>"#, Gate::Geetest),
+            (
+                r#"<script src="https://cdn.cutcaptcha.net/captcha/abc123.js"></script>"#,
+                Gate::Cutcaptcha,
+            ),
+            (
+                r#"<script>var CUTCAPTCHA_MISERY_KEY = "abc123";</script>"#,
+                Gate::Cutcaptcha,
+            ),
         ];
         for (page, gate) in cases {
             assert_eq!(detect(page), Some(gate), "{page}");

@@ -57,6 +57,9 @@ python3 -I .agents/skills/haul-windows-test/scripts/standin.py "$SCRATCH/standin
 | `/guard/swap`                    | its two links become two files on `localhost` after 4 s (same count) | `listed`, and `Ex.part1.rar`, `Ex.part2.rar` paused         |
 | `/guard/filepage-a/Ex.part3.rar` | a file's page (its path names it) that also links two other files    | not `listed`: the row stays `Ex.part3.rar`, under Needs you |
 | `/guard/stuck`                   | a Turnstile field that never fills                                   | `wants_person` after the pass's time                        |
+| `/guard/adpage-a/Ex.part4.rar`   | a file's page whose ad sends the window to `localhost` after 1 s     | `page` `sent back`, then `refused` with the row's `id`      |
+
+A page passed in Haul's own window rather than Edge (as on a machine without Edge) is what Open here shows: start the test copy with `HAUL_CHROMIUM` set to a path that does not exist, and its `page` signals tell what the window did. Such a window comes on screen once the pass's time is up; stop the test copy before then to keep it off the user's screen.
 
 Windows reaches the server at `127.0.0.1:8799` and `localhost:8799`, which Haul counts as two sites. Add `-<anything>` to a page's path for a fresh address. Stop the server with `pgrep -f '^python3 -I .*standin.py'` and `kill`, and delete its folder.
 

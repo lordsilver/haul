@@ -946,6 +946,7 @@ async fn filecrypt_answers_its_checkbox() {
                                 "seen.html" => solved,
                                 "locked.html" => r#"<input type="password" name="password">"#.into(),
                                 "plain.html" => "<p>Maintenance</p>".into(),
+                                "puzzle.html" => r#"<div id="puzzle-captcha"></div><script src="https://cdn.cutcaptcha.net/captcha/abc123.js"></script>"#.into(),
                                 // How it may turn away a client it refuses.
                                 "sent-away.html" => {
                                     return axum::response::Redirect::to("/404.html").into_response();
@@ -1041,7 +1042,11 @@ async fn filecrypt_answers_its_checkbox() {
     for (page, says) in [
         ("refuse.html", "turned Haul's answer"),
         ("locked.html", "password"),
-        ("plain.html", "gate Haul cannot answer"),
+        ("plain.html", "gate Haul cannot answer; open"),
+        (
+            "puzzle.html",
+            "gate Haul cannot answer (a CutCaptcha puzzle)",
+        ),
     ] {
         let err = filecrypt::unwrap(&cx, &format!("https://filecrypt.cc/Container/{page}"))
             .await

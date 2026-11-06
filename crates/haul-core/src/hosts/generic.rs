@@ -129,12 +129,14 @@ pub(super) fn guarded(url: &str) -> ResolveError {
 }
 
 /// What a page needs when it answers with a gate Haul has no code for, past
-/// any check in front of its site: a browser, which may be let through.
-pub(super) fn gated(url: &str) -> ResolveError {
+/// any check in front of its site: a browser, which may be let through. The
+/// gate, when Haul knows it, is named.
+pub(super) fn gated(url: &str, gate: Option<gates::Gate>) -> ResolveError {
+    let named = gate.map(|g| format!(" ({})", g.name())).unwrap_or_default();
     ResolveError::NeedsUser(
         Need::Gate,
         format!(
-            "{} shows a gate Haul cannot answer; open the page",
+            "{} shows a gate Haul cannot answer{named}; open the page",
             host_of(url)
         ),
     )

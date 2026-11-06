@@ -35,6 +35,14 @@ PAGES = {
     "/guard/filepage": f"""<title>Ex.part3.rar</title><h1>Ex.part3.rar</h1>
 <p>More files:</p><a href='http://localhost:{PORT}/files/Ex.part1.rar'>Ex.part1.rar</a>
 <a href='http://localhost:{PORT}/files/Ex.part2.rar'>Ex.part2.rar</a>""",
+    # A file host's page (as /guard/adpage-a/Ex.part4.rar) whose ad sends
+    # the whole window to another site a second after it shows, and asks
+    # for a new window to it: the window keeps to the page's site.
+    "/guard/adpage": f"""<title>Ex.part4.rar</title><h1>Ex.part4.rar</h1>
+<script>setTimeout(() => {{
+  window.open('http://localhost:{PORT}/ad/visit.php?al=2');
+  location.href = 'http://localhost:{PORT}/ad/visit.php?al=1';
+}}, 1000);</script>""",
     # A Turnstile that never answers: the pass runs until its time is up.
     "/guard/stuck": "<title>Just a moment...</title><form><input type=hidden name=cf-turnstile-response value=''></form>",
 }
