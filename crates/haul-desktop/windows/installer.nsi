@@ -521,7 +521,9 @@ Function .onInit
         StrCpy $INSTDIR "$PROGRAMFILES\${PRODUCTNAME}"
       ${EndIf}
     !else if "${INSTALLMODE}" == "currentUser"
-      StrCpy $INSTDIR "$LOCALAPPDATA\${PRODUCTNAME}"
+      ; Haul: Windows' per-user program folder; $LOCALAPPDATA\${PRODUCTNAME}
+      ; is Haul's data folder.
+      StrCpy $INSTDIR "$LOCALAPPDATA\Programs\${PRODUCTNAME}"
     !endif
 
     Call RestorePreviousInstallLocation
@@ -895,8 +897,8 @@ Section Uninstall
     DeleteRegKey /ifempty HKCU "${MANUKEY}"
 
     SetShellVarContext current
-    RmDir /r "$APPDATA\${BUNDLEID}"
-    RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+    ; Haul: its data folder (paths::data_dir), browser data included.
+    RmDir /r "$LOCALAPPDATA\${PRODUCTNAME}"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL
@@ -911,6 +913,13 @@ Section Uninstall
 SectionEnd
 
 Function RestorePreviousInstallLocation
+  ; Haul: MultiUser.nsh puts a per-user install in $LOCALAPPDATA\${PRODUCTNAME},
+  ; Haul's data folder, so a fresh one goes to Windows' per-user program folder.
+  !if "${INSTALLMODE}" == "both"
+    ${If} $MultiUser.InstallMode == "CurrentUser"
+      StrCpy $INSTDIR "$LOCALAPPDATA\Programs\${PRODUCTNAME}"
+    ${EndIf}
+  !endif
   ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
   StrCmp $4 "" +2 0
     StrCpy $INSTDIR $4
