@@ -15,7 +15,7 @@ download_dir: string,
 /**
  * Given on the command line, so it cannot change here.
  */
-download_dir_fixed: boolean, default_user_agent: string, 
+download_dir_fixed: boolean, 
 /**
  * Keys an environment variable set, with its name; read-only here.
  */
@@ -143,7 +143,7 @@ proxies_on: boolean,
 /**
  * Off: NordVPN's settings stay, but its servers are not used.
  */
-nordvpn_on: boolean, user_agent: string, 
+nordvpn_on: boolean, 
 /**
  * The user's route choice per host when a proxy is configured.
  */

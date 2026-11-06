@@ -9,7 +9,6 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use reqwest::header::HeaderValue;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -33,7 +32,6 @@ pub struct SettingsView {
     pub download_dir: String,
     /// Given on the command line, so it cannot change here.
     pub download_dir_fixed: bool,
-    pub default_user_agent: &'static str,
     /// Keys an environment variable set, with its name; read-only here.
     pub from_env: BTreeMap<String, String>,
     pub config_file: Option<String>,
@@ -163,7 +161,6 @@ impl Engine {
         SettingsView {
             download_dir: self.download_dir().display().to_string(),
             download_dir_fixed: self.0.download_dir_fixed,
-            default_user_agent: config::DEFAULT_USER_AGENT,
             from_env: cfg.from_env.clone(),
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
             error: self.config_error(),
@@ -273,7 +270,7 @@ impl Engine {
                 "proxy" => {
                     let (proxy, write) = optional_text(value, key)?;
                     if let Some(proxy) = &proxy {
-                        check_proxy(proxy, &cfg.user_agent)?;
+                        check_proxy(proxy)?;
                     }
                     writes.push(write);
                     cfg.proxy = proxy;
@@ -281,21 +278,10 @@ impl Engine {
                 "proxies" => {
                     let list = text_list(value, key, true)?;
                     for proxy in &list {
-                        check_proxy(proxy, &cfg.user_agent)?;
+                        check_proxy(proxy)?;
                     }
                     writes.push(top(key, Some(str_list(&list))));
                     cfg.proxies = list;
-                }
-                "user_agent" => {
-                    let (agent, write) = optional_text(value, key)?;
-                    if agent
-                        .as_deref()
-                        .is_some_and(|a| HeaderValue::from_str(a).is_err())
-                    {
-                        return Err("the user agent must be text on one line".into());
-                    }
-                    writes.push(write);
-                    cfg.user_agent = agent.unwrap_or_else(|| config::DEFAULT_USER_AGENT.into());
                 }
                 "download_dir" => {
                     if self.0.download_dir_fixed {
@@ -497,8 +483,7 @@ impl Engine {
         // the settings does not show.
         if (new.proxy_pool() != old.proxy_pool()
             || new.use_proxy != old.use_proxy
-            || new.proxy_fresh_connections != old.proxy_fresh_connections
-            || new.user_agent != old.user_agent)
+            || new.proxy_fresh_connections != old.proxy_fresh_connections)
             && let Err(e) = self.set_clients(&new, &self.service_proxies())
         {
             self.set_config_error(Some(e));
@@ -779,7 +764,7 @@ fn move_partials(from: &Path, to: &Path) -> std::io::Result<usize> {
 
 /// A proxy address Haul can use: `socks5://`, `socks5h://`, `http://` or
 /// `https://`, with credentials if it needs them.
-fn check_proxy(proxy: &str, user_agent: &str) -> Result<(), String> {
+fn check_proxy(proxy: &str) -> Result<(), String> {
     let scheme = proxy.split("://").next().unwrap_or_default();
     if !matches!(scheme, "socks5" | "socks5h" | "http" | "https") || !proxy.contains("://") {
         return Err(format!(
@@ -787,5 +772,5 @@ fn check_proxy(proxy: &str, user_agent: &str) -> Result<(), String> {
             super::diagnostics::without_credentials(proxy)
         ));
     }
-    Http::new(Some(proxy), user_agent).map(|_| ())
+    Http::new(Some(proxy), config::USER_AGENT).map(|_| ())
 }

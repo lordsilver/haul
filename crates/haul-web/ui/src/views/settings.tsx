@@ -109,6 +109,42 @@ function FolderCard({ s, d }: { s: State; d: SettingsView }) {
   );
 }
 
+// Where Haul keeps its settings, queue, logs and browser data. The settings
+// file is in that folder unless the command line named another one.
+function DataCard({ s, d }: { s: State; d: SettingsView }) {
+  const sep = s.data_dir.includes('\\') ? '\\' : '/';
+  const inside = d.config_file?.startsWith(s.data_dir + sep);
+  return (
+    <SettingCard
+      icon={FolderOpen}
+      title="Data folder"
+      description={
+        <>
+          <span className="block font-mono text-xs">{s.data_dir}</span>
+          Settings, downloads list, logs and browser data.
+          {d.config_file && !inside ? (
+            <span className="block">
+              Settings file: <span className="font-mono text-xs">{d.config_file}</span>
+            </span>
+          ) : null}
+        </>
+      }
+      controls={
+        <>
+          {d.config_file ? (
+            <Button variant="outline" onClick={() => openPlace('config')}>
+              Settings file
+            </Button>
+          ) : null}
+          <Button variant="outline" onClick={() => openPlace('data')}>
+            Open
+          </Button>
+        </>
+      }
+    />
+  );
+}
+
 // The desktop app saves the report to Downloads and shows it; a browser
 // downloads it.
 async function saveDiagnostics(desktop: boolean) {
@@ -191,6 +227,12 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               </ToggleGroup>
             }
           />
+          <DataCard s={s} d={d} />
+        </>
+      ) : null}
+      {tab === 'downloads' ? (
+        <>
+          <FolderCard s={s} d={d} />
           <SettingCard icon={ArrowDownToLine} title="Adding links">
             <SettingRow
               title="Add dropped links right away"
@@ -207,11 +249,6 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               />
             ) : null}
           </SettingCard>
-        </>
-      ) : null}
-      {tab === 'downloads' ? (
-        <>
-          <FolderCard s={s} d={d} />
           <SettingCard icon={Gauge} title="Limits" description="Each applies on top of the others. 0 means no limit.">
             <SettingRow
               title="Speed"
@@ -362,28 +399,6 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               title="Live connection"
               description="Lets a diagnosing tool on this computer follow everything Haul does as it happens, with a key Haul writes to its data folder."
               controls={<SettingSwitch name="live_debug" on={d.live_debug} label="Live connection" />}
-            />
-          </SettingCard>
-          <SettingCard icon={FolderOpen} title="Haul's files">
-            {d.config_file ? (
-              <SettingRow
-                title="Settings file"
-                description={<span className="font-mono text-xs">{d.config_file}</span>}
-                controls={
-                  <Button variant="outline" onClick={() => openPlace('config')}>
-                    Open
-                  </Button>
-                }
-              />
-            ) : null}
-            <SettingRow
-              title="Data folder"
-              description={<span className="font-mono text-xs">{s.data_dir}</span>}
-              controls={
-                <Button variant="outline" onClick={() => openPlace('data')}>
-                  Open folder
-                </Button>
-              }
             />
           </SettingCard>
         </>

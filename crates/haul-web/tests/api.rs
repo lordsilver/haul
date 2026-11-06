@@ -333,7 +333,7 @@ async fn settings_round_trip_and_secrets_stay_out_of_the_stream() {
         json!({"max_total": "many"}),
         json!({"proxy": "ftp://nope"}),
         json!({"download_dir": "relative/path"}),
-        json!({"user_agent": "two\nlines"}),
+        json!({"user_agent": "Example/1.0"}),
         json!({"no_such_setting": 1}),
     ] {
         let r = s.post("/api/settings", bad.clone()).await;

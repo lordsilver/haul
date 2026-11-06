@@ -25,13 +25,17 @@ pub const FILE: &str = "config.toml";
 pub const DEFAULT_PREFERRED: [&str; 4] =
     ["pixeldrain.com", "vikingfile.com", "mega.nz", "megaup.net"];
 
-/// The hosts turned off until the user turns them on: those whose free
-/// download is too slow to be worth having (ddownload's, about 30 KB/s after
-/// its wait, measured 2026-11-06), so no file waits on them.
-pub const DEFAULT_DISABLED: [&str; 1] = ["ddownload.com"];
+/// The hosts turned off until the user turns them on, so no file waits on
+/// them: ddownload, whose free download is too slow to be worth having (about
+/// 30 KB/s after its wait, measured 2026-11-06), and rapidgator, whose free
+/// download is a wait and a reCAPTCHA for a person on every file (off at the
+/// owner's word, 2026-11-06).
+pub const DEFAULT_DISABLED: [&str; 2] = ["ddownload.com", "rapidgator.net"];
 
-/// User agent for every request a host does not get a browser's for.
-pub const DEFAULT_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0";
+/// User agent for every request a host does not get a browser's for. Hosts
+/// answered it as they did a current Edge's (2026-11-06): Cloudflare's check
+/// turned both away alike, and every other host gave both the same page.
+pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0";
 
 /// Serialized for the settings view ([`crate::SettingsView`]), which says
 /// where downloads go itself.
@@ -116,7 +120,6 @@ pub struct Config {
     pub proxies_on: bool,
     /// Off: NordVPN's settings stay, but its servers are not used.
     pub nordvpn_on: bool,
-    pub user_agent: String,
     /// The user's route choice per host when a proxy is configured.
     pub routes: BTreeMap<String, Route>,
     /// Subfolder of the download folder for the files from a host.
@@ -186,7 +189,6 @@ impl Default for Config {
             use_proxy: true,
             proxies_on: true,
             nordvpn_on: true,
-            user_agent: DEFAULT_USER_AGENT.into(),
             routes: BTreeMap::new(),
             folders: BTreeMap::new(),
             preferred_hosts: DEFAULT_PREFERRED.iter().map(|h| h.to_string()).collect(),
@@ -692,9 +694,6 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # gofile, comes only through its page.
 # accountless_hosts = ["rapidgator.net"]
 
-# Sent to hosts with every request.
-# user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Haul/1.0"
-
 # Hosts allowed to bypass the proxy ("direct"), or kept on it ("proxy").
 # [routes]
 # "example.com" = "direct"
@@ -824,7 +823,6 @@ mod tests {
         assert_eq!(cfg.preference("c.example"), None);
         assert_eq!(cfg.folder_for("a.example"), Path::new("Hosts").join("a"));
         assert_eq!(cfg.folder_for("other.example"), PathBuf::new());
-        assert_eq!(cfg.user_agent, DEFAULT_USER_AGENT);
         let typo = Config::parse("max_totl = 3").unwrap_err();
         assert!(typo.contains("max_totl"), "{typo}");
         let typo = Config::parse("[accounts]\npixeldrain = \"k\"").unwrap_err();
@@ -847,7 +845,10 @@ mod tests {
 
     #[test]
     fn hosts_too_slow_for_free_are_off_until_told_otherwise() {
-        assert_eq!(Config::default().disabled_hosts, ["ddownload.com"]);
+        assert_eq!(
+            Config::default().disabled_hosts,
+            ["ddownload.com", "rapidgator.net"]
+        );
         assert!(
             Config::parse("disabled_hosts = []")
                 .unwrap()

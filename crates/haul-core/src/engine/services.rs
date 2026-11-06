@@ -184,8 +184,8 @@ impl Engine {
             let mut checks = tokio::task::JoinSet::new();
             for (n, server) in batch.iter().enumerate() {
                 let proxy = vpn::nordvpn_proxies(&cfg, std::slice::from_ref(server)).remove(0);
-                let (api, agent) = (cfg.endpoints.nordvpn.clone(), cfg.user_agent.clone());
-                checks.spawn(async move { (n, vpn::nordvpn_check(&api, &proxy, &agent).await) });
+                let (api, agent) = (cfg.endpoints.nordvpn.clone(), crate::config::USER_AGENT);
+                checks.spawn(async move { (n, vpn::nordvpn_check(&api, &proxy, agent).await) });
             }
             let mut results = checks.join_all().await;
             results.sort_by_key(|(n, _)| *n);

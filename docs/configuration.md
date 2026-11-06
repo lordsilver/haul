@@ -35,12 +35,11 @@ proxy = "socks5://user:pass@host:1080" # every host goes through it unless allow
 use_proxy = true                # false keeps proxies and VPN servers but connects directly
 proxies_on = true               # false leaves the proxies of proxy and proxies out
 preferred_hosts = ["rapidgator.net"]   # downloaded from first, in this order (default: ["pixeldrain.com", "vikingfile.com", "mega.nz", "megaup.net"])
-disabled_hosts = ["mediafire.com"]     # never downloaded from: their links are left alone (default: ddownload.com)
+disabled_hosts = ["mediafire.com"]     # never downloaded from: their links are left alone (default: ddownload.com, rapidgator.net)
 accountless_hosts = ["rapidgator.net"] # used like any other host without their account (otherwise gofile.io, rapidgator.net, nitroflare.com go only when no other host has the file)
 proxies = ["socks5://u:p@nl.example:1080"]  # more proxies; downloads spread over them
 proxy_with_direct = false       # your own connection as one more of them
 proxy_fresh_connections = false # a new connection per download, for rotating endpoints
-user_agent = "..."              # default: Haul's own
 
 [routes]            # hosts allowed off the proxy
 "example.com" = "direct"
