@@ -330,10 +330,10 @@ impl Item {
         size: Option<u64>,
         checksum: Option<Checksum>,
     ) {
-        if self.name.is_none() || (replace && !self.named) {
-            if let Some(name) = name {
-                self.name = Some(tidy_name(name));
-            }
+        if (self.name.is_none() || (replace && !self.named))
+            && let Some(name) = name
+        {
+            self.name = Some(tidy_name(name));
         }
         if let Some(size) = size.filter(|s| *s > 0) {
             self.size = size;

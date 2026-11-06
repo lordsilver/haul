@@ -491,15 +491,14 @@ impl Engine {
         }
         // The switch also takes the VPN servers in or out, which the pool of
         // the settings does not show.
-        if new.proxy_pool() != old.proxy_pool()
+        if (new.proxy_pool() != old.proxy_pool()
             || new.use_proxy != old.use_proxy
             || new.proxy_fresh_connections != old.proxy_fresh_connections
-            || new.user_agent != old.user_agent
+            || new.user_agent != old.user_agent)
+            && let Err(e) = self.set_clients(&new, &self.service_proxies())
         {
-            if let Err(e) = self.set_clients(&new, &self.service_proxies()) {
-                self.set_config_error(Some(e));
-                return;
-            }
+            self.set_config_error(Some(e));
+            return;
         }
         if new.rate_limit_mbps != old.rate_limit_mbps {
             self.0.limiter.set_rate(new.rate_limit_mbps * 1e6);

@@ -331,12 +331,11 @@ impl Engine {
         // link failed, the others standing by.
         if let Some(want) = st.items[id].prefer.clone()
             && let Some(m) = candidates.iter().find(|m| hosts::host_of(m) == want)
+            && !self.host_cooling(st, &want, now)
         {
-            if !self.host_cooling(st, &want, now) {
-                return self
-                    .free_exit(st, &want, &cfg, now)
-                    .map(|exit| (m.clone(), exit));
-            }
+            return self
+                .free_exit(st, &want, &cfg, now)
+                .map(|exit| (m.clone(), exit));
         }
         // Preferred hosts first, in the user's order. One that is only busy
         // is waited for; one cooling down is passed over like any other.

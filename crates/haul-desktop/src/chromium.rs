@@ -190,7 +190,7 @@ pub type TakeLinks<'a> = &'a dyn Fn(&Shown) -> bool;
 
 /// What a page that lists links shows: every address on it, those written
 /// out in its text, and its title.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Shown {
     pub links: Vec<String>,
     pub text: Vec<String>,

@@ -82,10 +82,10 @@ struct View {
 
 impl App {
     /// The desktop app, or the answer for a request only it can serve.
-    fn desktop(&self, why: &str) -> Result<Arc<dyn Desktop>, Response> {
+    fn desktop(&self, why: &str) -> Result<Arc<dyn Desktop>, Box<Response>> {
         self.desktop
             .clone()
-            .ok_or_else(|| error(StatusCode::NOT_IMPLEMENTED, why))
+            .ok_or_else(|| Box::new(error(StatusCode::NOT_IMPLEMENTED, why)))
     }
 
     /// The state as JSON, made once for every open view: on every change
@@ -453,7 +453,7 @@ struct BrowseBody {
 async fn browse(State(app): State<App>, Path(id): Path<String>, body: Bytes) -> Response {
     let desktop = match app.desktop("only the desktop app has an in-app browser") {
         Ok(desktop) => desktop,
-        Err(answer) => return answer,
+        Err(answer) => return *answer,
     };
     let Some(url) = app.engine.page_for(&id) else {
         return error(StatusCode::NOT_FOUND, "no such item");
@@ -599,7 +599,7 @@ async fn install_update(State(app): State<App>) -> Response {
         "only the desktop app installs updates; download the new version from its release page",
     ) {
         Ok(desktop) => desktop,
-        Err(answer) => return answer,
+        Err(answer) => return *answer,
     };
     let installer = match app.engine.download_update().await {
         Ok(installer) => installer,
@@ -714,7 +714,7 @@ async fn update_settings(
 async fn pick_download_dir(State(app): State<App>) -> Response {
     let desktop = match app.desktop("only the desktop app has a folder dialog") {
         Ok(desktop) => desktop,
-        Err(answer) => return answer,
+        Err(answer) => return *answer,
     };
     let start = app.engine.download_dir();
     let picked = tokio::task::spawn_blocking(move || desktop.pick_folder(&start)).await;
@@ -754,7 +754,7 @@ async fn save_diagnostics(State(app): State<App>) -> Response {
     if let Err(answer) =
         app.desktop("only the desktop app saves the report itself; GET /api/diagnostics instead")
     {
-        return answer;
+        return *answer;
     }
     let engine = app.engine.clone();
     let saved = blocking(move || -> Result<std::path::PathBuf, String> {

@@ -96,6 +96,15 @@ impl Browser {
     }
 
     /// The bridge's address, pointed at the proxy currently configured.
+    /// The local bridge to the proxy `host`'s pages go through, when they go
+    /// through one.
+    fn bridge_for(&self, host: &str) -> Result<Option<SocketAddr>, String> {
+        self.engine
+            .proxy_for(host)
+            .map(|proxy| self.bridge_to(&proxy))
+            .transpose()
+    }
+
     fn bridge_to(&self, proxy: &str) -> Result<SocketAddr, String> {
         let mut slot = self.bridge.lock().unwrap_or_else(|e| e.into_inner());
         if slot.is_none() {
@@ -153,10 +162,7 @@ impl Browser {
     /// [`Browser::pass`] in a full browser driven over DevTools.
     fn pass_in(&self, exe: PathBuf, id: &str, url: &str) -> Result<(), String> {
         let host = hosts::host_of(url);
-        let proxy = match self.engine.proxy_for(&host) {
-            Some(proxy) => Some(self.bridge_to(&proxy)?),
-            None => None,
-        };
+        let proxy = self.bridge_for(&host)?;
         let handle = chromium::Handle::default();
         passes(&self.passes).insert(id.to_string(), handle.clone());
         let abandoned = handle.abandoned.clone();
@@ -214,31 +220,14 @@ impl Browser {
                     {
                         return;
                     }
-                    let entries = files
-                        .into_iter()
-                        .map(|f| {
-                            let mut headers =
-                                BTreeMap::from([("Referer".to_string(), url.clone())]);
-                            if let Some(cookie) = f.cookie {
-                                headers.insert("Cookie".to_string(), cookie);
-                            }
-                            if let Some(agent) = &agent {
-                                headers.insert("User-Agent".to_string(), agent.clone());
-                            }
-                            hosts::Entry {
-                                url: f.url,
-                                name: f.name,
-                                size: f.size,
-                                headers,
-                                ..hosts::Entry::default()
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    let count = entries.len();
-                    match engine.set_files(&id, entries) {
-                        Ok(()) => tracing::info!("took over {count} file(s) for item {id}"),
-                        Err(e) => notify(&app, "Could not use that download", &e),
-                    }
+                    hand_over(
+                        &app,
+                        &engine,
+                        &id,
+                        files,
+                        Some(url.as_str()),
+                        agent.as_deref(),
+                    );
                 }
                 Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
                 Ok(chromium::Outcome::Failed(reason)) => engine.page_failed(&id, &reason),
@@ -312,10 +301,7 @@ impl Browser {
         let page: Url = url.parse().map_err(|e| format!("{url}: {e}"))?;
         let host = hosts::host_of(url);
         // Pages for a proxied host go through the same proxy as its downloads.
-        let bridge = match self.engine.proxy_for(&host) {
-            Some(proxy) => Some(self.bridge_to(&proxy)?),
-            None => None,
-        };
+        let bridge = self.bridge_for(&host)?;
         let proxied = bridge.is_some();
         // One browser profile per route, so pages opened through the proxy
         // never share cookies or settings with direct ones.
@@ -350,20 +336,20 @@ impl Browser {
             .initialization_script(HANDOFF)
             .on_download(move |_, event| on_download.on_download(event))
             .on_new_window(move |url, _| capture.on_popup(url))
-            .on_navigation(move |url| match handed_off(url) {
-                Some(Handoff { files, agent, page }) => {
+            .on_navigation(move |url| match said(url) {
+                Some(Said::Files { files, agent, page }) => {
                     on_handoff.take_files(files, agent, page);
                     false
                 }
-                None if let Some(reason) = gone(url) => {
+                Some(Said::Gone(reason)) => {
                     on_handoff.gone(&reason);
                     false
                 }
-                None if let Some(shown) = listed(url) => {
+                Some(Said::Links(shown)) => {
                     on_handoff.listed(shown);
                     false
                 }
-                None if let Some((reason, seconds)) = later(url) => {
+                Some(Said::Later { reason, seconds }) => {
                     on_handoff.later(&reason, seconds);
                     false
                 }
@@ -609,97 +595,124 @@ struct Handed {
     size: Option<u64>,
 }
 
-/// What the hand-off script sends: a host's files (one, or a folder's) and
-/// the window's user agent, which the downloads then use too; on a
-/// wrapper's page Haul's own code reads, the parts of it that code reads.
+/// What the hand-off script says, as a link to `haul.invalid` it sends the
+/// window to.
 #[derive(Debug, PartialEq)]
-struct Handoff {
-    files: Vec<(Url, Handed)>,
-    agent: Option<String>,
-    page: Option<String>,
+enum Said {
+    /// A host's files (one, or a folder's) and the window's user agent,
+    /// which the downloads then use too; on a wrapper's page Haul's own code
+    /// reads, the parts of it that code reads. Only http(s) links count; a
+    /// message with none is none.
+    Files {
+        files: Vec<(Url, Handed)>,
+        agent: Option<String>,
+        page: Option<String>,
+    },
+    /// The page says its file is gone.
+    Gone(String),
+    /// The page could not hand out its link this time, and how long it says
+    /// its host limits this address, if it does.
+    Later {
+        reason: String,
+        seconds: Option<u64>,
+    },
+    /// What a page that lists links shows.
+    Links(chromium::Shown),
 }
 
-/// The hand-off script's message, when `url` is one. Only http(s) links
-/// count; a message with none is not one.
-fn handed_off(url: &Url) -> Option<Handoff> {
-    if url.host_str() != Some("haul.invalid") || url.path() != "/take" {
+/// The hand-off script's message, when `url` is one.
+fn said(url: &Url) -> Option<Said> {
+    if url.host_str() != Some("haul.invalid") {
         return None;
     }
     let pair = |key: &str| {
         url.query_pairs()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.into_owned())
+            .filter(|v| !v.is_empty())
     };
-    let sent: Vec<Handed> = serde_json::from_str(&pair("files")?).ok()?;
-    let files: Vec<(Url, Handed)> = sent
-        .into_iter()
-        .filter_map(|f| {
-            let link: Url = f.url.parse().ok()?;
-            matches!(link.scheme(), "http" | "https").then_some((link, f))
-        })
-        .collect();
-    (!files.is_empty()).then(|| Handoff {
-        files,
-        agent: pair("agent").filter(|a| !a.is_empty()),
-        page: pair("page").filter(|p| !p.is_empty()),
-    })
-}
-
-/// The reason the hand-off script gives when the page says its file is
-/// gone, when `url` is that message.
-fn gone(url: &Url) -> Option<String> {
-    message(url, "/gone")
-}
-
-/// What a page that lists links shows, when `url` is the hand-off script's
-/// message with it.
-fn listed(url: &Url) -> Option<chromium::Shown> {
-    if url.host_str() != Some("haul.invalid") || url.path() != "/links" {
-        return None;
-    }
-    let pair = |key: &str| {
-        url.query_pairs()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.into_owned())
-    };
+    let reason = || pair("reason").unwrap_or_else(|| "the page says the file was deleted".into());
     let list = |key: &str| -> Vec<String> {
         pair(key)
             .and_then(|v| serde_json::from_str(&v).ok())
             .unwrap_or_default()
     };
-    Some(chromium::Shown {
-        links: list("links"),
-        text: list("shown"),
-        title: pair("title").filter(|t| !t.is_empty()),
-    })
-}
-
-/// The reason the hand-off script gives when the page could not hand out
-/// its link this time, and how long the page says its host limits this
-/// address if it does, when `url` is that message.
-fn later(url: &Url) -> Option<(String, Option<u64>)> {
-    let reason = message(url, "/later")?;
-    let seconds = url
-        .query_pairs()
-        .find(|(k, _)| k == "seconds")
-        .and_then(|(_, v)| v.parse().ok());
-    Some((reason, seconds))
-}
-
-fn message(url: &Url, path: &str) -> Option<String> {
-    if url.host_str() != Some("haul.invalid") || url.path() != path {
-        return None;
+    match url.path() {
+        "/take" => {
+            let sent: Vec<Handed> = serde_json::from_str(&pair("files")?).ok()?;
+            let files: Vec<(Url, Handed)> = sent
+                .into_iter()
+                .filter_map(|f| {
+                    let link: Url = f.url.parse().ok()?;
+                    matches!(link.scheme(), "http" | "https").then_some((link, f))
+                })
+                .collect();
+            (!files.is_empty()).then(|| Said::Files {
+                files,
+                agent: pair("agent"),
+                page: pair("page"),
+            })
+        }
+        "/gone" => Some(Said::Gone(reason())),
+        "/later" => Some(Said::Later {
+            reason: reason(),
+            seconds: pair("seconds").and_then(|s| s.parse().ok()),
+        }),
+        "/links" => Some(Said::Links(chromium::Shown {
+            links: list("links"),
+            text: list("shown"),
+            title: pair("title"),
+        })),
+        _ => None,
     }
-    let reason = url
-        .query_pairs()
-        .find(|(k, _)| k == "reason")
-        .map(|(_, v)| v.into_owned())
-        .unwrap_or_default();
-    Some(if reason.is_empty() {
-        "the page says the file was deleted".into()
-    } else {
-        reason
-    })
+}
+
+/// Hands a page's files to the engine for row `id`: each link with the
+/// browser's cookies for it, the page as the referrer and the browser's user
+/// agent, so the host serves them as it did the browser. Says so when the
+/// engine cannot use them; returns whether it took them.
+fn hand_over(
+    app: &AppHandle,
+    engine: &Engine,
+    id: &str,
+    files: Vec<chromium::File>,
+    referer: Option<&str>,
+    agent: Option<&str>,
+) -> bool {
+    let entries: Vec<hosts::Entry> = files
+        .into_iter()
+        .map(|f| {
+            let mut headers = BTreeMap::new();
+            let wanted = [
+                ("Referer", referer.map(str::to_string)),
+                ("Cookie", f.cookie),
+                ("User-Agent", agent.map(str::to_string)),
+            ];
+            for (name, value) in wanted {
+                if let Some(value) = value {
+                    headers.insert(name.to_string(), value);
+                }
+            }
+            hosts::Entry {
+                url: f.url,
+                name: f.name.filter(|n| !n.is_empty()),
+                size: f.size,
+                headers,
+                ..hosts::Entry::default()
+            }
+        })
+        .collect();
+    let count = entries.len();
+    match engine.set_files(id, entries) {
+        Ok(()) => {
+            tracing::info!("took over {count} file(s) for item {id}");
+            true
+        }
+        Err(e) => {
+            notify(app, "Could not use that download", &e);
+            false
+        }
+    }
 }
 
 fn passes(
@@ -818,13 +831,7 @@ impl Capture {
     /// closes without asking anyone.
     fn gone(&self, reason: &str) {
         self.engine.page_gone(&self.id, reason);
-        if let Some(window) = self.app.get_webview_window(&self.label) {
-            let window = window.clone();
-            // Not from inside the webview's own event.
-            std::thread::spawn(move || {
-                let _ = window.close();
-            });
-        }
+        self.close_soon();
     }
 
     /// The page could not hand out its link this time: it is tried again
@@ -832,8 +839,12 @@ impl Capture {
     fn later(&self, reason: &str, seconds: Option<u64>) {
         self.engine
             .page_later(&self.id, &self.page, reason, seconds);
+        self.close_soon();
+    }
+
+    /// Closes the window, not from inside the webview's own event.
+    fn close_soon(&self) {
         if let Some(window) = self.app.get_webview_window(&self.label) {
-            let window = window.clone();
             std::thread::spawn(move || {
                 let _ = window.close();
             });
@@ -841,10 +852,10 @@ impl Capture {
     }
 
     /// Hands what the page gave (a file, or a folder's files) to the engine,
-    /// each link with the page's cookies for it, then closes the window. The
-    /// user agent the page reports stands in when the window was opened
-    /// without one. A wrapper's page Haul finds what it holds in (`shown`,
-    /// the parts of it Haul reads) unwraps to that instead.
+    /// each link with the page's cookies for it ([`hand_over`]), then closes
+    /// the window. The user agent the page reports stands in when the window
+    /// was opened without one. A wrapper's page Haul finds what it holds in
+    /// (`shown`, the parts of it Haul reads) unwraps to that instead.
     fn take_files(&self, files: Vec<(Url, Handed)>, agent: Option<String>, shown: Option<String>) {
         let mut this = self.clone();
         if this.user_agent.is_none() {
@@ -865,45 +876,36 @@ impl Capture {
                 return;
             }
             let page = window.as_ref().and_then(|w| w.url().ok());
-            let entries: Vec<hosts::Entry> = files
+            let cookie = |link: &Url| -> Option<String> {
+                let cookies = window.as_ref()?.cookies_for_url(link.clone()).ok()?;
+                (!cookies.is_empty()).then(|| {
+                    cookies
+                        .iter()
+                        .map(|c| format!("{}={}", c.name(), c.value()))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+            };
+            let files = files
                 .into_iter()
-                .map(|(link, file)| {
-                    let mut headers = BTreeMap::new();
-                    if let Some(window) = &window
-                        && let Ok(cookies) = window.cookies_for_url(link.clone())
-                        && !cookies.is_empty()
-                    {
-                        let cookie = cookies
-                            .iter()
-                            .map(|c| format!("{}={}", c.name(), c.value()))
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        headers.insert("Cookie".to_string(), cookie);
-                    }
-                    if let Some(page) = &page {
-                        headers.insert("Referer".to_string(), page.to_string());
-                    }
-                    if let Some(agent) = &this.user_agent {
-                        headers.insert("User-Agent".to_string(), agent.clone());
-                    }
-                    hosts::Entry {
-                        url: link.to_string(),
-                        name: file.name.filter(|n| !n.is_empty()),
-                        size: file.size,
-                        headers,
-                        ..hosts::Entry::default()
-                    }
+                .map(|(link, file)| chromium::File {
+                    cookie: cookie(&link),
+                    url: link.to_string(),
+                    name: file.name,
+                    size: file.size,
                 })
                 .collect();
-            let count = entries.len();
-            match this.engine.set_files(&this.id, entries) {
-                Ok(()) => {
-                    tracing::info!("took over {count} file(s) for item {}", this.id);
-                    if let Some(window) = window {
-                        let _ = window.close();
-                    }
-                }
-                Err(e) => notify(&this.app, "Could not use that download", &e),
+            let referer = page.as_ref().map(Url::as_str);
+            if hand_over(
+                &this.app,
+                &this.engine,
+                &this.id,
+                files,
+                referer,
+                this.user_agent.as_deref(),
+            ) && let Some(window) = window
+            {
+                let _ = window.close();
             }
         });
     }
@@ -920,36 +922,47 @@ mod tests {
         sent.query_pairs_mut()
             .append_pair("files", files)
             .append_pair("agent", "UA");
-        let got = handed_off(&sent).unwrap();
-        let links: Vec<&str> = got.files.iter().map(|(l, _)| l.as_str()).collect();
+        let Some(Said::Files { files, agent, .. }) = said(&sent) else {
+            panic!("no files");
+        };
+        let links: Vec<&str> = files.iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(
             links,
             ["https://cdn.example/a%20b.rar", "https://cdn.example/c.rar"],
             "http(s) only"
         );
-        assert_eq!(got.files[0].1.name.as_deref(), Some("a b.rar"));
-        assert_eq!(got.files[0].1.size, Some(5));
-        assert_eq!(got.agent.as_deref(), Some("UA"));
+        assert_eq!(files[0].1.name.as_deref(), Some("a b.rar"));
+        assert_eq!(files[0].1.size, Some(5));
+        assert_eq!(agent.as_deref(), Some("UA"));
         for other in [
             "https://vik1ngfile.site/f/x",
             "https://haul.invalid/take?files=%5B%7B%22url%22%3A%22javascript%3Ax%22%7D%5D",
             "https://haul.invalid/take",
         ] {
-            assert_eq!(handed_off(&other.parse().unwrap()), None, "{other}");
+            assert_eq!(said(&other.parse().unwrap()), None, "{other}");
         }
     }
 
     #[test]
     fn a_page_says_how_long_its_host_limits_the_address() {
-        let said = |url: &str| later(&url.parse().unwrap());
+        let later = |url: &str| said(&url.parse().unwrap());
+        let limit = |seconds| {
+            Some(Said::Later {
+                reason: "limit".into(),
+                seconds,
+            })
+        };
         assert_eq!(
-            said("https://haul.invalid/later?reason=limit&seconds=6939"),
-            Some(("limit".to_string(), Some(6939)))
+            later("https://haul.invalid/later?reason=limit&seconds=6939"),
+            limit(Some(6939))
         );
         assert_eq!(
-            said("https://haul.invalid/later?reason=limit"),
-            Some(("limit".to_string(), None))
+            later("https://haul.invalid/later?reason=limit"),
+            limit(None)
         );
-        assert_eq!(said("https://haul.invalid/gone?reason=limit"), None);
+        assert_eq!(
+            later("https://haul.invalid/gone?reason=limit"),
+            Some(Said::Gone("limit".into()))
+        );
     }
 }

@@ -153,9 +153,8 @@ impl Checksum {
         })
     }
 
-    /// Whether the file at `path` has this checksum. Reads all of it.
-
-    /// [`Checksum::matches`], asking `steer` before every read whether to go
+    /// Whether the file at `path` has this checksum, reading all of it, and
+    /// asking `steer` before every read whether to go
     /// on, wait (while downloads are paused, say) or give up, which fails
     /// with [`std::io::ErrorKind::Interrupted`].
     pub fn matches_steered(&self, path: &Path, steer: &dyn Fn() -> Steer) -> std::io::Result<bool> {
