@@ -616,7 +616,7 @@ impl Clients {
     /// Exits for the proxies of the settings, then for `services`' (a VPN's
     /// servers), unless proxies are switched off.
     fn new(cfg: &Config, services: &[String]) -> Result<Self, String> {
-        let mut exits = vec![Http::new(None, &cfg.user_agent)?];
+        let mut exits = vec![Http::new(None, crate::config::USER_AGENT)?];
         let services = services
             .iter()
             .map(String::as_str)
@@ -624,7 +624,7 @@ impl Clients {
         for proxy in cfg.proxy_pool().into_iter().chain(services) {
             exits.push(Http::with(
                 Some(proxy),
-                &cfg.user_agent,
+                crate::config::USER_AGENT,
                 cfg.proxy_fresh_connections,
             )?);
         }

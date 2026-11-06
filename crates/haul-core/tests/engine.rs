@@ -4648,6 +4648,33 @@ async fn a_row_leaving_a_slow_host_gets_its_page_passed() {
     assert_eq!(t.server.requests("/paced/40/held.bin").len(), 1);
 }
 
+/// A preferred host whose page the desktop app passes goes before a host that
+/// isn't preferred, though Haul knows that one and measured neither: the row
+/// waits for the page's turn.
+#[tokio::test]
+async fn a_preferred_page_goes_before_a_host_that_isnt() {
+    let t = Setup::new().await;
+    let mut options = through_stand_in(&t);
+    if let Some(cfg) = options.config.as_mut() {
+        cfg.preferred_hosts = vec!["ddownload.com".into()];
+    }
+    let engine = Engine::start(options).await.unwrap();
+    engine.set_pages_pass(true);
+    engine.add_text("http://fileguard.cc/vault/ddownload-slow", "");
+    let w = wrapper_settled(&engine, "done").await.wrappers[0]
+        .id
+        .clone();
+    wait_for(&engine, "the file", |s| s.items.len() == 1).await;
+    engine.start_wrapper(&w);
+    let s = wait_for(&engine, "the page's turn", |s| {
+        s.items[0].status.as_str() == "passing"
+    })
+    .await;
+    assert_eq!(s.items[0].shown_host, "ddownload.com");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(t.server.requests("/paced/40/held.bin").is_empty());
+}
+
 /// A host that lifts its limit gets its cooldown ended and the row its plain
 /// look back.
 #[tokio::test]
@@ -4919,8 +4946,10 @@ async fn a_handed_file_shows_under_the_host_it_came_from() {
     let s = wait_for(&engine, "the file", |s| s.items.len() == 1).await;
     let id = s.items[0].id.clone();
     engine.start_wrapper(&w);
-    wait_for(&engine, "both pages to wait", |s| {
-        s.items[0].status.as_str() == "passing" && s.items[0].open_urls.len() == 2
+    // The preferred host's page goes first; ddownload, not preferred, waits.
+    wait_for(&engine, "the preferred page to wait", |s| {
+        s.items[0].status.as_str() == "passing"
+            && s.items[0].open_urls == ["https://gofile.io/d/both"]
     })
     .await;
     assert_eq!(

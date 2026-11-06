@@ -350,7 +350,10 @@ impl Engine {
                 .map(|exit| (m.clone(), exit));
         }
         // Preferred hosts first, in the user's order. One that is only busy
-        // is waited for; one cooling down is passed over like any other.
+        // is waited for; one cooling down is passed over like any other. A
+        // preferred host whose page the desktop app passes takes its place in
+        // that order: the row waits for the page's turn rather than go to a
+        // host after it.
         let mut preferred: Vec<(usize, String)> = Vec::new();
         for m in &candidates {
             let name = hosts::host_of(m);
@@ -360,12 +363,22 @@ impl Engine {
                 preferred.push((rank, m.clone()));
             }
         }
-        if !preferred.is_empty() {
+        let pass_rank = pass_host.as_deref().and_then(|h| cfg.preference(h));
+        if !preferred.is_empty() || pass_rank.is_some() {
             preferred.sort_by_key(|(rank, _)| *rank);
-            for (_, m) in preferred {
+            for (rank, m) in preferred {
+                if pass_rank.is_some_and(|page| page < rank) {
+                    break;
+                }
                 if let Some(exit) = self.free_exit(st, &hosts::host_of(&m), &cfg, now) {
                     return Some((m, exit));
                 }
+            }
+            if pass_rank.is_some()
+                && let Some(it) = st.items.get_mut(id)
+            {
+                // Shown as passing until its page's turn comes.
+                it.status = Status::Captcha;
             }
             return None;
         }

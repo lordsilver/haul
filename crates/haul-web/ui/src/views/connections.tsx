@@ -87,10 +87,10 @@ function Redial({ s }: { s: State }) {
   );
 }
 
-// Getting this line a new public address, in one card: what was found and
-// the button that does it now, the switch that lets Haul do it on its own,
-// and how it is done (the router, with its login when it wants one, or a
-// command of the user's own).
+// Getting this line a new public address, in one card: how it is done (the
+// router, with its login when it wants one, or a command of the user's own),
+// then the button that does it now and the switch that lets Haul do it on
+// its own.
 function YourLine({ s, d }: { s: State; d: SettingsView }) {
   useEffect(() => {
     api('/api/router').catch(() => {});
@@ -108,35 +108,9 @@ function YourLine({ s, d }: { s: State; d: SettingsView }) {
       icon={Globe}
       title="Router"
       description={`${found} Hosts limit what one address may fetch; a new IP usually brings a fresh allowance.`}
-      controls={<Redial s={s} />}
     >
-      {/* What stands in the way, or how the last attempt went. */}
-      {r.blocked ? (
-        <Infobar kind="caution" title="Cannot get a new IP yet.">
-          {`${r.blocked.charAt(0).toUpperCase()}${r.blocked.slice(1)}.`}
-        </Infobar>
-      ) : r.note ? (
-        <Infobar kind={r.failed ? 'critical' : 'success'}>
-          {r.note_at ? `${r.note} · ${at(r.note_at)}` : r.note}
-        </Infobar>
-      ) : null}
-      <SettingRow
-        title="Get a new IP on its own"
-        disabled={Boolean(r.blocked) && !d.reconnect}
-        description={
-          r.blocked
-            ? 'Off until Haul can get a new IP: see above.'
-            : 'When a host has slowed your address for the day, or asked it to wait a long while, and no proxy can take over. At most every ten minutes; each redial cuts the line for a few seconds.'
-        }
-        controls={
-          <SettingSwitch
-            name="reconnect"
-            on={r.blocked && !d.reconnect ? false : d.reconnect}
-            disabled={Boolean(r.blocked) && !d.reconnect}
-            label="Get a new IP on its own"
-          />
-        }
-      />
+      {/* How first: nothing below works without the router's login, or a
+          command of the user's own. */}
       <SettingRow
         title="How"
         description={
@@ -183,6 +157,39 @@ function YourLine({ s, d }: { s: State; d: SettingsView }) {
           />
         )}
       </SettingRow>
+      {/* What stands in the way, or how the last attempt went. */}
+      {r.blocked ? (
+        <Infobar kind="caution" title="Cannot get a new IP yet.">
+          {`${r.blocked.charAt(0).toUpperCase()}${r.blocked.slice(1)}.`}
+        </Infobar>
+      ) : r.note ? (
+        <Infobar kind={r.failed ? 'critical' : 'success'}>
+          {r.note_at ? `${r.note} · ${at(r.note_at)}` : r.note}
+        </Infobar>
+      ) : null}
+      <SettingRow
+        title="Get a new IP now"
+        disabled={Boolean(r.blocked)}
+        description="Cuts the line for a few seconds; downloads on it pause and resume."
+        controls={<Redial s={s} />}
+      />
+      <SettingRow
+        title="Get a new IP on its own"
+        disabled={Boolean(r.blocked) && !d.reconnect}
+        description={
+          r.blocked
+            ? 'Off until Haul can get a new IP: see above.'
+            : 'When a host has slowed your address for the day, or asked it to wait a long while, and no proxy can take over. At most every ten minutes.'
+        }
+        controls={
+          <SettingSwitch
+            name="reconnect"
+            on={r.blocked && !d.reconnect ? false : d.reconnect}
+            disabled={Boolean(r.blocked) && !d.reconnect}
+            label="Get a new IP on its own"
+          />
+        }
+      />
     </SettingCard>
   );
 }
@@ -306,19 +313,21 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
   const proxies = Boolean(d.proxy || d.proxies.length);
   return (
     <>
-      <SettingCard
-        icon={Shield}
-        title={`In use: ${pool.label}`}
-        description={
-          pool.why ? (
-            <span className="text-warn-strong">{pool.why}</span>
-          ) : pool.configured ? (
-            pool.sources.map((x) => `${x.name}: ${x.status}`).join(' · ')
-          ) : (
-            'No proxies or VPN set up yet: every download uses your line. Add them below.'
-          )
-        }
-      />
+      {/* Only once there is a choice to report: with nothing set up, every
+          download simply uses the line. */}
+      {pool.why || pool.configured ? (
+        <SettingCard
+          icon={Shield}
+          title={`In use: ${pool.label}`}
+          description={
+            pool.why ? (
+              <span className="text-warn-strong">{pool.why}</span>
+            ) : (
+              pool.sources.map((x) => `${x.name}: ${x.status}`).join(' · ')
+            )
+          }
+        />
+      ) : null}
       <Section>Your line</Section>
       <YourLine s={s} d={d} />
       {proxies || s.services.nordvpn.length ? (
@@ -381,17 +390,6 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
       ) : null}
       <Section>VPN services</Section>
       <NordVpn s={s} d={d} />
-      <Section>Requests</Section>
-      <SettingCard icon={Globe} title="User agent" description="Sent to hosts. Empty uses Haul's own.">
-        <TextField
-          d={d}
-          name="user_agent"
-          value={d.user_agent === d.default_user_agent ? '' : d.user_agent}
-          label="User agent"
-          placeholder={d.default_user_agent}
-          wide
-        />
-      </SettingCard>
     </>
   );
 }
