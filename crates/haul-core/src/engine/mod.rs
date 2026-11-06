@@ -711,7 +711,7 @@ impl Engine {
         let routes = cfg.routes.clone();
         let mut items: IndexMap<String, Item> = saved
             .into_iter()
-            .map(|(id, s)| (id.clone(), Item::restore(id, s)))
+            .map(|(id, it)| (id.clone(), it.restored(id)))
             .collect();
         // Dropping a host from a wrapper's card can take its last file and
         // leave the wrapper on the list until now.
@@ -2177,24 +2177,24 @@ impl Engine {
 
     fn save(&self, force: bool) {
         let _guard = self.0.save_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let (queue, hosts): (IndexMap<String, _>, BTreeMap<String, _>) = {
+        let (queue, hosts): (_, BTreeMap<String, _>) = {
             let mut st = self.lock();
             if !st.dirty && !force {
                 return;
             }
             st.dirty = false;
             (
-                st.items
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.saved()))
-                    .collect(),
+                serde_json::to_vec(&st.items),
                 st.hosts
                     .iter()
                     .map(|(k, h)| (k.clone(), h.saved()))
                     .collect(),
             )
         };
-        if let Err(e) = store::write(&self.0.data_dir, store::QUEUE, &queue) {
+        let queue = queue
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| store::write_atomic(&self.0.data_dir.join(store::QUEUE), &bytes));
+        if let Err(e) = queue {
             tracing::error!("saving the queue: {e}");
             self.lock().dirty = true;
         }

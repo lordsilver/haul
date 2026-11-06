@@ -121,10 +121,8 @@ impl Engine {
 }
 
 fn item_report(it: &Item) -> Value {
-    let bare = |links: &mut dyn Iterator<Item = &String>| -> Vec<String> {
-        let mut links: Vec<String> = links.map(|l| without_fragment(l)).collect();
-        links.sort();
-        links
+    let bare = |links: &std::collections::BTreeSet<String>| -> Vec<String> {
+        links.iter().map(|l| without_fragment(l)).collect()
     };
     json!({
         "id": it.id,
@@ -141,8 +139,8 @@ fn item_report(it: &Item) -> Value {
         "done": it.done,
         "host": it.host,
         "mirrors": it.mirrors.iter().map(|m| without_fragment(m)).collect::<Vec<_>>(),
-        "failed": bare(&mut it.failed.iter()),
-        "needs_you": bare(&mut it.manual_urls.iter()),
+        "failed": bare(&it.failed),
+        "needs_you": bare(&it.manual_urls),
         "handed_back": it.pre.as_ref().filter(|_| it.manual).map(|p| page_only(&p.url)),
         "retries": it.retries,
         "auto_retries": it.auto_retries,

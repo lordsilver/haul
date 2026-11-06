@@ -12,7 +12,7 @@ use std::{
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{engine::StartError, item::Saved};
+use crate::{engine::StartError, item::Item};
 
 pub(crate) const QUEUE: &str = "queue.json";
 pub(crate) const HOSTS: &str = "hosts.json";
@@ -66,7 +66,7 @@ fn read<T: DeserializeOwned + Default>(path: PathBuf) -> Result<T, StartError> {
     }
 }
 
-pub(crate) fn load_queue(dir: &Path) -> Result<IndexMap<String, Saved>, StartError> {
+pub(crate) fn load_queue(dir: &Path) -> Result<IndexMap<String, Item>, StartError> {
     read(dir.join(QUEUE))
 }
 
