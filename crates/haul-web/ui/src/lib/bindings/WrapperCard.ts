@@ -24,7 +24,27 @@ hosts: Array<string>, status: WrapperState,
 /**
  * Its error without the wrapper's host.
  */
-error_shown: string, wait: number, retry_in: number, open_urls: Array<string>, found: Found | null, 
+error_shown: string, 
+/**
+ * What the card says of its state: its error, when it failed, waits or
+ * wants a person; empty for none.
+ */
+reason: string, 
+/**
+ * Seconds until it is tried again on its own, failed or waiting for a
+ * person; 0 when never.
+ */
+again: number, 
+/**
+ * Files its wrappers added that wait for a start: never started, or
+ * paused.
+ */
+to_start: number, 
+/**
+ * Done with nothing left to start: taking it off the list takes no
+ * file.
+ */
+clearable: boolean, wait: number, retry_in: number, open_urls: Array<string>, found: Found | null, 
 /**
  * The files its wrappers added, counted once.
  */

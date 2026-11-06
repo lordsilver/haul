@@ -82,7 +82,7 @@ function Banner({ s, offline, updated, view }: { s: State; offline: boolean; upd
       {view === 'attention' && wrappersWaiting > 0 ? (
         <Infobar
           kind="caution"
-          title={`${wrappersWaiting} ${wrappersWaiting === 1 ? 'wrapper needs' : 'wrappers need'} you.`}
+          title={`${plural(wrappersWaiting, 'wrapper needs', 'wrappers need')} you.`}
           actions={
             <Button size="sm" variant="outline" onClick={() => go('wrappers')}>
               Show

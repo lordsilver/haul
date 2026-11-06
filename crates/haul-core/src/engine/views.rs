@@ -302,6 +302,20 @@ pub(super) fn items(
             .filter(|m| **m != it.shown_host && !off(m) && !failed(m))
             .count();
         it.error_shown = without_host(&it.error, &it.shown_host);
+        let says = matches!(
+            it.status,
+            RowState::Error | RowState::Waiting | RowState::Captcha
+        );
+        it.reason = match &it.slowed {
+            Some(slowed) => slowed.clone(),
+            None if says => it.error_shown.clone(),
+            None => String::new(),
+        };
+        it.again = if it.status == RowState::Captcha {
+            it.retry_in
+        } else {
+            0
+        };
         it.source_name = it.source.as_deref().and_then(|s| sources.get(s)).cloned();
         it.commands = item_commands(it, recycle_on_remove);
     }
@@ -605,6 +619,18 @@ pub struct WrapperCard {
     pub status: WrapperState,
     /// Its error without the wrapper's host.
     pub error_shown: String,
+    /// What the card says of its state: its error, when it failed, waits or
+    /// wants a person; empty for none.
+    pub reason: String,
+    /// Seconds until it is tried again on its own, failed or waiting for a
+    /// person; 0 when never.
+    pub again: u64,
+    /// Files its wrappers added that wait for a start: never started, or
+    /// paused.
+    pub to_start: usize,
+    /// Done with nothing left to start: taking it off the list takes no
+    /// file.
+    pub clearable: bool,
     pub wait: u64,
     pub retry_in: u64,
     pub open_urls: Vec<String>,
@@ -685,6 +711,7 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 .copied()
                 .unwrap_or(w);
             let empty = ws.iter().filter(|x| set_aside(x)).count();
+            let card_tally = tally(files.iter().copied());
             let mut hosts: Vec<String> = Vec::new();
             for h in ws.iter().flat_map(|x| &x.hosts) {
                 if !hosts.contains(h) {
@@ -700,6 +727,22 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 hosts,
                 status: urgent.status,
                 error_shown: without_host(&urgent.error, &urgent.host),
+                reason: if matches!(
+                    urgent.status,
+                    WrapperState::Error | WrapperState::Waiting | WrapperState::Captcha
+                ) {
+                    without_host(&urgent.error, &urgent.host)
+                } else {
+                    String::new()
+                },
+                again: if matches!(urgent.status, WrapperState::Error | WrapperState::Captcha) {
+                    urgent.retry_in
+                } else {
+                    0
+                },
+                to_start: card_tally.not_started + card_tally.paused,
+                clearable: urgent.status == WrapperState::Done
+                    && card_tally.not_started + card_tally.paused == 0,
                 wait: urgent.wait,
                 retry_in: urgent.retry_in,
                 open_urls: urgent.open_urls.clone(),
@@ -711,7 +754,7 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                     .iter()
                     .filter(|x| x.status == WrapperState::Captcha)
                     .count(),
-                tally: tally(files),
+                tally: card_tally,
             }
         })
         .collect()
@@ -750,6 +793,9 @@ pub struct Counts {
     /// Wrappers' files not started yet: they wait for the user to start
     /// them.
     pub ready: usize,
+    /// The wrapper cards' files that wait for a start, never started or
+    /// paused: what the Wrappers view's Start button starts.
+    pub wrapper_files_to_start: usize,
 }
 
 pub(super) fn counts(
@@ -802,6 +848,7 @@ pub(super) fn counts(
             .iter()
             .filter(|i| i.not_started && i.source.is_some() && !i.tentative)
             .count(),
+        wrapper_files_to_start: cards.iter().map(|c| c.to_start).sum(),
         // From the cards, which set aside a paste that lists nothing.
         wrappers_alert: if cards.iter().any(|c| c.status == WrapperState::Error) {
             Some(Alert::Critical)
@@ -1040,6 +1087,8 @@ mod tests {
             preferred_host: false,
             other_hosts: 0,
             error_shown: String::new(),
+            reason: String::new(),
+            again: 0,
             failed_hosts: Vec::new(),
             gone: false,
             slowed: None,

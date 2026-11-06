@@ -5,12 +5,12 @@ import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Switch } from '@/components/ui/switch';
 import { UpdateEntry } from '@/components/update';
-import { fetchSettings, report, save } from '@/lib/api';
+import { save } from '@/lib/api';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
 import { bytes, plural, roughly } from '@/lib/format';
 import { go } from '@/lib/route';
-import { envNote } from '@/lib/settings';
+import { envNote, useSettings } from '@/lib/settings';
 import { THEMES, setTheme, useTheme } from '@/lib/theme';
 import { cn } from '@/lib/utils';
 
@@ -20,12 +20,15 @@ const item = 'inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs';
 // from the settings as they are when it opens.
 function Flyout({
   title,
+  version,
   trigger,
   on = false,
   action,
   children,
 }: {
   title: string;
+  // The settings' version (`config_version`): fetched again when it moves.
+  version: number;
   trigger: ReactNode;
   on?: boolean;
   // Beside the title, such as the way to the page that sets this up.
@@ -33,21 +36,8 @@ function Flyout({
   children: (d: SettingsView, close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const [settings, setSettings] = useState<SettingsView | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    let current = true;
-    fetchSettings().then(
-      (d) => current && setSettings(d),
-      (error) => {
-        report(error);
-        setOpen(false);
-      },
-    );
-    return () => {
-      current = false;
-    };
-  }, [open]);
+  // Fetched each time it opens.
+  const settings = useSettings(open ? version : undefined);
   return (
     <Popover open={open && settings !== null} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -248,7 +238,7 @@ export function StatusBar({ state: s }: { state: State | null }) {
       {left ? (
         <span className={cn(item, 'tabular-nums')}>
           {bytes(left)} left
-          {slowed ? ` · ${slowed} slowed by ${slowed === 1 ? 'its host' : 'their hosts'}` : ''}
+          {slowed ? ` · ${plural(slowed, 'slowed by its host', 'slowed by their hosts')}` : ''}
           {!slowed && s.speed && !s.paused ? ` · ${roughly(left / s.speed)}` : ''}
         </span>
       ) : null}
@@ -279,13 +269,14 @@ export function StatusBar({ state: s }: { state: State | null }) {
           onClick={() => go(s.counts.attention ? 'attention' : 'wrappers')}
         >
           <TriangleAlert aria-hidden className="size-3.5" />
-          {need_you} {need_you === 1 ? 'needs' : 'need'} you
+          {plural(need_you, 'needs', 'need')} you
         </button>
       ) : null}
       <span className="flex-1" />
       <UpdateEntry s={s} />
       {clipboard ? (
         <Flyout
+          version={s.config_version}
           title="Clipboard"
           on
           trigger={[<ClipboardList key="i" aria-hidden className="size-3.5" />, 'Watching the clipboard']}
@@ -310,6 +301,7 @@ export function StatusBar({ state: s }: { state: State | null }) {
         </Flyout>
       ) : null}
       <Flyout
+        version={s.config_version}
         title="Speed limit"
         trigger={[
           <Gauge key="i" aria-hidden className="size-3.5" />,
@@ -319,6 +311,7 @@ export function StatusBar({ state: s }: { state: State | null }) {
         {(d, close) => <SpeedLimit d={d} close={close} />}
       </Flyout>
       <Flyout
+        version={s.config_version}
         title="Connections"
         on={pooled}
         action={(close) => (

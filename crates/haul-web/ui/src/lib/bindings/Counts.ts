@@ -41,4 +41,9 @@ need_you: number,
  * Wrappers' files not started yet: they wait for the user to start
  * them.
  */
-ready: number, };
+ready: number, 
+/**
+ * The wrapper cards' files that wait for a start, never started or
+ * paused: what the Wrappers view's Start button starts.
+ */
+wrapper_files_to_start: number, };

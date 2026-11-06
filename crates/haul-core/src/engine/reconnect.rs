@@ -72,6 +72,9 @@ pub struct ReconnectView {
     /// A redial on its own waits for downloads to finish, and nothing new
     /// starts: why it would help.
     pub draining: Option<String>,
+    /// Downloads on this machine's own line now: what a redial stops for a
+    /// moment. Those through a proxy go on.
+    pub on_line: usize,
 }
 
 impl Engine {
@@ -92,6 +95,11 @@ impl Engine {
             blocked,
             failed: r.failed,
             draining: st.draining.clone(),
+            on_line: st
+                .items
+                .values()
+                .filter(|i| i.running() && i.exit == Some(DIRECT))
+                .count(),
         }
     }
 

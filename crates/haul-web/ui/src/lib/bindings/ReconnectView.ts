@@ -30,4 +30,9 @@ failed: boolean,
  * A redial on its own waits for downloads to finish, and nothing new
  * starts: why it would help.
  */
-draining: string | null, };
+draining: string | null, 
+/**
+ * Downloads on this machine's own line now: what a redial stops for a
+ * moment. Those through a proxy go on.
+ */
+on_line: number, };

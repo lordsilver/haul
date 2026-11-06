@@ -21,6 +21,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { api, report, save } from '@/lib/api';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
+import { plural } from '@/lib/format';
 import { envNote, useSettings } from '@/lib/settings';
 import { toast } from '@/lib/toast';
 
@@ -54,10 +55,11 @@ function Redial({ s }: { s: State }) {
       </Button>
     );
   }
-  const onLine = s.items.filter((i) => i.status === 'downloading').length;
+  // Only those on your own line: downloads through a proxy go on.
+  const onLine = r.on_line;
   const what = onLine
-    ? `${onLine} ${onLine === 1 ? 'download pauses' : 'downloads pause'} and then resume.`
-    : 'Nothing is downloading.';
+    ? `${plural(onLine, 'download pauses', 'downloads pause')} and then resume.`
+    : 'Nothing downloads on your line.';
   return (
     <>
       <span className="text-sm text-muted-foreground">Cuts your line for a few seconds. {what}</span>
@@ -174,7 +176,7 @@ function YourLine({ s, d }: { s: State; d: SettingsView }) {
           <TextField
             d={d}
             name="reconnect_command"
-            value={d.reconnect_command}
+            value={d.reconnect_command ?? ''}
             label="Reconnect command"
             placeholder="my-router-cli reconnect"
             wide
@@ -349,7 +351,7 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
         <TextField
           d={d}
           name="proxy"
-          value={d.proxy}
+          value={d.proxy ?? ''}
           label="Proxy"
           placeholder="socks5://user:pass@host:1080"
           secret

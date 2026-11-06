@@ -89,7 +89,7 @@ function status(card: WrapperCard): string {
 function Card({ card, s }: { card: WrapperCard; s: State }) {
   const [pasting, setPasting] = useState(false);
   // Files that wait for a start: never started, or paused.
-  const waiting = card.tally.not_started + card.tally.paused;
+  const waiting = card.to_start;
   const unstarted = card.tally.not_started;
   const needs = card.status === 'captcha';
   // A card of several wrappers (one per host, or a download page and the
@@ -108,12 +108,12 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
       : status(card);
   // Pastes that list nothing, beside wrappers that found their files: a
   // quiet note, not a failure.
-  const empty = card.empty ? `${plural(card.empty, 'paste')} ${card.empty === 1 ? 'lists' : 'list'} no links` : '';
+  const empty = card.empty ? `${plural(card.empty, 'paste lists', 'pastes list')} no links` : '';
   const line = [card.host, state, empty].filter(Boolean).join(' · ');
-  const reason = ['error', 'waiting', 'captcha'].includes(card.status) ? card.error_shown : '';
+  const reason = card.reason;
   // When a failed one, or the page of one waiting for a person, is tried
   // again on its own, after its reason.
-  const again = (card.status === 'error' || needs) && card.retry_in ? `trying again in ${duration(card.retry_in)}` : '';
+  const again = card.again ? `trying again in ${duration(card.again)}` : '';
   // The wrapper the card shows: the one to open when it needs a person.
   const first = card.open_id;
   const hint = s.desktop
@@ -195,11 +195,10 @@ export function Wrappers({ s }: { s: State }) {
   const cards = s.wrapper_cards;
   const words = typed.trim().toLowerCase();
   const shown = cards.filter((c) => !words || [c.name, c.host, ...c.hosts].join(' ').toLowerCase().includes(words));
-  const waiting = cards.filter((c) => c.tally.not_started + c.tally.paused);
+  const waiting = cards.filter((c) => c.to_start);
   const failed = cards.filter((c) => c.status === 'error');
-  // Done, with nothing left to start: taking it off the list takes no file.
-  const finished = cards.filter((c) => c.status === 'done' && !c.tally.not_started && !c.tally.paused);
-  const files = waiting.reduce((n, c) => n + c.tally.not_started + c.tally.paused, 0);
+  const finished = cards.filter((c) => c.clearable);
+  const files = s.counts.wrapper_files_to_start;
   return (
     <>
       <PageHeader

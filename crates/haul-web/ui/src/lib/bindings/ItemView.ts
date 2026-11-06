@@ -92,6 +92,16 @@ other_hosts: number,
  */
 error_shown: string, 
 /**
+ * What the row says after its host: why it failed, waits or wants a
+ * person, or what its host is slowing; empty for none.
+ */
+reason: string, 
+/**
+ * Seconds until its page is passed again on its own while it waits for
+ * a person; 0 when never.
+ */
+again: number, 
+/**
  * The hosts whose link failed for it, or says the file is gone: not among
  * the hosts that could take over.
  */

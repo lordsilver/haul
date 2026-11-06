@@ -135,6 +135,12 @@ pub struct ItemView {
     pub other_hosts: usize,
     /// Its error without `shown_host`'s name in front.
     pub error_shown: String,
+    /// What the row says after its host: why it failed, waits or wants a
+    /// person, or what its host is slowing; empty for none.
+    pub reason: String,
+    /// Seconds until its page is passed again on its own while it waits for
+    /// a person; 0 when never.
+    pub again: u64,
     /// The hosts whose link failed for it, or says the file is gone: not among
     /// the hosts that could take over.
     pub failed_hosts: Vec<String>,
@@ -430,6 +436,8 @@ impl Engine {
                 preferred_host: false,
                 other_hosts: 0,
                 error_shown: String::new(),
+                reason: String::new(),
+                again: 0,
                 failed_hosts: it
                     .failed
                     .iter()
