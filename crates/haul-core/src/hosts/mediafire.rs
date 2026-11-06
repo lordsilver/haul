@@ -61,9 +61,7 @@ async fn info(cx: &Cx<'_>, key: &str) -> Result<Info, ResolveError> {
 }
 
 fn key_of(url: &str) -> Result<String, ResolveError> {
-    KEY.captures(url)
-        .map(|c| c[1].to_string())
-        .ok_or_else(|| ResolveError::failed(format!("mediafire: not a file link: {url}")))
+    super::link_id(&KEY, url, "mediafire")
 }
 
 /// The download address on the file's page.

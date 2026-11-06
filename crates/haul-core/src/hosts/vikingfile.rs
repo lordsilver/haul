@@ -36,10 +36,7 @@ struct File {
 }
 
 async fn check(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
-    let id = LINK
-        .captures(url)
-        .map(|c| c[1].to_string())
-        .ok_or_else(|| ResolveError::failed(format!("vikingfile: not a file link: {url}")))?;
+    let id = super::link_id(&LINK, url, "vikingfile")?;
     let base = &cx.cfg.endpoints.vikingfile;
     // It turns away a burst (a wrapper's thirty parts looked up at once)
     // with 429, so lookups go one at a time and spaced out, and one turned

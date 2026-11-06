@@ -26,9 +26,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     ) else {
         return Err(ResolveError::person(super::FREE_ON_PAGE));
     };
-    let id = FILE_ID
-        .captures(url)
-        .ok_or_else(|| ResolveError::failed("bad rapidgator url"))?;
+    let id = super::link_id(&FILE_ID, url, "rapidgator")?;
     let base = &cx.cfg.endpoints.rapidgator;
     let cached = cx
         .tokens
@@ -68,7 +66,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         .http
         .client
         .get(format!("{base}/api/v2/file/download"))
-        .query(&[("file_id", &id[1]), ("token", &token)])
+        .query(&[("file_id", id.as_str()), ("token", &token)])
         .send()
         .await?
         .json()

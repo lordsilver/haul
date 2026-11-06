@@ -1157,6 +1157,14 @@ fn last_segment(url: &str) -> Option<String> {
     )
 }
 
+/// The file's id in `url`, as the first group of `link` finds it; a link it
+/// does not find one in is not `host`'s file link.
+pub(super) fn link_id(link: &Regex, url: &str, host: &str) -> Result<String, ResolveError> {
+    link.captures(url)
+        .map(|c| c[1].to_string())
+        .ok_or_else(|| ResolveError::failed(format!("{host}: not a file link: {url}")))
+}
+
 /// The name a link's file goes by: `given` when there is one, else the one
 /// its address suggests ([`guess_name`]).
 pub fn name_for(url: &str, given: Option<String>) -> Option<String> {

@@ -27,10 +27,7 @@ struct File {
 }
 
 async fn lookup(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
-    let short = LINK
-        .captures(url)
-        .map(|c| c[1].to_string())
-        .ok_or_else(|| ResolveError::failed(format!("rootz: not a file link: {url}")))?;
+    let short = super::link_id(&LINK, url, "rootz")?;
     let base = &cx.cfg.endpoints.rootz;
     let page = cx
         .http

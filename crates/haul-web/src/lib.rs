@@ -5,7 +5,12 @@
 //! `Host` (which defeats DNS rebinding), and a browser request that changes
 //! anything has to come from this server's own origin.
 
-use std::{collections::BTreeMap, convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    convert::Infallible,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -23,7 +28,7 @@ use futures_util::Stream;
 use haul_core::{Added, Engine, ItemAction, Route, SettingsView, Snapshot, config};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::watch};
 
 mod debug;
 mod os;
@@ -61,6 +66,8 @@ struct App {
     engine: Engine,
     desktop: Option<Arc<dyn Desktop>>,
     port: u16,
+    /// The state as the stream sends it ([`App::states`]).
+    states: Arc<OnceLock<watch::Receiver<Arc<str>>>>,
 }
 
 #[derive(Serialize, ts_rs::TS)]
@@ -74,6 +81,44 @@ struct View {
 }
 
 impl App {
+    /// The desktop app, or the answer for a request only it can serve.
+    fn desktop(&self, why: &str) -> Result<Arc<dyn Desktop>, Response> {
+        self.desktop
+            .clone()
+            .ok_or_else(|| error(StatusCode::NOT_IMPLEMENTED, why))
+    }
+
+    /// The state as JSON, made once for every open view: on every change
+    /// (bursts merged), and at least once a second for progress. Started by
+    /// the first view that asks.
+    fn states(&self) -> watch::Receiver<Arc<str>> {
+        self.states
+            .get_or_init(|| {
+                let (tx, rx) = watch::channel(self.view_json());
+                let app = self.clone();
+                tokio::spawn(async move {
+                    let mut changes = app.engine.watch();
+                    loop {
+                        tokio::select! {
+                            changed = changes.changed() => if changed.is_err() { return },
+                            () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        changes.borrow_and_update();
+                        tx.send_replace(app.view_json());
+                    }
+                });
+                rx
+            })
+            .clone()
+    }
+
+    fn view_json(&self) -> Arc<str> {
+        serde_json::to_string(&self.view())
+            .unwrap_or_default()
+            .into()
+    }
+
     fn view(&self) -> View {
         View {
             snapshot: self.engine.snapshot(),
@@ -101,6 +146,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         engine,
         desktop,
         port,
+        states: Arc::default(),
     };
     let mut router = Router::new();
     for &(path, file, content_type, body) in ASSETS {
@@ -246,6 +292,16 @@ async fn page(file: &'static str, content_type: &'static str, body: &'static [u8
     resp
 }
 
+/// Runs `work`, which blocks (a dialog, a file, a zip), off the async
+/// threads.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()))
+}
+
 fn error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
@@ -266,24 +322,21 @@ async fn state(State(app): State<App>) -> Json<View> {
     Json(app.view())
 }
 
-/// The full state as `state` events: right away, on every change (bursts
-/// merged), and at least once a second for progress.
+/// The full state as `state` events: right away, then as [`App::states`]
+/// makes it.
 async fn events(State(app): State<App>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let rx = app.engine.watch();
-    let stream = futures_util::stream::unfold((app, rx, true), |(app, mut rx, first)| async move {
-        if !first {
-            tokio::select! {
-                changed = rx.changed() => if changed.is_err() { return None },
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+    let mut rx = app.states();
+    rx.borrow_and_update();
+    let now = app.view_json();
+    let stream = futures_util::stream::unfold((rx, Some(now)), |(mut rx, now)| async move {
+        let data = match now {
+            Some(data) => data,
+            None => {
+                rx.changed().await.ok()?;
+                rx.borrow_and_update().clone()
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        rx.borrow_and_update();
-        let data = serde_json::to_string(&app.view()).unwrap_or_default();
-        Some((
-            Ok(Event::default().event("state").data(data)),
-            (app, rx, false),
-        ))
+        };
+        Some((Ok(Event::default().event("state").data(&*data)), (rx, None)))
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -398,11 +451,9 @@ struct BrowseBody {
 }
 
 async fn browse(State(app): State<App>, Path(id): Path<String>, body: Bytes) -> Response {
-    let Some(desktop) = &app.desktop else {
-        return error(
-            StatusCode::NOT_IMPLEMENTED,
-            "only the desktop app has an in-app browser",
-        );
+    let desktop = match app.desktop("only the desktop app has an in-app browser") {
+        Ok(desktop) => desktop,
+        Err(answer) => return answer,
     };
     let Some(url) = app.engine.page_for(&id) else {
         return error(StatusCode::NOT_FOUND, "no such item");
@@ -544,11 +595,11 @@ async fn check_update(State(app): State<App>) -> Response {
 
 /// Downloads the newer Haul, checks it, and has the desktop app install it.
 async fn install_update(State(app): State<App>) -> Response {
-    let Some(desktop) = app.desktop.clone() else {
-        return error(
-            StatusCode::NOT_IMPLEMENTED,
-            "only the desktop app installs updates; download the new version from its release page",
-        );
+    let desktop = match app.desktop(
+        "only the desktop app installs updates; download the new version from its release page",
+    ) {
+        Ok(desktop) => desktop,
+        Err(answer) => return answer,
     };
     let installer = match app.engine.download_update().await {
         Ok(installer) => installer,
@@ -558,9 +609,7 @@ async fn install_update(State(app): State<App>) -> Response {
         }
     };
     // Windows' permission prompt may wait for the person a while.
-    let started = tokio::task::spawn_blocking(move || desktop.install_update(&installer))
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()));
+    let started = blocking(move || desktop.install_update(&installer)).await;
     answer(
         started.inspect_err(|e| tracing::warn!("installing the update: {e}")),
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -663,11 +712,9 @@ async fn update_settings(
 
 /// Lets the user pick the download folder in the system's folder dialog.
 async fn pick_download_dir(State(app): State<App>) -> Response {
-    let Some(desktop) = app.desktop.clone() else {
-        return error(
-            StatusCode::NOT_IMPLEMENTED,
-            "only the desktop app has a folder dialog",
-        );
+    let desktop = match app.desktop("only the desktop app has a folder dialog") {
+        Ok(desktop) => desktop,
+        Err(answer) => return answer,
     };
     let start = app.engine.download_dir();
     let picked = tokio::task::spawn_blocking(move || desktop.pick_folder(&start)).await;
@@ -685,8 +732,8 @@ async fn pick_download_dir(State(app): State<App>) -> Response {
 /// with account keys and proxy credentials left out, and its logs.
 async fn diagnostics(State(app): State<App>) -> Response {
     let engine = app.engine.clone();
-    match tokio::task::spawn_blocking(move || engine.report_zip()).await {
-        Ok(Ok((name, body))) => (
+    match blocking(move || engine.report_zip()).await {
+        Ok((name, body)) => (
             [
                 (header::CONTENT_TYPE, "application/zip".to_string()),
                 (
@@ -697,22 +744,20 @@ async fn diagnostics(State(app): State<App>) -> Response {
             body,
         )
             .into_response(),
-        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 
 /// Desktop app only (501 elsewhere): saves the report to the system's
 /// Downloads folder, without asking, and shows it there.
 async fn save_diagnostics(State(app): State<App>) -> Response {
-    if app.desktop.is_none() {
-        return error(
-            StatusCode::NOT_IMPLEMENTED,
-            "only the desktop app saves the report itself; GET /api/diagnostics instead",
-        );
+    if let Err(answer) =
+        app.desktop("only the desktop app saves the report itself; GET /api/diagnostics instead")
+    {
+        return answer;
     }
     let engine = app.engine.clone();
-    let saved = tokio::task::spawn_blocking(move || -> Result<std::path::PathBuf, String> {
+    let saved = blocking(move || -> Result<std::path::PathBuf, String> {
         let (name, body) = engine.report_zip()?;
         let folder = haul_core::paths::downloads_folder();
         std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
@@ -722,14 +767,13 @@ async fn save_diagnostics(State(app): State<App>) -> Response {
     })
     .await;
     match saved {
-        Ok(Ok(path)) => {
+        Ok(path) => {
             if let Err(e) = os::reveal(&path) {
                 tracing::debug!("showing the report: {e}");
             }
             Json(json!({ "saved": path.display().to_string() })).into_response()
         }
-        Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
 

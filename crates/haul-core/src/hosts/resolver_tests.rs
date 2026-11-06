@@ -395,7 +395,7 @@ async fn rapidgator_logs_in_once_and_relogs_after_errors() {
     rapidgator::resolve(&cx, good).await.unwrap();
     assert_eq!(logins.load(Ordering::SeqCst), 1);
     assert!(
-        matches!(rapidgator::resolve(&cx, "https://rapidgator.net/folder/1").await, Err(ResolveError::Failed(m)) if m.contains("url"))
+        matches!(rapidgator::resolve(&cx, "https://rapidgator.net/folder/1").await, Err(ResolveError::Failed(m)) if m.contains("not a file link"))
     );
     assert_eq!(
         logins.load(Ordering::SeqCst),
