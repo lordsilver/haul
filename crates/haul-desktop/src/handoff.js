@@ -377,11 +377,20 @@
         window.__haulPressing = false;
         return;
       }
-      // A link that names a file is the file: Haul fetches it itself.
-      const direct = [...document.querySelectorAll("a[href]")].find(
-        (a) => shown(a) && names(a.href) && !NOT_FREE.test(a.innerText || ""),
-      );
-      if (direct) return hand([{ url: direct.href, name: decodeURIComponent(new URL(direct.href).pathname.split("/").pop()) || undefined }]);
+      // A link that names a file is the file: Haul fetches it itself. Several
+      // are a list (an archive's parts), which the page's links hand over.
+      const files = [
+        ...new Set(
+          [...document.querySelectorAll("a[href]")]
+            .filter((a) => shown(a) && names(a.href) && !NOT_FREE.test(a.innerText || ""))
+            .map((a) => a.href),
+        ),
+      ];
+      if (files.length > 1) {
+        window.__haulPressing = false;
+        return;
+      }
+      if (files.length === 1) return hand([{ url: files[0], name: decodeURIComponent(new URL(files[0]).pathname.split("/").pop()) || undefined }]);
       const best = [...document.querySelectorAll('a[href], button, input[type="submit"], input[type="button"], [role="button"]')]
         .filter(shown)
         .map((e) => ({ e, points: score(e) }))
