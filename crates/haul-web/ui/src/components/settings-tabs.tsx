@@ -8,7 +8,6 @@ export const SETTINGS_TABS = [
   { value: 'general', label: 'General' },
   { value: 'downloads', label: 'Downloads' },
   { value: 'archives', label: 'Archives' },
-  { value: 'retries', label: 'Retries' },
   { value: 'hosts', label: 'Hosts' },
   { value: 'connections', label: 'Connections' },
   { value: 'about', label: 'About' },

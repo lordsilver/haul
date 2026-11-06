@@ -51,11 +51,12 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object
 python3 -I .agents/skills/haul-windows-test/scripts/standin.py "$SCRATCH/standin" 8799 2> "$SCRATCH/standin.log" &
 ```
 
-| Page           | What it does                                                         | Expect (`pass` `end` `outcome`)                         |
-| -------------- | -------------------------------------------------------------------- | ------------------------------------------------------- |
-| `/guard/empty` | passes and lists nothing                                             | `settled`, then the row under Needs you (a paste fails) |
-| `/guard/swap`  | its two links become two files on `localhost` after 4 s (same count) | `listed`, and `Ex.part1.rar`, `Ex.part2.rar` paused   |
-| `/guard/stuck` | a Turnstile field that never fills                                   | `wants_person` after the pass's time                    |
+| Page                             | What it does                                                         | Expect (`pass` `end` `outcome`)                             |
+| -------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `/guard/empty`                   | passes and lists nothing                                             | `settled`, then the row under Needs you (a paste fails)     |
+| `/guard/swap`                    | its two links become two files on `localhost` after 4 s (same count) | `listed`, and `Ex.part1.rar`, `Ex.part2.rar` paused         |
+| `/guard/filepage-a/Ex.part3.rar` | a file's page (its path names it) that also links two other files    | not `listed`: the row stays `Ex.part3.rar`, under Needs you |
+| `/guard/stuck`                   | a Turnstile field that never fills                                   | `wants_person` after the pass's time                        |
 
 Windows reaches the server at `127.0.0.1:8799` and `localhost:8799`, which Haul counts as two sites. Add `-<anything>` to a page's path for a fresh address. Stop the server with `pgrep -f '^python3 -I .*standin.py'` and `kill`, and delete its folder.
 
