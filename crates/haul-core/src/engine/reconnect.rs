@@ -85,7 +85,7 @@ impl Engine {
     pub(super) fn reconnect_view_in(&self, st: &super::State) -> ReconnectView {
         let r = &st.reconnects;
         let cfg = self.cfg();
-        let blocked = blocker(&cfg, &r);
+        let blocked = blocker(&cfg, r);
         ReconnectView {
             router: r.router.as_ref().map(|r| r.model.clone()),
             busy: r.busy,
