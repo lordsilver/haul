@@ -21,6 +21,22 @@ pub fn data_dir() -> PathBuf {
 
 /// The system's Downloads folder, where a report Haul makes is saved; its
 /// data folder when the system has none.
+/// Where the desktop app keeps the browser profiles it passes pages in, one
+/// per site, beside the last picture of each site's page that wanted a person
+/// ([`wants_person_shot`]), which a report carries.
+pub fn pass_profiles(data_dir: &Path) -> PathBuf {
+    data_dir.join("webview").join("chromium")
+}
+
+/// The picture of `site`'s last page that wanted a person, among the
+/// profiles ([`pass_profiles`]).
+pub fn wants_person_shot(data_dir: &Path, site: &str) -> PathBuf {
+    pass_profiles(data_dir).join(format!("{site}{WANTS_PERSON}"))
+}
+
+/// How such a picture's file name ends.
+pub const WANTS_PERSON: &str = "-wants-person.png";
+
 pub fn downloads_folder() -> PathBuf {
     dirs::download_dir().unwrap_or_else(data_dir)
 }

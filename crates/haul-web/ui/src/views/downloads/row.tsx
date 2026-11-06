@@ -10,7 +10,7 @@ import type { Command } from '@/lib/bindings/Command';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import type { State } from '@/lib/bindings/State';
 import { caption, percent } from '@/lib/captions';
-import { bytes, duration } from '@/lib/format';
+import { bytes, duration, plural } from '@/lib/format';
 import { pickMany, picking } from '@/lib/selection';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -173,7 +173,7 @@ function RowActions({ it, s }: { it: ItemView; s: State }) {
 function Subtitle({ it, s }: { it: ItemView; s: State }) {
   const off = offHosts(s);
   // The host part, which chooses the host when the file has several.
-  const others = it.other_hosts ? ` · ${it.other_hosts} other ${it.other_hosts === 1 ? 'host' : 'hosts'}` : '';
+  const others = it.other_hosts ? ` · ${plural(it.other_hosts, 'other host')}` : '';
   const host = `${it.shown_host}${others}`;
   const label = hostLabel(
     <>
@@ -185,10 +185,10 @@ function Subtitle({ it, s }: { it: ItemView; s: State }) {
   const rest: string[] = [];
   if (it.package) rest.push(it.package);
   if (it.source_name) rest.push(`from ${it.source_name}`);
-  const reason = it.slowed ?? (['error', 'waiting', 'captcha'].includes(it.status) ? it.error_shown : '');
+  const reason = it.reason;
   const tone = it.status === 'error' ? 'text-destructive' : it.status === 'captcha' ? 'text-warn-strong' : '';
   // When its page is passed again on its own, while it waits for the person.
-  const again = it.status === 'captcha' && it.retry_in ? `trying again in ${duration(it.retry_in)}` : '';
+  const again = it.again ? `trying again in ${duration(it.again)}` : '';
   return (
     <div
       className="truncate text-xs text-muted-foreground"

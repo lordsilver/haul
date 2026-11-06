@@ -17,8 +17,10 @@ export function duration(seconds: number): string {
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
-export function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? '' : 's'}`;
+// "1 file", "3 files"; `many` for a word that does not take an s, or words
+// that agree with it ("download pauses", "downloads pause").
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
 }
 
 export function ordinal(n: number): string {

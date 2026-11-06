@@ -1,5 +1,6 @@
 import type { Added } from '@/lib/bindings/Added';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
+import { plural } from '@/lib/format';
 import { toast } from '@/lib/toast';
 
 // Every call is a POST with a JSON body (or a form of files); an error comes
@@ -61,7 +62,7 @@ export async function save(changes: Record<string, unknown>, saved: string | nul
 
 export function addedMessage(r: Added): string {
   const parts = r.wrappers && !r.added ? [] : [`${r.added} added`];
-  if (r.wrappers) parts.push(`${r.wrappers} ${r.wrappers === 1 ? 'wrapper' : 'wrappers'} to unwrap`);
+  if (r.wrappers) parts.push(`${plural(r.wrappers, 'wrapper')} to unwrap`);
   if (r.merged) parts.push(`${r.merged} merged as mirrors`);
   if (r.duplicates) parts.push(`${r.duplicates} already in the list`);
   if (r.invalid) parts.push(`${r.invalid} not http(s)`);

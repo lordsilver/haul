@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use super::{Engine, Exit, schedule::ASKED_TO_WAIT};
+use super::{Engine, Exit};
 use crate::{
     config::secret,
     hosts,
-    item::Status,
-    router::{self, Router},
+    item::{Status, Trouble},
+    router::{self, RedialError, Router},
 };
 
 /// A host's wait for this address worth a redial.
@@ -40,6 +40,15 @@ pub(super) struct Reconnects {
     keeps_address: bool,
     router: Option<Router>,
     looked: bool,
+}
+
+impl Reconnects {
+    /// What the last attempt came to, for the settings view, from now on.
+    fn note(&mut self, note: String, failed: bool) {
+        self.note = Some(note);
+        self.note_at = super::unix_now();
+        self.failed = failed;
+    }
 }
 
 /// What the settings view shows about getting a new address.
@@ -63,17 +72,20 @@ pub struct ReconnectView {
     /// A redial on its own waits for downloads to finish, and nothing new
     /// starts: why it would help.
     pub draining: Option<String>,
+    /// Downloads on this machine's own line now: what a redial stops for a
+    /// moment. Those through a proxy go on.
+    pub on_line: usize,
 }
 
 impl Engine {
-    fn reconnects(&self) -> std::sync::MutexGuard<'_, Reconnects> {
-        self.0.reconnects.lock().unwrap_or_else(|e| e.into_inner())
+    pub fn reconnect_view(&self) -> ReconnectView {
+        self.reconnect_view_in(&self.lock())
     }
 
-    pub fn reconnect_view(&self) -> ReconnectView {
-        let r = self.reconnects();
+    pub(super) fn reconnect_view_in(&self, st: &super::State) -> ReconnectView {
+        let r = &st.reconnects;
         let cfg = self.cfg();
-        let blocked = blocker(&cfg, &r);
+        let blocked = blocker(&cfg, r);
         ReconnectView {
             router: r.router.as_ref().map(|r| r.model.clone()),
             busy: r.busy,
@@ -82,33 +94,38 @@ impl Engine {
             auto: cfg.reconnect && !r.keeps_address && blocked.is_none(),
             blocked,
             failed: r.failed,
-            draining: None,
+            draining: st.draining.clone(),
+            on_line: st
+                .items
+                .values()
+                .filter(|i| i.running() && i.exit == Some(DIRECT))
+                .count(),
         }
     }
 
     /// Whether a redial could come on its own, as things are set.
-    pub(super) fn redials_on_its_own(&self, cfg: &crate::Config) -> bool {
-        let r = self.reconnects();
-        cfg.reconnect && !r.keeps_address && blocker(cfg, &r).is_none()
+    pub(super) fn redials_on_its_own(&self, st: &super::State, cfg: &crate::Config) -> bool {
+        let r = &st.reconnects;
+        cfg.reconnect && !r.keeps_address && blocker(cfg, r).is_none()
     }
 
     /// Why no redial can work as things are set, if none can.
     pub fn redial_blocker(&self, cfg: &crate::Config) -> Option<String> {
-        blocker(cfg, &self.reconnects())
+        blocker(cfg, &self.lock().reconnects)
     }
 
     /// Looks for the router again, as the settings do when shown.
     pub async fn find_router(&self) -> Option<Router> {
-        self.reconnects().looked = false;
+        self.lock().reconnects.looked = false;
         self.router().await
     }
 
     /// The router on this network, looked for once and remembered.
     pub async fn router(&self) -> Option<Router> {
         {
-            let r = self.reconnects();
-            if r.looked {
-                return r.router.clone();
+            let st = self.lock();
+            if st.reconnects.looked {
+                return st.reconnects.router.clone();
             }
         }
         let found = router::find(
@@ -119,14 +136,10 @@ impl Engine {
         if let Some(found) = &found {
             tracing::info!("router: {}", found.model);
         }
-        {
-            let mut r = self.reconnects();
-            r.looked = true;
-            r.router = found.clone();
-        }
-        // Never with the reconnect lock held: a snapshot takes the two
-        // the other way round.
-        self.touch(&mut self.lock());
+        let mut st = self.lock();
+        st.reconnects.looked = true;
+        st.reconnects.router = found.clone();
+        self.touch(&mut st);
         found
     }
 
@@ -135,36 +148,31 @@ impl Engine {
     /// and lets them go on. Returns the new address, or why there is none.
     pub async fn reconnect(&self, why: &str) -> Result<String, String> {
         {
-            let mut r = self.reconnects();
-            if r.busy {
+            let mut st = self.lock();
+            if st.reconnects.busy {
                 return Err("already getting a new address".into());
             }
             // One that cannot work stops no download.
-            if let Some(why_not) = blocker(&self.cfg(), &r) {
-                r.note = Some(format!("No new address: {why_not}"));
-                r.note_at = super::unix_now();
-                r.failed = true;
-                drop(r);
-                self.touch(&mut self.lock());
+            if let Some(why_not) = blocker(&self.cfg(), &st.reconnects) {
+                st.reconnects
+                    .note(format!("No new address: {why_not}"), true);
+                self.touch(&mut st);
                 return Err(why_not);
             }
-            r.busy = true;
+            st.reconnects.busy = true;
         }
         tracing::info!("getting a new address: {why}");
         self.hold_direct(true);
         let result = self.redial().await;
         self.hold_direct(false);
-        let mut r = self.reconnects();
-        r.busy = false;
-        r.last = Some(Instant::now());
+        let mut st = self.lock();
+        st.reconnects.busy = false;
+        st.reconnects.last = Some(Instant::now());
         match &result {
             Ok(address) => {
                 tracing::info!("new address {address}");
-                r.note = Some(format!("Got a new address ({why})"));
-                r.note_at = super::unix_now();
-                r.failed = false;
-                drop(r);
-                let mut st = self.lock();
+                st.reconnects
+                    .note(format!("Got a new address ({why})"), false);
                 for ((_, exit), lane) in st.lanes.iter_mut() {
                     if *exit == DIRECT {
                         lane.fresh_start();
@@ -174,7 +182,7 @@ impl Engine {
                 // Rows waiting out a limit on the old address go again now;
                 // one still held elsewhere is parked again on its turn.
                 for it in st.items.values_mut() {
-                    if it.status == Status::Waiting && it.error.ends_with(ASKED_TO_WAIT) {
+                    if it.status == Status::Waiting && it.trouble == Trouble::AskedToWait {
                         it.not_before = None;
                     }
                     it.slow_on.clear();
@@ -183,26 +191,25 @@ impl Engine {
             }
             Err(e) => {
                 tracing::warn!("no new address: {e}");
-                r.keeps_address |= e.contains("same address");
-                r.note = Some(format!("No new address: {e}"));
-                r.note_at = super::unix_now();
-                r.failed = true;
+                let r = &mut st.reconnects;
+                r.keeps_address |= matches!(e, RedialError::SameAddress(_));
+                r.note(format!("No new address: {e}"), true);
                 // Learned: this router redials only with its login.
-                if e.contains("give Haul its login")
+                if matches!(e, RedialError::NeedsLogin(_))
                     && let Some(router) = r.router.as_mut()
                 {
                     router.upnp_refused = true;
                 }
-                drop(r);
-                self.touch(&mut self.lock());
-                let _ = self.0.events.send(super::Event::Notice {
+                self.touch(&mut st);
+                drop(st);
+                self.emit([super::Event::Notice {
                     title: "Could not get a new IP".into(),
-                    body: e.clone(),
-                });
+                    body: e.to_string(),
+                }]);
             }
         }
         self.0.wake.notify_one();
-        result
+        result.map_err(|e| e.to_string())
     }
 
     /// Stops new starts and the downloads on this machine's own line, or
@@ -244,7 +251,7 @@ impl Engine {
     /// the address the internet sees, before and after, that it changed:
     /// a router's own address can change behind a carrier's shared one
     /// that does not, and a command proves nothing by itself.
-    async fn redial(&self) -> Result<String, String> {
+    async fn redial(&self) -> Result<String, RedialError> {
         // The stopped downloads let go of the line first.
         for _ in 0..50 {
             if !self.lock().items.values().any(|i| i.exit == Some(DIRECT)) {
@@ -272,17 +279,19 @@ impl Engine {
             // see: this machine's traffic leaves some other way, which a
             // redial can't change. A private or shared one is the carrier's
             // network in between, as before.
-            Some(after) if is_public(&reported) && reported != after => Err(format!(
-                "downloads leave through something other than the router, such as a VPN on this PC: hosts see {after}, the router's own address is {reported}, so a new one changes nothing for them"
-            )),
-            Some(after) => Err(format!(
+            Some(after) if is_public(&reported) && reported != after => {
+                Err(RedialError::Other(format!(
+                    "downloads leave through something other than the router, such as a VPN on this PC: hosts see {after}, the router's own address is {reported}, so a new one changes nothing for them"
+                )))
+            }
+            Some(after) => Err(RedialError::SameAddress(format!(
                 "the same address came back: the internet still sees {after} (the router reported {reported})"
-            )),
+            ))),
             None => Ok(reported),
         }
     }
 
-    async fn redial_line(&self) -> Result<String, String> {
+    async fn redial_line(&self) -> Result<String, RedialError> {
         let cfg = self.cfg();
         let http = self.clients().on(DIRECT).client;
         if let Some(command) = secret(&cfg.reconnect_command) {
@@ -297,11 +306,12 @@ impl Engine {
                 None => Ok("unknown (no router to ask)".into()),
             };
         }
-        let router = self
-            .router()
-            .await
-            .ok_or("no router answered on this network; set a reconnect command instead")?;
-        let login = match (secret(&cfg.router_user), secret(&cfg.router_password)) {
+        let router = self.router().await.ok_or_else(|| {
+            RedialError::Other(
+                "no router answered on this network; set a reconnect command instead".into(),
+            )
+        })?;
+        let login = match (cfg.account("router_user"), cfg.account("router_password")) {
             (user, Some(password)) => Some((user.unwrap_or_default(), password)),
             _ => None,
         };
@@ -319,18 +329,16 @@ impl Engine {
         if !cfg.reconnect {
             return None;
         }
-        {
-            let r = self.reconnects();
-            if r.busy
-                || r.keeps_address
-                || blocker(&cfg, &r).is_some()
-                || r.last
-                    .is_some_and(|t| t.elapsed() < cfg.throttling.redial_gap)
-            {
-                return None;
-            }
-        }
         let st = self.lock();
+        let r = &st.reconnects;
+        if r.busy
+            || r.keeps_address
+            || blocker(&cfg, r).is_some()
+            || r.last
+                .is_some_and(|t| t.elapsed() < cfg.throttling.redial_gap)
+        {
+            return None;
+        }
         let now = Instant::now();
         // The line can help this host, or it no longer needs to: the host is
         // reached through it, no proxy is free for it, and a redial made for
@@ -385,7 +393,7 @@ impl Engine {
                 .iter()
                 .filter(|m| !it.failed.contains(*m))
                 .map(|m| hosts::host_of(m))
-                .filter(|h| !cfg.is_off(h))
+                .filter(|h| !cfg.is_disabled(h))
                 .collect();
             let held = |host: &String| {
                 self.exits_for(host, &st).iter().all(|&e| {
@@ -435,9 +443,8 @@ impl Engine {
             if self.cfg().reconnect {
                 self.router().await;
             }
-            tokio::select! {
-                _ = self.0.shutdown.cancelled() => return,
-                _ = tokio::time::sleep(self.cfg().throttling.redial_check) => {}
+            if !self.idle(self.cfg().throttling.redial_check).await {
+                return;
             }
             if let Some(why) = self.wants_new_address() {
                 self.drain(&why).await;
@@ -449,11 +456,7 @@ impl Engine {
     /// One a host is slowing isn't among them, since it could take hours and
     /// loses nothing by stopping.
     fn running_well(&self) -> usize {
-        self.lock()
-            .items
-            .values()
-            .filter(|i| i.running() && i.exit == Some(DIRECT) && i.slowed.is_none())
-            .count()
+        running_well(&self.lock()).count()
     }
 
     /// Whether what runs well on the line should be done within the limit, as
@@ -463,20 +466,17 @@ impl Engine {
         let cfg = self.cfg();
         let now = Instant::now();
         let st = self.lock();
-        st.items
-            .values()
-            .filter(|i| i.running() && i.exit == Some(DIRECT) && i.slowed.is_none())
-            .all(|i| {
-                // Before a row has a speed of its own, what it has shown so far.
-                let speed = i
-                    .pace
-                    .as_ref()
-                    .and_then(|p| p.recent(now, &cfg.throttling))
-                    .unwrap_or(i.speed);
-                speed <= 0.0
-                    || i.size == 0
-                    || i.size.saturating_sub(i.done) as f64 / speed <= limit.as_secs_f64()
-            })
+        running_well(&st).all(|i| {
+            // Before a row has a speed of its own, what it has shown so far.
+            let speed = i
+                .pace
+                .as_ref()
+                .and_then(|p| p.recent(now, &cfg.throttling))
+                .unwrap_or(i.speed);
+            speed <= 0.0
+                || i.size == 0
+                || i.size.saturating_sub(i.done) as f64 / speed <= limit.as_secs_f64()
+        })
     }
 
     /// Gets a new address without cutting off anything that runs well: nothing
@@ -507,9 +507,8 @@ impl Engine {
             if Instant::now() >= deadline {
                 break false;
             }
-            tokio::select! {
-                _ = self.0.shutdown.cancelled() => return,
-                _ = tokio::time::sleep(throttling.tick) => {}
+            if !self.idle(throttling.tick).await {
+                return;
             }
         };
         if !finished {
@@ -518,13 +517,13 @@ impl Engine {
                 throttling.drain_limit.as_secs() / 60
             );
             {
-                let mut r = self.reconnects();
+                let mut st = self.lock();
+                let r = &mut st.reconnects;
                 r.last = Some(Instant::now());
-                r.note = Some(format!(
-                    "Put off a new address ({why}): downloads still running"
-                ));
-                r.note_at = super::unix_now();
-                r.failed = false;
+                r.note(
+                    format!("Put off a new address ({why}): downloads still running"),
+                    false,
+                );
             }
             self.set_draining(None);
             return;
@@ -556,6 +555,13 @@ impl Engine {
         st.draining = why.map(str::to_string);
         self.publish(st);
     }
+}
+
+/// The downloads on the line that no host is slowing ([`Engine::running_well`]).
+fn running_well(st: &super::State) -> impl Iterator<Item = &crate::item::Item> {
+    st.items
+        .values()
+        .filter(|i| i.running() && i.exit == Some(DIRECT) && i.slowed.is_none())
 }
 
 /// Whether `address` is one the internet routes to: not a private, shared
@@ -611,7 +617,7 @@ fn blocker(cfg: &crate::Config, r: &Reconnects) -> Option<String> {
             Some("no router answered on this network: set a reconnect command".into())
         }
         None => None,
-        Some(router) if router.needs_login() && secret(&cfg.router_password).is_none() => {
+        Some(router) if router.needs_login() && cfg.account("router_password").is_none() => {
             Some(format!(
                 "the {} redials only with its login: set it under Router login",
                 router.model

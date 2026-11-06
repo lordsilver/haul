@@ -13,57 +13,29 @@ use reqwest::header::HeaderValue;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use super::{AUTO_RETRIES, Clients, Engine, Event, State};
+use super::{AUTO_RETRIES, Engine, Event, State};
 use crate::{
-    config::{self, ACCOUNTS, Config, Route, Theme},
+    config::{self, Config, Route, Theme},
     hosts::{self, Http},
     item::{Item, Status},
     paths,
 };
 
-/// Every setting, for the settings view. Unlike the state stream this
-/// carries the account secrets, so it is only sent when asked for.
+/// Every setting, for the settings view, as the file names them. Unlike the
+/// state stream this carries the account secrets, so it is only sent when
+/// asked for.
 #[derive(Debug, Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct SettingsView {
+    #[serde(flatten)]
+    pub config: Config,
+    /// Where downloads go now.
     pub download_dir: String,
     /// Given on the command line, so it cannot change here.
     pub download_dir_fixed: bool,
-    pub max_total: usize,
-    pub rate_limit_mbps: f64,
-    pub max_active_gb: f64,
-    pub theme: Theme,
-    pub watch_clipboard: bool,
-    pub check_updates: bool,
-    pub recycle_on_remove: bool,
-    pub skip_add_dialog: bool,
-    pub verify_existing: bool,
-    pub auto_extract: bool,
-    pub delete_after_extract: bool,
-    pub archive_passwords: Vec<String>,
-    pub detailed_log: bool,
-    pub reconnect: bool,
-    pub reconnect_command: String,
-    pub nordvpn_servers: usize,
-    pub nordvpn_countries: Vec<String>,
-    pub resume_attempts: u32,
-    pub min_speed_kbps: u32,
-    pub min_speed_seconds: u64,
-    pub leave_slow_hosts: bool,
-    pub retry_failed_minutes: u64,
-    pub proxy: String,
-    pub proxies: Vec<String>,
-    pub proxy_with_direct: bool,
-    pub proxy_fresh_connections: bool,
-    pub use_proxy: bool,
-    pub proxies_on: bool,
-    pub nordvpn_on: bool,
-    pub user_agent: String,
     pub default_user_agent: &'static str,
-    /// Account keys by their name in the file; empty when unset.
-    pub accounts: BTreeMap<&'static str, String>,
     /// Keys an environment variable set, with its name; read-only here.
-    pub from_env: BTreeMap<&'static str, &'static str>,
+    pub from_env: BTreeMap<String, String>,
     pub config_file: Option<String>,
     /// Why the file on disk is not in effect.
     pub error: Option<String>,
@@ -106,6 +78,60 @@ fn str_list(list: &[String]) -> toml_edit::Value {
     toml_edit::Value::Array(list.iter().map(String::as_str).collect())
 }
 
+/// A list sent as a list of texts or as text with one entry per line; empty
+/// entries go, and with `trim` the spaces around each.
+fn text_list(value: &Value, key: &str, trim: bool) -> Result<Vec<String>, String> {
+    let list: Vec<String> = match value.as_array() {
+        Some(items) => items
+            .iter()
+            .map(|v| v.as_str().map(str::to_string))
+            .collect::<Option<_>>()
+            .ok_or_else(|| format!("{key} is a list of texts"))?,
+        None => text(value, key)?.lines().map(str::to_string).collect(),
+    };
+    Ok(list
+        .into_iter()
+        .map(|p| {
+            if trim {
+                p.trim().to_string()
+            } else {
+                p.trim_end_matches('\r').to_string()
+            }
+        })
+        .filter(|p| !p.is_empty())
+        .collect())
+}
+
+/// The whole-number settings: name, least, most, and where it goes.
+type Number = (&'static str, u64, u64, fn(&mut Config, u64));
+
+const NUMBERS: &[Number] = &[
+    ("max_total", 1, 64, |c, n| c.max_total = n as usize),
+    ("resume_attempts", 0, 20, |c, n| {
+        c.resume_attempts = n as u32
+    }),
+    ("min_speed_kbps", 0, 1 << 20, |c, n| {
+        c.min_speed_kbps = n as u32
+    }),
+    ("min_speed_seconds", 1, 3600, |c, n| c.min_speed_seconds = n),
+    ("retry_failed_minutes", 0, 24 * 60, |c, n| {
+        c.retry_failed_minutes = n
+    }),
+];
+
+/// The settings that are a number 0 or more: name, what the message calls
+/// it, and where it goes.
+type Decimal = (&'static str, &'static str, fn(&mut Config, f64));
+
+const DECIMALS: &[Decimal] = &[
+    ("rate_limit_mbps", "the speed limit", |c, v| {
+        c.rate_limit_mbps = v
+    }),
+    ("max_active_gb", "the size limit", |c, v| {
+        c.max_active_gb = v
+    }),
+];
+
 type Flag = fn(&mut Config) -> &mut bool;
 
 /// The settings that are simply on or off, by their names in the file.
@@ -133,48 +159,14 @@ impl Engine {
     /// Every setting, for the settings view.
     pub fn settings(&self) -> SettingsView {
         let cfg = self.cfg();
-        let shown = |v: &Option<String>| v.clone().unwrap_or_default();
         SettingsView {
             download_dir: self.download_dir().display().to_string(),
             download_dir_fixed: self.0.download_dir_fixed,
-            max_total: cfg.max_total,
-            rate_limit_mbps: cfg.rate_limit_mbps,
-            max_active_gb: cfg.max_active_gb,
-            theme: cfg.theme,
-            watch_clipboard: cfg.watch_clipboard,
-            check_updates: cfg.check_updates,
-            recycle_on_remove: cfg.recycle_on_remove,
-            skip_add_dialog: cfg.skip_add_dialog,
-            verify_existing: cfg.verify_existing,
-            auto_extract: cfg.auto_extract,
-            delete_after_extract: cfg.delete_after_extract,
-            archive_passwords: cfg.archive_passwords.clone(),
-            detailed_log: cfg.detailed_log,
-            reconnect: cfg.reconnect,
-            reconnect_command: cfg.reconnect_command.clone().unwrap_or_default(),
-            nordvpn_servers: cfg.nordvpn_servers,
-            nordvpn_countries: cfg.nordvpn_countries.clone(),
-            resume_attempts: cfg.resume_attempts,
-            min_speed_kbps: cfg.min_speed_kbps,
-            min_speed_seconds: cfg.min_speed_seconds,
-            leave_slow_hosts: cfg.leave_slow_hosts,
-            retry_failed_minutes: cfg.retry_failed_minutes,
-            proxy: shown(&cfg.proxy),
-            proxies: cfg.proxies.clone(),
-            proxy_with_direct: cfg.proxy_with_direct,
-            proxy_fresh_connections: cfg.proxy_fresh_connections,
-            use_proxy: cfg.use_proxy,
-            proxies_on: cfg.proxies_on,
-            nordvpn_on: cfg.nordvpn_on,
-            user_agent: cfg.user_agent.clone(),
             default_user_agent: config::DEFAULT_USER_AGENT,
-            accounts: ACCOUNTS
-                .iter()
-                .map(|(key, _)| (*key, shown(cfg.account(key).expect("listed account"))))
-                .collect(),
             from_env: cfg.from_env.clone(),
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
             error: self.config_error(),
+            config: (*cfg).clone(),
         }
     }
 
@@ -229,28 +221,22 @@ impl Engine {
                     "{key} is set by the {variable} environment variable"
                 ));
             }
+            if let Some((_, least, most, set)) = NUMBERS.iter().find(|n| n.0 == key) {
+                let n = number(value, key)?.clamp(*least, *most);
+                set(&mut cfg, n);
+                writes.push(top(key, Some((n as i64).into())));
+                continue;
+            }
+            if let Some((_, what, set)) = DECIMALS.iter().find(|d| d.0 == key) {
+                let v = value
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+                    .ok_or_else(|| format!("{what} must be a number, 0 or more"))?;
+                set(&mut cfg, v);
+                writes.push(top(key, Some(v.into())));
+                continue;
+            }
             match key.as_str() {
-                "max_total" => {
-                    let n = number(value, key)?.clamp(1, 64) as usize;
-                    cfg.max_total = n;
-                    writes.push(top(key, Some((n as i64).into())));
-                }
-                "rate_limit_mbps" => {
-                    let mbps = value
-                        .as_f64()
-                        .filter(|v| v.is_finite() && *v >= 0.0)
-                        .ok_or("the speed limit must be a number, 0 or more")?;
-                    cfg.rate_limit_mbps = mbps;
-                    writes.push(top(key, Some(mbps.into())));
-                }
-                "max_active_gb" => {
-                    let gb = value
-                        .as_f64()
-                        .filter(|v| v.is_finite() && *v >= 0.0)
-                        .ok_or("the size limit must be a number, 0 or more")?;
-                    cfg.max_active_gb = gb;
-                    writes.push(top(key, Some(gb.into())));
-                }
                 "theme" => {
                     let theme: Theme = serde_json::from_value(value.clone())
                         .map_err(|_| "theme is system, light or dark")?;
@@ -258,21 +244,8 @@ impl Engine {
                     writes.push(top(key, Some(theme.as_str().into())));
                 }
                 "archive_passwords" => {
-                    // A list, or text with one password per line. A password
-                    // keeps its spaces: only empty lines go.
-                    let list: Vec<String> = match value.as_array() {
-                        Some(items) => items
-                            .iter()
-                            .map(|v| v.as_str().map(str::to_string))
-                            .collect::<Option<_>>()
-                            .ok_or("archive passwords are text")?,
-                        None => text(value, key)?.lines().map(str::to_string).collect(),
-                    };
-                    let mut list: Vec<String> = list
-                        .into_iter()
-                        .map(|p| p.trim_end_matches('\r').to_string())
-                        .filter(|p| !p.is_empty())
-                        .collect();
+                    // A password keeps its spaces: only empty lines go.
+                    let mut list = text_list(value, key, false)?;
                     let mut seen = std::collections::HashSet::new();
                     list.retain(|p| seen.insert(p.clone()));
                     writes.push(top(key, Some(str_list(&list))));
@@ -287,13 +260,7 @@ impl Engine {
                     writes.push(top(key, Some((n as i64).into())));
                 }
                 "nordvpn_countries" => {
-                    let list: Vec<String> = value
-                        .as_array()
-                        .ok_or("nordvpn_countries is a list")?
-                        .iter()
-                        .map(|v| v.as_str().map(|s| s.trim().to_string()))
-                        .collect::<Option<_>>()
-                        .ok_or("countries are text")?;
+                    let list = text_list(value, key, true)?;
                     writes.push(top(key, Some(str_list(&list))));
                     cfg.nordvpn_countries = list;
                 }
@@ -301,26 +268,6 @@ impl Engine {
                     let (command, write) = optional_text(value, key)?;
                     writes.push(write);
                     cfg.reconnect_command = command;
-                }
-                "resume_attempts" => {
-                    let n = number(value, key)?.min(20) as u32;
-                    cfg.resume_attempts = n;
-                    writes.push(top(key, Some(i64::from(n).into())));
-                }
-                "min_speed_kbps" => {
-                    let n = number(value, key)?.min(1 << 20) as u32;
-                    cfg.min_speed_kbps = n;
-                    writes.push(top(key, Some(i64::from(n).into())));
-                }
-                "min_speed_seconds" => {
-                    let n = number(value, key)?.clamp(1, 3600);
-                    cfg.min_speed_seconds = n;
-                    writes.push(top(key, Some((n as i64).into())));
-                }
-                "retry_failed_minutes" => {
-                    let n = number(value, key)?.min(24 * 60);
-                    cfg.retry_failed_minutes = n;
-                    writes.push(top(key, Some((n as i64).into())));
                 }
                 "proxy" => {
                     let (proxy, write) = optional_text(value, key)?;
@@ -331,19 +278,7 @@ impl Engine {
                     cfg.proxy = proxy;
                 }
                 "proxies" => {
-                    // A list, or text with one proxy per line.
-                    let list: Vec<String> = match value.as_array() {
-                        Some(items) => items
-                            .iter()
-                            .map(|v| v.as_str().map(str::trim).map(str::to_string))
-                            .collect::<Option<_>>()
-                            .ok_or("proxies are text")?,
-                        None => text(value, key)?
-                            .lines()
-                            .map(|l| l.trim().to_string())
-                            .collect(),
-                    };
-                    let list: Vec<String> = list.into_iter().filter(|p| !p.is_empty()).collect();
+                    let list = text_list(value, key, true)?;
                     for proxy in &list {
                         check_proxy(proxy, &cfg.user_agent)?;
                     }
@@ -372,10 +307,14 @@ impl Engine {
                     writes.push(write);
                     cfg.download_dir = dir.map(PathBuf::from);
                 }
-                account if cfg.account(account).is_some() => {
-                    let (secret, write) = optional_text(value, key)?;
-                    *cfg.account_mut(account).expect("checked") = secret;
-                    writes.push(write);
+                account if config::account_keys().any(|k| k == account) => {
+                    let secret = Some(text(value, key)?).filter(|t| !t.is_empty());
+                    let write = vec!["accounts".to_string(), key.clone()];
+                    match &secret {
+                        Some(s) => cfg.accounts.insert(key.clone(), s.clone()),
+                        None => cfg.accounts.remove(key),
+                    };
+                    writes.push((write, secret.map(Into::into)));
                 }
                 _ => {
                     let Some((_, flag)) = FLAGS.iter().find(|(name, _)| name == key) else {
@@ -475,7 +414,7 @@ impl Engine {
             return Err("a host needs a name".into());
         }
         let mut cfg = (*self.cfg()).clone();
-        if disabled == cfg.is_off(host) {
+        if disabled == cfg.is_disabled(host) {
             return Ok(());
         }
         if disabled {
@@ -552,20 +491,14 @@ impl Engine {
         }
         // The switch also takes the VPN servers in or out, which the pool of
         // the settings does not show.
-        if new.proxy_pool() != old.proxy_pool()
+        if (new.proxy_pool() != old.proxy_pool()
             || new.use_proxy != old.use_proxy
             || new.proxy_fresh_connections != old.proxy_fresh_connections
-            || new.user_agent != old.user_agent
+            || new.user_agent != old.user_agent)
+            && let Err(e) = self.set_clients(&new, &self.service_proxies())
         {
-            match Clients::new(&new, &self.service_proxies()) {
-                Ok(clients) => {
-                    *self.0.clients.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(clients);
-                }
-                Err(e) => {
-                    self.set_config_error(Some(e));
-                    return;
-                }
-            }
+            self.set_config_error(Some(e));
+            return;
         }
         if new.rate_limit_mbps != old.rate_limit_mbps {
             self.0.limiter.set_rate(new.rate_limit_mbps * 1e6);
@@ -610,7 +543,7 @@ impl Engine {
             self.touch(&mut st);
         }
         if theme_changed {
-            let _ = self.0.events.send(Event::ThemeChanged(self.theme()));
+            self.emit([Event::ThemeChanged(self.theme())]);
         }
         if let Some(folder) = move_to {
             tokio::spawn(self.clone().move_downloads(folder));
@@ -628,9 +561,8 @@ impl Engine {
             return;
         };
         loop {
-            tokio::select! {
-                _ = self.0.shutdown.cancelled() => return,
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            if !self.idle(Duration::from_secs(1)).await {
+                return;
             }
             let now = stamp(&path);
             {
@@ -666,17 +598,9 @@ impl Engine {
         {
             let mut st = self.lock();
             st.moving = true;
-            for it in st.items.values() {
-                if let Some(task) = &it.task {
-                    task.cancel();
-                }
-            }
             self.touch(&mut st);
         }
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline && self.lock().items.values().any(Item::running) {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        self.stop_all(Duration::from_secs(10)).await;
         let from = self.download_dir().join(".partial");
         let to = folder.join(".partial");
         let moved = tokio::task::spawn_blocking(move || move_partials(&from, &to)).await;
@@ -702,11 +626,17 @@ impl Engine {
 
     /// Schedules the next automatic retry of a failed item, if any is left.
     pub(super) fn plan_auto_retry(&self, it: &mut Item, now: Instant) {
-        let minutes = self.cfg().retry_failed_minutes;
         // Every link is gone for good: another try would find the same.
         let gone = it.mirrors.iter().all(|m| it.gone.contains(m));
-        it.retry_at = (minutes > 0 && it.auto_retries < AUTO_RETRIES && !gone)
-            .then(|| now + Duration::from_secs(minutes * 60));
+        it.retry_at = self.next_try(it, now).filter(|_| !gone);
+    }
+
+    /// When row `it` may be tried again on its own, if it has a try left and
+    /// the setting is on.
+    fn next_try(&self, it: &Item, now: Instant) -> Option<Instant> {
+        let minutes = self.cfg().retry_failed_minutes;
+        (minutes > 0 && it.auto_retries < AUTO_RETRIES)
+            .then(|| now + Duration::from_secs(minutes * 60))
     }
 
     /// The pages of row `it` under Needs you that the desktop app could pass
@@ -717,7 +647,7 @@ impl Engine {
             .iter()
             .filter(|m| {
                 st.passes(m)
-                    && !cfg.is_off(&hosts::host_of(m))
+                    && !cfg.is_disabled(&hosts::host_of(m))
                     && !it.failed.contains(*m)
                     && !it.gone.contains(*m)
             })
@@ -728,12 +658,8 @@ impl Engine {
     /// timer and limit as a failed download: never when no such try is left,
     /// or no page could pass without a person.
     pub(super) fn page_retry_at(&self, st: &State, it: &Item, now: Instant) -> Option<Instant> {
-        let minutes = self.cfg().retry_failed_minutes;
-        (minutes > 0
-            && it.auto_retries < AUTO_RETRIES
-            && self.pages_pass()
-            && !self.pages_to_pass(st, it).is_empty())
-        .then(|| now + Duration::from_secs(minutes * 60))
+        self.next_try(it, now)
+            .filter(|_| self.pages_pass() && !self.pages_to_pass(st, it).is_empty())
     }
 
     /// Queues the failed items whose automatic retry is due, and passes the
@@ -750,7 +676,7 @@ impl Engine {
                 it.failed.clear();
                 it.retries = 0;
                 it.not_before = None;
-                it.error.clear();
+                it.clear_error();
                 // A wrapper is unwrapped at once, as when it was added: its
                 // files only wait for the user, so it takes no download's
                 // turn and waits for none. What this cannot settle is left to
@@ -854,19 +780,8 @@ fn check_proxy(proxy: &str, user_agent: &str) -> Result<(), String> {
     if !matches!(scheme, "socks5" | "socks5h" | "http" | "https") || !proxy.contains("://") {
         return Err(format!(
             "{} is not a socks5:// or http:// address",
-            redact_proxy(proxy)
+            super::diagnostics::without_credentials(proxy)
         ));
     }
     Http::new(Some(proxy), user_agent).map(|_| ())
-}
-
-/// A proxy address without its user and password, for messages.
-fn redact_proxy(proxy: &str) -> String {
-    match proxy.rsplit_once('@') {
-        Some((head, host)) => {
-            let scheme = head.split("://").next().unwrap_or_default();
-            format!("{scheme}://…@{host}")
-        }
-        None => proxy.to_string(),
-    }
 }

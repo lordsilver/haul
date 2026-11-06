@@ -4,13 +4,15 @@
 use std::{
     io::{Read, Seek, SeekFrom},
     path::Path,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{Value, json};
 
 use super::Engine;
-use crate::{item::Item, logging::utc};
+use crate::{
+    item::Item,
+    logging::{utc, without_keys},
+};
 
 /// How much of each log the report carries, from its end.
 const LOG_TAIL: u64 = 256 * 1024;
@@ -50,10 +52,10 @@ impl Engine {
                 add(&name.to_string_lossy(), &bytes)?;
             }
         }
-        if let Ok(pages) = std::fs::read_dir(dir.join("webview").join("chromium")) {
+        if let Ok(pages) = std::fs::read_dir(crate::paths::pass_profiles(dir)) {
             for page in pages.flatten() {
                 let name = page.file_name().to_string_lossy().into_owned();
-                if name.ends_with("-wants-person.png")
+                if name.ends_with(crate::paths::WANTS_PERSON)
                     && let Ok(bytes) = std::fs::read(page.path())
                 {
                     add(&format!("pages/{name}"), &bytes)?;
@@ -72,16 +74,15 @@ impl Engine {
     /// Links lose their `#…` part, which holds mega.nz's keys, and a link
     /// handed back from a browser its query, which can hold a token.
     pub fn diagnostics(&self) -> Value {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
+        let now = crate::logging::unix_now();
         let snapshot = self.snapshot();
         let mut settings = serde_json::to_value(self.settings()).unwrap_or(Value::Null);
-        if let Some(accounts) = settings.get_mut("accounts").and_then(Value::as_object_mut) {
-            for value in accounts.values_mut() {
-                *value = json!(value.as_str().is_some_and(|v| !v.is_empty()));
-            }
-        }
+        // Every account key, saying only whether it is set.
+        let cfg = self.cfg();
+        settings["accounts"] = crate::config::account_keys()
+            .map(|key| (key.to_string(), json!(cfg.account(key).is_some())))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
         if let Some(passwords) = settings.get_mut("archive_passwords") {
             *passwords = json!(passwords.as_array().map_or(0, Vec::len));
         }
@@ -93,7 +94,6 @@ impl Engine {
                 *proxy = json!(without_credentials(proxy.as_str().unwrap_or_default()));
             }
         }
-        let cfg = self.cfg();
         let queue: Vec<Value> = self.lock().items.values().map(item_report).collect();
         json!({
             "haul": env!("CARGO_PKG_VERSION"),
@@ -121,10 +121,8 @@ impl Engine {
 }
 
 fn item_report(it: &Item) -> Value {
-    let bare = |links: &mut dyn Iterator<Item = &String>| -> Vec<String> {
-        let mut links: Vec<String> = links.map(|l| without_fragment(l)).collect();
-        links.sort();
-        links
+    let bare = |links: &std::collections::BTreeSet<String>| -> Vec<String> {
+        links.iter().map(|l| unkeyed(l)).collect()
     };
     json!({
         "id": it.id,
@@ -140,9 +138,9 @@ fn item_report(it: &Item) -> Value {
         "size": it.size,
         "done": it.done,
         "host": it.host,
-        "mirrors": it.mirrors.iter().map(|m| without_fragment(m)).collect::<Vec<_>>(),
-        "failed": bare(&mut it.failed.iter()),
-        "needs_you": bare(&mut it.manual_urls.iter()),
+        "mirrors": it.mirrors.iter().map(|m| unkeyed(m)).collect::<Vec<_>>(),
+        "failed": bare(&it.failed),
+        "needs_you": bare(&it.manual_urls),
         "handed_back": it.pre.as_ref().filter(|_| it.manual).map(|p| page_only(&p.url)),
         "retries": it.retries,
         "auto_retries": it.auto_retries,
@@ -155,24 +153,14 @@ fn item_report(it: &Item) -> Value {
         "extract_password": it.extract_password.is_some(),
         "history": crate::logging::history(&it.id)
             .into_iter()
-            .map(|m| json!({"at": m.at, "level": m.level, "message": without_fragment_in(&m.message)}))
+            .map(|m| json!({"at": m.at, "level": m.level, "message": unkeyed(&m.message)}))
             .collect::<Vec<_>>(),
     })
 }
 
 /// `text` with the `#…` part of every link in it left out.
-fn without_fragment_in(text: &str) -> String {
-    text.split(' ')
-        .map(|word| match word.find("://") {
-            Some(_) => without_fragment(word),
-            None => word.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn without_fragment(link: &str) -> String {
-    link.split('#').next().unwrap_or_default().to_string()
+fn unkeyed(text: &str) -> String {
+    without_keys(text).into_owned()
 }
 
 /// A link without its query or fragment.
@@ -187,8 +175,9 @@ fn page_only(link: &str) -> String {
     }
 }
 
-/// A proxy address without the user and password in it.
-fn without_credentials(proxy: &str) -> String {
+/// A proxy address without the user and password in it, for messages and
+/// the report.
+pub(super) fn without_credentials(proxy: &str) -> String {
     match url::Url::parse(proxy) {
         Ok(mut url) if !url.username().is_empty() || url.password().is_some() => {
             let _ = url.set_username("");
@@ -226,7 +215,7 @@ fn tail(path: &Path) -> Value {
             .map(|line| {
                 serde_json::from_str::<Value>(line)
                     .map(redact_fragments)
-                    .unwrap_or_else(|_| json!(without_fragment_in(line)))
+                    .unwrap_or_else(|_| json!(unkeyed(line)))
             })
             .collect(),
     )
@@ -238,7 +227,7 @@ fn redact_fragments(mut line: Value) -> Value {
     if let Some(fields) = line.as_object_mut() {
         for value in fields.values_mut() {
             if let Some(text) = value.as_str() {
-                *value = json!(without_fragment_in(text));
+                *value = json!(unkeyed(text));
             }
         }
     }
@@ -255,7 +244,7 @@ mod tests {
         assert_eq!(utc(1_792_152_000), "2026-10-16T12:00:00Z");
         assert_eq!(utc(951_825_600), "2000-02-29T12:00:00Z");
         assert_eq!(
-            without_fragment("https://mega.nz/file/abc#secret-key"),
+            unkeyed("https://mega.nz/file/abc#secret-key"),
             "https://mega.nz/file/abc"
         );
         assert_eq!(

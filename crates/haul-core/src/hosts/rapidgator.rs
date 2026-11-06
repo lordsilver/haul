@@ -8,7 +8,6 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::{Cx, Entry, ResolveError, guess_name};
-use crate::config::secret;
 
 static FILE_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/file/([0-9a-f]{32})").unwrap());
 
@@ -22,14 +21,12 @@ fn details(j: &Value) -> String {
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     let (Some(user), Some(pass)) = (
-        secret(&cx.cfg.rapidgator_user),
-        secret(&cx.cfg.rapidgator_pass),
+        cx.cfg.account("rapidgator_user"),
+        cx.cfg.account("rapidgator_pass"),
     ) else {
-        return Err(ResolveError::NeedsUser(super::FREE_ON_PAGE.into()));
+        return Err(ResolveError::person(super::FREE_ON_PAGE));
     };
-    let id = FILE_ID
-        .captures(url)
-        .ok_or_else(|| ResolveError::failed("bad rapidgator url"))?;
+    let id = super::link_id(&FILE_ID, url, "rapidgator")?;
     let base = &cx.cfg.endpoints.rapidgator;
     let cached = cx
         .tokens
@@ -69,7 +66,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         .http
         .client
         .get(format!("{base}/api/v2/file/download"))
-        .query(&[("file_id", &id[1]), ("token", &token)])
+        .query(&[("file_id", id.as_str()), ("token", &token)])
         .send()
         .await?
         .json()

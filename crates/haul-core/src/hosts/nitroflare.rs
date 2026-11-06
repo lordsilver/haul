@@ -8,26 +8,23 @@ use regex::Regex;
 use serde_json::Value;
 
 use super::{Cx, Entry, ResolveError, guess_name};
-use crate::config::secret;
 
 static FILE_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/view/(\w+)").unwrap());
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     let (Some(user), Some(key)) = (
-        secret(&cx.cfg.nitroflare_user),
-        secret(&cx.cfg.nitroflare_key),
+        cx.cfg.account("nitroflare_user"),
+        cx.cfg.account("nitroflare_key"),
     ) else {
-        return Err(ResolveError::NeedsUser(super::FREE_ON_PAGE.into()));
+        return Err(ResolveError::person(super::FREE_ON_PAGE));
     };
-    let id = FILE_ID
-        .captures(url)
-        .ok_or_else(|| ResolveError::failed("bad nitroflare url"))?;
+    let id = super::link_id(&FILE_ID, url, "nitroflare")?;
     let base = &cx.cfg.endpoints.nitroflare;
     let j: Value = cx
         .http
         .client
         .get(format!("{base}/api/v2/getDownloadLink"))
-        .query(&[("user", user), ("premiumKey", key), ("file", &id[1])])
+        .query(&[("user", user), ("premiumKey", key), ("file", id.as_str())])
         .send()
         .await?
         .json()

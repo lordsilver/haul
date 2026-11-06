@@ -94,7 +94,8 @@ async fn pixeldrain_file_list_and_captcha() {
         );
     let base = serve(app).await;
     let mut cfg = config(&base);
-    cfg.pixeldrain_key = Some("secret".into());
+    cfg.accounts
+        .insert("pixeldrain_key".into(), "secret".into());
     let (http, tokens) = (http(), Tokens::default());
     let cx = context(&http, &cfg, &tokens);
 
@@ -132,7 +133,7 @@ async fn pixeldrain_file_list_and_captcha() {
 
     assert!(matches!(
         pixeldrain::resolve(&cx, "https://pixeldrain.com/u/busy").await,
-        Err(ResolveError::NeedsUser(m)) if m.contains("captcha")
+        Err(ResolveError::NeedsUser(_, m)) if m.contains("captcha")
     ));
     assert_eq!(
         pixeldrain::resolve(&cx, "https://pixeldrain.com/u/gone").await,
@@ -182,11 +183,11 @@ async fn gofile_asks_nothing_without_an_account_and_lists_folders_with_one() {
     let cx = context(&http, &cfg, &tokens);
     assert!(matches!(
         gofile::resolve(&cx, "https://gofile.io/d/abc").await,
-        Err(ResolveError::NeedsUser(_))
+        Err(ResolveError::NeedsUser(..))
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0, "gofile was not asked");
 
-    cfg.gofile_token = Some("premium".into());
+    cfg.accounts.insert("gofile_token".into(), "premium".into());
     let cx = context(&http, &cfg, &tokens);
     let entries = gofile::resolve(&cx, "https://gofile.io/d/abc")
         .await
@@ -204,7 +205,7 @@ async fn gofile_asks_nothing_without_an_account_and_lists_folders_with_one() {
     );
     assert!(matches!(
         gofile::resolve(&cx, "https://gofile.io/d/locked").await,
-        Err(ResolveError::NeedsUser(_))
+        Err(ResolveError::NeedsUser(..))
     ));
 }
 
@@ -241,7 +242,7 @@ async fn buzzheavier_redirects_rate_limits_and_gone_files() {
     ));
     assert!(matches!(
         buzzheavier::resolve(&cx, "https://buzzheavier.com/gone").await,
-        Err(ResolveError::NeedsUser(_))
+        Err(ResolveError::NeedsUser(..))
     ));
 }
 
@@ -305,11 +306,11 @@ async fn onefichier_api_key_and_free_mode() {
     );
     assert!(matches!(
         onefichier::resolve(&cx, &format!("{base}/?abc")).await,
-        Err(ResolveError::NeedsUser(_))
+        Err(ResolveError::NeedsUser(..))
     ));
     // A deleted file fails without its page, whether the checker or the
     // page says so.
-    let gone = Err(ResolveError::failed("1fichier: the file was deleted"));
+    let gone = Err(ResolveError::gone("1fichier: the file was deleted"));
     assert_eq!(
         onefichier::resolve(&cx, &format!("{base}/?gone&af=1")).await,
         gone
@@ -335,7 +336,7 @@ async fn onefichier_api_key_and_free_mode() {
         None
     );
 
-    cfg.onefichier_key = Some("key".into());
+    cfg.accounts.insert("1fichier_key".into(), "key".into());
     let cx = context(&http, &cfg, &tokens);
     let e = onefichier::resolve(&cx, "https://1fichier.com/?abc&af=1")
         .await
@@ -375,12 +376,12 @@ async fn rapidgator_logs_in_once_and_relogs_after_errors() {
     {
         let cx = context(&http, &cfg, &tokens);
         assert!(
-            matches!(rapidgator::resolve(&cx, "https://rapidgator.net/file/x").await, Err(ResolveError::NeedsUser(m)) if m == FREE_ON_PAGE),
+            matches!(rapidgator::resolve(&cx, "https://rapidgator.net/file/x").await, Err(ResolveError::NeedsUser(_, m)) if m == FREE_ON_PAGE),
             "without the account, its page's free download"
         );
     }
-    cfg.rapidgator_user = Some("me".into());
-    cfg.rapidgator_pass = Some("pw".into());
+    cfg.accounts.insert("rapidgator_user".into(), "me".into());
+    cfg.accounts.insert("rapidgator_pass".into(), "pw".into());
     let cx = context(&http, &cfg, &tokens);
     let good =
         "https://rapidgator.net/file/abcdefabcdefabcdefabcdefabcdefab/archive.part1.rar.html";
@@ -394,7 +395,7 @@ async fn rapidgator_logs_in_once_and_relogs_after_errors() {
     rapidgator::resolve(&cx, good).await.unwrap();
     assert_eq!(logins.load(Ordering::SeqCst), 1);
     assert!(
-        matches!(rapidgator::resolve(&cx, "https://rapidgator.net/folder/1").await, Err(ResolveError::Failed(m)) if m.contains("url"))
+        matches!(rapidgator::resolve(&cx, "https://rapidgator.net/folder/1").await, Err(ResolveError::Failed(m)) if m.contains("not a file link"))
     );
     assert_eq!(
         logins.load(Ordering::SeqCst),
@@ -421,8 +422,8 @@ async fn nitroflare_premium_link() {
     );
     let base = serve(app).await;
     let mut cfg = config(&base);
-    cfg.nitroflare_user = Some("me".into());
-    cfg.nitroflare_key = Some("k".into());
+    cfg.accounts.insert("nitroflare_user".into(), "me".into());
+    cfg.accounts.insert("nitroflare_key".into(), "k".into());
     let (http, tokens) = (http(), Tokens::default());
     let cx = context(&http, &cfg, &tokens);
     let e = nitroflare::resolve(&cx, "https://nitroflare.com/view/ABC123/n.zip")
@@ -543,7 +544,7 @@ async fn generic_links_and_probes() {
     );
     assert!(matches!(
         generic::resolve(&cx, &format!("{base}/page")).await,
-        Err(ResolveError::NeedsUser(_))
+        Err(ResolveError::NeedsUser(..))
     ));
 
     assert_eq!(
@@ -731,7 +732,7 @@ async fn fileguard_solves_the_proof_of_work_and_lists_links() {
             .await
             .unwrap_err();
         assert!(
-            matches!(&err, ResolveError::NeedsUser(m) if m.contains(says)),
+            matches!(&err, ResolveError::NeedsUser(_, m) if m.contains(says)),
             "{vault}: {err:?}"
         );
     }
@@ -879,7 +880,7 @@ async fn filecrypt_dlc_links_become_entries() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, ResolveError::NeedsUser(m) if m.contains("web page")),
+        matches!(&err, ResolveError::NeedsUser(_, m) if m.contains("web page")),
         "{err:?}"
     );
 
@@ -887,7 +888,7 @@ async fn filecrypt_dlc_links_become_entries() {
         .await
         .unwrap_err();
     assert!(
-        matches!(&err, ResolveError::NeedsUser(m) if m.contains(".dlc")),
+        matches!(&err, ResolveError::NeedsUser(_, m) if m.contains(".dlc")),
         "{err:?}"
     );
 }
@@ -1046,7 +1047,7 @@ async fn filecrypt_answers_its_checkbox() {
             .await
             .unwrap_err();
         assert!(
-            matches!(&err, ResolveError::NeedsUser(m) if m.contains(says)),
+            matches!(&err, ResolveError::NeedsUser(_, m) if m.contains(says)),
             "{page}: {err:?}"
         );
     }
@@ -1121,8 +1122,9 @@ async fn vikingfile_checks_the_file_then_wants_a_person() {
     let (http, tokens) = (http(), Tokens::default());
     let cx = context(&http, &cfg, &tokens);
 
-    let probed = probe(&cx, "https://vikingfile.com/f/AbCdE12345")
+    let probed = look(&cx, "https://vikingfile.com/f/AbCdE12345")
         .await
+        .found()
         .unwrap();
     assert_eq!(
         (probed.name.as_str(), probed.size),
@@ -1140,12 +1142,15 @@ async fn vikingfile_checks_the_file_then_wants_a_person() {
     );
     assert!(matches!(
         resolve(&cx, "https://vik1ngfile.site/f/AbCdE12345").await,
-        Err(ResolveError::NeedsUser(_))
+        Err(ResolveError::NeedsUser(..))
     ));
-    assert!(probe(&cx, "https://vikingfile.com/f/gone").await.is_none());
+    assert!(matches!(
+        look(&cx, "https://vikingfile.com/f/gone").await,
+        Look::Gone(_)
+    ));
     assert!(matches!(
         resolve(&cx, "https://vikingfile.com/f/gone").await,
-        Err(ResolveError::Failed(m)) if m.contains("deleted")
+        Err(ResolveError::Gone(m)) if m.contains("deleted")
     ));
 }
 
@@ -1265,7 +1270,7 @@ async fn mega_names_and_decrypts_a_file_without_megatools() {
     );
     assert_eq!(
         mega::resolve(&cx, &format!("https://mega.nz/file/GONEGONE#{link_key}")).await,
-        Err(ResolveError::failed("mega: the file was deleted"))
+        Err(ResolveError::gone("mega: the file was deleted"))
     );
     assert!(matches!(
         mega::resolve(&cx, &format!("https://mega.nz/file/BUSYBUSY#{link_key}")).await,
@@ -1437,7 +1442,7 @@ async fn rootz_looks_a_file_up_with_its_pages_token() {
     );
     assert_eq!(
         rootz::resolve(&cx, "https://www.rootz.so/d/gone1").await,
-        Err(ResolveError::failed("rootz: the file was deleted"))
+        Err(ResolveError::gone("rootz: the file was deleted"))
     );
 }
 
@@ -1534,11 +1539,11 @@ async fn ddownload_names_the_file_and_leaves_its_wait_to_a_browser() {
     );
     assert!(matches!(
         ddownload::resolve(&cx, &format!("{base}/b95mf0a361s1")).await,
-        Err(ResolveError::NeedsUser(_))
+        Err(ResolveError::NeedsUser(..))
     ));
     assert_eq!(
         ddownload::resolve(&cx, &format!("{base}/gone00000000")).await,
-        Err(ResolveError::failed("ddownload: the file was deleted"))
+        Err(ResolveError::gone("ddownload: the file was deleted"))
     );
     assert_eq!(
         ddownload::look(&cx, &format!("{base}/gone00000000"))
@@ -1637,8 +1642,7 @@ async fn mediafire_sends_a_page_behind_cloudflares_check_to_a_browser() {
     )
     .await
     {
-        Err(ResolveError::NeedsUser(m)) => {
-            assert!(is_guarded(&m), "{m}");
+        Err(ResolveError::NeedsUser(Need::Check, m)) => {
             assert!(m.starts_with("mediafire.com "), "{m}");
         }
         other => panic!("{other:?}"),

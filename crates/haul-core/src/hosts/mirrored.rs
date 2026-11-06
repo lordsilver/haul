@@ -37,10 +37,7 @@ pub(super) fn key(url: &str) -> Option<String> {
 }
 
 pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
-    let id = ID
-        .captures(url)
-        .map(|c| c[1].to_string())
-        .ok_or_else(|| ResolveError::failed("not a mirrored.to file link"))?;
+    let id = super::link_id(&ID, url, "mirrored.to")?;
     let base = &cx.cfg.endpoints.mirrored;
     let page_url = format!("{base}/files/{id}/");
     let page = fetch(cx, &page_url, base).await?;
@@ -86,6 +83,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
             deferred: true,
             ..Entry::default()
         }],
+        ..Unwrapped::default()
     })
 }
 

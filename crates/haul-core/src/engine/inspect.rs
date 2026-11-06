@@ -22,12 +22,6 @@ impl Engine {
             .items
             .values()
             .map(|it| {
-                let mut failed: Vec<&String> = it.failed.iter().collect();
-                failed.sort();
-                let mut gone: Vec<&String> = it.gone.iter().collect();
-                gone.sort();
-                let mut manual: Vec<&String> = it.manual_urls.iter().collect();
-                manual.sort();
                 json!({
                     "id": it.id,
                     "name": it.name,
@@ -48,9 +42,9 @@ impl Engine {
                     "slow_on": it.slow_on,
                     "part_host": it.part_host,
                     "mirrors": it.mirrors,
-                    "failed": failed,
-                    "gone": gone,
-                    "manual_urls": manual,
+                    "failed": it.failed,
+                    "gone": it.gone,
+                    "manual_urls": it.manual_urls,
                     "page_wants_person": it.page_wants_person,
                     "page_retrying": it.page_retrying,
                     "prefer": it.prefer,

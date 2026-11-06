@@ -11,12 +11,10 @@ use reqwest::header::{ACCEPT_ENCODING, RANGE};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio_util::sync::CancellationToken;
 
-use super::{
-    Engine, Event, Exit, SETTLE, State, display_name, drop_tentative_row, noted_quietly, unix_now,
-};
+use super::{Engine, Event, Exit, SETTLE, State, display_name, drop_tentative_row, noted_quietly};
 use crate::{
-    hosts::{self, Cx, Entry, Http, ResolveError},
-    item::{Item, Status},
+    hosts::{self, Entry, Http, Need, ResolveError},
+    item::{Item, Status, Trouble},
     paths,
     throttle::Pace,
 };
@@ -81,8 +79,10 @@ enum Fail {
         seconds: u64,
         message: String,
     },
-    NeedsUser(String),
+    NeedsUser(Need, String),
     Error(String),
+    /// The host says the file is no more.
+    Gone(String),
     /// The connection broke mid-transfer; worth resuming on the same mirror.
     Transient(String),
     /// The host refused one more download while `allowed` others from it ran.
@@ -96,9 +96,10 @@ impl From<ResolveError> for Fail {
     fn from(e: ResolveError) -> Self {
         match e {
             ResolveError::Wait { seconds, message } => Fail::Wait { seconds, message },
-            ResolveError::NeedsUser(m) => Fail::NeedsUser(m),
+            ResolveError::NeedsUser(need, m) => Fail::NeedsUser(need, m),
             ResolveError::Network(m) => Fail::Transient(m),
             ResolveError::Failed(m) => Fail::Error(m),
+            ResolveError::Gone(m) => Fail::Gone(m),
         }
     }
 }
@@ -170,19 +171,12 @@ impl Engine {
                 // row's own link.
                 let source = pre.as_ref().map_or(url, |p| p.url.as_str());
                 let cfg = self.cfg();
-                let cx = Cx {
-                    http: &http,
-                    cfg: &cfg,
-                    tokens: &self.0.tokens,
-                    key_service: &key_service,
-                };
+                let cx = self.cx(&http, &cfg, &key_service);
                 // A wrapper holds files, not a file: they join the queue, not
                 // started, and the row keeps what it found.
                 if hosts::lists(source) || self.lock().items.get(id).is_some_and(|i| i.wrapper) {
                     let found = or_cancel(cancel, hosts::unwrap(&cx, source)).await??;
-                    for id in self.unwrapped(id, source, found) {
-                        self.spawn_probe(id);
-                    }
+                    self.take_unwrapped(id, source, found);
                     return Ok(Outcome::Unwrapped);
                 }
                 let mut entries = or_cancel(cancel, hosts::resolve(&cx, source)).await??;
@@ -208,35 +202,22 @@ impl Engine {
         {
             let mut st = self.lock();
             let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
-            if it.name.is_none() {
-                it.name = entry.name.as_deref().map(hosts::tidy_name);
-            }
-            if let Some(size) = entry.size.filter(|s| *s > 0) {
-                it.size = size;
-            }
-            if it.checksum.is_none() {
-                it.checksum = entry.checksum.clone();
-            }
-            if self.dedupe(&mut st, id) {
-                st.items.shift_remove(id);
-                self.touch(&mut st);
-                return Ok(Outcome::Gone);
-            }
+            it.learn(
+                entry.name.as_deref(),
+                false,
+                entry.size,
+                entry.checksum.clone(),
+            );
         }
-        if let Some(path) = or_cancel(cancel, self.existing_file(id)).await? {
-            return Ok(Outcome::Existing(path));
+        if let Some(known) = self.known_file(id, cancel).await? {
+            return Ok(known);
         }
         // A size learned only now may not fit next to what downloads already.
         let size_cap = self.size_cap();
         if size_cap > 0 {
             let st = self.lock();
             let size = st.items.get(id).map_or(0, |i| i.size);
-            let others: u64 = st
-                .items
-                .values()
-                .filter(|i| i.running() && i.id != id)
-                .map(|i| i.size)
-                .sum();
+            let others = running_size(&st, Some(id));
             if others > 0 && others + size > size_cap {
                 return Ok(Outcome::Deferred);
             }
@@ -245,7 +226,7 @@ impl Engine {
             let mut st = self.lock();
             let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
             it.status = Status::Downloading;
-            it.error.clear();
+            it.clear_error();
             self.touch(&mut st);
         }
         self.fetch(id, &entry, (host, exit), &http, cancel).await
@@ -325,8 +306,9 @@ impl Engine {
                         it.status = Status::Queued;
                     }
                 }
-                Err(Fail::NeedsUser(message)) => {
-                    st.note_check(url, &message);
+                Err(Fail::NeedsUser(need, message)) => {
+                    let tentative = st.items.get(id).is_some_and(|i| i.tentative);
+                    st.note_check(url, need, tentative);
                     // A copied page nobody passes for it asks no one: it goes.
                     if !(self.pages_pass() && st.passes(url)) {
                         drop_tentative_row(&mut st, id, "wants a person");
@@ -334,7 +316,7 @@ impl Engine {
                     if let Some(it) = st.items.get_mut(id) {
                         drop_used_pre(it, url);
                         it.manual_urls.insert(url.to_string());
-                        it.error = message;
+                        it.set_error(message, Trouble::Needs(need));
                         it.status = Status::Queued;
                     }
                 }
@@ -343,9 +325,7 @@ impl Engine {
                     // The wait is asked of this address.
                     st.lane(host, exit).asked_to_wait(until);
                     if let Some(it) = st.items.get_mut(id) {
-                        it.status = Status::Waiting;
-                        it.not_before = Some(until);
-                        it.error = message;
+                        it.wait_until(until, message, Trouble::Other);
                     }
                     self.hold_passes(&mut st, now);
                 }
@@ -359,10 +339,12 @@ impl Engine {
                     let it = st.items.get_mut(id).expect("checked by the guard");
                     it.retries += 1;
                     let wait = (2u64 << (it.retries - 1).min(5)).min(60);
-                    it.status = Status::Waiting;
-                    it.not_before = Some(now + Duration::from_secs(wait));
                     // The views count the wait down themselves.
-                    it.error = format!("{host}: {message}");
+                    it.wait_until(
+                        now + Duration::from_secs(wait),
+                        format!("{host}: {message}"),
+                        Trouble::Other,
+                    );
                 }
                 Err(Fail::Busy { allowed, .. })
                     if st.items.get(id).is_some_and(|it| it.busy < BUSY_REFUSALS) =>
@@ -372,16 +354,25 @@ impl Engine {
                     lane.cap_since = Some(now);
                     let it = st.items.get_mut(id).expect("checked by the guard");
                     it.busy += 1;
-                    it.status = Status::Waiting;
-                    it.not_before = Some(now + Duration::from_secs(BUSY_PAUSE));
-                    it.error = format!("{host} takes {allowed} at a time");
+                    it.wait_until(
+                        now + Duration::from_secs(BUSY_PAUSE),
+                        format!("{host} takes {allowed} at a time"),
+                        Trouble::Other,
+                    );
                 }
                 Err(
                     Fail::Error(message) | Fail::Transient(message) | Fail::Busy { message, .. },
                 ) => {
                     // A copied page that fails is no download: it goes.
                     if !drop_tentative_row(&mut st, id, "failed")
-                        && let Some(e) = self.fail_mirror(&mut st, id, url, host, message)
+                        && let Some(e) = self.fail_mirror(&mut st, id, url, host, message, false)
+                    {
+                        events.push(e);
+                    }
+                }
+                Err(Fail::Gone(message)) => {
+                    if !drop_tentative_row(&mut st, id, "is gone")
+                        && let Some(e) = self.fail_mirror(&mut st, id, url, host, message, true)
                     {
                         events.push(e);
                     }
@@ -405,14 +396,34 @@ impl Engine {
             self.touch(&mut st);
         }
         self.discard_parts(removed);
-        for e in events {
-            let _ = self.0.events.send(e);
-        }
+        self.emit(events);
         self.0.wake.notify_one();
     }
 
+    /// Row `id`'s file, named now, as the queue or the download folder has it
+    /// already: done or downloading in another row ([`Engine::dedupe`]), or
+    /// on disk ([`Engine::existing_file`]).
+    async fn known_file(
+        &self,
+        id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Outcome>, Fail> {
+        {
+            let mut st = self.lock();
+            if self.dedupe(&mut st, id) {
+                st.items.shift_remove(id);
+                self.touch(&mut st);
+                return Ok(Some(Outcome::Gone));
+            }
+        }
+        let path = or_cancel(cancel, self.existing_file(id)).await?;
+        Ok(path.map(Outcome::Existing))
+    }
+
     /// Counts a failed attempt against its mirror (or, for the user's own
-    /// link, asks for a new one). Returns an event when no mirror is left.
+    /// link, asks for a new one); `gone`: the host says the file is no more,
+    /// so the link is not tried again on a timer. Returns an event when no
+    /// mirror is left.
     pub(super) fn fail_mirror(
         &self,
         st: &mut State,
@@ -420,6 +431,7 @@ impl Engine {
         url: &str,
         host: &str,
         message: String,
+        gone: bool,
     ) -> Option<Event> {
         st.host(host).penalize(Instant::now());
         let it = st.items.get_mut(id)?;
@@ -427,12 +439,14 @@ impl Engine {
         if it.host == host {
             it.host.clear();
         }
-        // A paste holding no address has nothing to try again on a timer, as
-        // when the desktop app's pass finds so ([`Engine::page_gone`]).
-        if hosts::lists_no_links(&message) {
+        let mut trouble = Trouble::Other;
+        if gone {
             it.gone.insert(url.to_string());
+            if hosts::is_paste(url) {
+                trouble = Trouble::ListsNothing;
+            }
         }
-        it.error = format!("{host}: {message}");
+        it.set_error(format!("{host}: {message}"), trouble);
         // The next mirror gets its own retries.
         it.retries = 0;
         // A link handed back for another mirror stays that mirror's.
@@ -564,6 +578,7 @@ impl Engine {
             });
             if hosts::content_type(resp.headers()).contains("text/html") && !wants_a_page {
                 return Err(Fail::NeedsUser(
+                    Need::Person,
                     "got a web page, not the file (link dead or needs a browser)".into(),
                 ));
             }
@@ -620,18 +635,8 @@ impl Engine {
             // starts: before the body comes, the same checks a name found by
             // a probe or a resolver gets. The file may be done or downloading
             // in another row, or be in the download folder already.
-            if named_now {
-                {
-                    let mut st = self.lock();
-                    if self.dedupe(&mut st, id) {
-                        st.items.shift_remove(id);
-                        self.touch(&mut st);
-                        return Ok(Outcome::Gone);
-                    }
-                }
-                if let Some(path) = or_cancel(cancel, self.existing_file(id)).await? {
-                    return Ok(Outcome::Existing(path));
-                }
+            if named_now && let Some(known) = self.known_file(id, cancel).await? {
+                return Ok(known);
             }
             let file = tokio::fs::OpenOptions::new()
                 .create(true)
@@ -740,12 +745,7 @@ impl Engine {
                     let h = st.host(host);
                     h.bytes += chunk.len() as u64;
                     if let Some(speed) = speed {
-                        h.ema = if h.ema == 0.0 {
-                            speed
-                        } else {
-                            h.ema * 0.7 + speed * 0.3
-                        };
-                        h.measured = unix_now();
+                        h.sample(speed);
                     }
                 }
             }
@@ -847,7 +847,7 @@ fn log_outcome(id: &str, url: &str, result: &Result<Outcome, Fail>) {
         Err(Fail::Wait { seconds, message }) => {
             tracing::info!(item = id, url, seconds, "host asks to wait: {message}")
         }
-        Err(Fail::NeedsUser(message)) => {
+        Err(Fail::NeedsUser(_, message)) => {
             tracing::info!(item = id, url, "needs a person: {message}")
         }
         Err(Fail::Transient(message)) => {
@@ -857,6 +857,7 @@ fn log_outcome(id: &str, url: &str, result: &Result<Outcome, Fail>) {
             tracing::info!(item = id, url, allowed, "host busy: {message}")
         }
         Err(Fail::Error(message)) => tracing::warn!(item = id, url, "attempt failed: {message}"),
+        Err(Fail::Gone(message)) => tracing::info!(item = id, url, "gone: {message}"),
     }
 }
 
@@ -866,4 +867,14 @@ pub(super) fn drop_used_pre(it: &mut Item, url: &str) {
         it.pre_for = None;
         it.manual = false;
     }
+}
+
+/// The full size of the files downloading now, but for row `except`: what
+/// counts against `max_active_gb`.
+pub(super) fn running_size(st: &State, except: Option<&str>) -> u64 {
+    st.items
+        .values()
+        .filter(|i| i.running() && Some(i.id.as_str()) != except)
+        .map(|i| i.size)
+        .sum()
 }

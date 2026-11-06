@@ -15,7 +15,7 @@ use std::time::Duration;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, secret};
+use crate::config::Config;
 
 /// One server of a service, as the views show it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ts_rs::TS)]
@@ -105,19 +105,10 @@ pub async fn nordvpn_servers(http: &reqwest::Client, api: &str) -> Result<Vec<Se
     Ok(servers)
 }
 
-/// The NordVPN servers to use: the least loaded `nordvpn_servers` in the
-/// countries chosen (every country when none is), once the service
-/// credentials are set.
-pub fn nordvpn_pick(cfg: &Config, servers: &[Server]) -> Vec<Server> {
-    let mut picked = nordvpn_candidates(cfg, servers);
-    picked.truncate(cfg.nordvpn_servers);
-    picked
-}
-
 /// Every server in the countries chosen, least loaded first; none until
 /// the service credentials and a number of servers are set.
 pub fn nordvpn_candidates(cfg: &Config, servers: &[Server]) -> Vec<Server> {
-    if !cfg.nordvpn_on || secret(&cfg.nordvpn_password).is_none() || cfg.nordvpn_servers == 0 {
+    if !cfg.nordvpn_on || cfg.account("nordvpn_password").is_none() || cfg.nordvpn_servers == 0 {
         return Vec::new();
     }
     servers
@@ -190,14 +181,23 @@ fn refused(said: &str) -> bool {
 
 /// The proxy addresses of the servers picked.
 pub fn nordvpn_proxies(cfg: &Config, picked: &[Server]) -> Vec<String> {
-    let user = secret(&cfg.nordvpn_user).unwrap_or_default();
-    let password = secret(&cfg.nordvpn_password).unwrap_or_default();
+    let user = cfg.account("nordvpn_user").unwrap_or_default();
+    let password = cfg.account("nordvpn_password").unwrap_or_default();
     picked.iter().map(|s| s.proxy(user, password)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The NordVPN servers to use: the least loaded `nordvpn_servers` in the
+    /// countries chosen (every country when none is), once the service
+    /// credentials are set.
+    fn nordvpn_pick(cfg: &Config, servers: &[Server]) -> Vec<Server> {
+        let mut picked = nordvpn_candidates(cfg, servers);
+        picked.truncate(cfg.nordvpn_servers);
+        picked
+    }
 
     fn server(host: &str, country: &str, load: u32) -> Server {
         Server {
@@ -232,8 +232,10 @@ mod tests {
             nordvpn_pick(&cfg, &servers).is_empty(),
             "no credentials, none"
         );
-        cfg.nordvpn_user = Some("svc user".into());
-        cfg.nordvpn_password = Some("p@ss:w/rd".into());
+        cfg.accounts
+            .insert("nordvpn_user".into(), "svc user".into());
+        cfg.accounts
+            .insert("nordvpn_password".into(), "p@ss:w/rd".into());
         let all = nordvpn_pick(&cfg, &servers);
         assert_eq!(
             all.iter().map(|s| s.host.as_str()).collect::<Vec<_>>(),

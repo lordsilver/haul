@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ItemView } from '@/lib/bindings/ItemView';
+import type { List } from '@/lib/bindings/List';
 
 // The lists of downloads, each item knowing its own (`list`) and the engine
 // counting them; the wrappers; and the pages.
@@ -8,10 +8,10 @@ export const PAGES = ['wrappers', 'hosts', 'connections', 'settings'] as const;
 export type ListKey = (typeof LISTS)[number];
 export type ViewKey = ListKey | (typeof PAGES)[number];
 
-// The lists are `all` and exactly the engine's (`ItemView['list']`): one
-// added on either side fails to compile here rather than land on All.
+// The lists are `all` and exactly the engine's (`List`): one added on either
+// side fails to compile here rather than land on All.
 type Same<A, B> = [Exclude<A, B> | Exclude<B, A>] extends [never] ? true : false;
-true satisfies Same<ListKey, ItemView['list'] | 'all'>;
+true satisfies Same<ListKey, List | 'all'>;
 
 const VIEWS: readonly string[] = [...LISTS, ...PAGES];
 

@@ -13,31 +13,176 @@ use super::{HostView, ItemView, WrapperView, unpack::ArchiveSet};
 use crate::{
     config::Config,
     hosts,
-    item::{Extract, Found},
+    item::{Extract, Found, Status},
 };
 
-/// States of a download that is running or will run on its own.
-const ACTIVE: [&str; 6] = [
-    "downloading",
-    "resolving",
-    "waiting",
-    "queued",
-    "checking",
-    "passing",
-];
+/// A set of names the views are sent, as an enum: each serializes as its
+/// name, and compares equal to it, as a script or a test names it.
+macro_rules! names {
+    ($(#[$meta:meta])* $name:ident { $($(#[$vmeta:meta])* $variant:ident = $word:literal,)+ }) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, ts_rs::TS)]
+        #[ts(export)]
+        pub enum $name {
+            $($(#[$vmeta])* #[serde(rename = $word)] $variant,)+
+        }
+
+        impl $name {
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $word,)+
+                }
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = ();
+
+            fn from_str(s: &str) -> Result<Self, ()> {
+                match s {
+                    $($word => Ok(Self::$variant),)+
+                    _ => Err(()),
+                }
+            }
+        }
+
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.as_str() == *other
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
+}
+
+names! {
+    /// Where a download stands, as the views show it.
+    RowState {
+        Queued = "queued",
+        Resolving = "resolving",
+        /// Queued, its link not looked up yet.
+        Checking = "checking",
+        Downloading = "downloading",
+        Waiting = "waiting",
+        /// Its page is passed out of sight by the desktop app, in turn.
+        Passing = "passing",
+        Paused = "paused",
+        /// Waiting for a person.
+        Captcha = "captcha",
+        Done = "done",
+        Error = "error",
+    }
+}
+
+impl RowState {
+    /// Running, or going to run on its own.
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            Self::Downloading
+                | Self::Resolving
+                | Self::Waiting
+                | Self::Queued
+                | Self::Checking
+                | Self::Passing
+        )
+    }
+}
+
+impl From<Status> for RowState {
+    fn from(s: Status) -> Self {
+        match s {
+            Status::Queued => Self::Queued,
+            Status::Resolving => Self::Resolving,
+            Status::Downloading => Self::Downloading,
+            Status::Waiting => Self::Waiting,
+            Status::Paused => Self::Paused,
+            Status::Captcha => Self::Captcha,
+            Status::Done => Self::Done,
+            Status::Error => Self::Error,
+        }
+    }
+}
+
+names! {
+    /// Where a wrapper stands.
+    WrapperState {
+        Unwrapping = "unwrapping",
+        /// To try again.
+        Waiting = "waiting",
+        /// The desktop app passes its page's check by itself.
+        Passing = "passing",
+        /// A person has to pass its gate.
+        Captcha = "captcha",
+        Paused = "paused",
+        Error = "error",
+        /// Unwrapped.
+        Done = "done",
+    }
+}
+
+names! {
+    /// The list a download is in beside All downloads.
+    List {
+        Active = "active",
+        Attention = "attention",
+        Failed = "failed",
+        Paused = "paused",
+        Done = "done",
+    }
+}
+
+names! {
+    /// What a site is to Haul, in the Hosts view's order.
+    SiteKind {
+        /// A file host Haul has code for.
+        Host = "host",
+        /// Anything else: a page Haul reads links from, or a host it has
+        /// no code for, used as any web server.
+        Site = "site",
+        Paste = "paste",
+        Wrapper = "wrapper",
+    }
+}
+
+names! {
+    /// The group the Hosts view shows a site in.
+    HostGroup {
+        Preferred = "preferred",
+        Other = "other",
+        Wrapper = "wrapper",
+        Paste = "paste",
+        Site = "site",
+    }
+}
+
+names! {
+    /// How urgently the wrappers want looking at.
+    Alert {
+        /// One waits for a person.
+        Attention = "attention",
+        /// One failed.
+        Critical = "critical",
+    }
+}
 
 /// What needs attention first, for a row that stands for several.
-const URGENCY: [&str; 10] = [
-    "error",
-    "captcha",
-    "downloading",
-    "resolving",
-    "passing",
-    "waiting",
-    "checking",
-    "queued",
-    "paused",
-    "done",
+const URGENCY: [RowState; 10] = [
+    RowState::Error,
+    RowState::Captcha,
+    RowState::Downloading,
+    RowState::Resolving,
+    RowState::Passing,
+    RowState::Waiting,
+    RowState::Checking,
+    RowState::Queued,
+    RowState::Paused,
+    RowState::Done,
 ];
 
 /// What a row's buttons do; a view gives each its label and icon.
@@ -67,13 +212,13 @@ pub enum Command {
 }
 
 /// Which list a download is in, beside All downloads.
-pub fn list_of(status: &str) -> &'static str {
+pub fn list_of(status: RowState) -> List {
     match status {
-        s if ACTIVE.contains(&s) => "active",
-        "captcha" => "attention",
-        "error" => "failed",
-        "paused" => "paused",
-        _ => "done",
+        s if s.is_active() => List::Active,
+        RowState::Captcha => List::Attention,
+        RowState::Error => List::Failed,
+        RowState::Paused => List::Paused,
+        _ => List::Done,
     }
 }
 
@@ -111,11 +256,11 @@ pub(super) fn items(
     for it in items {
         // A page on trial, or being read, is in no list until it shows what
         // it is.
-        it.list = if it.tentative { "" } else { list_of(it.status) };
-        it.not_started = it.status == "paused" && it.done == 0;
+        it.list = (!it.tentative).then(|| list_of(it.status));
+        it.not_started = it.status == RowState::Paused && it.done == 0;
         let failed = |m: &str| it.failed_hosts.iter().any(|h| h == m);
         // The page being passed is where it goes next, whatever else it has.
-        let passing = (it.status == "passing")
+        let passing = (it.status == RowState::Passing)
             .then(|| {
                 it.open_urls
                     .iter()
@@ -157,6 +302,20 @@ pub(super) fn items(
             .filter(|m| **m != it.shown_host && !off(m) && !failed(m))
             .count();
         it.error_shown = without_host(&it.error, &it.shown_host);
+        let says = matches!(
+            it.status,
+            RowState::Error | RowState::Waiting | RowState::Captcha
+        );
+        it.reason = match &it.slowed {
+            Some(slowed) => slowed.clone(),
+            None if says => it.error_shown.clone(),
+            None => String::new(),
+        };
+        it.again = if it.status == RowState::Captcha {
+            it.retry_in
+        } else {
+            0
+        };
         it.source_name = it.source.as_deref().and_then(|s| sources.get(s)).cloned();
         it.commands = item_commands(it, recycle_on_remove);
     }
@@ -165,13 +324,13 @@ pub(super) fn items(
 fn item_commands(it: &ItemView, recycle_on_remove: bool) -> Vec<Command> {
     let mut out = Vec::new();
     match it.status {
-        s if ACTIVE.contains(&s) => out.push(Command::Pause),
-        "paused" if it.not_started => out.push(Command::Start),
-        "paused" => out.push(Command::Resume),
-        "error" => out.push(Command::Retry),
+        s if s.is_active() => out.push(Command::Pause),
+        RowState::Paused if it.not_started => out.push(Command::Start),
+        RowState::Paused => out.push(Command::Resume),
+        RowState::Error => out.push(Command::Retry),
         _ => {}
     }
-    let finished = it.status == "done";
+    let finished = it.status == RowState::Done;
     if finished && it.path.is_some() {
         out.push(Command::Reveal);
     }
@@ -207,14 +366,16 @@ fn tally<'a>(items: impl IntoIterator<Item = &'a ItemView>) -> Tally {
     let mut t = Tally::default();
     for it in items {
         match it.status {
-            "done" => t.done += 1,
-            "downloading" => t.downloading += 1,
-            "queued" | "waiting" | "checking" | "resolving" => t.waiting += 1,
-            "paused" if it.not_started => t.not_started += 1,
-            "paused" => t.paused += 1,
-            "captcha" => t.captcha += 1,
-            "error" => t.failed += 1,
-            _ => {}
+            RowState::Done => t.done += 1,
+            RowState::Downloading => t.downloading += 1,
+            RowState::Queued | RowState::Waiting | RowState::Checking | RowState::Resolving => {
+                t.waiting += 1
+            }
+            RowState::Paused if it.not_started => t.not_started += 1,
+            RowState::Paused => t.paused += 1,
+            RowState::Captcha => t.captcha += 1,
+            RowState::Error => t.failed += 1,
+            RowState::Passing => {}
         }
     }
     t
@@ -231,10 +392,7 @@ pub struct ArchiveView {
     /// Parts its names show are missing.
     pub missing: Vec<String>,
     /// The state that needs attention first among the parts.
-    #[ts(
-        type = "\"queued\" | \"resolving\" | \"checking\" | \"downloading\" | \"waiting\" | \"passing\" | \"paused\" | \"captcha\" | \"done\" | \"error\""
-    )]
-    pub status: &'static str,
+    pub status: RowState,
     /// Every part done.
     pub complete: bool,
     pub size: u64,
@@ -310,20 +468,22 @@ pub(super) fn archives(
         let status = URGENCY
             .into_iter()
             .find(|s| parts.iter().any(|p| p.status == *s))
-            .unwrap_or("queued");
-        let complete = parts.iter().all(|p| p.status == "done");
+            .unwrap_or(RowState::Queued);
+        let complete = parts.iter().all(|p| p.status == RowState::Done);
         let size: u64 = parts.iter().map(|p| p.size).sum();
         let done: u64 = parts
             .iter()
             .map(|p| {
-                if p.status == "done" {
+                if p.status == RowState::Done {
                     p.size
                 } else {
                     p.done.min(if p.size > 0 { p.size } else { p.done })
                 }
             })
             .sum();
-        let sized = parts.iter().all(|p| p.size > 0 || p.status == "done");
+        let sized = parts
+            .iter()
+            .all(|p| p.size > 0 || p.status == RowState::Done);
         let tally = tally(parts.iter().copied());
         let share = if sized && size > 0 {
             done as f64 / size as f64
@@ -361,12 +521,12 @@ pub(super) fn archives(
             .filter(|h| parts.iter().all(|p| p.download_from.as_deref() == Some(h)));
         let extract = if complete { first.extract } else { Extract::No };
         let mut commands = Vec::new();
-        if parts.iter().any(|p| ACTIVE.contains(&p.status)) {
+        if parts.iter().any(|p| p.status.is_active()) {
             commands.push(Command::Pause);
-        } else if parts.iter().any(|p| p.status == "paused") {
+        } else if parts.iter().any(|p| p.status == RowState::Paused) {
             let all_fresh = parts
                 .iter()
-                .filter(|p| p.status == "paused")
+                .filter(|p| p.status == RowState::Paused)
                 .all(|p| p.not_started);
             commands.push(if all_fresh {
                 Command::Start
@@ -456,12 +616,21 @@ pub struct WrapperCard {
     pub host: String,
     /// The hosts their links are on, over every wrapper of the card.
     pub hosts: Vec<String>,
-    #[ts(
-        type = "\"unwrapping\" | \"waiting\" | \"passing\" | \"captcha\" | \"paused\" | \"error\" | \"done\""
-    )]
-    pub status: &'static str,
+    pub status: WrapperState,
     /// Its error without the wrapper's host.
     pub error_shown: String,
+    /// What the card says of its state: its error, when it failed, waits or
+    /// wants a person; empty for none.
+    pub reason: String,
+    /// Seconds until it is tried again on its own, failed or waiting for a
+    /// person; 0 when never.
+    pub again: u64,
+    /// Files its wrappers added that wait for a start: never started, or
+    /// paused.
+    pub to_start: usize,
+    /// Done with nothing left to start: taking it off the list takes no
+    /// file.
+    pub clearable: bool,
     pub wait: u64,
     pub retry_in: u64,
     pub open_urls: Vec<String>,
@@ -481,14 +650,14 @@ pub struct WrapperCard {
 }
 
 /// What needs attention first among a card's wrappers.
-const WRAPPER_URGENCY: [&str; 7] = [
-    "error",
-    "captcha",
-    "waiting",
-    "passing",
-    "unwrapping",
-    "paused",
-    "done",
+const WRAPPER_URGENCY: [WrapperState; 7] = [
+    WrapperState::Error,
+    WrapperState::Captcha,
+    WrapperState::Waiting,
+    WrapperState::Passing,
+    WrapperState::Unwrapping,
+    WrapperState::Paused,
+    WrapperState::Done,
 ];
 
 pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec<WrapperCard> {
@@ -508,7 +677,7 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
     for w in wrappers {
         let top = root(&by_id, w);
         let key = match (&top.title, top.status) {
-            (Some(title), "done") => format!("t\u{0}{}\u{0}{title}", top.package),
+            (Some(title), WrapperState::Done) => format!("t\u{0}{}\u{0}{title}", top.package),
             _ => format!("w\u{0}{}", top.id),
         };
         match groups.iter_mut().find(|(k, _)| *k == key) {
@@ -532,7 +701,7 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
             // note on a card that has anything else going on or found,
             // not the card's failure.
             let lists_nothing =
-                |x: &WrapperView| x.status == "error" && crate::hosts::lists_no_links(&x.error);
+                |x: &WrapperView| x.status == WrapperState::Error && x.lists_nothing;
             let quiet = ws.iter().any(|x| !lists_nothing(x));
             let set_aside = |x: &WrapperView| quiet && lists_nothing(x);
             // The card shows what needs attention first among them.
@@ -542,6 +711,7 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 .copied()
                 .unwrap_or(w);
             let empty = ws.iter().filter(|x| set_aside(x)).count();
+            let card_tally = tally(files.iter().copied());
             let mut hosts: Vec<String> = Vec::new();
             for h in ws.iter().flat_map(|x| &x.hosts) {
                 if !hosts.contains(h) {
@@ -557,6 +727,22 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 hosts,
                 status: urgent.status,
                 error_shown: without_host(&urgent.error, &urgent.host),
+                reason: if matches!(
+                    urgent.status,
+                    WrapperState::Error | WrapperState::Waiting | WrapperState::Captcha
+                ) {
+                    without_host(&urgent.error, &urgent.host)
+                } else {
+                    String::new()
+                },
+                again: if matches!(urgent.status, WrapperState::Error | WrapperState::Captcha) {
+                    urgent.retry_in
+                } else {
+                    0
+                },
+                to_start: card_tally.not_started + card_tally.paused,
+                clearable: urgent.status == WrapperState::Done
+                    && card_tally.not_started + card_tally.paused == 0,
                 wait: urgent.wait,
                 retry_in: urgent.retry_in,
                 open_urls: urgent.open_urls.clone(),
@@ -564,8 +750,11 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 files: files.len(),
                 empty,
                 open_id: urgent.id.clone(),
-                need_you: ws.iter().filter(|x| x.status == "captcha").count(),
-                tally: tally(files),
+                need_you: ws
+                    .iter()
+                    .filter(|x| x.status == WrapperState::Captcha)
+                    .count(),
+                tally: card_tally,
             }
         })
         .collect()
@@ -595,8 +784,7 @@ pub struct Counts {
     /// Wrapper cards, and whether one failed (`critical`) or waits for a
     /// person (`attention`), by the cards' states.
     pub wrappers: usize,
-    #[ts(type = "\"\" | \"attention\" | \"critical\"")]
-    pub wrappers_alert: &'static str,
+    pub wrappers_alert: Option<Alert>,
     /// Wrappers being opened and pages being passed out of sight: work on
     /// links before their files show.
     pub unwrapping: usize,
@@ -605,6 +793,9 @@ pub struct Counts {
     /// Wrappers' files not started yet: they wait for the user to start
     /// them.
     pub ready: usize,
+    /// The wrapper cards' files that wait for a start, never started or
+    /// paused: what the Wrappers view's Start button starts.
+    pub wrapper_files_to_start: usize,
 }
 
 pub(super) fn counts(
@@ -614,71 +805,74 @@ pub(super) fn counts(
     paused: bool,
 ) -> Counts {
     let t = tally(items.iter().filter(|i| !i.tentative));
-    let in_list = |l: &str| items.iter().filter(|i| i.list == l).count();
+    let in_list = |l: List| items.iter().filter(|i| i.list == Some(l)).count();
     Counts {
         all: items.iter().filter(|i| !i.tentative).count(),
-        active: in_list("active"),
-        attention: in_list("attention"),
-        failed: in_list("failed"),
-        paused: in_list("paused"),
-        done: in_list("done"),
+        active: in_list(List::Active),
+        attention: in_list(List::Attention),
+        failed: in_list(List::Failed),
+        paused: in_list(List::Paused),
+        done: in_list(List::Done),
         downloading: t.downloading,
         waiting: t.waiting,
         slowed: items.iter().filter(|i| i.slowed.is_some()).count(),
-        held: paused && items.iter().any(|i| i.list == "active"),
+        held: paused && items.iter().any(|i| i.list == Some(List::Active)),
         left: items
             .iter()
-            .filter(|i| i.list == "active")
+            .filter(|i| i.list == Some(List::Active))
             .map(|i| i.size.saturating_sub(i.done))
             .sum(),
         wrappers: cards.len(),
         unwrapping: wrappers
             .iter()
-            .filter(|w| matches!(w.status, "unwrapping" | "passing"))
+            .filter(|w| matches!(w.status, WrapperState::Unwrapping | WrapperState::Passing))
             .count()
             + items
                 .iter()
                 .filter(|i| {
-                    i.status == "passing"
+                    i.status == RowState::Passing
                         // A page on trial or being read, while it is looked at.
                         || (i.tentative
-                            && matches!(i.status, "queued" | "resolving" | "checking"))
+                            && matches!(
+                                i.status,
+                                RowState::Queued | RowState::Resolving | RowState::Checking
+                            ))
                 })
                 .count(),
-        need_you: in_list("attention") + wrappers.iter().filter(|w| w.status == "captcha").count(),
+        need_you: in_list(List::Attention)
+            + wrappers
+                .iter()
+                .filter(|w| w.status == WrapperState::Captcha)
+                .count(),
         ready: items
             .iter()
             .filter(|i| i.not_started && i.source.is_some() && !i.tentative)
             .count(),
+        wrapper_files_to_start: cards.iter().map(|c| c.to_start).sum(),
         // From the cards, which set aside a paste that lists nothing.
-        wrappers_alert: if cards.iter().any(|c| c.status == "error") {
-            "critical"
-        } else if cards.iter().any(|c| c.status == "captcha") {
-            "attention"
+        wrappers_alert: if cards.iter().any(|c| c.status == WrapperState::Error) {
+            Some(Alert::Critical)
+        } else if cards.iter().any(|c| c.status == WrapperState::Captcha) {
+            Some(Alert::Attention)
         } else {
-            ""
+            None
         },
     }
 }
 
-/// The kinds of site the Hosts view groups, in its order ([`site_kind`]):
-/// the hosts, then the rest by their groups' names (Other sites,
-/// Pastebins, Wrappers).
-pub(super) const SITE_KINDS: [&str; 4] = ["host", "site", "paste", "wrapper"];
-
 /// What site `name` is to Haul: a wrapper's or a paste's by its name, a
 /// host when Haul has code for it as one, else a site (a page Haul reads
 /// links from, or a host it has no code for, used as any web server).
-pub(super) fn site_kind(name: &str) -> &'static str {
+pub(super) fn site_kind(name: &str) -> SiteKind {
     let url = format!("https://{name}/");
     if hosts::wraps(&url) {
-        "wrapper"
+        SiteKind::Wrapper
     } else if hosts::is_paste(&url) {
-        "paste"
+        SiteKind::Paste
     } else if hosts::known(name).is_some() {
-        "host"
+        SiteKind::Host
     } else {
-        "site"
+        SiteKind::Site
     }
 }
 
@@ -688,17 +882,17 @@ pub(super) fn site_kind(name: &str) -> &'static str {
 pub(super) fn hosts(hosts: &mut [HostView]) {
     let preferred = hosts
         .iter()
-        .filter(|h| h.kind == "host" && h.preferred.is_some())
+        .filter(|h| h.kind == SiteKind::Host && h.preferred.is_some())
         .count();
     for h in hosts {
-        h.group = if h.kind != "host" {
-            h.kind
-        } else if h.preferred.is_some() {
-            "preferred"
-        } else {
-            "other"
+        h.group = match h.kind {
+            SiteKind::Host if h.preferred.is_some() => HostGroup::Preferred,
+            SiteKind::Host => HostGroup::Other,
+            SiteKind::Wrapper => HostGroup::Wrapper,
+            SiteKind::Paste => HostGroup::Paste,
+            SiteKind::Site => HostGroup::Site,
         };
-        h.movable = h.kind == "host" && h.preferred.is_some() && preferred > 1;
+        h.movable = h.kind == SiteKind::Host && h.preferred.is_some() && preferred > 1;
     }
 }
 
@@ -759,10 +953,7 @@ pub(super) fn pool(cfg: &Config, p: super::PoolView, vpn: VpnFound) -> PoolSumma
         }
     };
     let proxies = usize::from(cfg.proxy.is_some()) + cfg.proxies.len();
-    let nord = cfg
-        .account("nordvpn_password")
-        .and_then(Option::as_deref)
-        .is_some_and(|s| !s.is_empty());
+    let nord = cfg.account("nordvpn_password").is_some();
     let paused = !cfg.use_proxy;
     let mut sources = Vec::new();
     if proxies > 0 {
@@ -872,7 +1063,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             package: String::new(),
-            status,
+            status: status.parse().unwrap(),
             error: String::new(),
             size: 100,
             done: if status == "done" { 100 } else { 0 },
@@ -890,13 +1081,16 @@ mod tests {
             extract: Extract::No,
             extract_error: String::new(),
             extract_progress: None,
-            list: "",
+            list: None,
             not_started: false,
             shown_host: String::new(),
             preferred_host: false,
             other_hosts: 0,
             error_shown: String::new(),
+            reason: String::new(),
+            again: 0,
             failed_hosts: Vec::new(),
+            gone: false,
             slowed: None,
             commands: Vec::new(),
             archive: None,
@@ -926,9 +1120,9 @@ mod tests {
             free: None,
             account: false,
             cap: None,
-            kind: "host",
+            kind: SiteKind::Host,
             listed: true,
-            group: "",
+            group: HostGroup::Other,
             movable: false,
         }
     }
@@ -940,7 +1134,7 @@ mod tests {
             host: "w.example".into(),
             title: title.map(String::from),
             package: String::new(),
-            status,
+            status: status.parse().unwrap(),
             error: String::new(),
             wait: 0,
             retry_in: 0,
@@ -948,6 +1142,8 @@ mod tests {
             found: None,
             hosts: vec![format!("{id}.example")],
             source: None,
+            lists_nothing: false,
+            gone: false,
         }
     }
 
@@ -990,7 +1186,7 @@ mod tests {
             "a.example; the one that is off does not count"
         );
         assert_eq!(it.error_shown, "busy");
-        assert_eq!(it.list, "active");
+        assert_eq!(it.list, Some(List::Active));
 
         // Once it runs, the host it runs on.
         let mut it = item("y", "downloading");
@@ -1183,7 +1379,7 @@ mod tests {
 
         let c = counts(&items, &wrappers, &cards, false);
         assert_eq!((c.all, c.active, c.paused, c.done), (3, 1, 1, 1));
-        assert_eq!((c.wrappers, c.wrappers_alert), (3, "critical"));
+        assert_eq!((c.wrappers, c.wrappers_alert), (3, Some(Alert::Critical)));
         assert!(!c.held);
         assert_eq!(
             c.left, 100,
@@ -1227,6 +1423,7 @@ mod tests {
         let mut empty = wrapper("paste", "error", None);
         empty.source = Some("page".into());
         empty.error = "zpaste.net: the paste on zpaste.net lists no links".into();
+        empty.lists_nothing = true;
         let wrappers = [page, empty];
         let mut file = item("f", "paused");
         file.source = Some("page".into());
@@ -1234,20 +1431,21 @@ mod tests {
         super::items(&mut items, &[host("a.example")], &wrappers, false);
         let cards = wrapper_cards(&wrappers, &items);
         assert_eq!(cards.len(), 1, "the paste is on its page's card");
-        assert_eq!((cards[0].status, cards[0].empty), ("done", 1));
+        assert_eq!((cards[0].status.as_str(), cards[0].empty), ("done", 1));
         assert_eq!(cards[0].error_shown, "");
         let c = counts(&items, &wrappers, &cards, false);
-        assert_eq!(c.wrappers_alert, "", "nothing failed that matters");
+        assert_eq!(c.wrappers_alert, None, "nothing failed that matters");
 
         // Only pastes that list nothing: the page found no files.
         let mut alone = wrapper("alone", "error", None);
         alone.error = "the paste on zpaste.net lists no links".into();
+        alone.lists_nothing = true;
         let wrappers = [alone];
         let cards = wrapper_cards(&wrappers, &[]);
-        assert_eq!((cards[0].status, cards[0].empty), ("error", 0));
+        assert_eq!((cards[0].status.as_str(), cards[0].empty), ("error", 0));
         assert_eq!(
             counts(&[], &wrappers, &cards, false).wrappers_alert,
-            "critical"
+            Some(Alert::Critical)
         );
     }
 
@@ -1260,6 +1458,7 @@ mod tests {
         let mut empty = wrapper("paste", "error", None);
         empty.source = Some("page".into());
         empty.error = "paste2.org: the paste on paste2.org lists no links".into();
+        empty.lists_nothing = true;
         let mut wrappers = vec![page, empty];
         for n in 0..6 {
             let mut c = wrapper(&format!("container{n}"), "captcha", None);
@@ -1269,11 +1468,14 @@ mod tests {
         let cards = wrapper_cards(&wrappers, &[]);
         assert_eq!(cards.len(), 1);
         let card = &cards[0];
-        assert_eq!((card.status, card.need_you, card.empty), ("captcha", 6, 1));
+        assert_eq!(
+            (card.status.as_str(), card.need_you, card.empty),
+            ("captcha", 6, 1)
+        );
         assert!(card.open_id.starts_with("container"), "{}", card.open_id);
         assert_eq!(
             counts(&[], &wrappers, &cards, false).wrappers_alert,
-            "attention"
+            Some(Alert::Attention)
         );
     }
 
@@ -1308,7 +1510,7 @@ mod tests {
         hs[0].speed = 3.0;
         hs[3].needs_account = true;
         hosts(&mut hs);
-        let groups: Vec<&str> = hs.iter().map(|h| h.group).collect();
+        let groups: Vec<&str> = hs.iter().map(|h| h.group.as_str()).collect();
         assert_eq!(groups, ["preferred", "preferred", "other", "other"]);
         assert!(hs[0].movable && hs[1].movable && !hs[2].movable);
     }
@@ -1329,13 +1531,13 @@ mod tests {
         hs[0].preferred = Some(0);
         hs[0].speed = 1.0;
         for (h, kind) in hs[2..].iter_mut().zip(["wrapper", "paste", "site"]) {
-            h.kind = kind;
+            h.kind = kind.parse().unwrap();
             h.preferred = Some(1);
             h.speed = 9.0;
         }
         hs[4].disabled = true;
         hosts(&mut hs);
-        let groups: Vec<&str> = hs.iter().map(|h| h.group).collect();
+        let groups: Vec<&str> = hs.iter().map(|h| h.group.as_str()).collect();
         assert_eq!(groups, ["preferred", "other", "wrapper", "paste", "site"]);
         assert!(!hs[0].movable, "only one host is preferred");
     }
@@ -1371,7 +1573,7 @@ mod tests {
         assert_eq!(p.sources[1].status, "2 in use");
 
         let cfg = Config {
-            nordvpn_password: Some("pw".into()),
+            accounts: std::collections::BTreeMap::from([("nordvpn_password".into(), "pw".into())]),
             nordvpn_servers: 0,
             ..Config::default()
         };

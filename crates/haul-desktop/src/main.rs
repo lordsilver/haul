@@ -377,14 +377,8 @@ fn reveal_waiting(app: &AppHandle, from_waiting: bool) {
     let Some(engine) = app.try_state::<Engine>().map(|e| e.inner().clone()) else {
         return;
     };
-    let (waiting, wrappers): (Vec<String>, Vec<String>) = if from_waiting {
-        let s = engine.snapshot();
-        let downloads = s.items.iter().filter(|it| it.list == "attention");
-        let wrappers = s.wrappers.iter().filter(|w| w.status == "captcha");
-        (
-            downloads.map(|it| it.id.clone()).collect(),
-            wrappers.map(|w| w.id.clone()).collect(),
-        )
+    let (waiting, wrappers) = if from_waiting {
+        engine.waiting_for_person()
     } else {
         Default::default()
     };

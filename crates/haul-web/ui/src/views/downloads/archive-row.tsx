@@ -12,7 +12,7 @@ import type { Command } from '@/lib/bindings/Command';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import type { State } from '@/lib/bindings/State';
 import { archiveCaption } from '@/lib/captions';
-import { bytes } from '@/lib/format';
+import { bytes, plural } from '@/lib/format';
 import { pickMany, picking } from '@/lib/selection';
 import { cn } from '@/lib/utils';
 import { toggleArchive } from '@/views/downloads/entries';
@@ -124,7 +124,7 @@ export function ArchiveRow({
   // The host part, which chooses the host for every part when they have
   // several; a host that is off is greyed out.
   const off = offHosts(s);
-  const others = a.other_hosts ? `${a.other_hosts} other ${a.other_hosts === 1 ? 'host' : 'hosts'}` : null;
+  const others = a.other_hosts ? plural(a.other_hosts, 'other host') : null;
   const host = [a.hosts.join(', '), others].filter(Boolean).join(' · ');
   const rest = [a.package || null, a.source_name ? `from ${a.source_name}` : null].filter(Boolean).join(' · ');
   const sub = [lead, host, rest, a.slowed].filter(Boolean).join(' · ');

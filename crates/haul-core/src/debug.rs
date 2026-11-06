@@ -123,34 +123,20 @@ pub fn watch_statuses(engine: Engine) {
     }
     let mut changes = engine.watch();
     tokio::spawn(async move {
-        let mut before: HashMap<String, (&'static str, String)> = HashMap::new();
+        let mut before: HashMap<String, &'static str> = HashMap::new();
         loop {
-            let s = engine.snapshot();
             let mut now = HashMap::new();
-            let rows = s
-                .items
-                .iter()
-                .map(|i| ("item", &i.id, i.name.as_str(), i.status, &i.error))
-                .chain(s.wrappers.iter().map(|w| {
-                    (
-                        "wrapper",
-                        &w.id,
-                        w.title.as_deref().unwrap_or(&w.url),
-                        w.status,
-                        &w.error,
-                    )
-                }));
-            for (kind, id, name, status, error) in rows {
-                let was = before.get(id.as_str()).map(|(s, _)| *s);
-                if was != Some(status) {
+            for row in engine.row_states() {
+                let was = before.get(&row.id).copied();
+                if was != Some(row.state) {
                     emit(
                         "status",
-                        json!({ "row": kind, "id": id, "name": name, "from": was, "to": status, "error": error }),
+                        json!({ "row": row.row, "id": row.id, "name": row.name, "from": was, "to": row.state, "error": row.error }),
                     );
                 }
-                now.insert(id.clone(), (status, error.clone()));
+                now.insert(row.id, row.state);
             }
-            for (id, (status, _)) in &before {
+            for (id, status) in &before {
                 if !now.contains_key(id) {
                     emit(
                         "status",

@@ -7,12 +7,13 @@ use serde::Serialize;
 
 use super::{
     ArchiveView, BIN, Command, Counts, Engine, Exit, HostStats, PoolSummary, ReconnectView,
-    ServicesView, WrapperCard, display_name, unpack, views,
+    ServicesView, WrapperCard, display_name, unpack,
+    views::{self, HostGroup, List, RowState, SiteKind, WrapperState},
 };
 use crate::{
     config::{Route, Theme},
     hosts,
-    item::{Extract, Found, Item, Status, Verifying},
+    item::{Extract, Found, Item, Status, Trouble, Verifying},
 };
 
 /// The addresses in use: this machine's line, proxies of the settings and
@@ -83,10 +84,7 @@ pub struct ItemView {
     pub id: String,
     pub name: String,
     pub package: String,
-    #[ts(
-        type = "\"queued\" | \"resolving\" | \"checking\" | \"downloading\" | \"waiting\" | \"passing\" | \"paused\" | \"captcha\" | \"done\" | \"error\""
-    )]
-    pub status: &'static str,
+    pub status: RowState,
     pub error: String,
     pub size: u64,
     pub done: u64,
@@ -122,10 +120,9 @@ pub struct ItemView {
     pub extract_error: String,
     /// How far unpacking is, between 0 and 1, while it runs.
     pub extract_progress: Option<f32>,
-    /// The list it is in beside All downloads: `active`, `attention`,
-    /// `failed`, `paused` or `done`.
-    #[ts(type = "\"active\" | \"attention\" | \"failed\" | \"paused\" | \"done\"")]
-    pub list: &'static str,
+    /// The list it is in beside All downloads; none for a copied page on
+    /// trial.
+    pub list: Option<List>,
     /// Paused before any byte came: what a wrapper's files are until
     /// started.
     pub not_started: bool,
@@ -138,9 +135,17 @@ pub struct ItemView {
     pub other_hosts: usize,
     /// Its error without `shown_host`'s name in front.
     pub error_shown: String,
+    /// What the row says after its host: why it failed, waits or wants a
+    /// person, or what its host is slowing; empty for none.
+    pub reason: String,
+    /// Seconds until its page is passed again on its own while it waits for
+    /// a person; 0 when never.
+    pub again: u64,
     /// The hosts whose link failed for it, or says the file is gone: not among
     /// the hosts that could take over.
     pub failed_hosts: Vec<String>,
+    /// Every one of its hosts says the file is no more: not tried again.
+    pub gone: bool,
     /// The host limiting its download and why it stays there, for the row to
     /// say instead of a time left that means nothing.
     pub slowed: Option<String>,
@@ -164,13 +169,7 @@ pub struct WrapperView {
     /// The page's own name for what it holds, once unwrapped.
     pub title: Option<String>,
     pub package: String,
-    /// `unwrapping`, `waiting` (to try again), `passing` (the desktop app
-    /// passes its page's check by itself), `captcha` (a person has to pass
-    /// its gate), `paused`, `error` or `done` (unwrapped).
-    #[ts(
-        type = "\"unwrapping\" | \"waiting\" | \"passing\" | \"captcha\" | \"paused\" | \"error\" | \"done\""
-    )]
-    pub status: &'static str,
+    pub status: WrapperState,
     pub error: String,
     /// Seconds until it is tried again.
     pub wait: u64,
@@ -185,6 +184,10 @@ pub struct WrapperView {
     pub hosts: Vec<String>,
     /// The wrapper it was found on (a paste a download page links).
     pub source: Option<String>,
+    /// A paste that lists no links: on a card with others, a note.
+    pub lists_nothing: bool,
+    /// Its host says what it stands for is no more: not tried again.
+    pub gone: bool,
 }
 
 /// A host's daily allowance at full speed, over the addresses it was asked
@@ -237,17 +240,14 @@ pub struct HostView {
     /// The most downloads it takes at once, learned when it refused one more
     /// than it was serving; `None` until it does.
     pub cap: Option<usize>,
-    /// What the site is to Haul: `host` (a file host Haul has code for),
-    /// `wrapper` (filecrypt.cc's, fileguard.cc's…), `paste`, or `site`
-    /// (anything else, listed only when the user starred or switched it off).
-    #[ts(type = "\"host\" | \"wrapper\" | \"paste\" | \"site\"")]
-    pub kind: &'static str,
+    /// What the site is to Haul; a `site` is listed only when the user
+    /// starred or switched it off.
+    pub kind: SiteKind,
     /// The Hosts view lists it: any but a `site` the user gave no setting.
     pub listed: bool,
     /// The group the Hosts view shows it in: a host's `preferred` or
     /// `other` (on or off alike), or its kind for the others.
-    #[ts(type = "\"preferred\" | \"other\" | \"wrapper\" | \"paste\" | \"site\"")]
-    pub group: &'static str,
+    pub group: HostGroup,
     /// It can trade places with another preferred host.
     pub movable: bool,
 }
@@ -264,17 +264,82 @@ fn quota_view(quotas: impl Iterator<Item = hosts::Allowance>) -> Option<QuotaVie
     })
 }
 
+/// Where download `it` stands, as the views show it; `passing`: the desktop
+/// app passes its page first ([`Engine::passing`]).
+fn row_state(it: &Item, passing: bool) -> RowState {
+    match it.status {
+        Status::Queued if !it.probed => RowState::Checking,
+        Status::Captcha if passing => RowState::Passing,
+        other => other.into(),
+    }
+}
+
+fn wrapper_state(it: &Item, passing: bool) -> WrapperState {
+    match it.status {
+        Status::Queued | Status::Resolving | Status::Downloading => WrapperState::Unwrapping,
+        // A page or paste behind Cloudflare's check, say.
+        Status::Captcha if passing => WrapperState::Passing,
+        Status::Captcha => WrapperState::Captcha,
+        Status::Waiting => WrapperState::Waiting,
+        Status::Paused => WrapperState::Paused,
+        Status::Error => WrapperState::Error,
+        Status::Done => WrapperState::Done,
+    }
+}
+
+/// One row as debug mode's status signals name it ([`Engine::row_states`]).
+pub struct RowStatus {
+    /// `item` or `wrapper`.
+    pub row: &'static str,
+    pub id: String,
+    pub name: String,
+    /// Its state, as the views name it.
+    pub state: &'static str,
+    pub error: String,
+}
+
 impl Engine {
+    /// Where every row stands, as the views name it, without the rest of a
+    /// [`Snapshot`].
+    pub fn row_states(&self) -> Vec<RowStatus> {
+        let st = self.lock();
+        let now = Instant::now();
+        st.items
+            .values()
+            .map(|it| {
+                let passing = self.passing(&st, it, now);
+                RowStatus {
+                    row: if it.wrapper { "wrapper" } else { "item" },
+                    id: it.id.clone(),
+                    name: if it.wrapper {
+                        it.title
+                            .clone()
+                            .or_else(|| it.mirrors.first().cloned())
+                            .unwrap_or_default()
+                    } else {
+                        display_name(it)
+                    },
+                    state: if it.wrapper {
+                        wrapper_state(it, passing).as_str()
+                    } else {
+                        row_state(it, passing).as_str()
+                    },
+                    error: it.error.clone(),
+                }
+            })
+            .collect()
+    }
+
     pub fn snapshot(&self) -> Snapshot {
-        // Before the state's lock: the two are always taken in this order.
-        let mut reconnect = self.reconnect_view();
-        let services = self.services_view();
+        let st = self.lock();
+        let reconnect = self.reconnect_view_in(&st);
+        let services = self.services_view_in(&st);
         let pages = self.pages_pass();
         let pool = {
             let cfg = self.cfg();
             let proxies = cfg.proxy_pool().len();
             let vpn = if cfg.use_proxy {
-                self.service_proxies().len()
+                st.services.proxies.len()
             } else {
                 0
             };
@@ -293,8 +358,6 @@ impl Engine {
                 error: services.error.clone(),
             },
         );
-        let st = self.lock();
-        reconnect.draining.clone_from(&st.draining);
         let now = Instant::now();
         let has_proxy = self.clients().exits.len() > 1;
         let cfg = self.cfg();
@@ -313,16 +376,7 @@ impl Engine {
                 .cloned()
                 .collect()
         };
-        // The desktop app passes one of its pages by itself, in turn: nothing
-        // for the person yet.
-        let passing = |it: &Item| {
-            pages
-                && !it.page_wants_person
-                && it
-                    .manual_urls
-                    .iter()
-                    .any(|u| st.passes(u) && self.pass_held_for(&st, it, u, now).is_none())
-        };
+        let passing = |it: &Item| self.passing(&st, it, now);
         let wrappers: Vec<WrapperView> = st
             .items
             .values()
@@ -337,13 +391,10 @@ impl Engine {
                     .unwrap_or_default(),
                 title: it.title.clone(),
                 package: it.package.clone(),
-                status: match it.status {
-                    Status::Queued | Status::Resolving | Status::Downloading => "unwrapping",
-                    // A page or paste behind Cloudflare's check, say.
-                    Status::Captcha if passing(it) => "passing",
-                    other => other.as_str(),
-                },
+                status: wrapper_state(it, passing(it)),
                 source: it.source.clone(),
+                lists_nothing: it.trouble == Trouble::ListsNothing,
+                gone: all_gone(it),
                 error: it.error.clone(),
                 wait: wait(it),
                 retry_in: retry_in(it),
@@ -361,13 +412,7 @@ impl Engine {
                 id: it.id.clone(),
                 name: display_name(it),
                 package: it.package.clone(),
-                status: if it.status == Status::Queued && !it.probed {
-                    "checking"
-                } else if it.status == Status::Captcha && passing(it) {
-                    "passing"
-                } else {
-                    it.status.as_str()
-                },
+                status: row_state(it, passing(it)),
                 error: it.error.clone(),
                 size: it.size,
                 done: it.done,
@@ -385,18 +430,21 @@ impl Engine {
                 extract: it.extract,
                 extract_error: it.extract_error.clone(),
                 extract_progress: unpacked.filter(|_| it.extract == Extract::Extracting),
-                list: "",
+                list: None,
                 not_started: false,
                 shown_host: String::new(),
                 preferred_host: false,
                 other_hosts: 0,
                 error_shown: String::new(),
+                reason: String::new(),
+                again: 0,
                 failed_hosts: it
                     .failed
                     .iter()
                     .chain(&it.gone)
                     .map(|m| hosts::host_of(m))
                     .collect(),
+                gone: all_gone(it),
                 slowed: it.slowed.as_ref().map(|s| {
                     let by = if s.sure { "Slowed by" } else { "Slow from" };
                     format!("{by} {}: {}", s.host, s.why)
@@ -452,9 +500,9 @@ impl Engine {
                     .filter(|f| *f != hosts::Free::default()),
                 account: hosts::known(name).is_some_and(|k| k.has_account(&cfg)),
                 exits: exits.len(),
-                kind: "",
+                kind: views::site_kind(name),
                 listed: true,
-                group: "",
+                group: HostGroup::Other,
                 movable: false,
             }
         };
@@ -484,24 +532,21 @@ impl Engine {
             }
             hosts.push(host_view(&name, None));
         }
-        for h in &mut hosts {
-            h.kind = views::site_kind(&h.name);
-        }
         // Any other site (a page, or a host Haul has no code for) is used
         // without a setting of its own, so the Hosts view does not list it:
         // only one the user gave one (a star, the switch, a folder,
         // a route) shows, to be changed back.
         let set = |name: &str| cfg.folders.contains_key(name) || st.routes.contains_key(name);
         for h in &mut hosts {
-            h.listed = h.kind != "site" || h.disabled || h.preferred.is_some() || set(&h.name);
+            h.listed =
+                h.kind != SiteKind::Site || h.disabled || h.preferred.is_some() || set(&h.name);
         }
         // File hosts first: the preferred ones in their order, then the rest
         // by name, on and off alike; then the other groups by their names.
         hosts.sort_by(|a, b| {
             let rank = |h: &HostView| h.preferred.unwrap_or(usize::MAX);
-            let kind = |h: &HostView| views::SITE_KINDS.iter().position(|k| *k == h.kind);
-            kind(a)
-                .cmp(&kind(b))
+            a.kind
+                .cmp(&b.kind)
                 .then_with(|| rank(a).cmp(&rank(b)))
                 .then_with(|| a.name.cmp(&b.name))
         });
@@ -552,6 +597,11 @@ impl Engine {
                 .map(crate::update::Update::view),
         }
     }
+}
+
+/// Whether every link of `it` is gone for good.
+fn all_gone(it: &Item) -> bool {
+    !it.mirrors.is_empty() && it.mirrors.iter().all(|m| it.gone.contains(m))
 }
 
 /// Whether `it` is a pasted web page not read yet: it may turn out a wrapper

@@ -222,18 +222,11 @@ fn node_key(k: &str, folder: &[u8; 16]) -> Option<Vec<u8>> {
 
 const NOT_IN_FOLDER: &str = "mega: the file is no longer in the folder";
 
-/// What MEGA says when a file is no more.
-const GONE: [&str; 3] = [
-    "mega: the file was deleted",
-    "mega: the file was taken down",
-    NOT_IN_FOLDER,
-];
-
 /// What MEGA's error numbers mean for a download.
 fn refusal(code: i64) -> ResolveError {
     match code {
-        -9 => ResolveError::failed("mega: the file was deleted"),
-        -16 => ResolveError::failed("mega: the file was taken down"),
+        -9 => ResolveError::gone("mega: the file was deleted"),
+        -16 => ResolveError::gone("mega: the file was taken down"),
         -11 => ResolveError::failed("mega: access to the file is denied"),
         -3 | -4 | -6 | -18 => ResolveError::Wait {
             seconds: 60,
@@ -400,7 +393,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             let node = files
                 .into_iter()
                 .find(|f| f.id == wanted)
-                .ok_or_else(|| ResolveError::failed(NOT_IN_FOLDER))?;
+                .ok_or_else(|| ResolveError::gone(NOT_IN_FOLDER))?;
             let (size, _, address) = file(cx, &node.id, Some(&space)).await?;
             Ok(vec![Entry {
                 url: address,
@@ -475,7 +468,7 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
                     }
                 };
                 match (files.len(), wanted) {
-                    (0, Some(_)) => return Err(ResolveError::failed(NOT_IN_FOLDER)),
+                    (0, Some(_)) => return Err(ResolveError::gone(NOT_IN_FOLDER)),
                     // One file (a transfer of one, often): it, named now.
                     (1, _) => {
                         let f = files.remove(0);
@@ -494,7 +487,7 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
     };
     match found.await {
         Ok(p) => Look::Found(p),
-        Err(ResolveError::Failed(m)) if GONE.contains(&m.as_str()) => Look::Gone(m),
+        Err(ResolveError::Gone(m)) => Look::Gone(m),
         Err(_) => Look::Unknown,
     }
 }

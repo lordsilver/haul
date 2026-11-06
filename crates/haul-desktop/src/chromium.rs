@@ -190,7 +190,7 @@ pub type TakeLinks<'a> = &'a dyn Fn(&Shown) -> bool;
 
 /// What a page that lists links shows: every address on it, those written
 /// out in its text, and its title.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Shown {
     pub links: Vec<String>,
     pub text: Vec<String>,
@@ -792,6 +792,16 @@ impl Cdp {
                 let refuse = main && site.is_some() && keep.site.is_some() && site != keep.site;
                 if main && !refuse && site.is_some() {
                     keep.last = site.clone();
+                }
+                // Going to another site for a file (a host's download server,
+                // a CDN) is the file, whichever site the page is on: Haul
+                // takes it, and the page stays where it is.
+                if refuse && hosts::names_a_file(url) {
+                    tracing::info!(url, "the page went on to a file on another site");
+                    self.download = Some(Download {
+                        url: url.to_string(),
+                        name: hosts::guess_name(url),
+                    });
                 }
                 let (method, params) = if refuse {
                     tracing::info!(url, "kept the page on its site: refused going to {url}");

@@ -39,8 +39,8 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
                 .map(str::to_string)
         });
     let Some(location) = location else {
-        return Err(ResolveError::NeedsUser(
-            "buzzheavier: no download link (file removed, or it needs a browser)".into(),
+        return Err(ResolveError::person(
+            "buzzheavier: no download link (file removed, or it needs a browser)",
         ));
     };
     let location = if location.starts_with('/') {

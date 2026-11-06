@@ -27,10 +27,7 @@ struct File {
 }
 
 async fn lookup(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
-    let short = LINK
-        .captures(url)
-        .map(|c| c[1].to_string())
-        .ok_or_else(|| ResolveError::failed(format!("rootz: not a file link: {url}")))?;
+    let short = super::link_id(&LINK, url, "rootz")?;
     let base = &cx.cfg.endpoints.rootz;
     let page = cx
         .http
@@ -61,11 +58,11 @@ async fn lookup(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
     }
     let d = &answer["data"];
     if d["status"] == "deleted" {
-        return Err(ResolveError::failed(DELETED));
+        return Err(ResolveError::gone(DELETED));
     }
     if d["passwordProtected"] == true {
-        return Err(ResolveError::NeedsUser(
-            "rootz: the file wants a password: open its page".into(),
+        return Err(ResolveError::person(
+            "rootz: the file wants a password: open its page",
         ));
     }
     match (
@@ -100,7 +97,7 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
             size: Some(file.size),
             checksum: None,
         }),
-        Err(ResolveError::Failed(m)) if m == DELETED => Look::Gone(m),
+        Err(ResolveError::Gone(m)) => Look::Gone(m),
         Err(_) => Look::Unknown,
     }
 }

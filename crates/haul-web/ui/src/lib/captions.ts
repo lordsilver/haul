@@ -1,7 +1,7 @@
 import type { ArchiveView } from '@/lib/bindings/ArchiveView';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import type { Tally } from '@/lib/bindings/Tally';
-import { bytes, duration } from '@/lib/format';
+import { bytes, duration, plural } from '@/lib/format';
 
 // A file already in the download folder, being compared with the host's
 // checksum.
@@ -81,6 +81,5 @@ export function archiveCaption(a: ArchiveView): string {
   const summary = partsSummary(a.tally, a.ids.length);
   if (!a.missing.length) return summary;
   // First, since the column cuts the end off; the names are in its tooltip.
-  const count = a.missing.length;
-  return `${count} ${count === 1 ? 'part' : 'parts'} missing · ${summary}`;
+  return `${plural(a.missing.length, 'part')} missing · ${summary}`;
 }
