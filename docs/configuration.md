@@ -23,10 +23,6 @@ archive_passwords = []          # tried in order on an encrypted archive, after 
 detailed_log = true             # write every request, retry and mirror choice to haul.log; false keeps notable events
 reconnect = false               # a new address from the router when yours holds downloads back, once healthy ones finish
 reconnect_command = ""           # a command that gets the new address instead of the router
-router_user = ""                 # the router's login, for one that redials only with it
-router_password = ""
-nordvpn_user = ""                # NordVPN service credentials, for its SOCKS5 servers
-nordvpn_password = ""
 nordvpn_servers = 0              # how many of them join the proxies, least loaded first
 nordvpn_countries = []           # the countries they come from; every one when empty
 nordvpn_on = true                # false keeps the above but leaves NordVPN's servers out
@@ -46,7 +42,13 @@ proxy_with_direct = false       # your own connection as one more of them
 proxy_fresh_connections = false # a new connection per download, for rotating endpoints
 user_agent = "..."              # default: Haul's own
 
-# Accounts
+[routes]            # hosts allowed off the proxy
+"example.com" = "direct"
+
+[folders]           # subfolders of the download folder per host
+"pixeldrain.com" = "pixeldrain"
+
+[accounts]          # every key and login, in one table
 1fichier_key = ""
 pixeldrain_key = ""
 rapidgator_user = ""
@@ -54,19 +56,17 @@ rapidgator_pass = ""
 nitroflare_user = ""
 nitroflare_key = ""
 gofile_token = ""
-
-[routes]            # hosts allowed off the proxy
-"example.com" = "direct"
-
-[folders]           # subfolders of the download folder per host
-"pixeldrain.com" = "pixeldrain"
+router_user = ""        # the router's login, for one that redials only with it
+router_password = ""
+nordvpn_user = ""       # NordVPN service credentials, for its SOCKS5 servers
+nordvpn_password = ""
 ```
 
 What each download setting does is in [How downloads behave](downloading.md).
 
 ## Environment variables
 
-`HAUL_PROXY` replaces `proxy`; `HAUL_1FICHIER_KEY`, `HAUL_PIXELDRAIN_KEY`, `HAUL_RAPIDGATOR_USER`, `HAUL_RAPIDGATOR_PASS`, `HAUL_NITROFLARE_USER`, `HAUL_NITROFLARE_KEY`, `HAUL_GOFILE_TOKEN`, `HAUL_ROUTER_USER`, `HAUL_ROUTER_PASSWORD`, `HAUL_NORDVPN_USER` and `HAUL_NORDVPN_PASSWORD` fill the account keys the file leaves unset. Settings shows those as set by the environment and does not change them. `HAUL_DATA_DIR` moves the data folder and `HAUL_PORT` the local port (default 8765). `HAUL_DEBUG=1` starts Haul in [debug mode](debugging.md).
+`HAUL_PROXY` replaces `proxy`; `HAUL_` and an account key in capitals (`HAUL_1FICHIER_KEY`, `HAUL_PIXELDRAIN_KEY`, `HAUL_ROUTER_PASSWORD`, `HAUL_NORDVPN_USER` and so on, one for every key under `[accounts]`) fills that key when the file leaves it unset. Settings shows those as set by the environment and does not change them. `HAUL_DATA_DIR` moves the data folder and `HAUL_PORT` the local port (default 8765). `HAUL_DEBUG=1` starts Haul in [debug mode](debugging.md).
 
 ## The data folder
 
