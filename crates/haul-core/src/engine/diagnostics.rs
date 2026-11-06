@@ -106,16 +106,86 @@ impl Engine {
             }
         }
         let mut engine = self.debug_inspect();
-        // Each row's last events, as the row keeps them.
-        if let Some(items) = engine["items"].as_array_mut() {
-            for it in items {
-                let id = it["id"].as_str().unwrap_or_default().to_string();
-                it["history"] = crate::logging::history(&id)
+        let mut view = serde_json::to_value(&snapshot).unwrap_or(Value::Null);
+        // Each row once, in the queue's order: what the engine holds, and
+        // what the UI shows of it that the engine's fields don't say.
+        let mut shown: HashMap<String, Value> = HashMap::new();
+        for list in ["items", "wrappers"] {
+            for v in take(&mut view, list).as_array_mut().into_iter().flatten() {
+                if let Some(id) = v["id"].as_str() {
+                    shown.insert(id.to_string(), v.take());
+                }
+            }
+        }
+        let mut rows = take(&mut engine, "items");
+        for row in rows.as_array_mut().into_iter().flatten() {
+            let id = row["id"].as_str().unwrap_or_default().to_string();
+            if let Some(v) = shown.remove(&id) {
+                row["view"] = only_new(v, row);
+            }
+            // Its last events, as the row keeps them, debug ones included:
+            // the timeline holds them already when the detailed log is on.
+            if !cfg.detailed_log {
+                row["history"] = crate::logging::history(&id)
                     .into_iter()
                     .map(|m| json!({"at": m.at, "level": m.level, "message": m.message}))
                     .collect();
             }
         }
+        // Each host once: what the UI shows of it, what the engine measured
+        // that this doesn't say, and its lanes, one per exit.
+        let mut measured: HashMap<String, Value> = HashMap::new();
+        for h in take(&mut engine, "hosts")
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+        {
+            if let Some(name) = h["name"].as_str() {
+                measured.insert(name.to_string(), h.take());
+            }
+        }
+        let mut lanes: HashMap<String, Vec<Value>> = HashMap::new();
+        for mut lane in take(&mut engine, "lanes")
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+            .map(Value::take)
+        {
+            let host = lane
+                .as_object_mut()
+                .and_then(|o| o.remove("host"))
+                .and_then(|h| h.as_str().map(str::to_string))
+                .unwrap_or_default();
+            lanes.entry(host).or_default().push(without_defaults(lane));
+        }
+        let mut hosts = take(&mut view, "hosts");
+        let list = hosts.as_array_mut();
+        let mut all: Vec<Value> = list.map(std::mem::take).unwrap_or_default();
+        for name in measured.keys().chain(lanes.keys()) {
+            if !all.iter().any(|h| h["name"] == *name.as_str()) {
+                all.push(json!({ "name": name }));
+            }
+        }
+        // Only the hosts this run dealt with or the settings name: what Haul
+        // knows of the others is in its code.
+        all.retain_mut(|h| {
+            let name = h["name"].as_str().unwrap_or_default().to_string();
+            let mut met = false;
+            if let Some(m) = measured.remove(&name) {
+                h["measured"] = only_new(m, h);
+                met = true;
+            }
+            if let Some(l) = lanes.remove(&name) {
+                h["lanes"] = json!(l);
+                met = true;
+            }
+            let named = !h["preferred"].is_null()
+                || h["disabled"] == true
+                || h["account"] == true
+                || h["folder"].as_str().is_some_and(|f| !f.is_empty());
+            *h = without_defaults(h.take());
+            met || named
+        });
         let mut report = json!({
             "about": {
                 "haul": env!("CARGO_PKG_VERSION"),
@@ -123,14 +193,31 @@ impl Engine {
                 "arch": std::env::consts::ARCH,
                 "created": utc(now),
                 "desktop": !desktop.is_null(),
+                // The download folder, the settings file and its error are
+                // under `settings`.
                 "data_dir": snapshot.data_dir,
-                "download_dir": snapshot.download_dir,
-                "config_error": snapshot.config_error,
                 "detailed_log": cfg.detailed_log,
                 "live_debug": crate::debug::enabled(),
+                "paused": snapshot.paused,
+                "speed": snapshot.speed,
+                "update": take(&mut view, "update"),
             },
             "settings": settings,
-            "view": snapshot,
+            "counts": take(&mut view, "counts"),
+            "rows": rows,
+            "cards": take(&mut view, "wrapper_cards"),
+            "archives": take(&mut view, "archives"),
+            "hosts": all,
+            "network": {
+                "proxy": take(&mut view, "proxy"),
+                "rate": take(&mut view, "rate"),
+                "max_total": take(&mut view, "max_total"),
+                "pool": take(&mut view, "pool"),
+                "pool_summary": take(&mut view, "pool_summary"),
+                "reconnect": take(&mut view, "reconnect"),
+                "services": take(&mut view, "services"),
+            },
+            // The engine's own state beside its rows and hosts.
             "engine": engine,
             "desktop": desktop,
         });
@@ -262,6 +349,36 @@ fn clip(s: &str) -> String {
         Some((cut, _)) => format!("{}…", &s[..cut]),
         None => s.to_string(),
     }
+}
+
+/// Field `k` of `o`, taken out of it.
+fn take(o: &mut Value, k: &str) -> Value {
+    o.get_mut(k).map(Value::take).unwrap_or(Value::Null)
+}
+
+/// `v` without the fields `known` holds with the same value, nor its `id`
+/// or `name`, nor those at their defaults: what it adds.
+fn only_new(mut v: Value, known: &Value) -> Value {
+    if let Some(o) = v.as_object_mut() {
+        o.retain(|k, x| k != "id" && k != "name" && known.get(k) != Some(x));
+    }
+    without_defaults(v)
+}
+
+/// Object `v` without its fields at a default (`null`, `false`, `0`, `""`,
+/// `[]`, `{}`): a field left out is at its default.
+fn without_defaults(mut v: Value) -> Value {
+    if let Some(o) = v.as_object_mut() {
+        o.retain(|_, x| match x {
+            Value::Null => false,
+            Value::Bool(b) => *b,
+            Value::Number(n) => n.as_f64() != Some(0.0),
+            Value::String(s) => !s.is_empty(),
+            Value::Array(a) => !a.is_empty(),
+            Value::Object(m) => !m.is_empty(),
+        });
+    }
+    v
 }
 
 /// Takes the `#…` part out of every link in `v`, and the query out of a
