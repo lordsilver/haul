@@ -9,6 +9,9 @@ type Props = {
   action: () => Promise<unknown>;
   icon?: ReactNode;
   iconOnly?: boolean;
+  // Words the button stays as wide as, so the buttons beside it keep their
+  // place when its label changes.
+  reserve?: string;
 } & Omit<ComponentProps<typeof Button>, 'onClick' | 'children'>;
 
 // A button that, given `confirm`, wants a second click within a few seconds,
@@ -17,7 +20,7 @@ type Props = {
 // afresh, so a question left open is not asked again later.
 export const ConfirmButton = (props: Props) => <Asking key={props.confirm ? 'confirm' : 'plain'} {...props} />;
 
-function Asking({ label, confirm, action, icon, iconOnly = false, variant = 'ghost', size, ...props }: Props) {
+function Asking({ label, confirm, action, icon, iconOnly = false, reserve, variant = 'ghost', size, ...props }: Props) {
   const [asking, setAsking] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -43,7 +46,18 @@ function Asking({ label, confirm, action, icon, iconOnly = false, variant = 'gho
       {...props}
     >
       {icon}
-      {plain ? null : asking ? confirm : label}
+      {plain ? null : reserve ? (
+        <span className="grid justify-items-start">
+          <span className="[grid-area:1/1]">{asking ? confirm : label}</span>
+          <span aria-hidden className="invisible [grid-area:1/1]">
+            {reserve}
+          </span>
+        </span>
+      ) : asking ? (
+        confirm
+      ) : (
+        label
+      )}
     </Button>
   );
   if (!plain) return button;

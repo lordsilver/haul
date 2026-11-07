@@ -407,7 +407,7 @@ export function Connections({ s }: { s: State }) {
   const d = useSettings(s.config_version);
   return (
     <>
-      <PageHeader title="Settings" actions={<SettingsTabs current="connections" />} />
+      <PageHeader title="Settings" tabs={<SettingsTabs current="connections" />} />
       <PageScroll>{d ? <Page s={s} d={d} /> : null}</PageScroll>
     </>
   );

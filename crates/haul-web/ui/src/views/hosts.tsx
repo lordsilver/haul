@@ -663,11 +663,13 @@ export function Hosts({ s }: { s: State }) {
   );
   return (
     <>
-      <PageHeader title="Settings" actions={<SettingsTabs current="hosts" />} />
-      <div className="flex max-w-4xl flex-wrap items-center gap-2">
-        {linkSites.map(({ group, sites }) => (
-          <LinkSitesButton key={group} group={group} sites={sites} s={s} d={d} />
-        ))}
+      <PageHeader title="Settings" tabs={<SettingsTabs current="hosts" />} />
+      <div className="flex max-w-4xl flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {linkSites.map(({ group, sites }) => (
+            <LinkSitesButton key={group} group={group} sites={sites} s={s} d={d} />
+          ))}
+        </div>
         <SearchBox value={typed} label="Search hosts" placeholder="Search hosts" onChange={setTyped} />
       </div>
       {hosts.length ? (

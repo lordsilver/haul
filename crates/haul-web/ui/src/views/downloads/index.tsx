@@ -262,20 +262,25 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
       </Button>
       {/* In the Failed view the eraser clears failed downloads, partial files
           and all, so it asks for a second click; elsewhere it tidies
-          finished ones. */}
+          finished ones. Both keep the longer label's width, so the buttons
+          before it stay put from view to view. */}
       {view === 'failed' ? (
         <ConfirmButton
           label="Clear failed"
           confirm={failed ? `Clear ${plural(failed, 'download')}?` : undefined}
           disabled={!failed}
           icon={<Eraser />}
+          reserve="Clear completed"
           action={() => api('/api/global/clear_failed')}
         />
       ) : (
-        <Button variant="ghost" disabled={!s.counts.done} onClick={() => api('/api/global/clear_done').catch(report)}>
-          <Eraser />
-          Clear completed
-        </Button>
+        <ConfirmButton
+          label="Clear completed"
+          disabled={!s.counts.done}
+          icon={<Eraser />}
+          reserve="Clear completed"
+          action={() => api('/api/global/clear_done')}
+        />
       )}
       <Button variant="ghost" title={`Open ${s.download_dir}`} onClick={() => openPlace('downloads')}>
         <FolderOpen />
