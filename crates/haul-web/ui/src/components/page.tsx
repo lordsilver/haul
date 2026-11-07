@@ -5,17 +5,20 @@ import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
-// A page's title, with what the page is for behind an info mark, and what it
-// does on the same row after it, wrapping under the title only when the window
-// is too narrow for both. `wide` for a page whose list takes the whole width,
-// so the row ends where the list does.
+// A page's title, with what the page is for behind an info mark, its tabs
+// right after it, and what it does at the right end of the same row, so the
+// commands keep their place whatever the title. They wrap under the title only
+// when the window is too narrow for both. `wide` for a page whose list takes
+// the whole width, so the row ends where the list does.
 export function PageHeader({
   title,
+  tabs,
   actions,
   wide = false,
   children,
 }: {
   title: ReactNode;
+  tabs?: ReactNode;
   actions?: ReactNode;
   wide?: boolean;
   children?: string;
@@ -39,7 +42,8 @@ export function PageHeader({
           </Tooltip>
         ) : null}
       </div>
-      {actions ? <div className="flex min-h-9 grow flex-wrap items-center gap-2">{actions}</div> : null}
+      {tabs}
+      {actions ? <div className="flex min-h-9 grow flex-wrap items-center justify-end gap-2">{actions}</div> : null}
     </header>
   );
 }
@@ -59,7 +63,7 @@ export function SearchBox({
   ref?: Ref<HTMLInputElement>;
 }) {
   return (
-    <div className="relative ml-auto w-48">
+    <div className="relative w-48">
       <Search
         aria-hidden
         className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"

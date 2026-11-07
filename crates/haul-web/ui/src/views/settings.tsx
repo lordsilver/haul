@@ -412,7 +412,7 @@ export function Settings({ s }: { s: State }) {
   const [tab, setTab] = useState<OwnTab>(savedTab);
   return (
     <>
-      <PageHeader title="Settings" actions={<SettingsTabs current={tab} pick={setTab} />} />
+      <PageHeader title="Settings" tabs={<SettingsTabs current={tab} pick={setTab} />} />
       <PageScroll>{d ? <Page s={s} d={d} tab={tab} /> : null}</PageScroll>
     </>
   );
