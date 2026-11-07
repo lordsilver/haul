@@ -22,7 +22,7 @@ export function savedTab(): OwnTab {
   return tab && tab !== 'hosts' && tab !== 'connections' ? tab : 'general';
 }
 
-// The row of tabs under the Settings title, on each of its pages.
+// The row of tabs after the Settings title, on each of its pages.
 export function SettingsTabs({ current, pick }: { current: SettingsTab; pick?: (tab: OwnTab) => void }) {
   const open = (tab: SettingsTab) => {
     if (tab === 'hosts' || tab === 'connections') {

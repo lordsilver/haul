@@ -663,20 +663,13 @@ export function Hosts({ s }: { s: State }) {
   );
   return (
     <>
-      <PageHeader
-        title="Settings"
-        actions={
-          <div className="flex w-full flex-col gap-3">
-            <SettingsTabs current="hosts" />
-            <div className="flex flex-wrap items-center gap-2">
-              {linkSites.map(({ group, sites }) => (
-                <LinkSitesButton key={group} group={group} sites={sites} s={s} d={d} />
-              ))}
-              <SearchBox value={typed} label="Search hosts" placeholder="Search hosts" onChange={setTyped} />
-            </div>
-          </div>
-        }
-      />
+      <PageHeader title="Settings" actions={<SettingsTabs current="hosts" />} />
+      <div className="flex max-w-4xl flex-wrap items-center gap-2">
+        {linkSites.map(({ group, sites }) => (
+          <LinkSitesButton key={group} group={group} sites={sites} s={s} d={d} />
+        ))}
+        <SearchBox value={typed} label="Search hosts" placeholder="Search hosts" onChange={setTyped} />
+      </div>
       {hosts.length ? (
         // Where a dragged host lands; the arrows reorder from the keyboard.
         <PageScroll

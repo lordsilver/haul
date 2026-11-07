@@ -219,6 +219,21 @@ async fn buzzheavier_redirects_rate_limits_and_gone_files() {
             match id.as_str() {
                 "ok" => (StatusCode::NO_CONTENT, [("hx-redirect", "/dl/ok.bin")]).into_response(),
                 "busy" => (StatusCode::TOO_MANY_REQUESTS, [("retry-after", "7")]).into_response(),
+                // Cloudflare's check, as it answered a request it scored as
+                // no browser's (2026-11-07), and its rate limit, which
+                // carries a check of its own.
+                "checked" => (
+                    StatusCode::FORBIDDEN,
+                    [("cf-mitigated", "challenge")],
+                    "<title>Just a moment...</title><script>window._cf_chl_opt = {cType: 'managed'};</script>",
+                )
+                    .into_response(),
+                "limited" => (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("cf-mitigated", "challenge"), ("retry-after", "9")],
+                    "<script>window._cf_chl_opt = {cType: 'interactive'};</script>",
+                )
+                    .into_response(),
                 _ => StatusCode::NO_CONTENT.into_response(),
             }
         }),
@@ -243,6 +258,16 @@ async fn buzzheavier_redirects_rate_limits_and_gone_files() {
     assert!(matches!(
         buzzheavier::resolve(&cx, "https://buzzheavier.com/gone").await,
         Err(ResolveError::NeedsUser(..))
+    ));
+    match buzzheavier::resolve(&cx, "https://buzzheavier.com/checked").await {
+        Err(ResolveError::NeedsUser(Need::Check, m)) => {
+            assert!(m.contains("(Cloudflare's, managed)"), "{m}");
+        }
+        other => panic!("a check a browser passes, got {other:?}"),
+    }
+    assert!(matches!(
+        buzzheavier::resolve(&cx, "https://buzzheavier.com/limited").await,
+        Err(ResolveError::Wait { seconds: 9, .. })
     ));
 }
 

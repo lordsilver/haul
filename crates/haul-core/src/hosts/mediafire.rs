@@ -88,7 +88,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         .send()
         .await?;
     if super::generic::challenged(page.headers()) {
-        return Err(super::generic::guarded(url));
+        return Err(super::generic::guarded_by(url, page).await);
     }
     // A file mediafire took down still has its info; its page says why.
     if page.url().path().contains("error.php") {
