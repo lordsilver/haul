@@ -27,6 +27,7 @@ mod rapidgator;
 mod rootz;
 mod vikingfile;
 
+pub(crate) use generic::gate_message;
 pub use generic::{is_paste, pasted_links, short_title};
 
 use std::{

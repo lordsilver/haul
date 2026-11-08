@@ -36,7 +36,7 @@ Every signal but `log` goes to `haul.log` too, debug mode or not (target `haul_c
 
 ## The report
 
-**Settings**, **About**, **Save report…** (or `GET /api/diagnostics`) writes one zip, laid out for whoever diagnoses it:
+**Settings**, **About**, **Save report…** (or `GET /api/diagnostics`) writes one zip, laid out for whoever diagnoses it; the desktop app asks where to save it, starting in the download folder:
 
 - `timeline.txt`: the last 4 MB of `haul.log` and of the log before it, oldest first, a line per event: `MM-DD HH:MM:SS.mmm L target [row name] message key=value…`, each run headed by `==== … Haul <version> starts (os, pid) ====`. Read it first.
 - `report.json`, each fact once: `about` (version, system, data folder, whether the detailed log and the live connection are on, paused, speed, update), `settings` (no secrets: keys say only whether they are set), `counts`, `rows` (every download and wrapper in the queue's order: the engine's fields as `/api/debug/inspect` gives them, `view` with what the UI shows of it that those don't say, and its last events as `history` when the detailed log is off), `cards` (the Wrappers view's), `archives`, `hosts` (those this run dealt with or the settings name, each as the Hosts view shows it, `measured` with the engine's measures that it doesn't show, and its `lanes`, one per exit), `network` (proxies, pool, router, VPN services), `engine` (paused, moving, redialing, draining, pages behind checks) and `desktop` (its passes out of sight and windows). Under `view`, `measured` and `hosts`, a field left out is at its default (`null`, `false`, `0`, empty).
