@@ -43,6 +43,10 @@ pub trait Desktop: Send + Sync + 'static {
     /// answer. `None` when they cancel.
     fn pick_folder(&self, start: &std::path::Path) -> Option<std::path::PathBuf>;
 
+    /// Asks the user where to save a file named `name`, starting in `start`;
+    /// blocks until they answer. `None` when they cancel.
+    fn pick_save(&self, start: &std::path::Path, name: &str) -> Option<std::path::PathBuf>;
+
     /// Runs the newer Haul's setup program at `installer`, which installs it
     /// over this one and starts it again, and closes the app.
     fn install_update(&self, installer: &std::path::Path) -> Result<(), String>;
@@ -753,32 +757,37 @@ async fn diagnostics(State(app): State<App>) -> Response {
     }
 }
 
-/// Desktop app only (501 elsewhere): saves the report to the system's
-/// Downloads folder, without asking, and shows it there.
+/// Desktop app only (501 elsewhere): asks where to save the report,
+/// starting in the download folder, saves it there and shows it.
 async fn save_diagnostics(State(app): State<App>) -> Response {
-    if let Err(answer) =
-        app.desktop("only the desktop app saves the report itself; GET /api/diagnostics instead")
+    let desktop = match app
+        .desktop("only the desktop app saves the report itself; GET /api/diagnostics instead")
     {
-        return *answer;
-    }
+        Ok(desktop) => desktop,
+        Err(answer) => return *answer,
+    };
     let engine = app.engine.clone();
-    let desktop = app.desktop_inspect();
-    let saved = blocking(move || -> Result<std::path::PathBuf, String> {
-        let (name, body) = engine.report_zip(desktop)?;
-        let folder = haul_core::paths::downloads_folder();
-        std::fs::create_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-        let path = haul_core::paths::unused_name(&folder, &name);
+    let inspect = app.desktop_inspect();
+    let saved = blocking(move || -> Result<Option<std::path::PathBuf>, String> {
+        // Made first, so it holds what Haul was doing when it was asked for.
+        let (name, body) = engine.report_zip(inspect)?;
+        let start = engine.download_dir();
+        let _ = std::fs::create_dir_all(&start);
+        let Some(path) = desktop.pick_save(&start, &name) else {
+            return Ok(None);
+        };
         std::fs::write(&path, body).map_err(|e| format!("{}: {e}", path.display()))?;
-        Ok(path)
+        Ok(Some(path))
     })
     .await;
     match saved {
-        Ok(path) => {
+        Ok(Some(path)) => {
             if let Err(e) = os::reveal(&path) {
                 tracing::debug!("showing the report: {e}");
             }
             Json(json!({ "saved": path.display().to_string() })).into_response()
         }
+        Ok(None) => Json(json!({ "cancelled": true })).into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }

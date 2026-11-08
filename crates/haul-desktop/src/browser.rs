@@ -275,6 +275,9 @@ impl Browser {
                     let gate = hosts::gates::detect(&look.page);
                     let named = gate.map_or("its check", |g| g.name());
                     tracing::info!(item = %id, page = %look.page, "{host} wants a person for {named}");
+                    if let Some(gate) = gate {
+                        engine.page_shows_gate(&id, &url, gate);
+                    }
                     // The last such page of each site, to see what it asked.
                     if let Some(png) = look.shot {
                         let _ = std::fs::write(&shot, png);
@@ -571,6 +574,27 @@ impl Desktop for Browser {
             dialog = dialog.set_parent(&window);
         }
         dialog.blocking_pick_folder()?.into_path().ok()
+    }
+
+    fn pick_save(&self, start: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+        use tauri_plugin_dialog::DialogExt;
+        let mut dialog = self
+            .app
+            .dialog()
+            .file()
+            .set_title("Save report")
+            .set_directory(start)
+            .set_file_name(name);
+        if let Some(ext) = std::path::Path::new(name)
+            .extension()
+            .and_then(|e| e.to_str())
+        {
+            dialog = dialog.add_filter(ext.to_ascii_uppercase(), &[ext]);
+        }
+        if let Some(window) = self.app.get_webview_window(crate::MAIN) {
+            dialog = dialog.set_parent(&window);
+        }
+        dialog.blocking_save_file()?.into_path().ok()
     }
 
     /// Tauri's installer installs over this version (`/UPDATE`, which skips

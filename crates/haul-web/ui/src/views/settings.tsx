@@ -145,8 +145,8 @@ function DataCard({ s, d }: { s: State; d: SettingsView }) {
   );
 }
 
-// The desktop app saves the report to Downloads and shows it; a browser
-// downloads it.
+// The desktop app asks where to save the report, starting in the download
+// folder, and shows it; a browser downloads it.
 async function saveDiagnostics(desktop: boolean) {
   if (!desktop) {
     const link = document.createElement('a');

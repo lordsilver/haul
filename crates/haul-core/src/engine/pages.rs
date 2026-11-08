@@ -235,6 +235,22 @@ impl Engine {
         tell
     }
 
+    /// The desktop app's browser found `gate` on item `id`'s page at `url`:
+    /// a row that says it waits at a gate names that one, since what the
+    /// browser loaded is surer than what Haul read in the page's code.
+    pub fn page_shows_gate(&self, id: &str, url: &str, gate: hosts::gates::Gate) {
+        let mut st = self.lock();
+        let Some(it) = st.items.get_mut(id) else {
+            return;
+        };
+        let said = hosts::gate_message(url, Some(gate));
+        if it.trouble != Trouble::Needs(hosts::Need::Gate) || it.error == said {
+            return;
+        }
+        it.set_error(said, Trouble::Needs(hosts::Need::Gate));
+        self.publish(st);
+    }
+
     /// As [`Engine::page_wants_person`], for a page past its checks that
     /// shows all it will: only a click from the person leads on, so it is
     /// not passed again on a timer.

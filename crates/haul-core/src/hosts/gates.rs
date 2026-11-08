@@ -76,13 +76,59 @@ const MARKS: &[(Gate, &[&str])] = &[
     (Gate::Cutcaptcha, &["cutcaptcha"]),
 ];
 
-/// The gate `page` shows, when it shows one Haul knows.
+/// The gate `page` shows, when it shows one Haul knows. A page's own code
+/// may name products it does not show (a site that can use several keeps
+/// code for each), so marks in its markup, a script it loads or an element,
+/// come before words in its inline code and comments: filecrypt.cc's page
+/// loads CutCaptcha while its code still names reCAPTCHA (2026-11-08).
 pub fn detect(page: &str) -> Option<Gate> {
     let page = page.to_ascii_lowercase();
+    first_marked(&markup(&page)).or_else(|| first_marked(&page))
+}
+
+/// Each gate whose marks `page` holds, with the marks found, in order: what
+/// a log shows when a page names more than one.
+pub fn marks_in(page: &str) -> Vec<(Gate, Vec<&'static str>)> {
+    let page = page.to_ascii_lowercase();
+    MARKS
+        .iter()
+        .filter_map(|(gate, marks)| {
+            let found: Vec<_> = marks.iter().copied().filter(|m| page.contains(m)).collect();
+            (!found.is_empty()).then_some((*gate, found))
+        })
+        .collect()
+}
+
+fn first_marked(page: &str) -> Option<Gate> {
     MARKS
         .iter()
         .find(|(_, marks)| marks.iter().any(|m| page.contains(m)))
         .map(|(gate, _)| *gate)
+}
+
+/// Lower-case `page` without its inline scripts' code and its comments; a
+/// script's own tag, which holds its address, stays.
+fn markup(page: &str) -> String {
+    let mut out = String::with_capacity(page.len());
+    let mut rest = page;
+    loop {
+        let comment = rest.find("<!--");
+        let Some(at) = rest.find("<script").into_iter().chain(comment).min() else {
+            break;
+        };
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        if comment == Some(at) {
+            rest = rest.find("-->").map_or("", |i| &rest[i + 3..]);
+            continue;
+        }
+        let open = rest.find('>').map_or(rest.len(), |i| i + 1);
+        out.push_str(&rest[..open]);
+        rest = &rest[open..];
+        rest = rest.find("</script").map_or("", |i| &rest[i..]);
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -126,6 +172,33 @@ mod tests {
         for (page, gate) in cases {
             assert_eq!(detect(page), Some(gate), "{page}");
         }
+    }
+
+    #[test]
+    fn what_a_page_loads_comes_before_what_its_code_names() {
+        let page = r#"<script>if (window.grecaptcha) { grecaptcha.reset(); }</script>
+            <!-- <div class="g-recaptcha"></div> -->
+            <script src="https://api.cutcaptcha.net/v1/api.js"></script>
+            <div id="puzzle-captcha"></div>"#;
+        assert_eq!(detect(page), Some(Gate::Cutcaptcha));
+        assert_eq!(
+            marks_in(page),
+            [
+                (Gate::Recaptcha, vec!["g-recaptcha", "grecaptcha"]),
+                (Gate::Cutcaptcha, vec!["cutcaptcha"]),
+            ]
+        );
+        // Named only in code, a gate is still found.
+        assert_eq!(
+            detect(r#"<script>var CUTCAPTCHA_MISERY_KEY = "abc123";</script>"#),
+            Some(Gate::Cutcaptcha)
+        );
+        // An unclosed script or comment ends the markup.
+        assert_eq!(
+            detect("<div class=\"g-recaptcha\"></div><script>cutcaptcha"),
+            Some(Gate::Recaptcha)
+        );
+        assert_eq!(detect("<!-- grecaptcha"), Some(Gate::Recaptcha));
     }
 
     #[test]

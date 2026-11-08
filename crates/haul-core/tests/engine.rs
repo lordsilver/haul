@@ -2817,6 +2817,28 @@ async fn a_container_behind_another_gate_is_passed_in_the_browser() {
     wrapper_settled(&engine, "done").await;
 }
 
+/// The gate the browser finds on the page is the one the row names, as what
+/// it loaded is surer than Haul's read of the page's code.
+#[tokio::test]
+async fn the_row_names_the_gate_the_browser_found() {
+    use haul_core::hosts::gates::Gate;
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    let page = "https://filecrypt.cc/Container/other-gate.html";
+    engine.add_text(page, "");
+    let s = wrapper_settled(&engine, "passing").await;
+    let id = s.wrappers[0].id.clone();
+    engine.page_shows_gate(&id, page, Gate::Cutcaptcha);
+    assert!(engine.page_wants_person(&id));
+    let s = wrapper_settled(&engine, "captcha").await;
+    let said = &s.wrappers[0].error;
+    assert!(
+        said.contains("gate Haul cannot answer (a CutCaptcha puzzle)"),
+        "{said}"
+    );
+}
+
 /// Without a browser to pass it, the same gate waits for a person.
 #[tokio::test]
 async fn a_container_behind_another_gate_waits_for_a_person_without_a_browser() {

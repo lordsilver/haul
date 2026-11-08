@@ -45,12 +45,6 @@ pub fn wants_person_shot(data_dir: &Path, site: &str) -> PathBuf {
 /// How such a picture's file name ends.
 pub const WANTS_PERSON: &str = "-wants-person.png";
 
-/// The system's Downloads folder, where a report Haul makes is saved; its
-/// data folder when the system has none.
-pub fn downloads_folder() -> PathBuf {
-    dirs::download_dir().unwrap_or_else(data_dir)
-}
-
 /// `dir/name` unless something is there already; then the first free
 /// `name (1).ext`, `name (2).ext` and so on, as browsers number their
 /// downloads. A `.tar.*` archive keeps its double extension together.
