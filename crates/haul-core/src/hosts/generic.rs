@@ -408,6 +408,7 @@ pub(super) const PASTES: &[&str] = &[
     "pastes.io",
     "paste.ee",
     "privatebin.net",
+    "anotepad.com",
 ];
 
 /// Scripts and styles, whose addresses are no paste's list.
@@ -627,6 +628,32 @@ https://unknown.example/f/x?y=1&amp;z=2</pre></body></html>"#;
         assert_eq!(
             links_in(page, &base, "https://zpaste.net/p/x9y8z"),
             ["https://mega.nz/file/AbCdEfGh#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"]
+        );
+    }
+
+    #[test]
+    fn an_anotepad_note_lists_the_links_its_text_shows() {
+        // anotepad sends each link through its own checker, whose address
+        // says nothing of where it goes; the note's text still names it.
+        let url = "https://anotepad.com/notes/abc123";
+        let page = r#"<html><head>
+            <meta name="description" content="Download https://filecrypt.cc/Container/AAAAAAAA.html" />
+            </head><body><a href="/notes/other">Other note</a>
+            <div class="plaintext"><a href="/link-check?u=1.AAAAAAAA&amp;n=1" title="https://filecrypt.cc/Container/AAAAAAAA.html">https://filecrypt.cc/Container/AAAAAAAA.html</a>
+            https://unknown.example/f/abc123</div>
+            <a href="https://www.ads.example">Ad</a></body></html>"#;
+        assert!(is_paste(url));
+        let base = url::Url::parse(url).unwrap();
+        assert_eq!(
+            links_in(page, &base, url),
+            ["https://filecrypt.cc/Container/AAAAAAAA.html"]
+        );
+        assert_eq!(
+            paste_text_links(page, url),
+            [
+                "https://filecrypt.cc/Container/AAAAAAAA.html",
+                "https://unknown.example/f/abc123",
+            ]
         );
     }
 
