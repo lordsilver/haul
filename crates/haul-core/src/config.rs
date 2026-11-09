@@ -415,11 +415,31 @@ impl Route {
 /// everything else, comments included. A missing file starts from
 /// [`TEMPLATE`]. `key` is a top-level key or `[table, key]`.
 pub fn write_key(path: &Path, key: &[&str], value: Option<toml_edit::Value>) -> io::Result<()> {
-    let text = match std::fs::read_to_string(path) {
+    let key: Vec<String> = key.iter().map(|k| (*k).to_string()).collect();
+    write_keys(path, &[(key, value)])
+}
+
+/// Sets or removes several keys as [`write_key`] does, with one read and one
+/// write of the file: all of them land, or none.
+pub fn write_keys(
+    path: &Path,
+    writes: &[(Vec<String>, Option<toml_edit::Value>)],
+) -> io::Result<()> {
+    let mut text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => TEMPLATE.to_string(),
         Err(e) => return Err(e),
     };
+    for (key, value) in writes {
+        let key: Vec<&str> = key.iter().map(String::as_str).collect();
+        text = with_key(&text, &key, value.clone())?;
+    }
+    store::write_atomic(path, text.as_bytes())
+}
+
+/// `text` with one key set or removed.
+fn with_key(text: &str, key: &[&str], value: Option<toml_edit::Value>) -> io::Result<String> {
+    let text = text.to_string();
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(io::Error::other)?;
     match (key, value) {
         ([name], Some(value)) => {
@@ -465,7 +485,7 @@ pub fn write_key(path: &Path, key: &[&str], value: Option<toml_edit::Value>) -> 
         }
         _ => return Err(io::Error::other(format!("bad settings key {key:?}"))),
     }
-    store::write_atomic(path, doc.to_string().as_bytes())
+    Ok(doc.to_string())
 }
 
 /// Turns the commented `# key = …` line among the top-level keys into

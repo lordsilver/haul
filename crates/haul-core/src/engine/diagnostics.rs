@@ -10,11 +10,14 @@
 //!   lanes) and the desktop app's (`desktop`: its passes out of sight);
 //! - the logs themselves, and the last picture of each site's page that
 //!   wanted a person (under `pages/`).
+//!
+//! Every link in all of them loses its `#…` part, which holds mega.nz's keys;
+//! queries stay, since some hosts (1fichier) name the file in theirs.
 
 use std::{
     collections::HashMap,
     fmt::Write as _,
-    io::{Read, Seek, SeekFrom},
+    io::{BufRead, Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -59,9 +62,18 @@ impl Engine {
             "report.json",
             &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
         )?;
+        // Line by line through the same stripping as the timeline: a log
+        // written before the log stripped keys itself still holds them.
         for log in &logs {
-            if let (Some(name), Ok(bytes)) = (log.file_name(), std::fs::read(log)) {
-                add(&name.to_string_lossy(), &bytes)?;
+            if let (Some(name), Ok(file)) = (log.file_name(), std::fs::File::open(log)) {
+                let mut text = String::new();
+                for line in std::io::BufReader::new(file)
+                    .split(b'\n')
+                    .map_while(Result::ok)
+                {
+                    let _ = writeln!(text, "{}", unkeyed(&String::from_utf8_lossy(&line)));
+                }
+                add(&name.to_string_lossy(), text.as_bytes())?;
             }
         }
         if let Ok(pages) = std::fs::read_dir(crate::paths::pass_profiles(dir)) {
@@ -80,10 +92,9 @@ impl Engine {
 
     /// The report's `report.json`: Haul and its system, the settings with
     /// every secret left out (an account key says only whether it is set, a
-    /// proxy loses its credentials, archive passwords are counted), what the
-    /// UI shows, the engine's insides and `desktop`'s. Links lose their `#…`
-    /// part, which holds mega.nz's keys, and a link a page handed back its
-    /// query, which can hold a token.
+    /// proxy loses its credentials, archive passwords are counted, a redial
+    /// command is said to be set), what the UI shows, the engine's insides
+    /// and `desktop`'s. Links lose their `#…` part, which holds mega.nz's keys.
     pub fn diagnostics(&self, desktop: Value) -> Value {
         let now = crate::logging::unix_now();
         let snapshot = self.snapshot();
@@ -96,6 +107,12 @@ impl Engine {
             .into();
         if let Some(passwords) = settings.get_mut("archive_passwords") {
             *passwords = json!(passwords.as_array().map_or(0, Vec::len));
+        }
+        // A command often holds the router's login.
+        if let Some(command) = settings.get_mut("reconnect_command")
+            && !command.is_null()
+        {
+            *command = json!("(set)");
         }
         if let Some(proxy) = settings.get_mut("proxy") {
             *proxy = json!(without_credentials(proxy.as_str().unwrap_or_default()));
@@ -221,7 +238,7 @@ impl Engine {
             "engine": engine,
             "desktop": desktop,
         });
-        redact(&mut report, false);
+        redact(&mut report);
         report
     }
 
@@ -381,33 +398,13 @@ fn without_defaults(mut v: Value) -> Value {
     v
 }
 
-/// Takes the `#…` part out of every link in `v`, and the query out of a
-/// link a page handed back (`handed_back`), which can hold a token; a row's
-/// attempt going to that link (its `url`) loses it too.
-fn redact(v: &mut Value, link: bool) {
+/// Takes the `#…` part out of every link in `v`, as the timeline and the
+/// logs in the report have it.
+fn redact(v: &mut Value) {
     match v {
-        Value::String(s) => {
-            *s = if link { page_only(s) } else { unkeyed(s) };
-        }
-        Value::Array(a) => a.iter_mut().for_each(|x| redact(x, link)),
-        Value::Object(o) => {
-            let handed = o
-                .get("handed_back")
-                .and_then(|h| h.get("url"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            for (k, x) in o.iter_mut() {
-                let attempt = k == "url" && handed.is_some() && x.as_str() == handed.as_deref();
-                redact(x, link || attempt);
-            }
-            if let Some(url) = o
-                .get_mut("handed_back")
-                .and_then(|h| h.get_mut("url"))
-                .filter(|u| u.is_string())
-            {
-                *url = json!(page_only(url.as_str().unwrap_or_default()));
-            }
-        }
+        Value::String(s) => *s = unkeyed(s),
+        Value::Array(a) => a.iter_mut().for_each(redact),
+        Value::Object(o) => o.values_mut().for_each(redact),
         _ => {}
     }
 }
@@ -415,18 +412,6 @@ fn redact(v: &mut Value, link: bool) {
 /// `text` with the `#…` part of every link in it left out.
 fn unkeyed(text: &str) -> String {
     without_keys(text).into_owned()
-}
-
-/// A link without its query or fragment; text that is not a link stays.
-fn page_only(link: &str) -> String {
-    match url::Url::parse(link) {
-        Ok(mut url) => {
-            url.set_query(None);
-            url.set_fragment(None);
-            url.to_string()
-        }
-        Err(_) => unkeyed(link),
-    }
 }
 
 /// A proxy address without the user and password in it, for messages and
@@ -479,10 +464,6 @@ mod tests {
             "https://mega.nz/file/abc"
         );
         assert_eq!(
-            page_only("https://cdn.example/f/a.bin?token=t#x"),
-            "https://cdn.example/f/a.bin"
-        );
-        assert_eq!(
             without_credentials("socks5://me:pw@proxy.example:1080"),
             "socks5://proxy.example:1080 (with credentials)"
         );
@@ -506,15 +487,15 @@ mod tests {
                 "handed_back": {"url": "https://cdn.example/f/a.bin?token=t", "for": "https://1fichier.com/?abc123"},
             },
         });
-        redact(&mut report, false);
+        redact(&mut report);
         assert_eq!(
             report,
             json!({
                 "a": "https://mega.nz/file/a",
                 "row": {
-                    "url": "https://cdn.example/f/a.bin",
+                    "url": "https://cdn.example/f/a.bin?token=t",
                     "mirrors": ["https://1fichier.com/?abc123"],
-                    "handed_back": {"url": "https://cdn.example/f/a.bin", "for": "https://1fichier.com/?abc123"},
+                    "handed_back": {"url": "https://cdn.example/f/a.bin?token=t", "for": "https://1fichier.com/?abc123"},
                 },
             })
         );

@@ -4,6 +4,7 @@
 
 use std::{
     path::{Path, PathBuf},
+    sync::atomic::Ordering,
     time::{Duration, Instant},
 };
 
@@ -90,6 +91,13 @@ enum Fail {
         allowed: usize,
         message: String,
     },
+    /// This computer's own trouble (no room, no permission): no host's doing,
+    /// so no host is blamed and no mirror is used up.
+    Local {
+        message: String,
+        /// The disk is full: every other download is about to fail the same way.
+        full: bool,
+    },
 }
 
 impl From<ResolveError> for Fail {
@@ -113,7 +121,11 @@ impl From<reqwest::Error> for Fail {
 
 impl From<std::io::Error> for Fail {
     fn from(e: std::io::Error) -> Self {
-        Fail::Error(e.to_string())
+        use std::io::ErrorKind;
+        Fail::Local {
+            full: matches!(e.kind(), ErrorKind::StorageFull | ErrorKind::QuotaExceeded),
+            message: e.to_string(),
+        }
     }
 }
 
@@ -235,6 +247,7 @@ impl Engine {
     fn finish(&self, id: &str, url: &str, host: &str, exit: Exit, result: Result<Outcome, Fail>) {
         let mut events = Vec::new();
         let mut removed = Vec::new();
+        let mut disk_full = false;
         let complete = matches!(result, Ok(Outcome::Done | Outcome::Existing(_)));
         {
             let mut st = self.lock();
@@ -370,6 +383,25 @@ impl Engine {
                         events.push(e);
                     }
                 }
+                Err(Fail::Local { message, full }) => {
+                    if let Some(it) = st.items.get_mut(id) {
+                        drop_used_pre(it, url);
+                        it.set_error(format!("this computer: {message}"), Trouble::Other);
+                        if full {
+                            // Back in the queue, which pauses until there is room.
+                            disk_full = true;
+                            it.status = Status::Queued;
+                        } else {
+                            it.status = Status::Error;
+                            self.plan_auto_retry(it, now);
+                            events.push(Event::Failed {
+                                id: id.to_string(),
+                                name: display_name(it),
+                                error: it.error.clone(),
+                            });
+                        }
+                    }
+                }
                 Err(Fail::Gone(message)) => {
                     if !drop_tentative_row(&mut st, id, "is gone")
                         && let Some(e) = self.fail_mirror(&mut st, id, url, host, message, true)
@@ -396,6 +428,14 @@ impl Engine {
             self.touch(&mut st);
         }
         self.discard_parts(removed);
+        if disk_full && !self.0.paused_now.load(Ordering::Relaxed) {
+            tracing::warn!("the disk is full: pausing every download");
+            self.set_paused(true);
+            events.push(Event::Notice {
+                title: "Downloads paused".into(),
+                body: "The disk is full. Make room, then resume.".into(),
+            });
+        }
         self.emit(events);
         self.0.wake.notify_one();
     }
@@ -536,13 +576,18 @@ impl Engine {
             ));
         }
         if status == 416 && have > 0 {
-            // Nothing left to send: the partial file is complete, unless we
-            // know it should be longer.
-            if known_size > 0 && have < known_size {
-                let _ = tokio::fs::remove_file(&part).await;
-                return Err(Fail::Error(format!(
-                    "HTTP 416 at {have} of {known_size} bytes; starting over"
-                )));
+            // Nothing left to send: the partial file is complete, but only
+            // when its size is known to be that. A link that has run out
+            // answers so to anything, and says nothing about these bytes.
+            let stated = hosts::unsatisfied_total(resp.headers());
+            if stated != Some(have) && known_size != have {
+                let of = stated.or((known_size > 0).then_some(known_size));
+                return Err(Fail::Error(match of {
+                    Some(size) => format!("its link answers nothing past {have} of {size} bytes"),
+                    None => format!(
+                        "its link answers nothing past {have} bytes, and the file's size is not known"
+                    ),
+                }));
             }
             if let Some(it) = self.lock().items.get_mut(id) {
                 it.done = have;
@@ -764,11 +809,14 @@ impl Engine {
                     tail.len()
                 )));
             }
-            if let Some(total) = total
-                && done < total
+            // What this host said the file's size is, when its answer does
+            // not: a body sent in chunks may end early without an error.
+            let expected = total.or(entry.size.filter(|s| *s > 0));
+            if let Some(want) = expected
+                && done < want
             {
                 return Err(Fail::Transient(format!(
-                    "connection closed at {done} of {total} bytes"
+                    "connection closed at {done} of {want} bytes"
                 )));
             }
         }
@@ -858,6 +906,9 @@ fn log_outcome(id: &str, url: &str, result: &Result<Outcome, Fail>) {
         }
         Err(Fail::Error(message)) => tracing::warn!(item = id, url, "attempt failed: {message}"),
         Err(Fail::Gone(message)) => tracing::info!(item = id, url, "gone: {message}"),
+        Err(Fail::Local { message, .. }) => {
+            tracing::warn!(item = id, url, "this computer: {message}")
+        }
     }
 }
 
@@ -877,4 +928,20 @@ pub(super) fn running_size(st: &State, except: Option<&str>) -> u64 {
         .filter(|i| i.running() && Some(i.id.as_str()) != except)
         .map(|i| i.size)
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Fail;
+
+    #[test]
+    fn a_full_disk_is_told_apart_from_other_local_trouble() {
+        let full = std::io::Error::from(std::io::ErrorKind::StorageFull);
+        assert!(matches!(Fail::from(full), Fail::Local { full: true, .. }));
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(matches!(
+            Fail::from(denied),
+            Fail::Local { full: false, .. }
+        ));
+    }
 }

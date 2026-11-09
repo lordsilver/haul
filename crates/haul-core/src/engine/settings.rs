@@ -211,8 +211,11 @@ impl Engine {
     /// and writes each to the file. An empty text removes the key, which
     /// brings back its default.
     pub fn update_settings(&self, changes: &Map<String, Value>) -> Result<(), String> {
+        let _settings = self.settings_held();
         let mut cfg = (*self.cfg()).clone();
         let mut writes = Vec::new();
+        // Created and tried only once every other key has passed.
+        let mut new_folder = None;
         for (key, value) in changes {
             if let Some(variable) = cfg.from_env.get(key.as_str()) {
                 return Err(format!(
@@ -288,9 +291,12 @@ impl Engine {
                         return Err("the download folder was given on the command line".into());
                     }
                     let (dir, write) = optional_text(value, key)?;
-                    if let Some(dir) = &dir {
-                        usable_folder(Path::new(dir))?;
+                    if let Some(dir) = &dir
+                        && !Path::new(dir).is_absolute()
+                    {
+                        return Err(format!("{dir} is not a full path"));
                     }
+                    new_folder.clone_from(&dir);
                     writes.push(write);
                     cfg.download_dir = dir.map(PathBuf::from);
                 }
@@ -324,6 +330,9 @@ impl Engine {
         {
             return Err(format!("cannot get a new IP on its own: {why}"));
         }
+        if let Some(dir) = new_folder {
+            usable_folder(Path::new(&dir))?;
+        }
         self.write_and_apply(cfg, writes)
     }
 
@@ -334,6 +343,7 @@ impl Engine {
         let folder = paths::subfolder(folder)
             .to_string_lossy()
             .replace('\\', "/");
+        let _settings = self.settings_held();
         let mut cfg = (*self.cfg()).clone();
         let key = vec!["folders".into(), host.to_string()];
         let write = if folder.is_empty() {
@@ -349,6 +359,7 @@ impl Engine {
     /// Adds `host` to the end of the preferred hosts, or takes it out; a host
     /// already preferred keeps its place.
     pub fn set_preferred(&self, host: &str, preferred: bool) -> Result<(), String> {
+        let _settings = self.settings_held();
         let mut cfg = (*self.cfg()).clone();
         if preferred == cfg.preference(host).is_some() {
             return Ok(());
@@ -384,6 +395,7 @@ impl Engine {
             }
             list.push(host.to_string());
         }
+        let _settings = self.settings_held();
         let mut cfg = (*self.cfg()).clone();
         if cfg.preferred_hosts == list {
             return Ok(());
@@ -400,6 +412,7 @@ impl Engine {
         if host.is_empty() {
             return Err("a host needs a name".into());
         }
+        let _settings = self.settings_held();
         let mut cfg = (*self.cfg()).clone();
         if disabled == cfg.is_disabled(host) {
             return Ok(());
@@ -439,6 +452,7 @@ impl Engine {
     /// The user's choice of route for one host. `Direct` leaves the proxy and
     /// uses the real address, so it is never chosen automatically.
     pub fn set_route(&self, host: &str, route: Route) -> Result<(), String> {
+        let _settings = self.settings_held();
         let mut cfg = (*self.cfg()).clone();
         cfg.routes.insert(host.to_string(), route);
         let write = (
@@ -454,13 +468,22 @@ impl Engine {
         Ok(())
     }
 
+    /// Held from reading the settings in effect to putting the changed ones
+    /// in effect, so two changes at once cannot each start from the old
+    /// settings and leave the file and memory disagreeing.
+    fn settings_held(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.0
+            .settings_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Writes the keys to the file in one go and puts `cfg` in effect. The
+    /// caller holds [`Engine::settings_held`].
     fn write_and_apply(&self, cfg: Config, writes: Vec<Write>) -> Result<(), String> {
         if let Some(path) = &self.0.config_path {
-            for (key, value) in writes {
-                let key: Vec<&str> = key.iter().map(String::as_str).collect();
-                config::write_key(path, &key, value)
-                    .map_err(|e| format!("saving {}: {e}", path.display()))?;
-            }
+            config::write_keys(path, &writes)
+                .map_err(|e| format!("saving {}: {e}", path.display()))?;
             *self.0.config_seen.lock().unwrap_or_else(|e| e.into_inner()) = stamp(path);
         }
         self.reconfigure(cfg);
@@ -553,6 +576,8 @@ impl Engine {
             if !self.idle(Duration::from_secs(1)).await {
                 return;
             }
+            // A change from the app and one in the file go one at a time.
+            let _settings = self.settings_held();
             let now = stamp(&path);
             {
                 let mut seen = self.0.config_seen.lock().unwrap_or_else(|e| e.into_inner());
@@ -751,6 +776,11 @@ fn move_partials(from: &Path, to: &Path) -> std::io::Result<usize> {
     let mut moved = 0;
     for entry in entries {
         let entry = entry?;
+        // Which Haul owns a folder is the folder's own to say.
+        if entry.file_name() == super::PARTIAL_OWNER {
+            let _ = std::fs::remove_file(entry.path());
+            continue;
+        }
         let target = to.join(entry.file_name());
         if std::fs::rename(entry.path(), &target).is_err() {
             std::fs::copy(entry.path(), &target)?;
