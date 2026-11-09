@@ -8,6 +8,8 @@ Any web page you visit can send requests to loopback addresses, so the server gu
 - A request that changes anything is refused when it carries an `Origin` other than the server's own. Browsers send `Origin` on every POST; scripts that send none are allowed.
 - Pages are served with a Content Security Policy that forbids framing, so no other page can overlay the UI to steer clicks.
 
+There is no token: any program that can reach the port may change anything, including `reconnect_command` through `POST /api/settings`, which `POST /api/reconnect` then runs through the shell. On one machine that is your own programs. If you reach the server from another machine through an SSH tunnel, anyone who can use that tunnel can run a command on the machine Haul runs on.
+
 Bodies are JSON. Errors come back as `{"error": "…"}` with a 4xx or 5xx status.
 
 ## State

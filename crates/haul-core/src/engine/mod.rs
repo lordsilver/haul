@@ -133,6 +133,52 @@ impl FromStr for ItemAction {
     }
 }
 
+/// The partial files in `dir/.partial`, by the id of the row each belongs to,
+/// with their lengths.
+fn partial_sizes(dir: &Path) -> HashMap<String, u64> {
+    let Ok(entries) = std::fs::read_dir(dir.join(".partial")) else {
+        return HashMap::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let id = name.strip_suffix(".part")?.to_string();
+            let meta = e.metadata().ok()?;
+            meta.is_file().then_some((id, meta.len()))
+        })
+        .collect()
+}
+
+/// The file in `.partial` that names the data folder whose queue the partial
+/// files belong to.
+const PARTIAL_OWNER: &str = "owner";
+
+/// Whether the Haul on `data_dir` may delete partial files in
+/// `download_dir/.partial` no row of its own claims. Another Haul with a data
+/// folder of its own (a test copy, say) may share the download folder, and
+/// its partial files are not this one's to delete: the folder is owned by
+/// whichever data folder came first, as long as that one still has a queue.
+fn owns_partials(download_dir: &Path, data_dir: &Path) -> bool {
+    let folder = download_dir.join(".partial");
+    if !folder.is_dir() {
+        return true;
+    }
+    let marker = folder.join(PARTIAL_OWNER);
+    let me = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    if let Ok(owner) = std::fs::read_to_string(&marker) {
+        let owner = PathBuf::from(owner.trim());
+        if owner == me {
+            return true;
+        }
+        if owner.join(store::QUEUE).exists() {
+            return false;
+        }
+    }
+    let _ = std::fs::write(&marker, me.to_string_lossy().as_bytes());
+    true
+}
+
 /// Takes off the list the unwrapped wrappers none of whose files is on it
 /// any more: they stood for those files, and starting or removing them
 /// would do nothing.
@@ -675,6 +721,8 @@ struct Inner {
     runtime: tokio::runtime::Handle,
     save_lock: Mutex<()>,
     rename_lock: Mutex<()>,
+    /// Held while settings change ([`Engine::settings_held`]).
+    settings_lock: Mutex<()>,
     shutdown: CancellationToken,
     /// A newer Haul, when GitHub has one.
     update: Mutex<Option<crate::update::Update>>,
@@ -741,6 +789,31 @@ impl Engine {
         // Dropping a host from a wrapper's card can take its last file and
         // leave the wrapper on the list until now.
         drop_spent_wrappers(&mut items);
+        // What each unfinished row holds on disk, which only a running
+        // transfer counts: without it a paused row with bytes would read as
+        // never started. A partial file no row claims can never be resumed.
+        let mut on_disk = partial_sizes(&download_dir);
+        for it in items.values_mut().filter(|it| it.status != Status::Done) {
+            if let Some(len) = on_disk.remove(&it.id) {
+                // Never more than the file's size: a host may have said a
+                // smaller one since.
+                it.done = if it.size > 0 { len.min(it.size) } else { len };
+            }
+        }
+        if owns_partials(&download_dir, &data_dir) {
+            for (id, len) in on_disk {
+                tracing::info!(
+                    "deleting partial file {id}.part ({len} bytes): no download owns it"
+                );
+                let _ =
+                    std::fs::remove_file(download_dir.join(".partial").join(format!("{id}.part")));
+            }
+        } else if !on_disk.is_empty() {
+            tracing::info!(
+                "{} partial files belong to no download here; another Haul's data folder owns the folder, so they stay",
+                on_disk.len()
+            );
+        }
         let unprobed: Vec<String> = items
             .values()
             .filter(|i| !i.probed && i.status == Status::Queued)
@@ -790,6 +863,7 @@ impl Engine {
             runtime: tokio::runtime::Handle::current(),
             save_lock: Mutex::new(()),
             rename_lock: Mutex::new(()),
+            settings_lock: Mutex::new(()),
             shutdown: CancellationToken::new(),
             update: Mutex::new(None),
             _lock: lock,
@@ -1224,6 +1298,7 @@ impl Engine {
                 if self.dedupe(&mut st, id) {
                     st.items.shift_remove(id);
                     self.publish(st);
+                    self.discard_parts([id.to_string()]);
                     return;
                 }
             }

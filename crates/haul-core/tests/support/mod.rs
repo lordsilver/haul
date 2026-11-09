@@ -438,6 +438,55 @@ pub(super) async fn start_server() -> (Server, u16) {
             }),
         )
         .route(
+            "/short/{name}",
+            // Says the file's size when asked, then sends half of it in
+            // chunks, with no length, and ends as if that were all; the
+            // answers after that are whole.
+            get(|State(s): State<Server>, method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                let data = content(&name, SIZE);
+                if method == Method::HEAD || s.flaky.fetch_add(1, Ordering::SeqCst) > 0 {
+                    if method != Method::HEAD {
+                        log(&s, &format!("/short/{name}"), &headers);
+                    }
+                    return file_response(data, &headers);
+                }
+                log(&s, &format!("/short/{name}"), &headers);
+                let half = Bytes::from(data[..SIZE / 2].to_vec());
+                let stream = futures_util::stream::once(async move { Ok::<_, Infallible>(half) });
+                Response::builder().body(Body::from_stream(stream)).unwrap()
+            }),
+        )
+        .route(
+            "/unsized-expiring/{name}",
+            // Never says the file's size; its first answer breaks off a third
+            // in, and past the start it answers a bare 416, as a link that
+            // ran out does.
+            get(|State(s): State<Server>, method: Method, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {
+                if method == Method::HEAD {
+                    return StatusCode::OK.into_response();
+                }
+                log(&s, &format!("/unsized-expiring/{name}"), &headers);
+                if range_start(&headers).is_some_and(|start| start > 0) {
+                    return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
+                }
+                let head = Bytes::from(content(&name, SIZE)[..SIZE / 3].to_vec());
+                let stream = futures_util::stream::unfold(0, move |step| {
+                    let head = head.clone();
+                    async move {
+                        match step {
+                            0 => Some((Ok(head), 1)),
+                            1 => {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                Some((Err(std::io::Error::other("connection dropped")), 2))
+                            }
+                            _ => None,
+                        }
+                    }
+                });
+                Response::builder().body(Body::from_stream(stream)).unwrap()
+            }),
+        )
+        .route(
             "/cut/{name}",
             // Answers a range as if it had the file, and sends nothing.
             get(|State(s): State<Server>, UrlPath(name): UrlPath<String>, headers: HeaderMap| async move {

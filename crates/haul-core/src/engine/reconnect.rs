@@ -77,6 +77,20 @@ pub struct ReconnectView {
     pub on_line: usize,
 }
 
+/// Lets the line go again however a redial ends, a panic included.
+struct LineHeld(Engine);
+
+impl Drop for LineHeld {
+    fn drop(&mut self) {
+        let mut st = self.0.lock();
+        st.reconnecting = false;
+        st.reconnects.busy = false;
+        self.0.touch(&mut st);
+        drop(st);
+        self.0.0.wake.notify_one();
+    }
+}
+
 impl Engine {
     pub fn reconnect_view(&self) -> ReconnectView {
         self.reconnect_view_in(&self.lock())
@@ -147,6 +161,15 @@ impl Engine {
     /// downloads on it, has the router redial (or runs the user's command),
     /// and lets them go on. Returns the new address, or why there is none.
     pub async fn reconnect(&self, why: &str) -> Result<String, String> {
+        let (engine, why) = (self.clone(), why.to_string());
+        // In a task of its own: a caller that goes away halfway (a request
+        // whose page reloaded) must not leave the line held.
+        tokio::spawn(async move { engine.reconnect_now(&why).await })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    async fn reconnect_now(&self, why: &str) -> Result<String, String> {
         {
             let mut st = self.lock();
             if st.reconnects.busy {
@@ -161,12 +184,12 @@ impl Engine {
             }
             st.reconnects.busy = true;
         }
+        let held = LineHeld(self.clone());
         tracing::info!("getting a new address: {why}");
-        self.hold_direct(true);
+        self.hold_direct();
         let result = self.redial().await;
-        self.hold_direct(false);
+        drop(held);
         let mut st = self.lock();
-        st.reconnects.busy = false;
         st.reconnects.last = Some(Instant::now());
         match &result {
             Ok(address) => {
@@ -212,18 +235,16 @@ impl Engine {
         result.map_err(|e| e.to_string())
     }
 
-    /// Stops new starts and the downloads on this machine's own line, or
-    /// lets them go again.
-    fn hold_direct(&self, hold: bool) {
+    /// Stops new starts and the downloads on this machine's own line;
+    /// [`LineHeld`] lets them go again.
+    fn hold_direct(&self) {
         let mut st = self.lock();
-        st.reconnecting = hold;
-        if hold {
-            for it in st.items.values_mut() {
-                if it.exit == Some(DIRECT)
-                    && let Some(task) = &it.task
-                {
-                    task.cancel();
-                }
+        st.reconnecting = true;
+        for it in st.items.values_mut() {
+            if it.exit == Some(DIRECT)
+                && let Some(task) = &it.task
+            {
+                task.cancel();
             }
         }
         self.touch(&mut st);

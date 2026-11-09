@@ -197,6 +197,42 @@ async fn a_person_can_look_for_updates_with_the_setting_off() {
     assert!(engine.snapshot().update.is_some());
 }
 
+/// A partial file that cannot be written is this computer's trouble: no
+/// host is blamed and no mirror is used up for it.
+#[tokio::test]
+async fn a_file_that_cannot_be_written_blames_no_host() {
+    let t = Setup::new().await;
+    // A file where the partial folder should be.
+    std::fs::create_dir_all(t.root.join("dl")).unwrap();
+    std::fs::write(t.root.join("dl/.partial"), b"in the way").unwrap();
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text(&format!("{}/files/w.bin\n{}/files/w.bin", t.ip, t.name), "");
+    wait_for(&engine, "one row on two hosts", |s| {
+        s.items.len() == 1 && s.items[0].mirrors.len() == 2
+    })
+    .await;
+    engine.set_paused(false);
+    let s = wait_for(&engine, "the failure", |s| {
+        s.items[0].status.as_str() == "error"
+    })
+    .await;
+    assert!(
+        s.items[0].error.starts_with("this computer:"),
+        "{}",
+        s.items[0].error
+    );
+    let inspect = engine.debug_inspect();
+    assert_eq!(
+        inspect["items"][0]["failed"],
+        json!([]),
+        "no mirror used up"
+    );
+    for h in &s.hosts {
+        assert_eq!(h.fails, 0, "{} not blamed", h.name);
+    }
+}
+
 /// A file on several hosts downloads from the one the user picked, even
 /// over the hosts they prefer in general.
 #[tokio::test]
@@ -552,6 +588,43 @@ async fn queue_and_settings_survive_restart_and_a_second_instance_is_refused() {
     assert_eq!(cfg.routes.get("127.0.0.1"), Some(&Route::Direct));
     let file = std::fs::read_to_string(t.root.join("data/config.toml")).unwrap();
     assert!(file.starts_with("# Haul settings"), "{file}");
+}
+
+/// Two settings changed at once both land, in memory and in the file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settings_changed_at_once_agree_with_the_file() {
+    let t = Setup::new().await;
+    let engine = start_from_file(&t).await;
+    let a = tokio::task::spawn_blocking({
+        let engine = engine.clone();
+        move || {
+            for i in 0..40 {
+                engine.set_disabled("a.example", i % 2 == 0).unwrap();
+            }
+        }
+    });
+    let b = tokio::task::spawn_blocking({
+        let engine = engine.clone();
+        move || {
+            for i in 0..40 {
+                engine
+                    .set_host_folder("b.example", &format!("x{i}"))
+                    .unwrap();
+            }
+        }
+    });
+    a.await.unwrap();
+    b.await.unwrap();
+    let file = Config::load(&t.root.join("data/config.toml")).unwrap();
+    let cfg = engine.cfg();
+    assert_eq!(cfg.disabled_hosts, file.disabled_hosts);
+    assert_eq!(cfg.folders, file.folders);
+    assert_eq!(*cfg, file);
+    assert_eq!(
+        cfg.folders.get("b.example").map(String::as_str),
+        Some("x39")
+    );
+    assert!(!cfg.is_disabled("a.example"));
 }
 
 #[tokio::test]
@@ -2580,6 +2653,81 @@ async fn removing_a_wrapper_takes_its_files_that_never_started() {
     assert_eq!(engine.start_wrapper(&w), None);
 }
 
+/// A paused file with bytes on disk is a started one after a restart too:
+/// removing its wrapper keeps it, and removing it asks twice.
+#[tokio::test]
+async fn bytes_on_disk_count_after_a_restart() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text("https://fileguard.cc/vault/parts", "");
+    let s = wrapper_settled(&engine, "done").await;
+    let w = s.wrappers[0].id.clone();
+    let s = wait_for(&engine, "the parts", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.size > 0)
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    engine.shutdown().await;
+    drop(engine);
+    std::fs::create_dir_all(t.partial(&id).parent().unwrap()).unwrap();
+    std::fs::write(t.partial(&id), b"some bytes").unwrap();
+
+    let engine = start_when_free(|| t.options()).await;
+    let s = engine.snapshot();
+    let it = s.items.iter().find(|i| i.id == id).unwrap();
+    assert!(!it.not_started, "it has bytes on disk");
+    assert_eq!(it.done, 10);
+    assert!(
+        it.commands
+            .contains(&haul_core::engine::Command::RemovePartial),
+        "{:?}",
+        it.commands
+    );
+    assert!(engine.remove_wrapper(&w));
+    let s = engine.snapshot();
+    assert_eq!(
+        s.items.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+        [id.as_str()],
+        "the started file stays"
+    );
+    assert!(t.partial(&id).exists());
+}
+
+/// A partial file no download owns is deleted at start, unless the folder
+/// belongs to another Haul's data folder that is still there.
+#[tokio::test]
+async fn a_partial_file_no_download_owns_is_deleted_at_start() {
+    let t = Setup::new().await;
+    let partial = t.root.join("dl/.partial");
+    std::fs::create_dir_all(&partial).unwrap();
+    std::fs::write(partial.join("abc123.part"), b"left over").unwrap();
+    let engine = t.engine().await;
+    assert!(!partial.join("abc123.part").exists(), "deleted");
+    engine.shutdown().await;
+    drop(engine);
+
+    // Another Haul's folder: its files stay.
+    let other = t.root.join("other-data");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("queue.json"), "{}").unwrap();
+    let other = std::fs::canonicalize(&other).unwrap();
+    std::fs::write(partial.join("owner"), other.to_string_lossy().as_bytes()).unwrap();
+    std::fs::write(partial.join("abc123.part"), b"theirs").unwrap();
+    let engine = start_when_free(|| t.options()).await;
+    assert!(
+        partial.join("abc123.part").exists(),
+        "not this Haul's to delete"
+    );
+    engine.shutdown().await;
+    drop(engine);
+
+    // Once that one's queue is gone, the folder is this one's again.
+    std::fs::remove_file(other.join("queue.json")).unwrap();
+    let _engine = start_when_free(|| t.options()).await;
+    assert!(!partial.join("abc123.part").exists());
+}
+
 #[tokio::test]
 async fn a_filecrypt_gate_hands_back_its_dlc_that_unpacks() {
     let t = Setup::new().await;
@@ -3882,6 +4030,25 @@ async fn the_router_gets_a_new_address() {
     assert!(s.reconnect.note.unwrap().contains("Got a new address"));
 }
 
+/// A redial whose caller goes away halfway (a request whose page reloaded)
+/// still ends, and lets the line and the queue go again.
+#[tokio::test]
+async fn a_redial_whose_caller_goes_away_lets_the_line_go() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.find_router().await;
+    let asked = tokio::spawn({
+        let engine = engine.clone();
+        async move { engine.reconnect("a test").await }
+    });
+    wait_for(&engine, "the redial to start", |s| s.reconnect.busy).await;
+    asked.abort();
+    wait_for(&engine, "the line let go", |s| !s.reconnect.busy).await;
+    assert_eq!(engine.debug_inspect()["reconnecting"], false);
+    engine.add_text(&format!("{}/files/a.bin", t.ip), "");
+    wait_for(&engine, "a download after it", all_done).await;
+}
+
 /// A redial whose router reports a new address while the internet still
 /// sees the old one (a carrier's shared address) is no new address.
 #[tokio::test]
@@ -4313,6 +4480,40 @@ async fn a_password_from_the_settings_opens_an_archive_on_its_own() {
     .await;
     let report = engine.diagnostics(serde_json::Value::Null).to_string();
     assert!(!report.contains("open sesame"), "{report}");
+}
+
+/// The report holds no link's key, in any of its files, nor the redial
+/// command, which often holds the router's login.
+#[tokio::test]
+async fn the_report_holds_no_keys_and_no_command() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("data")).unwrap();
+    // A log written before the log stripped keys itself.
+    std::fs::write(
+        haul_core::logging::path(&t.root.join("data")),
+        "{\"message\":\"adding https://mega.nz/file/abc#AAAAAAAA\"}\nplain https://mega.nz/file/abc#AAAAAAAA\n",
+    )
+    .unwrap();
+    let engine = t.engine().await;
+    let command = json!({"reconnect_command": "router-cli --password hunter2"});
+    engine
+        .update_settings(command.as_object().unwrap())
+        .unwrap();
+    let (_, bytes) = engine.report_zip(serde_json::Value::Null).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut names = Vec::new();
+    for i in 0..zip.len() {
+        let mut member = zip.by_index(i).unwrap();
+        let name = member.name().unwrap().to_string();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut member, &mut text).unwrap();
+        assert!(!text.contains("AAAAAAAA"), "{name}: {text}");
+        assert!(!text.contains("hunter2"), "{name}: {text}");
+        names.push(name);
+    }
+    assert!(names.contains(&"haul.log".to_string()), "{names:?}");
+    let report = engine.diagnostics(serde_json::Value::Null);
+    assert_eq!(report["settings"]["reconnect_command"], "(set)");
 }
 
 // ---- hosts that slow an address down
@@ -5305,6 +5506,38 @@ async fn an_expired_link_does_not_cost_the_partial_file() {
     let asked = t.server.requests("/paced/400/x.bin");
     let last = asked.last().unwrap();
     assert!(last.contains("bytes="), "went on from its bytes: {asked:?}");
+}
+
+/// An answer that ends early without an error, with no length of its own,
+/// is not the whole file when its host said how big the file is.
+#[tokio::test]
+async fn a_chunked_answer_that_ends_short_is_not_the_file() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/short/s.bin", t.ip), "");
+    wait_for(&engine, "done", all_done).await;
+    assert_eq!(t.downloaded("s.bin"), content("s.bin", SIZE));
+    assert!(t.server.requests("/short/s.bin").len() >= 2, "asked again");
+}
+
+/// A bare 416 to a resume of a file whose size nobody said is a link that
+/// ran out, not a finished file.
+#[tokio::test]
+async fn a_bare_416_does_not_finish_a_file_of_unknown_size() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/unsized-expiring/u.bin", t.ip), "");
+    let s = wait_for(&engine, "the link to give out", |s| {
+        s.items[0].status.as_str() == "error" || s.items[0].status.as_str() == "done"
+    })
+    .await;
+    assert_eq!(s.items[0].status.as_str(), "error", "not finished");
+    assert!(
+        s.items[0].error.contains("answers nothing past"),
+        "{}",
+        s.items[0].error
+    );
+    assert!(t.partial(&s.items[0].id).exists(), "its bytes stay");
 }
 
 /// An answer that ends before any byte was compared proves nothing either.
