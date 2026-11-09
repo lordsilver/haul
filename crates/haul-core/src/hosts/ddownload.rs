@@ -19,11 +19,13 @@ const DELETED: &str = "ddownload: the file was deleted";
 /// The file's name, when its page gives it; [`ResolveError::Gone`] when the
 /// page says it was deleted.
 async fn page(cx: &Cx<'_>, url: &str) -> Result<Option<String>, ResolveError> {
-    let page = cx.http.client.get(url).send().await?.text().await?;
+    let r = cx.http.client.get(url).send().await?;
+    super::rate_limited(&r)?;
+    let page = r.text().await?;
     if page.contains("File Not Found") {
         return Err(ResolveError::gone(DELETED));
     }
-    Ok(NAME.captures(&page).map(|c| c[1].replace("&amp;", "&")))
+    Ok(NAME.captures(&page).map(|c| super::decode_entities(&c[1])))
 }
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
@@ -34,13 +36,11 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
 }
 
 pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
-    match page(cx, url).await {
-        Ok(Some(name)) => Look::Found(Probed {
+    super::look_from(page(cx, url).await.map(|name| {
+        name.map(|name| Probed {
             name,
             size: None,
             checksum: None,
-        }),
-        Err(ResolveError::Gone(m)) => Look::Gone(m),
-        _ => Look::Unknown,
-    }
+        })
+    }))
 }

@@ -34,16 +34,14 @@ struct Info {
 
 async fn info(cx: &Cx<'_>, key: &str) -> Result<Info, ResolveError> {
     let base = &cx.cfg.endpoints.mediafire;
-    let answer: Value = cx
+    let answer = cx
         .http
         .client
         .get(format!("{base}/api/1.5/file/get_info.php"))
         .query(&[("quick_key", key), ("response_format", "json")])
         .send()
-        .await?
-        .json()
-        .await
-        .map_err(|e| ResolveError::Failed(format!("mediafire: {e}")))?;
+        .await?;
+    let answer: Value = super::api_json(answer, "mediafire").await?;
     let f = &answer["response"]["file_info"];
     match (
         f["filename"].as_str(),

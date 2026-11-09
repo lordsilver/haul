@@ -5,14 +5,10 @@ use std::collections::BTreeMap;
 
 use reqwest::header::{LOCATION, REFERER};
 
-use super::{Cx, Entry, ResolveError, retry_after};
+use super::{Cx, Entry, ResolveError};
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
-    let id = url
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or_default();
+    let id = super::last_path_part(url);
     let base = &cx.cfg.endpoints.buzzheavier;
     let r = cx
         .http
@@ -22,13 +18,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         .header(REFERER, url)
         .send()
         .await?;
-    if r.status() == 429 {
-        let seconds = retry_after(r.headers(), 120);
-        return Err(ResolveError::Wait {
-            seconds,
-            message: format!("buzzheavier rate limit, wait {seconds}s"),
-        });
-    }
+    super::wait_from(&r, "buzzheavier", 120)?;
     // Cloudflare scores each request to the site: Haul's passes this one
     // where it is turned away from the file's page (2026-11-07), but one
     // turned away is a check a browser passes, whose clearance Haul then

@@ -19,6 +19,39 @@ fn details(j: &Value) -> String {
     }
 }
 
+/// A session token: the one kept from before, or a new login's.
+async fn token(cx: &Cx<'_>, user: &str, pass: &str, fresh: bool) -> Result<String, ResolveError> {
+    let slot = || {
+        cx.tokens
+            .rapidgator
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    };
+    if !fresh && let Some(t) = slot().clone() {
+        return Ok(t);
+    }
+    let base = &cx.cfg.endpoints.rapidgator;
+    let r = cx
+        .http
+        .client
+        .get(format!("{base}/api/v2/user/login"))
+        .query(&[("login", user), ("password", pass)])
+        .send()
+        .await?;
+    let j: Value = super::api_json(r, "rapidgator").await?;
+    if j["status"] != 200 {
+        return Err(ResolveError::Failed(format!(
+            "rapidgator login: {}",
+            details(&j)
+        )));
+    }
+    let t = j["response"]["token"]
+        .as_str()
+        .ok_or_else(|| ResolveError::failed("rapidgator login: no token"))?;
+    *slot() = Some(t.to_string());
+    Ok(t.to_string())
+}
+
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
     let (Some(user), Some(pass)) = (
         cx.cfg.account("rapidgator_user"),
@@ -28,62 +61,44 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     };
     let id = super::link_id(&FILE_ID, url, "rapidgator")?;
     let base = &cx.cfg.endpoints.rapidgator;
-    let cached = cx
+    let had_token = cx
         .tokens
         .rapidgator
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    let token = match cached {
-        Some(t) => t,
-        None => {
-            let j: Value = cx
-                .http
-                .client
-                .get(format!("{base}/api/v2/user/login"))
-                .query(&[("login", user), ("password", pass)])
-                .send()
-                .await?
-                .json()
-                .await?;
-            if j["status"] != 200 {
-                return Err(ResolveError::Failed(format!(
-                    "rapidgator login: {}",
-                    details(&j)
-                )));
-            }
-            let t = j["response"]["token"]
-                .as_str()
-                .ok_or_else(|| ResolveError::failed("rapidgator login: no token"))?;
+        .is_some();
+    // A kept token may have run out: told so, Haul logs in once more and
+    // asks again before failing.
+    let mut fresh = false;
+    loop {
+        let token = token(cx, user, pass, fresh).await?;
+        let r = cx
+            .http
+            .client
+            .get(format!("{base}/api/v2/file/download"))
+            .query(&[("file_id", id.as_str()), ("token", &token)])
+            .send()
+            .await?;
+        let j: Value = super::api_json(r, "rapidgator").await?;
+        if j["status"] != 200 {
             *cx.tokens
                 .rapidgator
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(t.to_string());
-            t.to_string()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+            // 401: the session is no longer good, not the file.
+            if j["status"] == 401 && had_token && !fresh {
+                fresh = true;
+                continue;
+            }
+            return Err(ResolveError::Failed(format!("rapidgator: {}", details(&j))));
         }
-    };
-    let j: Value = cx
-        .http
-        .client
-        .get(format!("{base}/api/v2/file/download"))
-        .query(&[("file_id", id.as_str()), ("token", &token)])
-        .send()
-        .await?
-        .json()
-        .await?;
-    if j["status"] != 200 {
-        *cx.tokens
-            .rapidgator
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
-        return Err(ResolveError::Failed(format!("rapidgator: {}", details(&j))));
+        let link = j["response"]["download_url"]
+            .as_str()
+            .ok_or_else(|| ResolveError::failed("rapidgator: no download_url"))?;
+        return Ok(vec![Entry {
+            url: link.into(),
+            name: guess_name(url),
+            ..Entry::default()
+        }]);
     }
-    let link = j["response"]["download_url"]
-        .as_str()
-        .ok_or_else(|| ResolveError::failed("rapidgator: no download_url"))?;
-    Ok(vec![Entry {
-        url: link.into(),
-        name: guess_name(url),
-        ..Entry::default()
-    }])
 }
