@@ -4006,6 +4006,56 @@ async fn downloads_from_one_host_spread_over_the_proxies() {
     assert_eq!(t.downloaded("b.bin"), content("b.bin", SIZE));
 }
 
+/// A proxy taken out of the pool while a download runs through another
+/// leaves that download's lane as it was: still counted, under the name
+/// its proxy now has.
+#[tokio::test]
+async fn a_pool_change_keeps_the_lanes_of_running_downloads() {
+    let t = Setup::new().await;
+    let (_second, port) = start_server().await;
+    let other = format!("http://127.0.0.1:{port}");
+    let mut cfg = t.config();
+    cfg.proxies = vec![t.ip.clone(), other.clone()];
+    cfg.max_total = 1;
+    cfg.rate_limit_mbps = 0.05;
+    let engine = t.engine_with(cfg.clone()).await;
+    engine.add_text("http://files.example/files/a.bin", "");
+    wait_for(&engine, "the download", |s| {
+        s.items.iter().any(|i| i.status.as_str() == "downloading")
+    })
+    .await;
+    let exit = engine.debug_inspect()["items"][0]["exit"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The proxy it does not run through goes.
+    let (kept, gone) = if exit == "proxy 1" {
+        (t.ip.clone(), other)
+    } else {
+        (other, t.ip.clone())
+    };
+    let change = json!({ "proxies": [kept] });
+    engine.update_settings(change.as_object().unwrap()).unwrap();
+    let inspect = engine.debug_inspect();
+    assert_eq!(
+        inspect["items"][0]["exit"], "proxy 1",
+        "{gone} left the pool"
+    );
+    let lanes: Vec<&serde_json::Value> = inspect["lanes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["host"] == "files.example")
+        .collect();
+    assert!(
+        lanes
+            .iter()
+            .any(|l| l["exit"] == "proxy 1" && l["active"] == 1),
+        "{lanes:?}"
+    );
+    assert_eq!(active(&engine.snapshot(), "files.example"), 1);
+}
+
 /// pixeldrain says how much each address may still fetch at full speed
 /// today; the Hosts view shows it.
 #[tokio::test]

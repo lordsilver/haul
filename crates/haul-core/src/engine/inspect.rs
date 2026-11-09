@@ -16,6 +16,7 @@ fn until(at: Option<Instant>, now: Instant) -> Option<u64> {
 impl Engine {
     /// The engine's insides, as JSON.
     pub fn debug_inspect(&self) -> Value {
+        let clients = self.clients();
         let st = self.lock();
         let now = Instant::now();
         let items: Vec<Value> = st
@@ -30,7 +31,7 @@ impl Engine {
                     "tentative": it.tentative,
                     "probed": it.probed,
                     "running": it.task.is_some(),
-                    "exit": it.exit,
+                    "exit": it.exit.map(|e| clients.name(e)),
                     "host": it.host,
                     "url": it.url,
                     "speed_verdict": it.pace.as_ref().map(|p| p.verdict.as_str()),
@@ -92,10 +93,10 @@ impl Engine {
         let mut lanes: Vec<Value> = st
             .lanes
             .iter()
-            .map(|((host, exit), lane)| {
+            .map(|(host, exit, lane)| {
                 json!({
                     "host": host,
-                    "exit": exit,
+                    "exit": clients.name(exit),
                     "active": lane.active,
                     "serving": lane.serving,
                     "cap": lane.cap,
@@ -109,7 +110,7 @@ impl Engine {
         lanes.sort_by_key(|l| {
             (
                 l["host"].as_str().unwrap_or_default().to_string(),
-                l["exit"].as_u64(),
+                l["exit"].as_str().unwrap_or_default().to_string(),
             )
         });
         let mut guarded: Vec<&String> = st.guarded.iter().collect();

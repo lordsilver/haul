@@ -9,7 +9,7 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
-use super::{Engine, Event, Exit, State, display_name, exit_name, noted_quietly};
+use super::{Engine, Event, Exit, State, display_name, noted_quietly};
 use crate::{
     hosts,
     item::{Item, Mirror, Status, Trouble},
@@ -63,12 +63,12 @@ impl Engine {
                     if let (Some(old), Some(new)) = (lane.quota, quota)
                         && new.used < old.used
                     {
-                        tracing::info!(exit = %exit_name(exit), "{host} sees a fresh address: its limits start over");
+                        tracing::info!(exit = %self.exit_name(exit), "{host} sees a fresh address: its limits start over");
                         lane.fresh_start();
                     }
                     if quota.is_some() && lane.quota != quota {
                         if let Some(q) = quota {
-                            tracing::debug!(exit = %exit_name(exit), used = q.used, limit = q.limit, "{host} allowance");
+                            tracing::debug!(exit = %self.exit_name(exit), used = q.used, limit = q.limit, "{host} allowance");
                         }
                         lane.quota = quota;
                         self.touch(&mut st);
@@ -190,7 +190,7 @@ impl Engine {
                 match self.pick(&mut st, &id, now) {
                     Some((url, exit)) => {
                         let host = hosts::host_of(&url);
-                        let via = exit_name(exit);
+                        let via = self.exit_name(exit);
                         tracing::debug!(item = %id, url = %url, "starting from {host} via {via}");
                         st.lane(&host, exit).active += 1;
                         let cancel = CancellationToken::new();

@@ -195,8 +195,8 @@ impl Engine {
                 tracing::info!("new address {address}");
                 st.reconnects
                     .note(format!("Got a new address ({why})"), false);
-                for ((_, exit), lane) in st.lanes.iter_mut() {
-                    if *exit == DIRECT {
+                for (_, exit, lane) in st.lanes.iter_mut() {
+                    if exit == DIRECT {
                         lane.fresh_start();
                         lane.quota = None;
                     }
@@ -365,7 +365,7 @@ impl Engine {
         // it before didn't already show it doesn't limit by address.
         let line_helps = |host: &str| {
             let exits = self.exits_for(host, &st);
-            let lane = |e: Exit| st.lanes.get(&(host.to_string(), e));
+            let lane = |e: Exit| st.lanes.get(host, e);
             let proxy_free = exits
                 .iter()
                 .any(|&e| e != DIRECT && lane(e).is_none_or(|l| !l.slowed() && !l.cooling(now)));
@@ -374,7 +374,7 @@ impl Engine {
         };
         let quota_slowed = |host: &str| {
             st.lanes
-                .get(&(host.to_string(), DIRECT))
+                .get(host, DIRECT)
                 .and_then(|l| l.quota)
                 .filter(|q| q.slowed())
                 .map(|q| {
@@ -401,7 +401,7 @@ impl Engine {
                 }
                 let slowing = st
                     .lanes
-                    .get(&(host.to_string(), DIRECT))
+                    .get(host, DIRECT)
                     .is_some_and(|l| l.slowing && l.slowing_sure);
                 if slowing && it.slowed.as_ref().is_some_and(|s| s.sure) {
                     return Some(format!("{host} is slowing this address"));
@@ -418,7 +418,7 @@ impl Engine {
             let held = |host: &String| {
                 self.exits_for(host, &st).iter().all(|&e| {
                     st.lanes
-                        .get(&(host.clone(), e))
+                        .get(host, e)
                         .is_some_and(|l| l.slowed() || l.cooling(now))
                 })
             };
@@ -429,7 +429,7 @@ impl Engine {
                 if let Some(why) = quota_slowed(host) {
                     return Some(why);
                 }
-                let Some(direct) = st.lanes.get(&(host.clone(), DIRECT)) else {
+                let Some(direct) = st.lanes.get(host, DIRECT) else {
                     continue;
                 };
                 // A host's slowness nothing else confirms isn't worth cutting
@@ -554,8 +554,8 @@ impl Engine {
             let st = self.lock();
             st.lanes
                 .iter()
-                .filter(|((_, exit), l)| *exit == DIRECT && l.slowing && l.slowing_sure)
-                .map(|((host, _), _)| host.clone())
+                .filter(|(_, exit, l)| *exit == DIRECT && l.slowing && l.slowing_sure)
+                .map(|(host, _, _)| host.to_string())
                 .collect()
         };
         let got = self.reconnect(why).await;

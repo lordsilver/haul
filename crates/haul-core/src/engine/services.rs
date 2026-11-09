@@ -153,10 +153,7 @@ impl Engine {
         match self.set_clients(&cfg, &proxies) {
             Ok(()) => {
                 tracing::info!("{} NordVPN servers among the proxies", proxies.len());
-                let mut st = self.lock();
-                // Exits may now be other addresses.
-                st.lanes.retain(|(_, exit), _| *exit == 0);
-                self.touch(&mut st);
+                self.touch(&mut self.lock());
             }
             Err(e) => {
                 self.lock().services.error = Some(e);
