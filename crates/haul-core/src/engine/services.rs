@@ -230,7 +230,7 @@ impl Engine {
     /// Keeps the services' servers up to date: when their settings change,
     /// and once an hour.
     pub(super) async fn watch_services(self) {
-        let mut changes = self.watch();
+        let mut changes = self.watch_settings();
         let mut seen = None;
         let mut last = Instant::now();
         loop {

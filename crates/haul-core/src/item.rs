@@ -132,6 +132,79 @@ pub struct Found {
     pub links: usize,
 }
 
+/// One link a file can come from, with its host as [`crate::hosts::host_of`]
+/// names it, worked out once: the scheduler, the views and the planners ask
+/// a mirror's host many times a second. Saved as the link alone.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub(crate) struct Mirror {
+    pub url: String,
+    pub host: std::sync::Arc<str>,
+}
+
+impl From<String> for Mirror {
+    fn from(url: String) -> Self {
+        let host = crate::hosts::host_of(&url).into();
+        Self { url, host }
+    }
+}
+
+impl From<&str> for Mirror {
+    fn from(url: &str) -> Self {
+        url.to_string().into()
+    }
+}
+
+impl From<Mirror> for String {
+    fn from(m: Mirror) -> Self {
+        m.url
+    }
+}
+
+impl Mirror {
+    pub fn as_str(&self) -> &str {
+        &self.url
+    }
+}
+
+/// Reads as its link wherever a `&str` is wanted.
+impl std::ops::Deref for Mirror {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.url
+    }
+}
+
+impl std::borrow::Borrow<str> for Mirror {
+    fn borrow(&self) -> &str {
+        &self.url
+    }
+}
+
+impl std::fmt::Display for Mirror {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.url)
+    }
+}
+
+impl PartialEq<str> for Mirror {
+    fn eq(&self, other: &str) -> bool {
+        self.url == other
+    }
+}
+
+impl PartialEq<&str> for Mirror {
+    fn eq(&self, other: &&str) -> bool {
+        self.url == *other
+    }
+}
+
+impl PartialEq<String> for Mirror {
+    fn eq(&self, other: &String) -> bool {
+        &self.url == other
+    }
+}
+
 /// Saved in `queue.json` as it is, but for what only matters while Haul runs
 /// (`#[serde(skip)]`), by its id.
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -139,7 +212,7 @@ pub struct Found {
 pub(crate) struct Item {
     #[serde(skip)]
     pub id: String,
-    pub mirrors: Vec<String>,
+    pub mirrors: Vec<Mirror>,
     #[serde(skip)]
     pub failed: BTreeSet<String>,
     /// Mirrors whose host or page said the file is gone (deleted, or a
@@ -356,11 +429,15 @@ impl Item {
         }
     }
 
-    pub fn new(urls: Vec<String>, name: Option<String>, package: String) -> Self {
+    pub fn new(
+        urls: impl IntoIterator<Item = impl Into<Mirror>>,
+        name: Option<String>,
+        package: String,
+    ) -> Self {
         let name = name.map(|n| tidy_name(&n)).filter(|n| !n.is_empty());
         Self {
             id: uuid::Uuid::new_v4().simple().to_string()[..10].to_string(),
-            mirrors: urls,
+            mirrors: urls.into_iter().map(Into::into).collect(),
             probed: name.is_some(),
             name,
             package,
@@ -489,7 +566,7 @@ mod tests {
     #[test]
     fn a_row_as_this_version_writes_it_loads() {
         let mut it = Item::new(
-            vec!["https://site.example/archive.part1.rar".into()],
+            vec!["https://site.example/archive.part1.rar".to_string()],
             Some("archive.part1.rar".into()),
             "Example".into(),
         );
@@ -529,7 +606,7 @@ mod tests {
             (Status::Error, Status::Error),
         ] {
             let mut it = Item::new(
-                vec!["https://site.example/video.mkv".into()],
+                vec!["https://site.example/video.mkv".to_string()],
                 None,
                 String::new(),
             );

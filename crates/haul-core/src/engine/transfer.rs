@@ -74,6 +74,9 @@ enum Outcome {
     Unwrapped,
 }
 
+/// How often a transfer tells the state how far it is.
+const TELL_EVERY: Duration = Duration::from_millis(250);
+
 enum Fail {
     Cancelled,
     Wait {
@@ -715,6 +718,11 @@ impl Engine {
             if let Some(it) = self.lock().items.get_mut(id) {
                 it.pace = Some(Pace::new(Instant::now(), have));
             }
+            // Counted here and told to the state a few times a second, not
+            // for every chunk: the state's lock is everyone's.
+            let (mut told_at, mut untold) = (Instant::now(), 0u64);
+            // Never coarser than the speeds are judged at.
+            let tell_every = TELL_EVERY.min(cfg.throttling.tick);
             let streamed: Result<(), Fail> = async {
                 loop {
                     // Woken at the window's end too, so a stalled connection
@@ -774,27 +782,18 @@ impl Engine {
                     }
                     file.write_all(&chunk).await?;
                     done += chunk.len() as u64;
+                    untold += chunk.len() as u64;
                     self.0.limiter.throttle(chunk.len()).await;
-                    let mut st = self.lock();
-                    if let Some(it) = st.items.get_mut(id) {
-                        it.done = done;
-                    }
-                    let elapsed = mark.elapsed().as_secs_f64();
-                    let speed = (elapsed >= 1.0).then(|| (done - mark_bytes) as f64 / elapsed);
-                    if let Some(speed) = speed {
-                        if let Some(it) = st.items.get_mut(id) {
-                            it.speed = speed;
-                        }
-                        (mark, mark_bytes) = (Instant::now(), done);
-                    }
-                    let h = st.host(host);
-                    h.bytes += chunk.len() as u64;
-                    if let Some(speed) = speed {
-                        h.sample(speed);
+                    if told_at.elapsed() >= tell_every {
+                        let bytes = std::mem::take(&mut untold);
+                        self.tell_progress(id, host, done, bytes, &mut mark, &mut mark_bytes);
+                        told_at = Instant::now();
                     }
                 }
             }
             .await;
+            // What came since the last time, before anything reads `done`.
+            self.tell_progress(id, host, done, untold, &mut mark, &mut mark_bytes);
             file.flush().await?;
             drop(file);
             if differs {
@@ -830,6 +829,37 @@ impl Engine {
         tokio::fs::create_dir_all(&out_dir).await?;
         self.place(id, &part, &out_dir)?;
         Ok(Outcome::Done)
+    }
+
+    /// Tells the state how far row `id`'s transfer from `host` is: `done`
+    /// bytes, `bytes` of them since it was last told. Its speed is measured
+    /// over a second or more, from `mark`.
+    fn tell_progress(
+        &self,
+        id: &str,
+        host: &str,
+        done: u64,
+        bytes: u64,
+        mark: &mut Instant,
+        mark_bytes: &mut u64,
+    ) {
+        let mut st = self.lock();
+        let elapsed = mark.elapsed().as_secs_f64();
+        let speed = (elapsed >= 1.0).then(|| (done - *mark_bytes) as f64 / elapsed);
+        if let Some(it) = st.items.get_mut(id) {
+            it.done = done;
+            if let Some(speed) = speed {
+                it.speed = speed;
+            }
+        }
+        if speed.is_some() {
+            (*mark, *mark_bytes) = (Instant::now(), done);
+        }
+        let h = st.host(host);
+        h.bytes += bytes;
+        if let Some(speed) = speed {
+            h.sample(speed);
+        }
     }
 
     /// Where a finished file goes: the download folder, then the host's

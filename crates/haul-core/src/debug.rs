@@ -242,34 +242,27 @@ pub fn watch_statuses(engine: Engine) {
         let mut before: HashMap<String, (&'static str, String)> = HashMap::new();
         let mut first = true;
         loop {
-            let mut now = HashMap::new();
+            let found = engine.row_changes(&mut before);
             let mut tally: std::collections::BTreeMap<&str, usize> = Default::default();
-            for row in engine.row_states() {
-                let was = before.get(&row.id).map(|(s, _)| *s);
-                if was != Some(row.state) {
-                    let signal = json!({ "row": row.row, "id": row.id, "name": row.name, "from": was, "to": row.state, "error": row.error });
-                    if first {
-                        *tally.entry(row.state).or_default() += 1;
-                        send(signal_of("status", signal));
-                    } else {
-                        emit("status", signal);
-                    }
+            for (row, was) in found.changed {
+                let signal = json!({ "row": row.row, "id": row.id, "name": row.name, "from": was, "to": row.state, "error": row.error });
+                if first {
+                    *tally.entry(row.state).or_default() += 1;
+                    send(signal_of("status", signal));
+                } else {
+                    emit("status", signal);
                 }
-                now.insert(row.id, (row.state, row.name));
             }
             if first {
                 let rows: usize = tally.values().sum();
                 tracing::info!(target: SIGNAL_TARGET, rows, by_state = %json!(tally), "{rows} rows at start");
             }
-            for (id, (status, name)) in &before {
-                if !now.contains_key(id) {
-                    emit(
-                        "status",
-                        json!({ "id": id, "name": name, "from": status, "to": "removed" }),
-                    );
-                }
+            for (id, name, status) in found.removed {
+                emit(
+                    "status",
+                    json!({ "id": id, "name": name, "from": status, "to": "removed" }),
+                );
             }
-            before = now;
             first = false;
             if changes.changed().await.is_err() {
                 return;

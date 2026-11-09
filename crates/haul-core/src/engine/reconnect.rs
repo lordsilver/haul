@@ -17,7 +17,6 @@ use serde::Serialize;
 use super::{Engine, Exit};
 use crate::{
     config::secret,
-    hosts,
     item::{Status, Trouble},
     router::{self, RedialError, Router},
 };
@@ -412,8 +411,8 @@ impl Engine {
             let mirrors: Vec<String> = it
                 .mirrors
                 .iter()
-                .filter(|m| !it.failed.contains(*m))
-                .map(|m| hosts::host_of(m))
+                .filter(|m| !it.failed.contains(m.as_str()))
+                .map(|m| m.host.to_string())
                 .filter(|h| !cfg.is_disabled(h))
                 .collect();
             let held = |host: &String| {

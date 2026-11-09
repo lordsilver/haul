@@ -10,7 +10,7 @@ use super::{Engine, Exit, State, reconnect::DIRECT, transfer::drop_used_pre};
 use crate::{
     config::Config,
     hosts,
-    item::{Item, Slowed},
+    item::{Item, Mirror, Slowed},
     throttle::{self, Around, OwnLimit, Pace, Reading, Throttling, Verdict},
 };
 
@@ -314,7 +314,7 @@ impl Engine {
         let it = st.items.get(id)?;
         let mirrors = it.mirrors.clone();
         for m in mirrors {
-            let name = hosts::host_of(&m);
+            let name = m.host.to_string();
             if !self.could_serve(st, id, &m, &cfg, now) {
                 continue;
             }
@@ -352,7 +352,7 @@ impl Engine {
                 && st.exit_while_slowing(&name, &exits, &cfg, now).is_some()
             {
                 if let Some(it) = st.items.get_mut(id) {
-                    it.back_to = Some(m.clone());
+                    it.back_to = Some(m.url.clone());
                 }
                 return Some(name);
             }
@@ -361,15 +361,15 @@ impl Engine {
     }
 
     /// Whether mirror `m` of row `id` could serve it without a person.
-    fn could_serve(&self, st: &State, id: &str, m: &String, cfg: &Config, now: Instant) -> bool {
+    fn could_serve(&self, st: &State, id: &str, m: &Mirror, cfg: &Config, now: Instant) -> bool {
         let Some(it) = st.items.get(id) else {
             return false;
         };
-        if it.failed.contains(m) || cfg.is_disabled(&hosts::host_of(m)) {
+        if it.failed.contains(m.as_str()) || cfg.is_disabled(&m.host) {
             return false;
         }
         let pages = self.pages_pass();
-        if it.manual_urls.contains(m) {
+        if it.manual_urls.contains(m.as_str()) {
             return pages
                 && !it.page_wants_person
                 && st.passes(m)
@@ -384,10 +384,9 @@ impl Engine {
         let cfg = self.cfg();
         let host = hosts::host_of(url);
         it.mirrors.iter().any(|m| {
-            let name = hosts::host_of(m);
-            name != host
+            *m.host != *host
                 && self.could_serve(st, &it.id, m, &cfg, now)
-                && !self.host_cooling(st, &name, now)
+                && !self.host_cooling(st, &m.host, now)
         })
     }
 
@@ -412,11 +411,11 @@ impl Engine {
         if it.prefer.as_deref() == Some(host) {
             return "you picked this host";
         }
-        let others: Vec<&String> = it
+        let others: Vec<&Mirror> = it
             .mirrors
             .iter()
-            .filter(|m| hosts::host_of(m) != host)
-            .filter(|m| !it.failed.contains(*m) && !cfg.is_disabled(&hosts::host_of(m)))
+            .filter(|m| *m.host != *host)
+            .filter(|m| !it.failed.contains(m.as_str()) && !cfg.is_disabled(&m.host))
             .collect();
         let now = Instant::now();
         if others.is_empty() {

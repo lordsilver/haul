@@ -13,7 +13,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc, Mutex, MutexGuard, RwLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -28,7 +28,7 @@ use crate::{
     container::{self, Link},
     extract,
     hosts::{self, Cx, Entry, Http, Need, ResolveError, Tokens},
-    item::{Found, Item, Status, Trouble, Verifying},
+    item::{Found, Item, Mirror, Status, Trouble, Verifying},
     limiter::Limiter,
     logging::unix_now,
     parts, paths, store,
@@ -509,6 +509,9 @@ struct State {
     draining: Option<String>,
     max_total: usize,
     dirty: bool,
+    /// A lookup learned a size: archives copied on other hosts are looked
+    /// for on the scheduler's next turn ([`Engine::merge_copies`]).
+    merge_due: bool,
     /// Pages that answered with a browser check (Cloudflare's) a browser
     /// usually passes by itself: the desktop app passes them out of sight,
     /// as a host's whose page passes ([`hosts::page_passes`]).
@@ -547,10 +550,12 @@ impl State {
         }
     }
 
+    /// A host's stats; a known host's are found without allocating.
     fn host(&mut self, name: &str) -> &mut HostStats {
-        self.hosts
-            .entry(name.to_string())
-            .or_insert_with(HostStats::new)
+        if !self.hosts.contains_key(name) {
+            self.hosts.insert(name.to_string(), HostStats::new());
+        }
+        self.hosts.get_mut(name).expect("just put there")
     }
 
     fn lane(&mut self, host: &str, exit: Exit) -> &mut Lane {
@@ -692,7 +697,8 @@ struct Inner {
     config_seen: Mutex<Option<(SystemTime, u64)>>,
     /// Why the file on disk is not in effect, when it does not parse.
     config_error: Mutex<Option<String>>,
-    config_version: AtomicU64,
+    /// Moves whenever the settings in effect change ([`Engine::watch_settings`]).
+    config_version: watch::Sender<u64>,
     data_dir: PathBuf,
     download_dir: RwLock<PathBuf>,
     /// Given on the command line, so the settings do not move it.
@@ -833,6 +839,7 @@ impl Engine {
                 draining: None,
                 max_total: cfg.max_total.max(1),
                 dirty: false,
+                merge_due: false,
                 guarded: HashSet::new(),
                 cleared: HashSet::new(),
                 tried: passes::Tried::new(),
@@ -844,7 +851,7 @@ impl Engine {
             cfg: RwLock::new(Arc::new(cfg)),
             config_path,
             config_error: Mutex::new(None),
-            config_version: AtomicU64::new(0),
+            config_version: watch::Sender::new(0),
             data_dir,
             download_dir: RwLock::new(download_dir),
             download_dir_fixed,
@@ -1037,6 +1044,11 @@ impl Engine {
         self.0.version.subscribe()
     }
 
+    /// Moves whenever the settings in effect change, and only then.
+    pub fn watch_settings(&self) -> watch::Receiver<u64> {
+        self.0.config_version.subscribe()
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.0.events.subscribe()
     }
@@ -1103,7 +1115,7 @@ impl Engine {
             let mut known: HashSet<String> = st
                 .items
                 .values()
-                .flat_map(|i| i.mirrors.iter().cloned())
+                .flat_map(|i| i.mirrors.iter().map(|m| m.url.clone()))
                 .collect();
             let mut wrappers = wrapper_keys(&st);
             for link in links {
@@ -1143,7 +1155,7 @@ impl Engine {
                         .find(|it| it.status != Status::Done && it.same_file(name, 0))
                 {
                     tracing::debug!(item = %it.id, url = %link.url, "another host for {name}");
-                    it.mirrors.push(link.url);
+                    it.mirrors.push(link.url.into());
                     if let Some(password) = password {
                         it.extract_password = Some(password.to_string());
                     }
@@ -1221,7 +1233,7 @@ impl Engine {
             let url = it
                 .mirrors
                 .iter()
-                .find(|m| !cfg.is_disabled(&hosts::host_of(m)))
+                .find(|m| !cfg.is_disabled(&m.host))
                 .cloned();
             let http = self.http_for(&hosts::host_of(url.as_deref().unwrap_or_default()), &st);
             let http = match url.as_deref() {
@@ -1325,9 +1337,10 @@ impl Engine {
             self.extract_when_complete(&mut st, id);
         }
         // With its size known, this row may complete a copy of another
-        // archive.
+        // archive: looked for on the scheduler's next turn, once for a
+        // wrapper's many lookups in a row.
         if learned {
-            self.merge_copies(&mut st);
+            st.merge_due = true;
         }
         self.touch(&mut st);
         drop(st);
@@ -1380,7 +1393,7 @@ impl Engine {
                     && !it.running()
                 {
                     it.probed = true;
-                    it.manual_urls.insert(url.clone());
+                    it.manual_urls.insert(url.url.clone());
                     it.set_error(message, Trouble::Needs(need));
                     it.status = Status::Captcha;
                     event = Some(Event::NeedsUser {
@@ -1442,7 +1455,7 @@ impl Engine {
             let st = self.lock();
             let it = st.items.get(id)?;
             let name = it.name.clone()?;
-            let hosts: Vec<String> = it.mirrors.iter().map(|m| hosts::host_of(m)).collect();
+            let hosts: Vec<String> = it.mirrors.iter().map(|m| m.host.to_string()).collect();
             (
                 name,
                 it.size,
@@ -1593,7 +1606,7 @@ impl Engine {
             .items
             .iter()
             .filter(|(k, _)| k.as_str() != id)
-            .flat_map(|(_, i)| i.mirrors.iter().cloned())
+            .flat_map(|(_, i)| i.mirrors.iter().map(|m| m.url.clone()))
             .collect();
         known.insert(url.to_string());
         let mut wrappers = wrapper_keys(&st);
@@ -1660,7 +1673,7 @@ impl Engine {
                     .filter(|u| known.insert(u.clone()))
                     .collect();
                 if let Some(it) = st.items.get_mut(&row) {
-                    it.mirrors.extend(urls);
+                    it.mirrors.extend(urls.into_iter().map(Into::into));
                     it.merge_wrappers(Some(&id.to_string()), &[]);
                 }
                 continue;
@@ -1669,7 +1682,7 @@ impl Engine {
                 seen.files += 1;
                 // The rows that hold its links already are this wrapper's
                 // files too.
-                let listed = |m: &String| *m == e.url || e.mirrors.contains(m);
+                let listed = |m: &Mirror| m.url == e.url || e.mirrors.contains(&m.url);
                 for it in st
                     .items
                     .iter_mut()
@@ -1729,7 +1742,7 @@ impl Engine {
             if !row.wrapper {
                 // A row handed a wrapper's link is that wrapper now.
                 row.wrapper = true;
-                row.mirrors = vec![url.to_string()];
+                row.mirrors = vec![url.into()];
                 row.name = None;
             }
             row.status = Status::Done;
@@ -1799,7 +1812,7 @@ impl Engine {
                 return true;
             }
             if o.running() || waits {
-                let extra: Vec<String> = st.items[id]
+                let extra: Vec<Mirror> = st.items[id]
                     .mirrors
                     .iter()
                     .filter(|m| !st.items[&other].mirrors.contains(m))
@@ -1867,7 +1880,7 @@ impl Engine {
             && let Some(mirrors) = st.items.get(id).map(|it| it.mirrors.clone())
         {
             for m in &mirrors {
-                st.cleared.remove(m);
+                st.cleared.remove(m.as_str());
             }
         }
         let Some(it) = st.items.get_mut(id) else {
@@ -1950,7 +1963,7 @@ impl Engine {
             let Some(it) = st.items.get_mut(id) else {
                 continue;
             };
-            let has = host.is_none_or(|h| it.mirrors.iter().any(|m| hosts::host_of(m) == h));
+            let has = host.is_none_or(|h| it.mirrors.iter().any(|m| *m.host == *h));
             if has && !it.wrapper {
                 it.prefer = host.map(str::to_string);
                 n += 1;
@@ -1999,7 +2012,7 @@ impl Engine {
         self.lock()
             .items
             .get(id)
-            .map(|it| it.mirrors.clone())
+            .map(|it| it.mirrors.iter().map(|m| m.url.clone()).collect())
             .unwrap_or_default()
     }
 
@@ -2066,9 +2079,7 @@ impl Engine {
     pub(crate) fn retry_turned_on(&self, host: &str) {
         self.retry_where(|i| {
             i.trouble == Trouble::OnlyOffHosts
-                && i.mirrors
-                    .iter()
-                    .any(|m| hosts::host_of(m).eq_ignore_ascii_case(host))
+                && i.mirrors.iter().any(|m| m.host.eq_ignore_ascii_case(host))
         });
     }
 
@@ -2164,8 +2175,8 @@ impl Engine {
                 let on_host: Vec<String> = it
                     .mirrors
                     .iter()
-                    .filter(|m| hosts::host_of(m) == host)
-                    .cloned()
+                    .filter(|m| *m.host == *host)
+                    .map(|m| m.url.clone())
                     .collect();
                 if on_host.is_empty() {
                     continue;
@@ -2509,7 +2520,12 @@ fn recycle(file: &Path, bin: Option<&Path>) -> Result<bool, String> {
 }
 
 fn display_name(it: &Item) -> String {
-    let link = || it.mirrors.first().cloned().unwrap_or_default();
+    let link = || {
+        it.mirrors
+            .first()
+            .map(|m| m.url.clone())
+            .unwrap_or_default()
+    };
     if it.wrapper {
         return it.title.clone().unwrap_or_else(link);
     }
@@ -2606,6 +2622,7 @@ mod exit_tests {
             draining: None,
             max_total: 8,
             dirty: false,
+            merge_due: false,
             guarded: HashSet::new(),
             cleared: HashSet::new(),
             tried: passes::Tried::new(),

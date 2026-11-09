@@ -94,7 +94,8 @@ impl App {
 
     /// The state as JSON, made once for every open view: on every change
     /// (bursts merged), and at least once a second for progress. Started by
-    /// the first view that asks.
+    /// the first view that asks; idle while no view is connected, and
+    /// nothing is sent that was sent already.
     fn states(&self) -> watch::Receiver<Arc<str>> {
         self.states
             .get_or_init(|| {
@@ -103,13 +104,27 @@ impl App {
                 tokio::spawn(async move {
                     let mut changes = app.engine.watch();
                     loop {
+                        // The receiver kept in `states` counts as one: no
+                        // view is connected. One that connects takes a fresh
+                        // state itself ([`events`]).
+                        if tx.receiver_count() <= 1 {
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
                         tokio::select! {
                             changed = changes.changed() => if changed.is_err() { return },
                             () = tokio::time::sleep(Duration::from_secs(1)) => {}
                         }
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         changes.borrow_and_update();
-                        tx.send_replace(app.view_json());
+                        let next = app.view_json();
+                        tx.send_if_modified(|shown| {
+                            let changed = **shown != *next;
+                            if changed {
+                                *shown = next;
+                            }
+                            changed
+                        });
                     }
                 });
                 rx
