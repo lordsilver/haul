@@ -69,6 +69,30 @@ impl Extract {
     }
 }
 
+/// Where a row stands with a page the desktop app passes for it, out of
+/// sight. The person is told once: a page that wants them again after its
+/// own tries says nothing more.
+///
+/// - `InTurn`: waiting for, or in, its pass.
+/// - `WithPerson`: the pass wanted a person ([`crate::Engine::page_wants_person`]);
+///   tried again on a timer.
+/// - `OnItsOwn`: the timer came due, and the page is passed again without
+///   telling anyone.
+/// - `WithPersonAgain`: that try wanted a person too, or the person opened
+///   the page as it came due ([`crate::Engine::page_with_person`]); told
+///   nobody.
+///
+/// The person retrying by hand starts it over at `InTurn`; retries counted
+/// over again ([`Item::reset_retries`]) leave what the person was told.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum PageTurn {
+    #[default]
+    InTurn,
+    WithPerson,
+    OnItsOwn,
+    WithPersonAgain,
+}
+
 /// A host is limiting this row's download ([`crate::throttle`]) and it stays
 /// on it for now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -213,14 +237,9 @@ pub(crate) struct Item {
     /// nothing: not opened for that again until a restart.
     #[serde(skip)]
     pub looked: BTreeSet<String>,
-    /// The desktop app tried this item's page out of sight and it wants a
-    /// person after all (its window came forward, or was closed).
+    /// Where it stands with the page the desktop app passes for it.
     #[serde(skip)]
-    pub page_wants_person: bool,
-    /// Its page is passed again on its own after it wanted a person, who
-    /// was told then: whatever comes of these tries tells nobody.
-    #[serde(skip)]
-    pub page_retrying: bool,
+    pub page: PageTurn,
     /// `pre` came from the user (a pasted or captured link).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub manual: bool,
@@ -468,13 +487,40 @@ impl Item {
         }
     }
 
+    /// Forgets what only its attempt that just ended had: its transfer, the
+    /// exit and link it went through, its speed and what slowed it.
+    pub(crate) fn end_attempt(&mut self) {
+        self.speed = 0.0;
+        self.task = None;
+        self.exit = None;
+        self.url = None;
+        self.pace = None;
+        self.slowed = None;
+    }
+
     /// Starts its retry counts over and forgets what went wrong.
     pub(crate) fn reset_retries(&mut self) {
         self.clear_error();
         self.retries = 0;
         self.auto_retries = 0;
         self.retry_at = None;
-        self.page_retrying = false;
+        self.page = match self.page {
+            PageTurn::WithPersonAgain => PageTurn::WithPerson,
+            PageTurn::OnItsOwn => PageTurn::InTurn,
+            turn => turn,
+        };
+    }
+
+    /// The desktop app tried its page out of sight and it wants a person
+    /// after all (its window came forward, or was closed).
+    pub(crate) fn page_wants_person(&self) -> bool {
+        matches!(self.page, PageTurn::WithPerson | PageTurn::WithPersonAgain)
+    }
+
+    /// Its page is passed again on its own after it wanted a person, who was
+    /// told then: whatever comes of it tells nobody.
+    pub(crate) fn page_retrying(&self) -> bool {
+        matches!(self.page, PageTurn::OnItsOwn | PageTurn::WithPersonAgain)
     }
 
     /// The name used to recognise the same file on other hosts.

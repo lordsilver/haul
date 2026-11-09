@@ -16,7 +16,7 @@ use super::{AUTO_RETRIES, Engine, Event, State};
 use crate::{
     config::{self, Config, Route, Theme},
     hosts::{self, Http},
-    item::{Item, Status},
+    item::{Item, PageTurn, Status},
     paths,
 };
 
@@ -618,7 +618,7 @@ impl Engine {
                 let asking: Vec<String> = st
                     .items
                     .values()
-                    .filter(|it| it.status == Status::Captcha && it.page_wants_person)
+                    .filter(|it| it.status == Status::Captcha && it.page_wants_person())
                     .map(|it| it.id.clone())
                     .collect();
                 for id in asking {
@@ -792,7 +792,7 @@ impl Engine {
             .values()
             .filter(|it| {
                 it.status == Status::Captcha
-                    && it.page_wants_person
+                    && it.page_wants_person()
                     && it.task.is_none()
                     && it.retry_at.is_some_and(|t| now >= t)
             })
@@ -814,8 +814,7 @@ impl Engine {
             } else if usable {
                 it.retry_at = None;
                 it.auto_retries += 1;
-                it.page_retrying = true;
-                it.page_wants_person = false;
+                it.page = PageTurn::OnItsOwn;
                 tracing::info!(item = %id, "passing its page again on its own ({} of {AUTO_RETRIES})", it.auto_retries);
             } else {
                 it.retry_at = None;

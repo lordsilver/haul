@@ -372,7 +372,7 @@ impl Engine {
         let pages = self.pages_pass();
         if it.manual_urls.contains(m.as_str()) {
             return pages
-                && !it.page_wants_person
+                && !it.page_wants_person()
                 && st.passes(m)
                 && self.pass_held_until(st, m, now).is_none();
         }

@@ -415,14 +415,7 @@ impl Engine {
                 }
             }
             match st.items.get_mut(id) {
-                Some(it) => {
-                    it.speed = 0.0;
-                    it.task = None;
-                    it.exit = None;
-                    it.url = None;
-                    it.pace = None;
-                    it.slowed = None;
-                }
+                Some(it) => it.end_attempt(),
                 // Removed or merged away while it ran.
                 None => removed.push(id.to_string()),
             }

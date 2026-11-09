@@ -224,7 +224,7 @@ impl Engine {
                             if it.tentative {
                                 continue;
                             }
-                            if it.status == Status::Captcha && !it.page_retrying {
+                            if it.status == Status::Captcha && !it.page_retrying() {
                                 events.push(Event::NeedsUser {
                                     id: id.clone(),
                                     name: display_name(it),
@@ -290,7 +290,7 @@ impl Engine {
             .iter()
             .any(|m| usable(m) && !cfg.is_last_resort_host(&m.host, pages));
         let wanted = |url: &str| !(others && cfg.is_last_resort(url, pages));
-        let pass_host = (pages && !it.page_wants_person)
+        let pass_host = (pages && !it.page_wants_person())
             .then(|| {
                 it.manual_urls
                     .iter()
@@ -327,7 +327,7 @@ impl Engine {
             let retry_at = it
                 .retry_at
                 .or_else(|| {
-                    it.page_wants_person
+                    it.page_wants_person()
                         .then(|| self.page_retry_at(st, it, now))
                         .flatten()
                 })

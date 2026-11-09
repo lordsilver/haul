@@ -28,7 +28,7 @@ use crate::{
     container::{self, Link},
     extract,
     hosts::{self, Cx, Entry, Http, Need, ResolveError, Tokens},
-    item::{Found, Item, Mirror, Status, Trouble, Verifying},
+    item::{Found, Item, Mirror, PageTurn, Status, Trouble, Verifying},
     limiter::Limiter,
     logging::unix_now,
     parts, paths, store,
@@ -2261,11 +2261,10 @@ impl Engine {
             ItemAction::RetryManual => {
                 it.queue_if_idle();
                 it.manual_urls.clear();
-                it.page_wants_person = false;
+                it.page = PageTurn::InTurn;
                 // The person's own try: the page's first pass again.
                 it.auto_retries = 0;
                 it.retry_at = None;
-                it.page_retrying = false;
             }
             ItemAction::Extract => {}
             ItemAction::Remove => {
