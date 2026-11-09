@@ -766,9 +766,21 @@ impl Engine {
 
     /// [`Engine::page_passes`] under the lock.
     pub(super) fn passes_now(&self, st: &State, url: &str, now: Instant) -> bool {
-        let free = || {
+        self.passes_now_among(st, url, now, st.items.values())
+    }
+
+    /// [`Engine::passes_now`], asking only `rows` (those that wait on page
+    /// `url`, when the caller knows them) whether one is free to go.
+    pub(super) fn passes_now_among<'a>(
+        &self,
+        st: &State,
+        url: &str,
+        now: Instant,
+        mut rows: impl Iterator<Item = &'a Item>,
+    ) -> bool {
+        let mut free = || {
             self.pass_held_until(st, url, now).is_none()
-                || st.items.values().any(|it| {
+                || rows.any(|it| {
                     it.manual_urls.contains(url) && self.pass_held_for(st, it, url, now).is_none()
                 })
         };

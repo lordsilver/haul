@@ -13,7 +13,7 @@
 
 use std::{
     fs::File,
-    io::{self, Read, Seek, SeekFrom},
+    io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -28,6 +28,9 @@ mod spanned;
 
 /// The hidden folder an archive is unpacked in, next to its first part.
 const STAGING: &str = ".haul-extract-";
+
+/// How much of an archive is read, and of a file written, at once.
+const READ_BUFFER: usize = 1 << 20;
 
 /// One downloaded part: where it is, and the name it has on its host, which
 /// RAR volumes are found by even when the file on disk got another
@@ -222,8 +225,10 @@ fn join(parts: &[Part], dest: &Path, name: &str, progress: &Progress) -> Result<
         "{STAGING}{}",
         &uuid::Uuid::new_v4().simple().to_string()[..10]
     )));
-    let mut to = File::create(&staging.0).map_err(|e| format!("{}: {e}", staging.0.display()))?;
+    let to = File::create(&staging.0).map_err(|e| format!("{}: {e}", staging.0.display()))?;
+    let mut to = BufWriter::with_capacity(READ_BUFFER, to);
     io::copy(&mut Counted(&mut from, &progress.done), &mut to)
+        .and_then(|_| to.flush())
         .map_err(|e| format!("joining the pieces: {e}"))?;
     drop(to);
     let target = paths::unused_name(dest, &paths::safe(name));
@@ -251,7 +256,7 @@ fn enclosed(name: &str) -> Option<PathBuf> {
 /// one turns a wrong password into garbage that fails to decode, so with a
 /// password any failure to read it counts as that password not fitting.
 fn seven_zip(
-    mut joined: Joined,
+    joined: Joined,
     out: &Path,
     password: Option<&str>,
     progress: &Progress,
@@ -266,6 +271,7 @@ fn seven_zip(
         }
         e => Failure::Other(e.to_string()),
     };
+    let mut joined = BufReader::with_capacity(READ_BUFFER, joined);
     let archive = match sevenz_rust2::Archive::read(&mut joined, &key) {
         Ok(archive) => archive,
         // Its headers are encrypted, and this password does not open them.
@@ -296,6 +302,8 @@ fn zip(
     password: Option<&str>,
     progress: &Progress,
 ) -> Result<(), Failure> {
+    // Not through a BufReader: the zip reader seeks often, and each seek
+    // throws a buffer away (measured: sixteen times slower on 2 GB).
     let mut archive = zip::ZipArchive::new(joined).map_err(|e| e.to_string())?;
     let total = (0..archive.len())
         .filter_map(|i| archive.by_index_raw(i).ok().map(|f| f.size()))
@@ -331,8 +339,11 @@ fn zip(
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        let mut to = File::create(&target).map_err(|e| format!("{}: {e}", target.display()))?;
-        if let Err(e) = io::copy(&mut Counted(&mut file, &progress.done), &mut to) {
+        let to = File::create(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+        let mut to = BufWriter::with_capacity(READ_BUFFER, to);
+        if let Err(e) =
+            io::copy(&mut Counted(&mut file, &progress.done), &mut to).and_then(|_| to.flush())
+        {
             return Err(if encrypted {
                 Failure::Password { tried: true }
             } else {
@@ -368,7 +379,9 @@ impl<R: Read + ?Sized> Read for Counted<'_, R> {
 }
 
 enum Piece {
-    File(File),
+    /// A file, and where in it the last read left off, so a read that
+    /// follows on asks the system for no seek.
+    File(File, u64),
     Bytes(Vec<u8>),
 }
 
@@ -387,7 +400,7 @@ impl Joined {
         for p in parts {
             let f = File::open(&p.path).map_err(|e| format!("{}: {e}", p.path.display()))?;
             let len = f.metadata().map_err(|e| e.to_string())?.len();
-            pieces.push((Piece::File(f), len));
+            pieces.push((Piece::File(f, 0), len));
         }
         let len = pieces.iter().map(|(_, l)| l).sum();
         Ok(Self {
@@ -423,9 +436,13 @@ impl Read for Joined {
                 let within = self.pos - start;
                 let room = (*len - within).min(buf.len() as u64) as usize;
                 let n = match piece {
-                    Piece::File(f) => {
-                        f.seek(SeekFrom::Start(within))?;
-                        f.read(&mut buf[..room])?
+                    Piece::File(f, at) => {
+                        if *at != within {
+                            f.seek(SeekFrom::Start(within))?;
+                        }
+                        let n = f.read(&mut buf[..room])?;
+                        *at = within + n as u64;
+                        n
                     }
                     Piece::Bytes(b) => {
                         let within = within as usize;

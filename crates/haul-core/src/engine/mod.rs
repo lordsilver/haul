@@ -60,6 +60,47 @@ pub use views::{
     SiteKind, Tally, WrapperCard, WrapperState,
 };
 
+/// The waits between saves of a changed queue, longer after each that failed.
+const SAVE_BACKOFF: [Duration; 4] = [
+    Duration::from_secs(1),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+];
+
+/// How often what was learned of the hosts is written, at most.
+const HOSTS_EVERY: Duration = Duration::from_secs(30);
+
+/// What the saver remembers between saves.
+#[derive(Default)]
+struct Saver {
+    /// Saves of the queue that failed in a row.
+    failures: usize,
+    /// The last error, logged once until another comes.
+    last_error: Option<String>,
+    /// When the hosts were last looked at for saving.
+    hosts_at: Option<Instant>,
+    /// The hosts file as last written.
+    hosts_written: Option<Vec<u8>>,
+    /// The rows there were at the last save.
+    rows: usize,
+}
+
+/// Forgets the pages behind a check ([`State::guarded`], [`State::cleared`])
+/// that no row has any more.
+fn prune_pages(st: &mut State) {
+    let pages: HashSet<&str> = st
+        .items
+        .values()
+        .flat_map(|i| i.mirrors.iter().map(|m| m.as_str()))
+        .collect();
+    let keep = |page: &String| pages.contains(page.as_str());
+    let guarded: HashSet<String> = st.guarded.iter().filter(|p| keep(p)).cloned().collect();
+    let cleared: HashSet<String> = st.cleared.iter().filter(|p| keep(p)).cloned().collect();
+    st.guarded = guarded;
+    st.cleared = cleared;
+}
+
 /// Automatic retries of a failed download, when `retry_failed_minutes` is on.
 const AUTO_RETRIES: u32 = 3;
 
@@ -98,7 +139,11 @@ pub enum StartError {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[error("{}: {message}; move it away to start with an empty queue", path.display())]
+    #[error(
+        "{}: {message}; the queue as it was at the last start is in {}: put it in its place, or move it away to start with an empty queue",
+        path.display(),
+        path.with_file_name(store::QUEUE_BACKUP).display()
+    )]
     Corrupt { path: PathBuf, message: String },
     #[error("{}: {message}", path.display())]
     Config { path: PathBuf, message: String },
@@ -2688,40 +2733,75 @@ impl Engine {
 
     // ---- persistence
 
+    /// Saves the queue once a second while it changes. After a save that
+    /// failed (a full disk), the next waits longer, and the same error is
+    /// logged once.
     async fn saver(self) {
+        let mut saver = Saver::default();
         loop {
-            if !self.idle(Duration::from_secs(1)).await {
+            let wait = SAVE_BACKOFF[saver.failures.min(SAVE_BACKOFF.len() - 1)];
+            if !self.idle(wait).await {
                 return;
             }
-            self.save(false);
+            self.save_with(&mut saver, false);
         }
     }
 
     fn save(&self, force: bool) {
+        self.save_with(&mut Saver::default(), force);
+    }
+
+    fn save_with(&self, saver: &mut Saver, force: bool) {
         let _guard = crate::lock::held(&self.0.save_lock);
-        let (queue, hosts): (_, BTreeMap<String, _>) = {
+        let hosts_due = force || saver.hosts_at.is_none_or(|t| t.elapsed() >= HOSTS_EVERY);
+        let (queue, hosts) = {
             let mut st = self.lock();
-            if !st.dirty && !force {
+            // Rows went: the pages only they had are forgotten.
+            if st.items.len() < saver.rows {
+                prune_pages(&mut st);
+            }
+            saver.rows = st.items.len();
+            if !st.dirty && !force && !hosts_due {
                 return;
             }
+            let queue = (st.dirty || force).then(|| serde_json::to_vec(&st.items));
             st.dirty = false;
-            (
-                serde_json::to_vec(&st.items),
+            let hosts: Option<BTreeMap<String, store::SavedHost>> = hosts_due.then(|| {
                 st.hosts
                     .iter()
                     .map(|(k, h)| (k.clone(), h.saved()))
-                    .collect(),
-            )
+                    .collect()
+            });
+            (queue, hosts)
         };
-        let queue = queue
-            .map_err(std::io::Error::other)
-            .and_then(|bytes| store::write_atomic(&self.0.data_dir.join(store::QUEUE), &bytes));
-        if let Err(e) = queue {
-            tracing::error!("saving the queue: {e}");
-            self.lock().dirty = true;
+        if let Some(queue) = queue {
+            let written = queue
+                .map_err(std::io::Error::other)
+                .and_then(|bytes| store::write_atomic(&self.0.data_dir.join(store::QUEUE), &bytes));
+            match written {
+                Ok(()) => saver.failures = 0,
+                Err(e) => {
+                    let e = e.to_string();
+                    if saver.last_error.as_deref() != Some(e.as_str()) {
+                        tracing::error!("saving the queue: {e}");
+                    }
+                    saver.last_error = Some(e);
+                    saver.failures += 1;
+                    self.lock().dirty = true;
+                }
+            }
         }
-        if let Err(e) = store::write(&self.0.data_dir, store::HOSTS, &hosts) {
-            tracing::error!("saving the host speeds: {e}");
+        // What was learned of the hosts, only when it changed: it is a head
+        // start, not a record.
+        if let Some(hosts) = hosts {
+            saver.hosts_at = Some(Instant::now());
+            let bytes = serde_json::to_vec(&hosts).unwrap_or_default();
+            if saver.hosts_written.as_ref() != Some(&bytes) || force {
+                match store::write_atomic(&self.0.data_dir.join(store::HOSTS), &bytes) {
+                    Ok(()) => saver.hosts_written = Some(bytes),
+                    Err(e) => tracing::error!("saving the host speeds: {e}"),
+                }
+            }
         }
     }
 
