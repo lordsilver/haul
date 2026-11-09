@@ -1,4 +1,4 @@
-import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ComponentProps, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { report } from '@/lib/api';
@@ -12,6 +12,9 @@ type Props = {
   // Words the button stays as wide as, so the buttons beside it keep their
   // place when its label changes.
   reserve?: string;
+  // Set to what a click does, for a key that stands for the button (Delete
+  // for Remove), second press included where it asks.
+  press?: RefObject<(() => void) | null>;
 } & Omit<ComponentProps<typeof Button>, 'onClick' | 'children'>;
 
 // A button that, given `confirm`, wants a second click within a few seconds,
@@ -20,7 +23,18 @@ type Props = {
 // afresh, so a question left open is not asked again later.
 export const ConfirmButton = (props: Props) => <Asking key={props.confirm ? 'confirm' : 'plain'} {...props} />;
 
-function Asking({ label, confirm, action, icon, iconOnly = false, reserve, variant = 'ghost', size, ...props }: Props) {
+function Asking({
+  label,
+  confirm,
+  action,
+  icon,
+  iconOnly = false,
+  reserve,
+  press,
+  variant = 'ghost',
+  size,
+  ...props
+}: Props) {
   const [asking, setAsking] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -34,6 +48,7 @@ function Asking({ label, confirm, action, icon, iconOnly = false, reserve, varia
     setAsking(false);
     action().catch(report);
   };
+  if (press) press.current = click;
   const plain = iconOnly && !asking;
   const button = (
     <Button

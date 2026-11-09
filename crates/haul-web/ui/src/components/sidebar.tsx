@@ -25,7 +25,6 @@ function NavItem({
   label,
   current,
   onClick,
-  title,
   children,
 }: {
   icon: LucideIcon;
@@ -33,14 +32,12 @@ function NavItem({
   label: string;
   current?: boolean;
   onClick: () => void;
-  title?: string;
   children?: ReactNode;
 }) {
   return (
     <button
       type="button"
       aria-current={current ? 'page' : undefined}
-      title={title}
       onClick={onClick}
       className={cn(
         'flex h-[34px] w-full items-center gap-2.5 rounded-lg px-2.5 text-left text-sm outline-none hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/50',

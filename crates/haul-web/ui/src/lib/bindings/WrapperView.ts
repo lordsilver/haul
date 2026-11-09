@@ -29,6 +29,10 @@ retry_in: number,
  */
 open_urls: Array<string>, 
 /**
+ * Their hosts, in the same order.
+ */
+open_hosts: Array<string>, 
+/**
  * What unwrapping found.
  */
 found: Found | null, 

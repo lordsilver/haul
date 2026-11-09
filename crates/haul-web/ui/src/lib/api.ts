@@ -1,42 +1,24 @@
 import type { Added } from '@/lib/bindings/Added';
 import type { Batch } from '@/lib/bindings/Batch';
-import type { SettingsView } from '@/lib/bindings/SettingsView';
+import * as client from '@/lib/client';
 import { plural } from '@/lib/format';
 import { toast } from '@/lib/toast';
 
-// Every call is a POST with a JSON body (or a form of files); an error comes
-// back as `{"error": "…"}`.
-export async function api<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T> {
-  const init: RequestInit = { method: 'POST' };
-  if (body instanceof FormData) {
-    init.body = body;
-  } else {
-    init.headers = { 'Content-Type': 'application/json' };
-    init.body = JSON.stringify(body ?? {});
-  }
-  const res = await fetch(path, init);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
-  return data as T;
-}
-
 export const report = (error: unknown) => toast(error instanceof Error ? error.message : String(error), 'error');
 
-const item = (id: string, action: string) => `/api/item/${encodeURIComponent(id)}/${action}`;
-
-export const act = (id: string, action: string) => api(item(id, action)).catch(report);
+export const act = (id: string, action: string) => client.item.act(id, action).catch(report);
 
 // The in-app browser window for a page that needs a person.
-export const openHere = (id: string) => api(item(id, 'browse'), { user_agent: navigator.userAgent }).catch(report);
+export const openHere = (id: string) => client.item.browse(id).catch(report);
 
-export const openPlace = (place: 'downloads' | 'config' | 'data') => api(`/api/open/${place}`).catch(report);
+export const openPlace = (place: 'downloads' | 'config' | 'data') => client.open(place).catch(report);
 
 // One action on many items in one request; the first failure, and how many
 // others there were, is reported. Answers how many succeeded.
 export async function bulk(ids: string[], action: string): Promise<number> {
   if (!ids.length) return 0;
   try {
-    const r = await api<Batch>(`/api/items/${action}`, { ids });
+    const r = await client.items.act(ids, action);
     reportFailed(r);
     return r.done;
   } catch (error) {
@@ -49,7 +31,7 @@ export async function bulk(ids: string[], action: string): Promise<number> {
 export async function wrappersBulk(ids: string[], action: 'start' | 'remove' | 'retry'): Promise<Batch | null> {
   if (!ids.length) return null;
   try {
-    const r = await api<Batch>(`/api/wrappers/${action}`, { ids });
+    const r = await client.wrappers.act(ids, action);
     reportFailed(r);
     return r;
   } catch (error) {
@@ -64,19 +46,14 @@ function reportFailed(r: Batch) {
   toast(rest.length ? `${first.error} (and ${plural(rest.length, 'other')})` : first.error, 'error');
 }
 
-// Every setting, account secrets included: fetched when a page needs it,
-// never part of the live state.
-export async function fetchSettings(): Promise<SettingsView> {
-  const res = await fetch('/api/settings');
-  if (!res.ok) throw new Error(`Settings: HTTP ${res.status}`);
-  return res.json();
-}
+export const fetchSettings = client.fetchSettings;
 
-// Saves settings; `saved` is the toast on success, null for none. Answers
-// whether it saved.
-export async function save(changes: Record<string, unknown>, saved: string | null = 'Saved'): Promise<boolean> {
+// Saves settings; a failure always says why. A control that shows its new
+// value needs no word for success: `saved` is a toast only for a result
+// that is not seen in place. Answers whether it saved.
+export async function save(changes: Record<string, unknown>, saved: string | null = null): Promise<boolean> {
   try {
-    await api('/api/settings', changes);
+    await client.settings.save(changes);
     if (saved) toast(saved, 'success');
     return true;
   } catch (error) {

@@ -1,5 +1,6 @@
 import { Globe, KeyRound, Monitor, RotateCw, Shield } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { Hint } from '@/components/hint';
 import { Infobar } from '@/components/infobar';
 import { PageHeader, PageScroll } from '@/components/page';
 import {
@@ -18,9 +19,10 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { api, report, save } from '@/lib/api';
+import { report, save } from '@/lib/api';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
+import { connections } from '@/lib/client';
 import { plural } from '@/lib/format';
 import { envNote, useSettings } from '@/lib/settings';
 import { toast } from '@/lib/toast';
@@ -41,10 +43,12 @@ function Redial({ s }: { s: State }) {
   }
   if (r.blocked) {
     return (
-      <Button variant="outline" disabled title={r.blocked}>
-        <RotateCw />
-        Get a new IP
-      </Button>
+      <Hint text={r.blocked} wrap>
+        <Button variant="outline" disabled>
+          <RotateCw />
+          Get a new IP
+        </Button>
+      </Hint>
     );
   }
   if (!asking) {
@@ -68,7 +72,7 @@ function Redial({ s }: { s: State }) {
           setAsking(false);
           setBusy(true);
           try {
-            const out = await api<{ address: string }>('/api/reconnect');
+            const out = await connections.reconnect();
             toast(`New IP: ${out.address}`, 'success');
           } catch (error) {
             report(error);
@@ -93,7 +97,7 @@ function Redial({ s }: { s: State }) {
 // its own.
 function YourLine({ s, d }: { s: State; d: SettingsView }) {
   useEffect(() => {
-    api('/api/router').catch(() => {});
+    connections.findRouter().catch(() => {});
   }, []);
   const [mode, setMode] = useState<'router' | 'command'>(d.reconnect_command ? 'command' : 'router');
   useEffect(() => {
@@ -199,12 +203,12 @@ function NordVpn({ s, d }: { s: State; d: SettingsView }) {
   const v = s.services;
   const listed = v.nordvpn_countries.length > 0;
   useEffect(() => {
-    if (!listed) api('/api/nordvpn/servers').catch(() => {});
+    if (!listed) connections.nordvpnServers().catch(() => {});
   }, [listed]);
   const chosen = new Set(d.nordvpn_countries);
   const check = async () => {
     try {
-      await api('/api/nordvpn/servers');
+      await connections.nordvpnServers();
       toast("Checked NordVPN's servers", 'success');
     } catch (error) {
       report(error);

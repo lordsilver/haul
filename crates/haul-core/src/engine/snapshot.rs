@@ -112,6 +112,8 @@ pub struct ItemView {
     pub retry_in: u64,
     /// Mirrors a person has to open.
     pub open_urls: Vec<String>,
+    /// Their hosts, in the same order.
+    pub open_hosts: Vec<String>,
     /// Where the finished file was saved.
     pub path: Option<String>,
     /// Finished without downloading: the file was in the download folder.
@@ -186,6 +188,8 @@ pub struct WrapperView {
     pub retry_in: u64,
     /// Pages a person has to open.
     pub open_urls: Vec<String>,
+    /// Their hosts, in the same order.
+    pub open_hosts: Vec<String>,
     /// What unwrapping found.
     pub found: Option<Found>,
     /// The hosts its links are on.
@@ -245,6 +249,10 @@ pub struct HostView {
     pub free: Option<hosts::Free>,
     /// The user set the account it takes, which may lift that.
     pub account: bool,
+    /// For a host that gives no decent download without its account: whether
+    /// the user has it used like any other host without one; `null` for
+    /// every other host.
+    pub accountless: Option<bool>,
     /// The most downloads it takes at once, learned when it refused one more
     /// than it was serving; `None` until it does.
     pub cap: Option<usize>,
@@ -418,6 +426,13 @@ impl Engine {
                 .map(|m| m.url.clone())
                 .collect()
         };
+        let open_hosts = |it: &Item| -> Vec<String> {
+            it.mirrors
+                .iter()
+                .filter(|m| it.manual_urls.contains(m.as_str()))
+                .map(|m| m.host.to_string())
+                .collect()
+        };
         let passing = |it: &Item| self.passing(&st, it, now);
         let looking_up = |it: &Item| self.look_up_page(&st, it).is_some();
         let wrappers: Vec<WrapperView> = st
@@ -446,6 +461,7 @@ impl Engine {
                 wait: wait(it),
                 retry_in: retry_in(it),
                 open_urls: open_urls(it),
+                open_hosts: open_hosts(it),
                 found: it.found,
                 hosts: it.found_hosts.clone(),
             })
@@ -469,6 +485,7 @@ impl Engine {
                 wait: wait(it),
                 retry_in: retry_in(it),
                 open_urls: open_urls(it),
+                open_hosts: open_hosts(it),
                 path: it.path.clone(),
                 existing: it.existing,
                 verifying: it.verifying,
@@ -547,6 +564,9 @@ impl Engine {
                     .map(|k| k.free)
                     .filter(|f| *f != hosts::Free::default()),
                 account: hosts::known(name).is_some_and(|k| k.has_account(&cfg)),
+                accountless: hosts::known(name)
+                    .filter(|k| k.needs_account)
+                    .map(|_| cfg.is_accountless(name)),
                 exits: exits.len(),
                 kind: views::site_kind(name),
                 listed: true,

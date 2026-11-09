@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { addOpen, addText, importFiles, openAdd, readFiles } from '@/lib/add';
-import { api, report } from '@/lib/api';
+import { report } from '@/lib/api';
+import { adding } from '@/lib/client';
 import { currentState } from '@/lib/store';
 import { toast } from '@/lib/toast';
 
@@ -22,17 +23,12 @@ export function useWindowInput(): boolean {
       const text = e.clipboardData?.getData('text') ?? '';
       if (!/https?:\/\//i.test(text)) return;
       e.preventDefault();
-      const link = text.trim();
-      const waiting = currentState()?.items.filter((i) => i.list === 'attention') ?? [];
-      const it = waiting[0];
-      if (waiting.length === 1 && it && !/\s/.test(link)) {
-        api(`/api/item/${encodeURIComponent(it.id)}/direct`, { url: link }).then(
-          () => toast(`Using your link for ${it.name}`, 'success'),
-          report,
-        );
-        return;
-      }
-      openAdd(text);
+      // The engine decides: a link for the one download that waits for one,
+      // or text for the Add dialog.
+      adding.paste(text).then((r) => {
+        if (r.used_for) toast(`Using your link for ${r.name}`, 'success');
+        else openAdd(r.open_add ?? text);
+      }, report);
     };
 
     // The whole window lights up as the drop zone while something is dragged

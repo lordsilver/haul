@@ -40,6 +40,10 @@ retry_in: number,
  */
 open_urls: Array<string>, 
 /**
+ * Their hosts, in the same order.
+ */
+open_hosts: Array<string>, 
+/**
  * Where the finished file was saved.
  */
 path: string | null, 

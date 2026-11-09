@@ -1,4 +1,5 @@
 import type { State } from '@/lib/bindings/State';
+import { paths } from '@/lib/client';
 import { externalStore } from '@/lib/external-store';
 import { type ToastKind, toast } from '@/lib/toast';
 
@@ -33,7 +34,7 @@ function set(next: Partial<Live>) {
 }
 
 export function connect() {
-  const events = new EventSource('/api/events');
+  const events = new EventSource(paths.events);
   let timer: ReturnType<typeof setTimeout> | null = null;
   events.addEventListener('state', (e) => {
     if (timer) clearTimeout(timer);

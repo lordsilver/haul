@@ -1,5 +1,6 @@
 import { AppWindow, ChevronDown, ExternalLink, Link, RotateCw } from 'lucide-react';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
+import { Hint } from '@/components/hint';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -12,21 +13,25 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
-import { act, api, openHere, report } from '@/lib/api';
-import { hostOf, isWebLink } from '@/lib/format';
+import { act, openHere, report } from '@/lib/api';
+import { item } from '@/lib/client';
+import { isWebLink } from '@/lib/format';
 import { toast } from '@/lib/toast';
 
 // What waits for a person: a download or a wrapper, with the pages it can be
 // solved on.
-export type Waiting = { id: string; name: string; open_urls: string[] };
+export type Waiting = { id: string; name: string; open_urls: string[]; open_hosts: string[] };
+
+// A page to open, with its host as the engine names it.
+type Page = { url: string; host: string };
 
 // The pages a download can be solved on, in the system's browser: one item
 // for one page, else a submenu of their hosts.
-function BrowserPages({ pages, label }: { pages: string[]; label: string }) {
+function BrowserPages({ pages, label }: { pages: Page[]; label: string }) {
   if (pages.length === 1 && pages[0]) {
     return (
-      <DropdownMenuItem asChild title={pages[0]}>
-        <a href={pages[0]} target="_blank" rel="noopener noreferrer">
+      <DropdownMenuItem asChild title={pages[0].url}>
+        <a href={pages[0].url} target="_blank" rel="noopener noreferrer">
           <ExternalLink />
           {label}
         </a>
@@ -40,10 +45,10 @@ function BrowserPages({ pages, label }: { pages: string[]; label: string }) {
         {label}
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent>
-        {pages.map((url) => (
+        {pages.map(({ url, host }) => (
           <DropdownMenuItem key={url} asChild title={url}>
             <a href={url} target="_blank" rel="noopener noreferrer">
-              {hostOf(url)}
+              {host}
             </a>
           </DropdownMenuItem>
         ))}
@@ -67,25 +72,33 @@ export function NeedsYou({
   paste: () => void;
   hint: string;
 }) {
-  const pages = w.open_urls.filter(isWebLink);
-  const first = pages[0];
+  const pages: Page[] = w.open_urls
+    .map((url, i) => ({ url, host: w.open_hosts[i] ?? url }))
+    .filter((p) => isWebLink(p.url));
+  const first = pages[0]?.url;
   const primary = desktop ? (
-    <Button size="sm" className="rounded-r-none" title={hint} onClick={() => openHere(w.id)}>
-      <AppWindow />
-      Open here
-    </Button>
+    <Hint text={hint}>
+      <Button size="sm" className="rounded-r-none" onClick={() => openHere(w.id)}>
+        <AppWindow />
+        Open here
+      </Button>
+    </Hint>
   ) : first && pages.length === 1 ? (
-    <Button size="sm" className="rounded-r-none" title={hint} asChild>
-      <a href={first} target="_blank" rel="noopener noreferrer">
-        <ExternalLink />
-        Open page
-      </a>
-    </Button>
+    <Hint text={hint}>
+      <Button size="sm" className="rounded-r-none" asChild>
+        <a href={first} target="_blank" rel="noopener noreferrer">
+          <ExternalLink />
+          Open page
+        </a>
+      </Button>
+    </Hint>
   ) : (
-    <Button size="sm" className="rounded-r-none" title={hint} onClick={paste}>
-      <Link />
-      Paste link
-    </Button>
+    <Hint text={hint}>
+      <Button size="sm" className="rounded-r-none" onClick={paste}>
+        <Link />
+        Paste link
+      </Button>
+    </Hint>
   );
   return (
     <div className="inline-flex">
@@ -96,7 +109,6 @@ export function NeedsYou({
             size="icon-sm"
             className="w-7 rounded-l-none border-l border-l-primary-foreground/25"
             aria-label="Other ways to get this download"
-            title="Other ways to get this download"
           >
             <ChevronDown />
           </Button>
@@ -109,7 +121,7 @@ export function NeedsYou({
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => act(w.id, 'retry_manual')}>
             <RotateCw />
-            Try again
+            Retry
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <p className="px-2 py-1.5 text-xs text-muted-foreground">{hint}</p>
@@ -128,7 +140,7 @@ export function PasteLink({ w, close, done }: { w: Waiting; close: () => void; d
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      await api(`/api/item/${encodeURIComponent(w.id)}/direct`, { url: url.trim() });
+      await item.direct(w.id, url.trim());
       close();
       toast(done, 'success');
     } catch (error) {

@@ -10,8 +10,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { api, report } from '@/lib/api';
+import { report } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
+import { update } from '@/lib/client';
 
 // Release notes, in the dialog's own type.
 const NOTES: Components = {
@@ -40,7 +41,7 @@ export function UpdateEntry({ s }: { s: State }) {
     setInstalling(true);
     try {
       // The app closes once the setup program starts; it opens again after.
-      await api('/api/update/install');
+      await update.install();
     } catch (error) {
       report(error);
       setInstalling(false);

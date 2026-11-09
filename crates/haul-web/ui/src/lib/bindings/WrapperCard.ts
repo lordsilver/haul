@@ -44,7 +44,11 @@ to_start: number,
  * Done with nothing left to start: taking it off the list takes no
  * file.
  */
-clearable: boolean, wait: number, retry_in: number, open_urls: Array<string>, found: Found | null, 
+clearable: boolean, wait: number, retry_in: number, open_urls: Array<string>, 
+/**
+ * Their hosts, in the same order.
+ */
+open_hosts: Array<string>, found: Found | null, 
 /**
  * The files its wrappers added, counted once.
  */
