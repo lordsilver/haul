@@ -239,6 +239,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/state", get(state))
         .route("/api/events", get(events))
         .route("/api/add", post(add))
+        .route("/api/paste", post(paste))
         .route(
             "/api/container",
             post(container).layer(DefaultBodyLimit::max(64 << 20)),
@@ -259,6 +260,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/host/{name}/folder", post(host_folder))
         .route("/api/host/{name}/preferred", post(host_preferred))
         .route("/api/host/{name}/disabled", post(host_disabled))
+        .route("/api/host/{name}/accountless", post(host_accountless))
         .route("/api/preferred-hosts", post(preferred_hosts))
         .route("/api/host/{name}/route/{mode}", post(host_route))
         .route("/api/global/{action}", post(global))
@@ -438,6 +440,19 @@ async fn events(State(app): State<App>) -> Sse<impl Stream<Item = Result<Event, 
         }
     });
     Sse::new(futures_util::stream::select(stream, notices)).keep_alive(KeepAlive::default())
+}
+
+#[derive(Deserialize)]
+struct PasteBody {
+    text: String,
+}
+
+/// A paste outside any field, for the engine to say what it is for.
+async fn paste(State(app): State<App>, Json(body): Json<PasteBody>) -> Response {
+    match app.engine.paste(&body.text) {
+        Ok(pasted) => Json(pasted).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
 }
 
 #[derive(Deserialize)]
@@ -780,6 +795,21 @@ async fn host_disabled(
     Json(body): Json<Disabled>,
 ) -> Response {
     setting(app.engine.set_disabled(&name, body.disabled))
+}
+
+#[derive(Deserialize)]
+struct Accountless {
+    accountless: bool,
+}
+
+/// Has a host that wants its account used like any other without one, or
+/// only when no other host has the file again.
+async fn host_accountless(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    Json(body): Json<Accountless>,
+) -> Response {
+    setting(app.engine.set_accountless(&name, body.accountless))
 }
 
 #[derive(Deserialize)]

@@ -22,6 +22,16 @@ const PAGE_LATER: Duration = Duration::from_secs(90);
 /// a host for a day at worst.
 const PAGE_LIMIT_AT_MOST: Duration = Duration::from_secs(24 * 3600);
 
+/// What a paste came to ([`Engine::paste`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Pasted {
+    /// The download that took the link.
+    pub used_for: Option<String>,
+    pub name: Option<String>,
+    /// The text, for the Add dialog.
+    pub open_add: Option<String>,
+}
+
 impl Engine {
     /// Says the desktop app passes the pages of hosts that allow it out of
     /// sight ([`hosts::Known::page_passes`]).
@@ -604,6 +614,35 @@ impl Engine {
             }
         }
         self.publish(st);
+    }
+
+    /// A paste outside any field: one link while one download waits for a
+    /// person is that download's link, handed back; anything else is text
+    /// for the Add dialog.
+    pub fn paste(&self, text: &str) -> Result<Pasted, String> {
+        let link = text.trim();
+        if hosts::is_http(link) && !link.chars().any(char::is_whitespace) {
+            let waiting: Vec<(String, String)> = self
+                .snapshot()
+                .items
+                .into_iter()
+                .filter(|i| i.list == Some(super::List::Attention))
+                .map(|i| (i.id, i.name))
+                .collect();
+            if let [(id, name)] = waiting.as_slice() {
+                self.set_direct(id, link, BTreeMap::new(), None)?;
+                return Ok(Pasted {
+                    used_for: Some(id.clone()),
+                    name: Some(name.clone()),
+                    open_add: None,
+                });
+            }
+        }
+        Ok(Pasted {
+            used_for: None,
+            name: None,
+            open_add: Some(text.to_string()),
+        })
     }
 
     /// Uses a direct link the user supplied (pasted, or caught from the

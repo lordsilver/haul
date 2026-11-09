@@ -4,10 +4,11 @@ import { ConfirmButton } from '@/components/confirm-button';
 import { HostName, offHosts } from '@/components/host-picker';
 import { EmptyState, PageHeader, PageScroll, SearchBox } from '@/components/page';
 import { Button } from '@/components/ui/button';
-import { act, api, wrappersBulk } from '@/lib/api';
+import { act, wrappersBulk } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
 import type { WrapperCard } from '@/lib/bindings/WrapperCard';
 import { partsSummary } from '@/lib/captions';
+import { wrappers } from '@/lib/client';
 import { duration, plural } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -35,7 +36,7 @@ const removeAll = (cards: WrapperCard[]) =>
 
 // Takes a host's links off the card's files; a file only on it goes.
 const dropHost = (card: WrapperCard, host: string) =>
-  api<{ dropped: number }>('/api/wrappers/drop-host', { ids: card.ids, host }).then((r) => {
+  wrappers.dropHost(card.ids, host).then((r) => {
     toast(`Dropped ${host} from ${plural(r.dropped, 'file')}`, 'success');
   });
 
@@ -159,7 +160,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
         <div className="flex flex-wrap items-center gap-2">
           {needs ? (
             <NeedsYou
-              w={{ id: first, name: card.name, open_urls: card.open_urls }}
+              w={{ id: first, name: card.name, open_urls: card.open_urls, open_hosts: card.open_hosts }}
               desktop={s.desktop}
               paste={() => setPasting(true)}
               hint={hint}
@@ -174,7 +175,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
           {card.status === 'error' ? (
             <Button variant="ghost" onClick={() => act(first, 'retry')}>
               <RotateCw />
-              Try again
+              Retry
             </Button>
           ) : null}
           {/* Its files that never started go with it, so that asks twice. */}
@@ -189,7 +190,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
       {pasting && needs ? (
         <div className="pl-9">
           <PasteLink
-            w={{ id: first, name: card.name, open_urls: card.open_urls }}
+            w={{ id: first, name: card.name, open_urls: card.open_urls, open_hosts: card.open_hosts }}
             close={() => setPasting(false)}
             done={`Using your link for ${card.name}`}
           />
@@ -235,7 +236,7 @@ export function Wrappers({ s }: { s: State }) {
             </Button>
             <Button variant="ghost" disabled={!finished.length} onClick={() => removeAll(finished)}>
               <Eraser />
-              Clear finished
+              Clear completed
             </Button>
             <SearchBox value={typed} label="Search wrappers" onChange={setTyped} />
           </>

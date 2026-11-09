@@ -45,6 +45,12 @@ free: Free | null,
  */
 account: boolean, 
 /**
+ * For a host that gives no decent download without its account: whether
+ * the user has it used like any other host without one; `null` for
+ * every other host.
+ */
+accountless: boolean | null, 
+/**
  * The most downloads it takes at once, learned when it refused one more
  * than it was serving; `None` until it does.
  */

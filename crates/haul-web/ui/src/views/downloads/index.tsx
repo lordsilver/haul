@@ -15,17 +15,19 @@ import {
   TriangleAlert,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type RefObject, useEffect, useMemo, useRef, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
+import { Hint } from '@/components/hint';
 import { HostPicker, offHosts } from '@/components/host-picker';
 import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
 import { EmptyState, PageHeader, SearchBox } from '@/components/page';
 import { Button } from '@/components/ui/button';
 import { addOpen } from '@/lib/add';
-import { api, bulk, openPlace, report } from '@/lib/api';
+import { bulk, openPlace, report } from '@/lib/api';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import type { State } from '@/lib/bindings/State';
+import { queue } from '@/lib/client';
 import { plural } from '@/lib/format';
 import { type ListKey, go } from '@/lib/route';
 import { clearSelection, keepOnly, selectAll, useSelection } from '@/lib/selection';
@@ -131,9 +133,9 @@ function Banner({ s, offline, updated, view }: { s: State; offline: boolean; upd
           kind="info"
           title="Downloads are paused."
           actions={
-            <Button size="sm" variant="outline" onClick={() => api('/api/global/resume').catch(report)}>
+            <Button size="sm" variant="outline" onClick={() => queue('resume').catch(report)}>
               <Play />
-              Unpause
+              Resume all
             </Button>
           }
         >
@@ -145,7 +147,15 @@ function Banner({ s, offline, updated, view }: { s: State; offline: boolean; upd
 }
 
 // The buttons for the picked rows: each acts on those it applies to.
-function SelectionCommands({ picked, s }: { picked: ItemView[]; s: State }) {
+function SelectionCommands({
+  picked,
+  s,
+  removePress,
+}: {
+  picked: ItemView[];
+  s: State;
+  removePress: RefObject<(() => void) | null>;
+}) {
   const where = (...commands: string[]) =>
     picked.filter((i) => i.commands.some((c) => commands.includes(c))).map((i) => i.id);
   const retry = where('retry');
@@ -209,7 +219,7 @@ function SelectionCommands({ picked, s }: { picked: ItemView[]; s: State }) {
         />
       ) : null}
       <ConfirmButton
-        data-role="remove"
+        press={removePress}
         label={label}
         confirm={
           losing
@@ -250,11 +260,11 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
           {fresh ? 'Start' : 'Resume'} {waiting.length}
         </Button>
       ) : null}
-      <Button variant="outline" onClick={() => api(`/api/global/${s.paused ? 'resume' : 'pause'}`).catch(report)}>
+      <Button variant="outline" onClick={() => queue(s.paused ? 'resume' : 'pause').catch(report)}>
         {s.paused ? <Play /> : <Pause />}
-        {s.paused ? 'Unpause' : 'Pause all'}
+        {s.paused ? 'Resume all' : 'Pause all'}
       </Button>
-      <Button variant="ghost" disabled={!failed} onClick={() => api('/api/global/retry_failed').catch(report)}>
+      <Button variant="ghost" disabled={!failed} onClick={() => queue('retry_failed').catch(report)}>
         <RotateCw />
         Retry failed
       </Button>
@@ -269,7 +279,7 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
           disabled={!failed}
           icon={<Eraser />}
           reserve="Clear completed"
-          action={() => api('/api/global/clear_failed')}
+          action={() => queue('clear_failed')}
         />
       ) : (
         <ConfirmButton
@@ -277,13 +287,15 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
           disabled={!s.counts.done}
           icon={<Eraser />}
           reserve="Clear completed"
-          action={() => api('/api/global/clear_done')}
+          action={() => queue('clear_done')}
         />
       )}
-      <Button variant="ghost" title={`Open ${s.download_dir}`} onClick={() => openPlace('downloads')}>
-        <FolderOpen />
-        Open folder
-      </Button>
+      <Hint text={`Open ${s.download_dir}`}>
+        <Button variant="ghost" onClick={() => openPlace('downloads')}>
+          <FolderOpen />
+          Open folder
+        </Button>
+      </Hint>
     </>
   );
 }
@@ -302,6 +314,8 @@ export function Downloads({
   const [typed, setTyped] = useState('');
   const query = typed.trim().toLowerCase();
   const search = useRef<HTMLInputElement>(null);
+  // What the selection's Remove button does, for the Delete key.
+  const removePress = useRef<(() => void) | null>(null);
   const picked = useSelection();
   const expanded = useExpanded();
   const visible = useMemo(() => s.items.filter((i) => inList(i, view) && matchesQuery(i, query)), [s, view, query]);
@@ -337,7 +351,7 @@ export function Downloads({
         clearSelection();
       } else if (e.key === 'Delete' && picked.size) {
         // Same as the Remove button, second press included where it asks.
-        document.querySelector<HTMLElement>('[data-role=remove]')?.click();
+        removePress.current?.();
       }
     };
     document.addEventListener('keydown', keys);
@@ -351,7 +365,11 @@ export function Downloads({
         title={TITLES[view]}
         actions={
           <>
-            {pickedItems.length ? <SelectionCommands picked={pickedItems} s={s} /> : <ListCommands s={s} view={view} />}
+            {pickedItems.length ? (
+              <SelectionCommands picked={pickedItems} s={s} removePress={removePress} />
+            ) : (
+              <ListCommands s={s} view={view} />
+            )}
             <SearchBox ref={search} value={typed} label="Search downloads" onChange={setTyped} />
           </>
         }

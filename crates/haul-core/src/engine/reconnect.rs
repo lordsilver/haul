@@ -172,12 +172,11 @@ impl Engine {
         {
             let mut st = self.lock();
             if st.reconnects.busy {
-                return Err("already getting a new address".into());
+                return Err("already getting a new IP".into());
             }
             // One that cannot work stops no download.
             if let Some(why_not) = blocker(&self.cfg(), &st.reconnects) {
-                st.reconnects
-                    .note(format!("No new address: {why_not}"), true);
+                st.reconnects.note(format!("No new IP: {why_not}"), true);
                 self.touch(&mut st);
                 return Err(why_not);
             }
@@ -193,8 +192,7 @@ impl Engine {
         match &result {
             Ok(address) => {
                 tracing::info!("new address {address}");
-                st.reconnects
-                    .note(format!("Got a new address ({why})"), false);
+                st.reconnects.note(format!("Got a new IP ({why})"), false);
                 for (_, exit, lane) in st.lanes.iter_mut() {
                     if exit == DIRECT {
                         lane.fresh_start();
@@ -215,7 +213,7 @@ impl Engine {
                 tracing::warn!("no new address: {e}");
                 let r = &mut st.reconnects;
                 r.keeps_address |= matches!(e, RedialError::SameAddress(_));
-                r.note(format!("No new address: {e}"), true);
+                r.note(format!("No new IP: {e}"), true);
                 // Learned: this router redials only with its login.
                 if matches!(e, RedialError::NeedsLogin(_))
                     && let Some(router) = r.router.as_mut()
@@ -380,7 +378,7 @@ impl Engine {
                 .map(|q| {
                     format!(
                         "{host} slowed this address to {} KB/s for the day",
-                        q.slowed_to / 1024
+                        q.slowed_to / 1000
                     )
                 })
         };
@@ -541,7 +539,7 @@ impl Engine {
                 let r = &mut st.reconnects;
                 r.last = Some(Instant::now());
                 r.note(
-                    format!("Put off a new address ({why}): downloads still running"),
+                    format!("Put off a new IP ({why}): downloads still running"),
                     false,
                 );
             }

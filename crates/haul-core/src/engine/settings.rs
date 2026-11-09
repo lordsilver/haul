@@ -37,6 +37,9 @@ pub struct SettingsView {
     pub config_file: Option<String>,
     /// Why the file on disk is not in effect.
     pub error: Option<String>,
+    /// The settings file is in the data folder, as it is unless the command
+    /// line named another one.
+    pub config_inside_data_dir: bool,
 }
 
 /// The file's modification time and length, to notice edits.
@@ -181,7 +184,13 @@ impl Engine {
     /// Every setting, for the settings view.
     pub fn settings(&self) -> SettingsView {
         let cfg = self.cfg();
+        let config_inside_data_dir = self
+            .0
+            .config_path
+            .as_deref()
+            .is_some_and(|p| p.parent() == Some(self.0.data_dir.as_path()));
         SettingsView {
+            config_inside_data_dir,
             download_dir: self.download_dir().display().to_string(),
             download_dir_fixed: self.0.download_dir_fixed,
             from_env: cfg.from_env.clone(),
@@ -453,6 +462,35 @@ impl Engine {
         }
         self.write_hosts(cfg)?;
         if !disabled {
+            self.retry_turned_on(host);
+        }
+        Ok(())
+    }
+
+    /// Has `host`, which gives no decent download without its account, used
+    /// like any other host without one (`accountless_hosts`), or only when no
+    /// other host has the file again. Switched on, what failed for having
+    /// only such hosts goes again.
+    pub fn set_accountless(&self, host: &str, on: bool) -> Result<(), SettingError> {
+        let host = host.trim();
+        if hosts::known(host).is_none_or(|k| !k.needs_account) {
+            return Err(SettingError::Invalid(format!(
+                "{host} is used like any other host already"
+            )));
+        }
+        let _settings = self.settings_held();
+        let mut cfg = (*self.cfg()).clone();
+        if on == cfg.is_accountless(host) {
+            return Ok(());
+        }
+        if on {
+            cfg.accountless_hosts.push(host.to_ascii_lowercase());
+        } else {
+            cfg.accountless_hosts
+                .retain(|h| !h.eq_ignore_ascii_case(host));
+        }
+        self.write_hosts(cfg)?;
+        if on {
             self.retry_turned_on(host);
         }
         Ok(())

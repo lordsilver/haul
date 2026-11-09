@@ -1,6 +1,7 @@
 import { type LucideIcon, Monitor, Moon, Sun } from 'lucide-react';
-import { api, report } from '@/lib/api';
+import { report } from '@/lib/api';
 import type { Theme } from '@/lib/bindings/Theme';
+import { settings } from '@/lib/client';
 import { externalStore } from '@/lib/external-store';
 import { prefs } from '@/lib/prefs';
 
@@ -29,7 +30,7 @@ export function applyTheme(next: Theme) {
 
 export function setTheme(next: Theme) {
   applyTheme(next);
-  api('/api/settings', { theme: next }).catch(report);
+  settings.save({ theme: next }).catch(report);
 }
 
 export const THEMES = [

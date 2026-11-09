@@ -1,5 +1,6 @@
 import { ChevronDown, Pin, Server } from 'lucide-react';
 import { Fragment, type ReactNode } from 'react';
+import { Hint } from '@/components/hint';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -10,8 +11,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { api, report } from '@/lib/api';
+import { report } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
+import { hosts as hostRoutes } from '@/lib/client';
 
 const AUTOMATIC = '';
 
@@ -25,9 +27,9 @@ export function offHosts(s: State): Set<string> {
 export function HostName({ host, off }: { host: string; off: boolean }) {
   if (!off) return <>{host}</>;
   return (
-    <span title={`${host} is off (Hosts)`} className="text-muted-foreground/70">
-      {host}
-    </span>
+    <Hint text={`${host} is off (Hosts)`}>
+      <span className="text-muted-foreground/70">{host}</span>
+    </Hint>
   );
 }
 
@@ -81,8 +83,7 @@ export function HostPicker({
   bar?: boolean;
 }) {
   if (hosts.length < 2 && !bar) return <span>{label}</span>;
-  const pick = (host: string) =>
-    api('/api/download-from', { ids, host: host === AUTOMATIC ? null : host }).catch(report);
+  const pick = (host: string) => hostRoutes.downloadFrom(ids, host === AUTOMATIC ? null : host).catch(report);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -92,14 +93,15 @@ export function HostPicker({
             {label}
           </Button>
         ) : (
-          <button
-            type="button"
-            title="Choose the host to download from"
-            className="inline-flex items-center gap-0.5 rounded-sm underline-offset-2 hover:text-foreground hover:underline"
-          >
-            {label}
-            <ChevronDown aria-hidden className="size-3" />
-          </button>
+          <Hint text="Choose the host to download from">
+            <button
+              type="button"
+              className="inline-flex items-center gap-0.5 rounded-sm underline-offset-2 hover:text-foreground hover:underline"
+            >
+              {label}
+              <ChevronDown aria-hidden className="size-3" />
+            </button>
+          </Hint>
         )}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">

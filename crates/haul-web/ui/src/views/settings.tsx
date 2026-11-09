@@ -19,9 +19,10 @@ import { type OwnTab, SettingsTabs, savedTab } from '@/components/settings-tabs'
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { api, openPlace, report, save } from '@/lib/api';
+import { openPlace, report, save } from '@/lib/api';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import type { State } from '@/lib/bindings/State';
+import { diagnostics, paths, settings as settingsRoutes, update } from '@/lib/client';
 import { envNote, useSettings } from '@/lib/settings';
 import { THEMES, setTheme, useTheme } from '@/lib/theme';
 import { toast } from '@/lib/toast';
@@ -34,7 +35,7 @@ function CheckNow() {
   const check = async () => {
     setBusy(true);
     try {
-      const { version } = await api<{ version: string | null }>('/api/update/check');
+      const { version } = await update.check();
       if (version) toast(`Haul ${version} is out: see the status bar`, 'success');
       else toast('You have the latest Haul');
     } catch (error) {
@@ -51,6 +52,10 @@ function CheckNow() {
   );
 }
 
+// The one change of a folder whose result is not seen in place: the
+// unfinished downloads move along.
+const FOLDER_MOVED = 'Download folder changed; unfinished downloads moved along';
+
 function FolderCard({ s, d }: { s: State; d: SettingsView }) {
   const [editing, setEditing] = useState(false);
   const [path, setPath] = useState(d.download_dir);
@@ -61,15 +66,15 @@ function FolderCard({ s, d }: { s: State; d: SettingsView }) {
       return;
     }
     try {
-      const r = await api<{ cancelled?: boolean }>('/api/settings/download-dir/pick');
-      if (!r.cancelled) toast('Download folder changed; unfinished downloads moved along', 'success');
+      const r = await settingsRoutes.pickDownloadDir();
+      if (!r.cancelled) toast(FOLDER_MOVED, 'success');
     } catch (error) {
       report(error);
     }
   };
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (await save({ download_dir: path.trim() }, 'Download folder changed')) setEditing(false);
+    if (await save({ download_dir: path.trim() }, FOLDER_MOVED)) setEditing(false);
   };
   return (
     <SettingCard
@@ -112,8 +117,7 @@ function FolderCard({ s, d }: { s: State; d: SettingsView }) {
 // Where Haul keeps its settings, queue, logs and browser data. The settings
 // file is in that folder unless the command line named another one.
 function DataCard({ s, d }: { s: State; d: SettingsView }) {
-  const sep = s.data_dir.includes('\\') ? '\\' : '/';
-  const inside = d.config_file?.startsWith(s.data_dir + sep);
+  const inside = d.config_inside_data_dir;
   return (
     <SettingCard
       icon={FolderOpen}
@@ -150,13 +154,13 @@ function DataCard({ s, d }: { s: State; d: SettingsView }) {
 async function saveDiagnostics(desktop: boolean) {
   if (!desktop) {
     const link = document.createElement('a');
-    link.href = '/api/diagnostics';
+    link.href = paths.diagnostics;
     link.download = '';
     link.click();
     return;
   }
   try {
-    const r = await api<{ saved?: string }>('/api/diagnostics/save');
+    const r = await diagnostics.save();
     if (r.saved) toast(`Saved ${r.saved}`, 'success');
   } catch (error) {
     report(error);
@@ -209,7 +213,7 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
           <SettingCard
             icon={Palette}
             title="App theme"
-            description="Follow Windows, or pick one."
+            description="Follow the system, or pick one."
             controls={
               <ToggleGroup
                 type="single"
@@ -301,7 +305,7 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
             />
             <SettingRow
               title="Give up below"
-              description={`For ${d.min_speed_seconds === 60 ? 'a minute' : `${d.min_speed_seconds} seconds`}: the next host takes over, or it fails. 0 is off.`}
+              description="The next host takes over, or it fails. 0 is off."
               controls={
                 <NumberField
                   name="min_speed_kbps"
@@ -309,7 +313,21 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
                   min={0}
                   max={1048576}
                   label="Minimum speed"
-                  unit="KB/s"
+                  unit="KiB/s"
+                />
+              }
+            />
+            <SettingRow
+              title="For"
+              description="How long a download has to stay below it."
+              controls={
+                <NumberField
+                  name="min_speed_seconds"
+                  value={d.min_speed_seconds}
+                  min={1}
+                  max={3600}
+                  label="Seconds below the minimum speed"
+                  unit="s"
                 />
               }
             />
@@ -395,6 +413,11 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               </Button>
             }
           >
+            <SettingRow
+              title="Detailed log"
+              description="Writes Haul's debug events to its log too, for a report that shows more."
+              controls={<SettingSwitch name="detailed_log" on={d.detailed_log} label="Detailed log" />}
+            />
             <SettingRow
               title="Live connection"
               description="Lets a diagnosing tool on this computer follow everything Haul does as it happens, with a key Haul writes to its data folder."

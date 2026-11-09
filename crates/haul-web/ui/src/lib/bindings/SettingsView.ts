@@ -25,6 +25,11 @@ from_env: { [key in string]: string }, config_file: string | null,
  */
 error: string | null, 
 /**
+ * The settings file is in the data folder, as it is unless the command
+ * line named another one.
+ */
+config_inside_data_dir: boolean, 
+/**
  * Files downloaded at the same time.
  */
 max_total: number, 

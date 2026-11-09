@@ -738,7 +738,8 @@ impl Engine {
                         let speed = (done - window_bytes) as f64 / window_at.elapsed().as_secs_f64();
                         if speed < floor {
                             return Err(Fail::Error(format!(
-                                "slower than {} KB/s for {}s ({:.0} KB/s)",
+                                // In the setting's own unit, KiB/s.
+                                "slower than {} KiB/s for {}s ({:.0} KiB/s)",
                                 cfg.min_speed_kbps,
                                 window.as_secs(),
                                 speed / 1024.0

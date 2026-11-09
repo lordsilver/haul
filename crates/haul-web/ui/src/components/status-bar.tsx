@@ -1,9 +1,10 @@
 import { ArrowDown, ChevronRight, ClipboardList, Gauge, LoaderCircle, Play, Shield, TriangleAlert } from 'lucide-react';
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useState } from 'react';
+import { Hint } from '@/components/hint';
+import { SavingSwitch } from '@/components/saving-switch';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Switch } from '@/components/ui/switch';
 import { UpdateEntry } from '@/components/update';
 import { save } from '@/lib/api';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
@@ -40,16 +41,17 @@ function Flyout({
   const settings = useSettings(open ? version : undefined);
   return (
     <Popover open={open && settings !== null} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          title={title}
-          onClick={() => setOpen(!open)}
-          className={cn(item, 'text-muted-foreground hover:bg-accent hover:text-foreground', on && 'text-foreground')}
-        >
-          {trigger}
-        </button>
-      </PopoverTrigger>
+      <Hint text={title} side="top">
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            onClick={() => setOpen(!open)}
+            className={cn(item, 'text-muted-foreground hover:bg-accent hover:text-foreground', on && 'text-foreground')}
+          >
+            {trigger}
+          </button>
+        </PopoverTrigger>
+      </Hint>
       <PopoverContent side="top" align="start" className="w-80" aria-label={title}>
         <div className="mb-2 flex min-h-8 items-center justify-between gap-2 font-medium">
           {title}
@@ -73,20 +75,10 @@ function FlyoutSwitch({
   change: (on: boolean) => Promise<boolean>;
   disabled?: boolean;
 }) {
-  const [value, setValue] = useState(on);
-  useEffect(() => setValue(on), [on]);
   return (
     <div className="flex items-center justify-between gap-3 py-1.5 text-sm">
       <span>{label}</span>
-      <Switch
-        checked={value}
-        disabled={disabled}
-        aria-label={label}
-        onCheckedChange={async (next) => {
-          setValue(next);
-          if (!(await change(next))) setValue(!next);
-        }}
-      />
+      <SavingSwitch on={on} label={label} disabled={disabled} change={change} />
     </div>
   );
 }
@@ -153,25 +145,13 @@ function Way({
   disabled?: boolean;
   change?: (on: boolean) => Promise<boolean>;
 }) {
-  const [value, setValue] = useState(on ?? false);
-  useEffect(() => setValue(on ?? false), [on]);
   return (
     <div className="flex items-center gap-3 py-2">
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium">{name}</div>
         <div className={cn('text-xs', problem ? 'text-warn-strong' : 'text-muted-foreground')}>{status}</div>
       </div>
-      {change ? (
-        <Switch
-          checked={value}
-          disabled={disabled}
-          aria-label={name}
-          onCheckedChange={async (next) => {
-            setValue(next);
-            if (!(await change(next))) setValue(!next);
-          }}
-        />
-      ) : null}
+      {change ? <SavingSwitch on={on ?? false} label={name} disabled={disabled} change={change} /> : null}
     </div>
   );
 }
@@ -243,10 +223,13 @@ export function StatusBar({ state: s }: { state: State | null }) {
         </span>
       ) : null}
       {s.reconnect.draining ? (
-        <span className={item} title={s.reconnect.draining}>
-          <LoaderCircle aria-hidden className="size-3.5 animate-spin" />
-          New address once downloads finish: nothing new starts
-        </span>
+        <Hint text={s.reconnect.draining} side="top">
+          {/* biome-ignore lint/a11y/noNoninteractiveTabindex: why nothing starts has to be reachable from the keyboard */}
+          <span className={item} tabIndex={0}>
+            <LoaderCircle aria-hidden className="size-3.5 animate-spin" />
+            New IP once downloads finish: nothing new starts
+          </span>
+        </Hint>
       ) : null}
       {/* Work on links before files show, and who waits for the user:
           steady entries rather than a toast for each. */}
@@ -331,15 +314,16 @@ export function StatusBar({ state: s }: { state: State | null }) {
       >
         {() => <Pool s={s} />}
       </Flyout>
-      <button
-        type="button"
-        title={`Theme: ${current.label} (click for ${next.label})`}
-        onClick={() => setTheme(next.value)}
-        className={cn(item, 'hover:bg-accent hover:text-foreground')}
-      >
-        <ThemeIcon aria-hidden className="size-3.5" />
-        {current.label}
-      </button>
+      <Hint text={`Theme: ${current.label} (click for ${next.label})`} side="top">
+        <button
+          type="button"
+          onClick={() => setTheme(next.value)}
+          className={cn(item, 'hover:bg-accent hover:text-foreground')}
+        >
+          <ThemeIcon aria-hidden className="size-3.5" />
+          {current.label}
+        </button>
+      </Hint>
     </footer>
   );
 }

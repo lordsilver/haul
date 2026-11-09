@@ -6,12 +6,13 @@ import { IconButton } from '@/components/icon-button';
 import { Infobar } from '@/components/infobar';
 import { SecretInput } from '@/components/secret-input';
 import { Button } from '@/components/ui/button';
-import { api, bulk, report } from '@/lib/api';
+import { bulk, report } from '@/lib/api';
 import type { ArchiveView } from '@/lib/bindings/ArchiveView';
 import type { Command } from '@/lib/bindings/Command';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import type { State } from '@/lib/bindings/State';
 import { archiveCaption } from '@/lib/captions';
+import { item } from '@/lib/client';
 import { bytes, plural } from '@/lib/format';
 import { pickMany, picking } from '@/lib/selection';
 import { cn } from '@/lib/utils';
@@ -25,7 +26,7 @@ function PasswordBar({ a, input }: { a: ArchiveView; input: React.RefObject<HTML
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      await api(`/api/item/${encodeURIComponent(a.ids[0] ?? '')}/extract`, { password });
+      await item.extract(a.ids[0] ?? '', password);
       setPassword('');
       input.current?.blur();
     } catch (error) {
@@ -75,7 +76,7 @@ function partsWith(a: ArchiveView, s: State, ...commands: Command[]) {
 // Pause, resume, retry or remove the parts together, and extract them once
 // they are all done.
 function ArchiveActions({ a, s, focusPassword }: { a: ArchiveView; s: State; focusPassword: () => void }) {
-  const extract = () => api(`/api/item/${encodeURIComponent(a.ids[0] ?? '')}/extract`).catch(report);
+  const extract = () => item.extract(a.ids[0] ?? '').catch(report);
   const remove = () => bulk(a.ids, 'remove');
   const resume = () => bulk(partsWith(a, s, 'start', 'resume'), 'resume');
   const buttons: Partial<Record<Command, CommandButton>> = {

@@ -1,8 +1,8 @@
 import type { LucideIcon } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
+import { SavingSwitch } from '@/components/saving-switch';
 import { SecretInput } from '@/components/secret-input';
 import { Input } from '@/components/ui/input';
-import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { save } from '@/lib/api';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
@@ -76,7 +76,8 @@ export const Section = ({ children }: { children: ReactNode }) => (
   <h2 className="mt-4 mb-0.5 text-sm font-semibold first:mt-0">{children}</h2>
 );
 
-// A switch that saves its setting at once.
+// A switch that saves its setting at once: it flips as it is pressed, and
+// back if the save fails.
 export function SettingSwitch({
   name,
   on,
@@ -88,14 +89,16 @@ export function SettingSwitch({
   label: string;
   disabled?: boolean;
 }) {
+  const [shown, setShown] = useState(on);
   return (
     <span className="flex items-center gap-2 text-sm text-muted-foreground">
-      <span className="w-6 text-right">{on ? 'On' : 'Off'}</span>
-      <Switch
-        checked={on}
+      <span className="w-6 text-right">{shown ? 'On' : 'Off'}</span>
+      <SavingSwitch
+        on={on}
+        label={label}
         disabled={disabled}
-        aria-label={label}
-        onCheckedChange={(next) => save({ [name]: next }, null)}
+        onShown={setShown}
+        change={(next) => save({ [name]: next }, null)}
       />
     </span>
   );
@@ -150,7 +153,7 @@ export function NumberField({
       toast(max === undefined ? `${label}: ${min} or more` : `${label}: from ${min} to ${max}`, 'error');
       return;
     }
-    if (n !== value) save({ [name]: n });
+    if (n !== value) save({ [name]: n }, null);
   };
   return (
     <span className="flex items-center gap-2">
@@ -201,7 +204,7 @@ export function TextField({
     disabled: Boolean(d.from_env[name]),
     className: wide ? 'w-full sm:w-96' : 'w-56',
     onChange: (e: React.ChangeEvent<HTMLInputElement>) => setText(e.target.value),
-    onBlur: () => text.trim() !== value && save({ [name]: text.trim() }),
+    onBlur: () => text.trim() !== value && save({ [name]: text.trim() }, null),
     onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && (e.target as HTMLInputElement).blur(),
   };
   return secret ? <SecretInput {...props} /> : <Input {...props} />;
@@ -245,7 +248,7 @@ export function LinesField({
       className="font-mono text-xs"
       value={text}
       onChange={(e) => setText(e.target.value)}
-      onBlur={() => text !== joined && save({ [name]: text })}
+      onBlur={() => text !== joined && save({ [name]: text }, null)}
     />
   );
 }

@@ -29,15 +29,6 @@ export function ordinal(n: number): string {
 
 export const isWebLink = (url: string) => /^https?:\/\//i.test(url);
 
-// A link's host, without "www.", for a button that names it.
-export function hostOf(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '');
-  } catch {
-    return 'page';
-  }
-}
-
 // A time to wait in round words: "about 5 min".
 export function roughly(seconds: number): string {
   const min = Math.round(seconds / 60);

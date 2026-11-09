@@ -48,6 +48,7 @@ mod transfer;
 mod unpack;
 mod views;
 
+pub use pages::Pasted;
 pub use passes::{Browsing, PassPlan};
 pub use reconnect::ReconnectView;
 pub use services::ServicesView;

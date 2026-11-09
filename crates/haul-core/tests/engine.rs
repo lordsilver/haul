@@ -490,6 +490,29 @@ async fn page_needs_a_person_then_their_link_is_used() {
     assert_eq!(t.downloaded("e.bin"), content("e.bin", SIZE));
 }
 
+/// A link pasted while one download waits for a person is that download's;
+/// text, or a link while none waits, is for the Add dialog.
+#[tokio::test]
+async fn a_pasted_link_goes_to_the_one_download_that_waits_for_it() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let text = format!("{0}/files/x.bin {0}/files/y.bin", t.ip);
+    let pasted = engine.paste(&text).unwrap();
+    assert_eq!(pasted.open_add.as_deref(), Some(text.as_str()));
+    let lone = format!("{}/files/e.bin", t.ip);
+    assert_eq!(engine.paste(&lone).unwrap().used_for, None, "none waits");
+    engine.add_text(&format!("{}/page/getfile", t.ip), "");
+    let s = wait_for(&engine, "captcha", |s| {
+        s.items[0].status.as_str() == "captcha"
+    })
+    .await;
+    let pasted = engine.paste(&format!(" {lone}\n")).unwrap();
+    assert_eq!(pasted.used_for.as_deref(), Some(s.items[0].id.as_str()));
+    assert_eq!(pasted.open_add, None);
+    wait_for(&engine, "done", all_done).await;
+    assert_eq!(t.downloaded("e.bin"), content("e.bin", SIZE));
+}
+
 #[tokio::test]
 async fn pause_resume_and_remove() {
     let t = Setup::new().await;
@@ -652,6 +675,37 @@ async fn settings_changed_at_once_agree_with_the_file() {
         Some("x39")
     );
     assert!(!cfg.is_disabled("a.example"));
+}
+
+/// A host that gives no decent download without its account can be used
+/// like any other without one, from the app; the choice is saved.
+#[tokio::test]
+async fn a_host_that_wants_its_account_can_be_used_without_one() {
+    let t = Setup::new().await;
+    let engine = start_from_file(&t).await;
+    let host = |engine: &Engine| {
+        let s = engine.snapshot();
+        let h = s.hosts.iter().find(|h| h.name == "rapidgator.net").unwrap();
+        (h.accountless, h.needs_account)
+    };
+    assert_eq!(host(&engine), (Some(false), true));
+    engine.set_accountless("rapidgator.net", true).unwrap();
+    assert_eq!(host(&engine), (Some(true), false));
+    let file = Config::load(&t.root.join("data/config.toml")).unwrap();
+    assert_eq!(file.accountless_hosts, ["rapidgator.net"]);
+    assert!(
+        engine.set_accountless("127.0.0.1", true).is_err(),
+        "a host that needs no account"
+    );
+    let s = engine.snapshot();
+    assert_eq!(
+        s.hosts
+            .iter()
+            .find(|h| h.name == "127.0.0.1")
+            .map(|h| h.accountless),
+        None,
+        "not reached yet"
+    );
 }
 
 #[tokio::test]
@@ -3801,7 +3855,7 @@ async fn a_slow_mirror_gives_way() {
     })
     .await;
     let error = &s.items.iter().find(|i| i.name == "u.bin").unwrap().error;
-    assert!(error.contains("slower than 100 KB/s for 1s"), "{error}");
+    assert!(error.contains("slower than 100 KiB/s for 1s"), "{error}");
 }
 
 #[tokio::test]
@@ -4104,7 +4158,7 @@ async fn the_router_gets_a_new_address() {
     let s = engine.snapshot();
     assert!(!s.reconnect.busy);
     assert!(s.reconnect.note_at.is_some_and(|t| t > 0));
-    assert!(s.reconnect.note.unwrap().contains("Got a new address"));
+    assert!(s.reconnect.note.unwrap().contains("Got a new IP"));
 }
 
 /// A redial whose caller goes away halfway (a request whose page reloaded)
@@ -4138,7 +4192,7 @@ async fn a_new_address_counts_only_when_the_internet_sees_it() {
     assert!(err.contains("still sees 203.0.113.9"), "{err}");
     let s = engine.snapshot();
     assert!(s.reconnect.failed);
-    assert!(s.reconnect.note.unwrap().contains("No new address"));
+    assert!(s.reconnect.note.unwrap().contains("No new IP"));
 }
 
 /// A switch for redialing on its own is refused, and nothing is stopped,
@@ -5047,7 +5101,7 @@ async fn a_new_address_waits_for_healthy_downloads_to_finish() {
     let s = wait_for(&engine, "the hold", |s| s.reconnect.draining.is_some()).await;
     assert_eq!(
         row(&s, "x.bin").slowed.as_deref(),
-        Some("Slowed by 127.0.0.1: a new address once other downloads finish")
+        Some("Slowed by 127.0.0.1: a new IP once other downloads finish")
     );
     assert_eq!(t.server.redials.load(Ordering::SeqCst), 0);
     assert_eq!(row(&s, "h.bin").status, "downloading");

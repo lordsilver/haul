@@ -5,10 +5,11 @@ import { FileName } from '@/components/file-name';
 import { HostName, HostPicker, hostLabel } from '@/components/host-picker';
 import { StatusGlyph } from '@/components/status-glyph';
 import { Checkbox } from '@/components/ui/checkbox';
-import { act, api, report } from '@/lib/api';
+import { act, report } from '@/lib/api';
 import type { Command } from '@/lib/bindings/Command';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import { caption, percent } from '@/lib/captions';
+import { item } from '@/lib/client';
 import { bytes, duration, plural } from '@/lib/format';
 import { pickMany, picking } from '@/lib/selection';
 import { toast } from '@/lib/toast';
@@ -144,10 +145,7 @@ export type RowContext = { desktop: boolean; bin: string; paused: boolean; off: 
 // going is the answer, unless its file moved to the bin.
 function RowActions({ it, ctx }: { it: ItemView; ctx: RowContext }) {
   const recycle = () =>
-    api(`/api/item/${encodeURIComponent(it.id)}/remove`).then(
-      () => toast(`Moved ${it.name} to the ${ctx.bin}`, 'success'),
-      report,
-    );
+    item.act(it.id, 'remove').then(() => toast(`Moved ${it.name} to the ${ctx.bin}`, 'success'), report);
   const buttons: Partial<Record<Command, CommandButton>> = {
     pause: { label: 'Pause', icon: Pause, action: () => act(it.id, 'pause') },
     start: { label: 'Start', icon: Play, action: () => act(it.id, 'resume') },
@@ -163,7 +161,7 @@ function RowActions({ it, ctx }: { it: ItemView; ctx: RowContext }) {
       icon: X,
       action: () => act(it.id, 'remove'),
     },
-    clear: { label: 'Clear from list', icon: X, action: () => act(it.id, 'remove') },
+    clear: { label: 'Clear completed', icon: X, action: () => act(it.id, 'remove') },
     remove: { label: 'Remove', icon: X, action: () => act(it.id, 'remove') },
   };
   return <CommandButtons commands={it.commands} buttons={buttons} />;

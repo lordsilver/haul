@@ -33,7 +33,8 @@ struct Run {
 }
 
 fn kb(speed: f64) -> String {
-    format!("{:.0} KB/s", speed / 1024.0)
+    // Decimal, as the page shows speeds.
+    format!("{:.0} KB/s", speed / 1000.0)
 }
 
 fn mb(bytes: u64) -> String {
@@ -406,7 +407,7 @@ impl Engine {
         };
         let useless = st.hosts.get(host).is_some_and(|h| h.redial_useless);
         if may_redial && sure && exit == DIRECT && !useless {
-            return "a new address once other downloads finish";
+            return "a new IP once other downloads finish";
         }
         if it.prefer.as_deref() == Some(host) {
             return "you picked this host";

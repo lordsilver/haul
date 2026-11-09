@@ -1,5 +1,5 @@
-import { addedMessage, api, report } from '@/lib/api';
-import type { Added } from '@/lib/bindings/Added';
+import { addedMessage, report } from '@/lib/api';
+import { adding } from '@/lib/client';
 import { externalStore } from '@/lib/external-store';
 import { toast } from '@/lib/toast';
 
@@ -42,7 +42,7 @@ export const addOpen = () => form.open;
 export async function addText(text: string, pkg = '', password = ''): Promise<boolean> {
   if (!text.trim()) return false;
   try {
-    const r = await api<Added>('/api/add', { text, package: pkg, password });
+    const r = await adding.text(text, pkg, password);
     toast(addedMessage(r), r.added + r.merged + r.wrappers ? 'success' : 'info');
     return r.added + r.merged + r.duplicates + r.wrappers > 0;
   } catch (error) {
@@ -61,7 +61,7 @@ function filesForm(files: FileList | File[]) {
 export async function importFiles(files: FileList | File[]) {
   if (!files.length) return;
   try {
-    toast(addedMessage(await api<Added>('/api/container', filesForm(files))), 'success');
+    toast(addedMessage(await adding.files(filesForm(files))), 'success');
   } catch (error) {
     toast(`Import failed: ${error instanceof Error ? error.message : error}`, 'error');
   }
@@ -72,7 +72,7 @@ export async function importFiles(files: FileList | File[]) {
 export async function readFiles(files: FileList | File[]) {
   if (!files.length) return;
   try {
-    const r = await api<{ links: string[]; package: string }>('/api/container/read', filesForm(files));
+    const r = await adding.read(filesForm(files));
     if (!r.links.length) {
       toast('No links in that file', 'info');
       return;
