@@ -197,6 +197,33 @@ async fn a_person_can_look_for_updates_with_the_setting_off() {
     assert!(engine.snapshot().update.is_some());
 }
 
+/// An action on many rows is one change of the state, not one per row.
+#[tokio::test]
+async fn an_action_on_many_rows_is_one_change() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text(
+        &format!("{0}/files/a.bin {0}/files/b.bin {0}/files/c.bin", t.ip),
+        "",
+    );
+    let s = wait_for(&engine, "the rows", |s| s.items.len() == 3).await;
+    let ids: Vec<String> = s.items.iter().map(|i| i.id.clone()).collect();
+    // Whatever lookups there are have had their say.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let before = *engine.watch().borrow();
+    let batch = engine.items_action(&ids, ItemAction::Pause);
+    assert_eq!((batch.done, batch.failed.len()), (3, 0));
+    assert_eq!(*engine.watch().borrow(), before + 1);
+    assert!(
+        engine
+            .snapshot()
+            .items
+            .iter()
+            .all(|i| i.status.as_str() == "paused")
+    );
+}
+
 /// A partial file that cannot be written is this computer's trouble: no
 /// host is blamed and no mirror is used up for it.
 #[tokio::test]

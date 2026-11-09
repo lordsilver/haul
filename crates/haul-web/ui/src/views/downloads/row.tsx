@@ -1,14 +1,13 @@
 import { FolderOpen, type LucideIcon, Pause, Play, RotateCw, Trash2, X } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, type RefObject, memo, useState } from 'react';
 import { ConfirmButton } from '@/components/confirm-button';
 import { FileName } from '@/components/file-name';
-import { HostName, HostPicker, hostLabel, offHosts } from '@/components/host-picker';
+import { HostName, HostPicker, hostLabel } from '@/components/host-picker';
 import { StatusGlyph } from '@/components/status-glyph';
 import { Checkbox } from '@/components/ui/checkbox';
 import { act, api, report } from '@/lib/api';
 import type { Command } from '@/lib/bindings/Command';
 import type { ItemView } from '@/lib/bindings/ItemView';
-import type { State } from '@/lib/bindings/State';
 import { caption, percent } from '@/lib/captions';
 import { bytes, duration, plural } from '@/lib/format';
 import { pickMany, picking } from '@/lib/selection';
@@ -137,11 +136,16 @@ export function CommandButtons({
   );
 }
 
-// A row's buttons, each with its label.
-function RowActions({ it, s }: { it: ItemView; s: State }) {
+// What a row needs of the state beyond its own item: kept the same object
+// while these do not change, so a row whose item did not change is skipped.
+export type RowContext = { desktop: boolean; bin: string; paused: boolean; off: Set<string> };
+
+// A row's buttons, each with its label. A removal says nothing: the row
+// going is the answer, unless its file moved to the bin.
+function RowActions({ it, ctx }: { it: ItemView; ctx: RowContext }) {
   const recycle = () =>
     api(`/api/item/${encodeURIComponent(it.id)}/remove`).then(
-      () => toast(`Moved ${it.name} to the ${s.bin}`, 'success'),
+      () => toast(`Moved ${it.name} to the ${ctx.bin}`, 'success'),
       report,
     );
   const buttons: Partial<Record<Command, CommandButton>> = {
@@ -150,14 +154,14 @@ function RowActions({ it, s }: { it: ItemView; s: State }) {
     resume: { label: 'Resume', icon: Play, action: () => act(it.id, 'resume') },
     retry: { label: 'Retry', icon: RotateCw, action: () => act(it.id, 'retry') },
     reveal: { label: 'Show in folder', icon: FolderOpen, action: () => act(it.id, 'reveal') },
-    recycle: { label: `Move to the ${s.bin}`, icon: Trash2, action: recycle },
+    recycle: { label: `Move to the ${ctx.bin}`, icon: Trash2, action: recycle },
     // Its partial file goes with it, so it asks twice, as Remove does for a
     // selection.
     remove_partial: {
       label: 'Remove',
       confirm: 'Delete partial file?',
       icon: X,
-      action: () => api(`/api/item/${encodeURIComponent(it.id)}/remove`),
+      action: () => act(it.id, 'remove'),
     },
     clear: { label: 'Clear from list', icon: X, action: () => act(it.id, 'remove') },
     remove: { label: 'Remove', icon: X, action: () => act(it.id, 'remove') },
@@ -170,8 +174,7 @@ function RowActions({ it, s }: { it: ItemView; s: State }) {
 // hosts that are on could take over, and where it belongs; then why it
 // failed or waits, or what the host wants of the user. A host that is off
 // is greyed out, here and among the hosts to choose from.
-function Subtitle({ it, s }: { it: ItemView; s: State }) {
-  const off = offHosts(s);
+function Subtitle({ it, off }: { it: ItemView; off: Set<string> }) {
   // The host part, which chooses the host when the file has several.
   const others = it.other_hosts ? ` · ${plural(it.other_hosts, 'other host')}` : '';
   const host = `${it.shown_host}${others}`;
@@ -202,24 +205,26 @@ function Subtitle({ it, s }: { it: ItemView; s: State }) {
   );
 }
 
-export function ItemRow({
+// One download. `order` is the list's order, read when a click picks a
+// range: rendering does not depend on it, so it comes through a ref.
+export const ItemRow = memo(function ItemRow({
   it,
-  s,
+  ctx,
   order,
   picked,
   selecting,
   member = false,
 }: {
   it: ItemView;
-  s: State;
-  order: string[];
+  ctx: RowContext;
+  order: RefObject<string[]>;
   picked: boolean;
   selecting: boolean;
   member?: boolean;
 }) {
   const [pasting, setPasting] = useState(false);
   const needs = it.status === 'captcha';
-  const hint = s.desktop
+  const hint = ctx.desktop
     ? 'Open here, solve the page and press its download button: Haul takes the download over.'
     : 'Open the page, solve it, then copy the final download link and paste it here.';
   return (
@@ -229,7 +234,8 @@ export function ItemRow({
     // biome-ignore lint/a11y/useKeyWithClickEvents: the row's checkbox is its keyboard way in
     <li
       className={cn(
-        'group/row border-t px-4 py-2.5 transition-colors',
+        // The browser skips laying out rows that are off screen.
+        'group/row border-t px-4 py-2.5 transition-colors [contain-intrinsic-size:auto_58px] [content-visibility:auto]',
         member && 'bg-muted/35 pl-11',
         needs ? 'bg-warn-soft' : 'hover:bg-muted/50',
         picked && 'bg-accent hover:bg-accent',
@@ -237,7 +243,7 @@ export function ItemRow({
       onMouseDown={(e) => e.shiftKey && e.preventDefault()}
       onClick={(e) => {
         if ((e.target as HTMLElement).closest('button, a, input, textarea, form, [role=menu]')) return;
-        if (picking(e)) pickMany([it.id], order, { toggle: true, range: e.shiftKey });
+        if (picking(e)) pickMany([it.id], order.current, { toggle: true, range: e.shiftKey });
       }}
     >
       <div className={ROW}>
@@ -246,20 +252,20 @@ export function ItemRow({
           checked={picked}
           selecting={selecting}
           label={`Select ${it.name}`}
-          onCheck={(e) => pickMany([it.id], order, { toggle: true, range: e.shiftKey })}
+          onCheck={(e) => pickMany([it.id], order.current, { toggle: true, range: e.shiftKey })}
         />
         <div className={COLUMNS.title}>
           <FileName name={it.name} />
-          <Subtitle it={it} s={s} />
+          <Subtitle it={it} off={ctx.off} />
         </div>
         <div className={COLUMNS.progress}>
           {needs ? (
-            <NeedsYou w={it} desktop={s.desktop} paste={() => setPasting(true)} hint={hint} />
+            <NeedsYou w={it} desktop={ctx.desktop} paste={() => setPasting(true)} hint={hint} />
           ) : (
             <>
               <Bar value={percent(it)} status={it.status} />
               <div className="mt-1.5 truncate text-xs text-muted-foreground tabular-nums">
-                {caption(it, s.paused)}
+                {caption(it, ctx.paused)}
                 <InlineRate speed={it.speed} />
               </div>
             </>
@@ -268,7 +274,7 @@ export function ItemRow({
         <div className={COLUMNS.rate}>
           <Rate speed={it.speed} size={it.size} done={it.done} slowed={Boolean(it.slowed)} />
         </div>
-        <RowActions it={it} s={s} />
+        <RowActions it={it} ctx={ctx} />
       </div>
       {pasting && needs ? (
         <div className="mt-2.5 pl-[68px]">
@@ -277,4 +283,4 @@ export function ItemRow({
       ) : null}
     </li>
   );
-}
+});

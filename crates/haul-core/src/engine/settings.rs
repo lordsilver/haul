@@ -154,6 +154,29 @@ const FLAGS: &[(&str, Flag)] = &[
     ("use_proxy", |c| &mut c.use_proxy),
 ];
 
+/// Why a setting was not changed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SettingError {
+    /// The request asked for something that cannot be: the asker's to fix.
+    #[error("{0}")]
+    Invalid(String),
+    /// The settings file could not be written: this computer's trouble.
+    #[error("{0}")]
+    Write(String),
+}
+
+impl From<String> for SettingError {
+    fn from(e: String) -> Self {
+        Self::Invalid(e)
+    }
+}
+
+impl From<&str> for SettingError {
+    fn from(e: &str) -> Self {
+        Self::Invalid(e.to_string())
+    }
+}
+
 impl Engine {
     /// Every setting, for the settings view.
     pub fn settings(&self) -> SettingsView {
@@ -210,7 +233,7 @@ impl Engine {
     /// Applies settings sent as `{key: value}` with the names the file uses,
     /// and writes each to the file. An empty text removes the key, which
     /// brings back its default.
-    pub fn update_settings(&self, changes: &Map<String, Value>) -> Result<(), String> {
+    pub fn update_settings(&self, changes: &Map<String, Value>) -> Result<(), SettingError> {
         let _settings = self.settings_held();
         let mut cfg = (*self.cfg()).clone();
         let mut writes = Vec::new();
@@ -218,9 +241,9 @@ impl Engine {
         let mut new_folder = None;
         for (key, value) in changes {
             if let Some(variable) = cfg.from_env.get(key.as_str()) {
-                return Err(format!(
+                return Err(SettingError::Invalid(format!(
                     "{key} is set by the {variable} environment variable"
-                ));
+                )));
             }
             if let Some((_, least, most, set)) = NUMBERS.iter().find(|n| n.0 == key) {
                 let n = number(value, key)?.clamp(*least, *most);
@@ -294,7 +317,7 @@ impl Engine {
                     if let Some(dir) = &dir
                         && !Path::new(dir).is_absolute()
                     {
-                        return Err(format!("{dir} is not a full path"));
+                        return Err(SettingError::Invalid(format!("{dir} is not a full path")));
                     }
                     new_folder.clone_from(&dir);
                     writes.push(write);
@@ -311,7 +334,7 @@ impl Engine {
                 }
                 _ => {
                     let Some((_, flag)) = FLAGS.iter().find(|(name, _)| name == key) else {
-                        return Err(format!("unknown setting {key}"));
+                        return Err(SettingError::Invalid(format!("unknown setting {key}")));
                     };
                     let on = value
                         .as_bool()
@@ -328,7 +351,9 @@ impl Engine {
             && changes.contains_key("reconnect")
             && let Some(why) = self.redial_blocker(&cfg)
         {
-            return Err(format!("cannot get a new IP on its own: {why}"));
+            return Err(SettingError::Invalid(format!(
+                "cannot get a new IP on its own: {why}"
+            )));
         }
         if let Some(dir) = new_folder {
             usable_folder(Path::new(&dir))?;
@@ -339,7 +364,7 @@ impl Engine {
     /// The subfolder of the download folder for files from `host`; an empty
     /// one puts them back in the download folder itself. Saved the way it is
     /// used, so the file shows the folder files actually go to.
-    pub fn set_host_folder(&self, host: &str, folder: &str) -> Result<(), String> {
+    pub fn set_host_folder(&self, host: &str, folder: &str) -> Result<(), SettingError> {
         let folder = paths::subfolder(folder)
             .to_string_lossy()
             .replace('\\', "/");
@@ -358,7 +383,7 @@ impl Engine {
 
     /// Adds `host` to the end of the preferred hosts, or takes it out; a host
     /// already preferred keeps its place.
-    pub fn set_preferred(&self, host: &str, preferred: bool) -> Result<(), String> {
+    pub fn set_preferred(&self, host: &str, preferred: bool) -> Result<(), SettingError> {
         let _settings = self.settings_held();
         let mut cfg = (*self.cfg()).clone();
         if preferred == cfg.preference(host).is_some() {
@@ -383,7 +408,7 @@ impl Engine {
     /// The preferred hosts, all of them, in this order: how the list is
     /// reordered. A blank name, or a host named twice (in any case), leaves
     /// the settings as they were.
-    pub fn set_preferred_hosts(&self, hosts: &[String]) -> Result<(), String> {
+    pub fn set_preferred_hosts(&self, hosts: &[String]) -> Result<(), SettingError> {
         let mut list: Vec<String> = Vec::with_capacity(hosts.len());
         for host in hosts {
             let host = host.trim();
@@ -391,7 +416,9 @@ impl Engine {
                 return Err("a preferred host needs a name".into());
             }
             if list.iter().any(|h| h.eq_ignore_ascii_case(host)) {
-                return Err(format!("{host} is in the list twice"));
+                return Err(SettingError::Invalid(format!(
+                    "{host} is in the list twice"
+                )));
             }
             list.push(host.to_string());
         }
@@ -407,7 +434,7 @@ impl Engine {
     /// Turns `host` off (its links are never tried, and it leaves the
     /// preferred hosts) or back on, which starts again the downloads that
     /// failed for having only turned-off hosts.
-    pub fn set_disabled(&self, host: &str, disabled: bool) -> Result<(), String> {
+    pub fn set_disabled(&self, host: &str, disabled: bool) -> Result<(), SettingError> {
         let host = host.trim();
         if host.is_empty() {
             return Err("a host needs a name".into());
@@ -432,7 +459,7 @@ impl Engine {
     }
 
     /// Puts `cfg` in effect with the host lists written whole.
-    fn write_hosts(&self, cfg: Config) -> Result<(), String> {
+    fn write_hosts(&self, cfg: Config) -> Result<(), SettingError> {
         let writes = vec![
             top("preferred_hosts", Some(str_list(&cfg.preferred_hosts))),
             top("disabled_hosts", Some(str_list(&cfg.disabled_hosts))),
@@ -444,14 +471,14 @@ impl Engine {
     /// Puts `cfg` in effect with its preferred hosts written whole. Written
     /// even when empty: a key left out would bring the defaults
     /// ([`config::DEFAULT_PREFERRED`]) back on the next load.
-    fn write_preferred(&self, cfg: Config) -> Result<(), String> {
+    fn write_preferred(&self, cfg: Config) -> Result<(), SettingError> {
         let list = str_list(&cfg.preferred_hosts);
         self.write_and_apply(cfg, vec![top("preferred_hosts", Some(list))])
     }
 
     /// The user's choice of route for one host. `Direct` leaves the proxy and
     /// uses the real address, so it is never chosen automatically.
-    pub fn set_route(&self, host: &str, route: Route) -> Result<(), String> {
+    pub fn set_route(&self, host: &str, route: Route) -> Result<(), SettingError> {
         let _settings = self.settings_held();
         let mut cfg = (*self.cfg()).clone();
         cfg.routes.insert(host.to_string(), route);
@@ -480,10 +507,10 @@ impl Engine {
 
     /// Writes the keys to the file in one go and puts `cfg` in effect. The
     /// caller holds [`Engine::settings_held`].
-    fn write_and_apply(&self, cfg: Config, writes: Vec<Write>) -> Result<(), String> {
+    fn write_and_apply(&self, cfg: Config, writes: Vec<Write>) -> Result<(), SettingError> {
         if let Some(path) = &self.0.config_path {
             config::write_keys(path, &writes)
-                .map_err(|e| format!("saving {}: {e}", path.display()))?;
+                .map_err(|e| SettingError::Write(format!("saving {}: {e}", path.display())))?;
             *self.0.config_seen.lock().unwrap_or_else(|e| e.into_inner()) = stamp(path);
         }
         self.reconfigure(cfg);

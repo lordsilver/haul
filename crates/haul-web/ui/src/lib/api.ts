@@ -1,4 +1,5 @@
 import type { Added } from '@/lib/bindings/Added';
+import type { Batch } from '@/lib/bindings/Batch';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
 import { plural } from '@/lib/format';
 import { toast } from '@/lib/toast';
@@ -30,13 +31,37 @@ export const openHere = (id: string) => api(item(id, 'browse'), { user_agent: na
 
 export const openPlace = (place: 'downloads' | 'config' | 'data') => api(`/api/open/${place}`).catch(report);
 
-// Each action on every item it applies to; one report if any fail. Answers
-// how many succeeded.
+// One action on many items in one request; the first failure, and how many
+// others there were, is reported. Answers how many succeeded.
 export async function bulk(ids: string[], action: string): Promise<number> {
-  const results = await Promise.allSettled(ids.map((id) => api(item(id, action))));
-  const failure = results.find((r) => r.status === 'rejected');
-  if (failure) report(failure.reason);
-  return results.filter((r) => r.status === 'fulfilled').length;
+  if (!ids.length) return 0;
+  try {
+    const r = await api<Batch>(`/api/items/${action}`, { ids });
+    reportFailed(r);
+    return r.done;
+  } catch (error) {
+    report(error);
+    return 0;
+  }
+}
+
+// One action on many wrappers (a card's, or every card's) in one request.
+export async function wrappersBulk(ids: string[], action: 'start' | 'remove' | 'retry'): Promise<Batch | null> {
+  if (!ids.length) return null;
+  try {
+    const r = await api<Batch>(`/api/wrappers/${action}`, { ids });
+    reportFailed(r);
+    return r;
+  } catch (error) {
+    report(error);
+    return null;
+  }
+}
+
+function reportFailed(r: Batch) {
+  const [first, ...rest] = r.failed;
+  if (!first) return;
+  toast(rest.length ? `${first.error} (and ${plural(rest.length, 'other')})` : first.error, 'error');
 }
 
 // Every setting, account secrets included: fetched when a page needs it,

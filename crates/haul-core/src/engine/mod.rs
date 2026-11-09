@@ -52,7 +52,7 @@ pub use passes::{Browsing, PassPlan};
 pub use reconnect::ReconnectView;
 pub use services::ServicesView;
 
-pub use settings::SettingsView;
+pub use settings::{SettingError, SettingsView};
 pub use snapshot::{HostView, ItemView, PoolView, QuotaView, Snapshot, WrapperView};
 pub use views::{
     Alert, ArchiveView, Command, Counts, HostGroup, List, PoolSource, PoolSummary, RowState,
@@ -179,6 +179,61 @@ fn owns_partials(download_dir: &Path, data_dir: &Path) -> bool {
     true
 }
 
+/// What a wrapper's buttons do ([`Engine::wrappers_action`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrapperAction {
+    /// Start the files it added that wait.
+    Start,
+    /// Take it off the list, with its files that never started.
+    Remove,
+    /// Unwrap it again, after it failed.
+    Retry,
+}
+
+impl FromStr for WrapperAction {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, ()> {
+        Ok(match s {
+            "start" => Self::Start,
+            "remove" => Self::Remove,
+            "retry" => Self::Retry,
+            _ => return Err(()),
+        })
+    }
+}
+
+/// Why a batch left a row as it was.
+const NO_SUCH: &str = "no such item";
+
+/// What an action on many rows came to.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct Batch {
+    /// Rows it was done to.
+    pub done: usize,
+    /// A wrapper's files started, each counted once.
+    pub started: usize,
+    /// The rows it was not done to, and why.
+    pub failed: Vec<BatchFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct BatchFailure {
+    pub id: String,
+    pub error: String,
+}
+
+impl Batch {
+    fn failed(&mut self, id: &str, error: impl Into<String>) {
+        self.failed.push(BatchFailure {
+            id: id.to_string(),
+            error: error.into(),
+        });
+    }
+}
+
 /// Takes off the list the unwrapped wrappers none of whose files is on it
 /// any more: they stood for those files, and starting or removing them
 /// would do nothing.
@@ -213,6 +268,129 @@ pub enum Event {
         title: String,
         body: String,
     },
+}
+
+/// What kind of thing [`summarize`] tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Told {
+    Finished,
+    Failed,
+    NeedsYou,
+    Notice,
+}
+
+/// One thing to tell the person, worded for a notification or a toast.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Telling {
+    pub title: String,
+    pub body: String,
+    pub kind: Told,
+}
+
+/// A burst of events as the few things worth saying: downloads finished
+/// together are one, as are failures, and downloads waiting for a person.
+pub fn summarize(events: &[Event]) -> Vec<Telling> {
+    let mut finished = Vec::new();
+    let mut waiting = Vec::new();
+    let mut failed = Vec::new();
+    let mut notices = Vec::new();
+    for e in events {
+        match e {
+            Event::Finished { name, .. } => finished.push(name.as_str()),
+            Event::NeedsUser { name, .. } => waiting.push(name.as_str()),
+            Event::Failed { name, error, .. } => failed.push(format!("{name}: {error}")),
+            Event::ThemeChanged(_) => {}
+            Event::Notice { title, body } => notices.push((title.clone(), body.clone())),
+        }
+    }
+    let list = |names: &[&str]| {
+        let shown = names.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+        if names.len() > 3 {
+            format!("{shown} and {} more", names.len() - 3)
+        } else {
+            shown
+        }
+    };
+    let tell = |title: String, body: String, kind| Telling { title, body, kind };
+    let mut out = Vec::new();
+    match finished.len() {
+        0 => {}
+        1 => out.push(tell(
+            "Downloaded".into(),
+            finished[0].to_string(),
+            Told::Finished,
+        )),
+        n => out.push(tell(
+            format!("{n} downloads finished"),
+            list(&finished),
+            Told::Finished,
+        )),
+    }
+    if !waiting.is_empty() {
+        out.push(tell(
+            "Needs you".into(),
+            format!(
+                "{}: open it in Haul to solve the host's page",
+                list(&waiting)
+            ),
+            Told::NeedsYou,
+        ));
+    }
+    for (title, body) in notices {
+        out.push(tell(title, body, Told::Notice));
+    }
+    match failed.len() {
+        0 => {}
+        1 => out.push(tell(
+            "Download failed".into(),
+            failed[0].clone(),
+            Told::Failed,
+        )),
+        n => out.push(tell(
+            format!("{n} downloads failed"),
+            failed
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Told::Failed,
+        )),
+    }
+    out
+}
+
+#[cfg(test)]
+mod summarize_tests {
+    use super::*;
+
+    #[test]
+    fn a_burst_is_told_in_a_few_lines() {
+        let events = [
+            Event::NeedsUser {
+                id: "waiting".into(),
+                name: "a.bin".into(),
+            },
+            Event::Finished {
+                id: "done".into(),
+                name: "b.bin".into(),
+            },
+            Event::Finished {
+                id: "done2".into(),
+                name: "c.bin".into(),
+            },
+        ];
+        let out = summarize(&events);
+        let waiting: Vec<_> = out.iter().filter(|t| t.kind == Told::NeedsYou).collect();
+        assert_eq!(waiting.len(), 1, "{out:?}");
+        assert_eq!(waiting[0].title, "Needs you");
+        assert!(waiting[0].body.contains("a.bin"));
+        assert!(
+            out.iter()
+                .any(|t| t.title == "2 downloads finished" && t.body == "b.bin, c.bin")
+        );
+    }
 }
 
 /// What is downloading ([`Engine::activity`]).
@@ -1875,6 +2053,50 @@ impl Engine {
             return self.extract(id, None).unwrap_or(true);
         }
         let mut st = self.lock();
+        let Some(discard) = self.apply(&mut st, id, action) else {
+            return false;
+        };
+        self.publish(st);
+        self.discard_parts(discard);
+        true
+    }
+
+    /// Does `action` to rows `ids` under one lock, with one change
+    /// published. Answers how many rows there were, and why each of the
+    /// others was left: no such row, or an archive that cannot be unpacked
+    /// yet.
+    pub fn items_action(&self, ids: &[String], action: ItemAction) -> Batch {
+        let mut batch = Batch::default();
+        if action == ItemAction::Extract {
+            for id in ids {
+                match self.extract(id, None) {
+                    Ok(true) => batch.done += 1,
+                    Ok(false) => batch.failed(id, "no such item"),
+                    Err(e) => batch.failed(id, e),
+                }
+            }
+            return batch;
+        }
+        let mut st = self.lock();
+        let mut discard = Vec::new();
+        for id in ids {
+            match self.apply(&mut st, id, action) {
+                Some(parts) => {
+                    batch.done += 1;
+                    discard.extend(parts);
+                }
+                None => batch.failed(id, "no such item"),
+            }
+        }
+        self.publish(st);
+        self.discard_parts(discard);
+        batch
+    }
+
+    /// Does `action` (not [`ItemAction::Extract`]) to row `id`: `None` when
+    /// there is no such row, else the partial files to discard once the
+    /// lock is let go.
+    fn apply(&self, st: &mut State, id: &str, action: ItemAction) -> Option<Vec<String>> {
         // Tried again by hand: a clearance may be handed over once more.
         if action == ItemAction::RetryManual
             && let Some(mirrors) = st.items.get(id).map(|it| it.mirrors.clone())
@@ -1883,11 +2105,9 @@ impl Engine {
                 st.cleared.remove(m.as_str());
             }
         }
-        let Some(it) = st.items.get_mut(id) else {
-            return false;
-        };
+        let it = st.items.get_mut(id)?;
         if it.status == Status::Done && action != ItemAction::Remove {
-            return true;
+            return Some(Vec::new());
         }
         tracing::debug!(item = %it.id, "{action:?} by the user");
         match action {
@@ -1916,13 +2136,13 @@ impl Engine {
                 it.cancel();
                 st.items.shift_remove(id);
                 drop_spent_wrappers(&mut st.items);
+                // A running one's transfer lets go of it as it stops.
                 if !running {
-                    self.discard_parts([id.to_string()]);
+                    return Some(vec![id.to_string()]);
                 }
             }
         }
-        self.publish(st);
-        true
+        Some(Vec::new())
     }
 
     /// Takes an item off the list, and its partial file with it. A finished
@@ -1930,6 +2150,38 @@ impl Engine {
     /// to the [`BIN`] first, and if that fails the item stays as well.
     /// Returns false when there is no such item.
     pub async fn remove(&self, id: &str) -> Result<bool, String> {
+        let batch = self
+            .remove_many(std::slice::from_ref(&id.to_string()))
+            .await;
+        match batch.failed.into_iter().next() {
+            Some(f) if f.error == NO_SUCH => Ok(false),
+            Some(f) => Err(f.error),
+            None => Ok(true),
+        }
+    }
+
+    /// Removes rows `ids` as [`Engine::remove`] does each, with one change
+    /// published for those that go. A finished file that could not go to
+    /// the bin keeps its row, and the batch says why.
+    pub async fn remove_many(&self, ids: &[String]) -> Batch {
+        let mut batch = Batch::default();
+        let mut go = Vec::new();
+        for id in ids {
+            match self.recycle_finished(id).await {
+                Ok(true) => go.push(id.clone()),
+                Ok(false) => batch.failed(id, NO_SUCH),
+                Err(e) => batch.failed(id, e),
+            }
+        }
+        let more = self.items_action(&go, ItemAction::Remove);
+        batch.done += more.done;
+        batch.failed.extend(more.failed);
+        batch
+    }
+
+    /// Moves row `id`'s finished file to the [`BIN`] when the settings say
+    /// so. False when there is no such row.
+    async fn recycle_finished(&self, id: &str) -> Result<bool, String> {
         let file = {
             let st = self.lock();
             let Some(it) = st.items.get(id) else {
@@ -1951,7 +2203,7 @@ impl Engine {
                 tracing::info!("moved {shown} to the {BIN}");
             }
         }
-        Ok(self.item_action(id, ItemAction::Remove))
+        Ok(true)
     }
 
     /// Has rows `ids` download from `host` while it has their file (`None`:
@@ -2069,8 +2321,8 @@ impl Engine {
             .filter(|i| i.status == Status::Error && !i.wrapper && which(i))
             .map(|i| i.id.clone())
             .collect();
-        for id in ids {
-            self.item_action(&id, ItemAction::Retry);
+        if !ids.is_empty() {
+            self.items_action(&ids, ItemAction::Retry);
         }
     }
 
@@ -2098,6 +2350,12 @@ impl Engine {
     /// Returns how many, or `None` when there is no such wrapper.
     pub fn start_wrapper(&self, id: &str) -> Option<usize> {
         let mut st = self.lock();
+        let started = Self::start_wrapper_in(&mut st, id)?;
+        self.publish(st);
+        Some(started)
+    }
+
+    fn start_wrapper_in(st: &mut State, id: &str) -> Option<usize> {
         if !st.items.get(id)?.wrapper {
             return None;
         }
@@ -2108,8 +2366,39 @@ impl Engine {
                 started += 1;
             }
         }
-        self.publish(st);
         Some(started)
+    }
+
+    /// Does `action` to wrappers `ids` (a card's, or every card's) under one
+    /// lock, with one change published. A file two of them list is started
+    /// once, and counted once in `started`.
+    pub fn wrappers_action(&self, ids: &[String], action: WrapperAction) -> Batch {
+        let mut batch = Batch::default();
+        let mut discard = Vec::new();
+        let mut st = self.lock();
+        for id in ids {
+            let done = match action {
+                WrapperAction::Start => Self::start_wrapper_in(&mut st, id).map(|n| {
+                    batch.started += n;
+                }),
+                WrapperAction::Remove => self.remove_wrapper_in(&mut st, id).map(|gone| {
+                    discard.extend(gone);
+                }),
+                WrapperAction::Retry => match st.items.get(id) {
+                    Some(w) if w.wrapper => self
+                        .apply(&mut st, id, ItemAction::Retry)
+                        .map(|parts| discard.extend(parts)),
+                    _ => None,
+                },
+            };
+            match done {
+                Some(()) => batch.done += 1,
+                None => batch.failed(id, "no such wrapper"),
+            }
+        }
+        self.publish(st);
+        self.discard_parts(discard);
+        batch
     }
 
     /// Takes a wrapper off the list with the files it added that never
@@ -2118,9 +2407,23 @@ impl Engine {
     pub fn remove_wrapper(&self, id: &str) -> bool {
         let gone: Vec<String> = {
             let mut st = self.lock();
-            let Some(w) = st.items.get(id).filter(|w| w.wrapper) else {
+            let Some(gone) = self.remove_wrapper_in(&mut st, id) else {
                 return false;
             };
+            self.touch(&mut st);
+            gone
+        };
+        self.discard_parts(gone);
+        self.0.wake.notify_one();
+        true
+    }
+
+    /// Takes wrapper `id` off the list as [`Engine::remove_wrapper`] says:
+    /// `None` when there is no such wrapper, else the rows that went, whose
+    /// partial files are for the caller to discard.
+    fn remove_wrapper_in(&self, st: &mut State, id: &str) -> Option<Vec<String>> {
+        {
+            let w = st.items.get(id).filter(|w| w.wrapper)?;
             w.cancel();
             // A file another wrapper lists too stays, as that one's.
             for it in st
@@ -2145,14 +2448,10 @@ impl Engine {
                 })
                 .map(|i| i.id.clone())
                 .collect();
-            self.remove_rows(&mut st, &gone);
+            self.remove_rows(st, &gone);
             st.items.shift_remove(id);
-            self.touch(&mut st);
-            gone
-        };
-        self.discard_parts(gone);
-        self.0.wake.notify_one();
-        true
+            Some(gone)
+        }
     }
 
     /// Takes host `host`'s links off the files wrappers `ids` (a card's)
