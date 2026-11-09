@@ -13,68 +13,54 @@ use crate::{
     throttle::Pace,
 };
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Status {
-    #[default]
-    Queued,
-    Resolving,
-    Downloading,
-    Waiting,
-    Paused,
-    /// Every remaining mirror needs a person (captcha or browser step).
-    Captcha,
-    Done,
-    Error,
-}
-
-/// Where a row stands with comparing a file already on disk to the
-/// checksum its host published. Serialized as `""`, `"waiting"` and
-/// `"comparing"`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ts_rs::TS)]
-#[serde(rename_all = "lowercase")]
-#[ts(export)]
-pub enum Verifying {
-    #[default]
-    #[serde(rename = "")]
-    No,
-    /// For its turn, or while downloads are paused.
-    Waiting,
-    Comparing,
-}
-
-impl Status {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Status::Queued => "queued",
-            Status::Resolving => "resolving",
-            Status::Downloading => "downloading",
-            Status::Waiting => "waiting",
-            Status::Paused => "paused",
-            Status::Captcha => "captcha",
-            Status::Done => "done",
-            Status::Error => "error",
-        }
+crate::names::named! {
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Status {
+        #[default]
+        Queued = "queued",
+        Resolving = "resolving",
+        Downloading = "downloading",
+        Waiting = "waiting",
+        Paused = "paused",
+        /// Every remaining mirror needs a person (captcha or browser step).
+        Captcha = "captcha",
+        Done = "done",
+        Error = "error",
     }
 }
 
-/// Where the archive a row is a part of stands with being unpacked; every
-/// part of it carries the same. Serialized as `""`, `"waiting"`,
-/// `"extracting"`, `"done"`, `"password"` and `"failed"`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[serde(rename_all = "lowercase")]
-#[ts(export)]
-pub enum Extract {
-    #[default]
-    #[serde(rename = "")]
-    No,
-    /// For its turn: one archive is unpacked at a time.
-    Waiting,
-    Extracting,
-    Done,
-    /// It is encrypted, and no password Haul has fits: one is wanted.
-    Password,
-    Failed,
+crate::names::named! {
+    /// Where a row stands with comparing a file already on disk to the
+    /// checksum its host published. Serialized as `""`, `"waiting"` and
+    /// `"comparing"`.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ts_rs::TS)]
+    #[ts(export)]
+    pub enum Verifying {
+        #[default]
+        No = "",
+        /// For its turn, or while downloads are paused.
+        Waiting = "waiting",
+        Comparing = "comparing",
+    }
+}
+
+crate::names::named! {
+    /// Where the archive a row is a part of stands with being unpacked; every
+    /// part of it carries the same. Serialized as `""`, `"waiting"`,
+    /// `"extracting"`, `"done"`, `"password"` and `"failed"`.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+    #[ts(export)]
+    pub enum Extract {
+        #[default]
+        No = "",
+        /// For its turn: one archive is unpacked at a time.
+        Waiting = "waiting",
+        Extracting = "extracting",
+        Done = "done",
+        /// It is encrypted, and no password Haul has fits: one is wanted.
+        Password = "password",
+        Failed = "failed",
+    }
 }
 
 impl Extract {

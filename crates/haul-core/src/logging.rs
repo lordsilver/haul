@@ -71,9 +71,7 @@ static HISTORIES: LazyLock<Mutex<Histories>> = LazyLock::new(Mutex::default);
 
 /// The last events of download `id`, oldest first.
 pub fn history(id: &str) -> Vec<Moment> {
-    HISTORIES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    crate::lock::held(&HISTORIES)
         .items
         .get(id)
         .map(|h| h.iter().cloned().collect())
@@ -81,7 +79,7 @@ pub fn history(id: &str) -> Vec<Moment> {
 }
 
 fn remember(id: String, moment: Moment) {
-    let mut h = HISTORIES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = crate::lock::held(&HISTORIES);
     if let Some(at) = h.recent.iter().position(|i| *i == id) {
         h.recent.remove(at);
     }
@@ -357,7 +355,7 @@ impl<'a> MakeWriter<'a> for LogFile {
     type Writer = Guard<'a>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        Guard(self.0.lock().unwrap_or_else(|e| e.into_inner()))
+        Guard(crate::lock::held(&self.0))
     }
 }
 

@@ -112,7 +112,7 @@ impl Browser {
     }
 
     fn bridge_to(&self, proxy: &str) -> Result<SocketAddr, String> {
-        let mut slot = self.bridge.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slot = haul_core::lock::held(&self.bridge);
         if slot.is_none() {
             *slot = Some(Bridge::start().map_err(|e| format!("proxy bridge: {e}"))?);
         }
@@ -500,7 +500,7 @@ impl Desktop for Browser {
         let passes: serde_json::Map<String, serde_json::Value> = passes(&self.passes)
             .iter()
             .map(|(id, h)| {
-                let mut info = h.info.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let mut info = haul_core::lock::held(&h.info).clone();
                 if let serde_json::Value::Object(o) = &mut info {
                     o.insert(
                         "stopping".into(),
@@ -664,7 +664,7 @@ fn run_installer(_installer: &std::path::Path, _args: &str) -> Result<(), String
 /// at most, however many of its pages ask (a page's pastes, say).
 fn first_ask_in_a_while(host: &str) -> bool {
     static LAST: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Mutex::default);
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let mut last = haul_core::lock::held(&LAST);
     let now = Instant::now();
     if last
         .get(host)
@@ -838,11 +838,11 @@ fn hand_over(
 fn passes(
     all: &Mutex<HashMap<String, chromium::Handle>>,
 ) -> MutexGuard<'_, HashMap<String, chromium::Handle>> {
-    all.lock().unwrap_or_else(|e| e.into_inner())
+    haul_core::lock::held(&all)
 }
 
 fn lock(stay: &Mutex<Stay>) -> MutexGuard<'_, Stay> {
-    stay.lock().unwrap_or_else(|e| e.into_inner())
+    haul_core::lock::held(&stay)
 }
 
 /// Sends the window back to the host's page: back in its history first,

@@ -1901,6 +1901,7 @@ dependencies = [
  "cbc",
  "dirs",
  "futures-util",
+ "haul-core",
  "iana-time-zone",
  "indexmap 2.14.2",
  "md-5",

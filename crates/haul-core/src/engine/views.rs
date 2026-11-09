@@ -20,41 +20,12 @@ use crate::{
 /// name, and compares equal to it, as a script or a test names it.
 macro_rules! names {
     ($(#[$meta:meta])* $name:ident { $($(#[$vmeta:meta])* $variant:ident = $word:literal,)+ }) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, ts_rs::TS)]
-        #[ts(export)]
-        pub enum $name {
-            $($(#[$vmeta])* #[serde(rename = $word)] $variant,)+
-        }
-
-        impl $name {
-            pub fn as_str(self) -> &'static str {
-                match self {
-                    $(Self::$variant => $word,)+
-                }
-            }
-        }
-
-        impl std::str::FromStr for $name {
-            type Err = ();
-
-            fn from_str(s: &str) -> Result<Self, ()> {
-                match s {
-                    $($word => Ok(Self::$variant),)+
-                    _ => Err(()),
-                }
-            }
-        }
-
-        impl PartialEq<&str> for $name {
-            fn eq(&self, other: &&str) -> bool {
-                self.as_str() == *other
-            }
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(self.as_str())
+        crate::names::named! {
+            $(#[$meta])*
+            #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, ts_rs::TS)]
+            #[ts(export)]
+            pub enum $name {
+                $($(#[$vmeta])* $variant = $word,)+
             }
         }
     };
@@ -888,12 +859,12 @@ pub(super) fn counts(
 /// host when Haul has code for it as one, else a site (a page Haul reads
 /// links from, or a host it has no code for, used as any web server).
 pub(super) fn site_kind(name: &str) -> SiteKind {
-    let url = format!("https://{name}/");
-    if hosts::wraps(&url) {
+    let name = hosts::main_name(name);
+    if hosts::wraps_host(&name) {
         SiteKind::Wrapper
-    } else if hosts::is_paste(&url) {
+    } else if hosts::is_paste_host(&name) {
         SiteKind::Paste
-    } else if hosts::known(name).is_some() {
+    } else if hosts::known(&name).is_some() {
         SiteKind::Host
     } else {
         SiteKind::Site

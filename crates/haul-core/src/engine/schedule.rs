@@ -254,7 +254,7 @@ impl Engine {
         let others = it
             .mirrors
             .iter()
-            .any(|m| usable(m) && !cfg.is_last_resort(m, pages));
+            .any(|m| usable(m) && !cfg.is_last_resort_host(&m.host, pages));
         let wanted = |url: &str| !(others && cfg.is_last_resort(url, pages));
         let pass_host = (pages && !it.page_wants_person)
             .then(|| {

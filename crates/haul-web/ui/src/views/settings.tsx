@@ -52,6 +52,12 @@ function CheckNow() {
   );
 }
 
+// What a whole-number setting allows, as the engine keeps it.
+const bounds = (d: SettingsView, name: string) => {
+  const limit = d.limits[name];
+  return { min: limit?.least ?? 0, max: limit?.most };
+};
+
 // The one change of a folder whose result is not seen in place: the
 // unfinished downloads move along.
 const FOLDER_MOVED = 'Download folder changed; unfinished downloads moved along';
@@ -286,9 +292,8 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               controls={
                 <NumberField
                   name="max_total"
+                  {...bounds(d, 'max_total')}
                   value={d.max_total}
-                  min={1}
-                  max={64}
                   label="Parallel downloads"
                   unit="files"
                 />
@@ -309,9 +314,8 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               controls={
                 <NumberField
                   name="min_speed_kbps"
+                  {...bounds(d, 'min_speed_kbps')}
                   value={d.min_speed_kbps}
-                  min={0}
-                  max={1048576}
                   label="Minimum speed"
                   unit="KiB/s"
                 />
@@ -323,9 +327,8 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               controls={
                 <NumberField
                   name="min_speed_seconds"
+                  {...bounds(d, 'min_speed_seconds')}
                   value={d.min_speed_seconds}
-                  min={1}
-                  max={3600}
                   label="Seconds below the minimum speed"
                   unit="s"
                 />
@@ -339,9 +342,8 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               controls={
                 <NumberField
                   name="resume_attempts"
+                  {...bounds(d, 'resume_attempts')}
                   value={d.resume_attempts}
-                  min={0}
-                  max={20}
                   label="Retries"
                   unit="times"
                 />
@@ -353,9 +355,8 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
               controls={
                 <NumberField
                   name="retry_failed_minutes"
+                  {...bounds(d, 'retry_failed_minutes')}
                   value={d.retry_failed_minutes}
-                  min={0}
-                  max={1440}
                   label="Minutes"
                   unit="min"
                 />

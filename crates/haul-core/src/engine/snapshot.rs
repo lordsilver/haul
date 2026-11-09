@@ -654,23 +654,14 @@ impl Engine {
             skip_add_dialog: cfg.skip_add_dialog,
             bin: BIN,
             config_version: *self.0.config_version.borrow(),
-            config_error: self
-                .0
-                .config_error
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone(),
+            config_error: crate::lock::held(&self.0.config_error).clone(),
             download_dir: self.download_dir().display().to_string(),
             data_dir: self.0.data_dir.display().to_string(),
             config_file: self.0.config_path.as_ref().map(|p| p.display().to_string()),
             accounts: hosts::account_forms(&cfg),
             reconnect,
             services,
-            update: self
-                .0
-                .update
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
+            update: crate::lock::held(&self.0.update)
                 .as_ref()
                 .map(crate::update::Update::view),
         }

@@ -103,7 +103,7 @@ impl Bridge {
                         continue;
                     }
                 };
-                let up = current.read().unwrap_or_else(|e| e.into_inner()).clone();
+                let up = crate::lock::read(&current).clone();
                 // Without a proxy there is nowhere to go: drop the connection.
                 let Some(up) = up else { continue };
                 tokio::spawn(async move {
@@ -123,7 +123,7 @@ impl Bridge {
     /// Sends new connections through `proxy`, or nowhere.
     pub fn set_upstream(&self, proxy: Option<&str>) -> io::Result<()> {
         let up = proxy.map(Upstream::parse).transpose()?.map(Arc::new);
-        *self.upstream.write().unwrap_or_else(|e| e.into_inner()) = up;
+        *crate::lock::write(&self.upstream) = up;
         Ok(())
     }
 }

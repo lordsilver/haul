@@ -47,7 +47,7 @@ const WITHIN: Duration = Duration::from_secs(30);
 static ADS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
 
 fn ads() -> std::sync::MutexGuard<'static, HashSet<String>> {
-    ADS.lock().unwrap_or_else(|e| e.into_inner())
+    crate::lock::held(&ADS)
 }
 
 /// Where to send a window that left the host's site.

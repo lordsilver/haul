@@ -91,17 +91,14 @@ impl Handle {
     /// page, within a second or so.
     pub fn ask(&self, what: PageAsk) -> Result<Value, String> {
         let (reply, answer) = std::sync::mpsc::channel();
-        self.asks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(Ask { what, reply });
+        haul_core::lock::held(&self.asks).push(Ask { what, reply });
         answer
             .recv_timeout(Duration::from_secs(20))
             .map_err(|_| "the pass did not answer (it may have ended)".to_string())?
     }
 
     fn note(&self, key: &str, value: Value) {
-        if let Value::Object(info) = &mut *self.info.lock().unwrap_or_else(|e| e.into_inner()) {
+        if let Value::Object(info) = &mut *haul_core::lock::held(&self.info) {
             info.insert(key.into(), value);
         }
     }
@@ -245,7 +242,7 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
         .spawn()
         .map_err(|e| format!("{}: {e}", p.exe.display()))?;
     let mut browser = Browser { child };
-    *p.handle.info.lock().unwrap_or_else(|e| e.into_inner()) = json!({
+    *haul_core::lock::held(&p.handle.info) = json!({
         "url": p.url,
         "profile": p.profile.display().to_string(),
         "pid": browser.child.id(),
@@ -298,7 +295,7 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
         };
         haul_core::debug::emit(
             "pass",
-            json!({ "event": "end", "id": p.item, "url": p.url, "outcome": outcome, "started": p.handle.info.lock().unwrap_or_else(|e| e.into_inner()).get("started").cloned() }),
+            json!({ "event": "end", "id": p.item, "url": p.url, "outcome": outcome, "started": haul_core::lock::held(&p.handle.info).get("started").cloned() }),
         );
     }
     result
@@ -404,8 +401,7 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
             let _ = cdp.call("Target.closeTarget", json!({ "targetId": other }), None);
         }
         // Debug mode's questions about the page, between looks.
-        let asks: Vec<Ask> =
-            std::mem::take(&mut *p.handle.asks.lock().unwrap_or_else(|e| e.into_inner()));
+        let asks: Vec<Ask> = std::mem::take(&mut *haul_core::lock::held(&p.handle.asks));
         for ask in asks {
             let answer = match ask.what {
                 PageAsk::Click(selector) => click(&mut cdp, s, &selector),
@@ -483,7 +479,7 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         };
         // Each new message from the page, for debug mode and the detailed
         // log.
-        if p.handle.info.lock().unwrap_or_else(|e| e.into_inner())["page_said"] != sent {
+        if haul_core::lock::held(&p.handle.info)["page_said"] != sent {
             p.handle.note("page_said", sent.clone());
             haul_core::debug::emit(
                 "pass",

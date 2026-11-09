@@ -77,10 +77,7 @@ impl Http {
             None => None,
         };
         if let Some(b) = as_browser {
-            self.as_browser
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(site_of(page), b);
+            crate::lock::held(&self.as_browser).insert(site_of(page), b);
         }
         for cookie in cookies {
             self.jar.add_cookie_str(cookie, &url);
@@ -91,7 +88,7 @@ impl Http {
     /// the browser whose clearance they carry there ([`Http::add_clearance`]),
     /// else as they are.
     pub fn for_page(&self, url: &str) -> Http {
-        let as_browser = self.as_browser.lock().unwrap_or_else(|e| e.into_inner());
+        let as_browser = crate::lock::held(&self.as_browser);
         let Some(b) = (!as_browser.is_empty())
             .then(|| as_browser.get(&site_of(url)))
             .flatten()

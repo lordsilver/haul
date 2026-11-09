@@ -40,6 +40,17 @@ pub struct SettingsView {
     /// The settings file is in the data folder, as it is unless the command
     /// line named another one.
     pub config_inside_data_dir: bool,
+    /// The bounds of each whole-number setting, by its name in the file: what
+    /// a field allows is what the engine keeps a value within.
+    pub limits: BTreeMap<String, Limit>,
+}
+
+/// The least and most a whole-number setting takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct Limit {
+    pub least: u64,
+    pub most: u64,
 }
 
 /// The file's modification time and length, to notice edits.
@@ -191,6 +202,18 @@ impl Engine {
             .is_some_and(|p| p.parent() == Some(self.0.data_dir.as_path()));
         SettingsView {
             config_inside_data_dir,
+            limits: NUMBERS
+                .iter()
+                .map(|(name, least, most, _)| {
+                    (
+                        (*name).to_string(),
+                        Limit {
+                            least: *least,
+                            most: *most,
+                        },
+                    )
+                })
+                .collect(),
             download_dir: self.download_dir().display().to_string(),
             download_dir_fixed: self.0.download_dir_fixed,
             from_env: cfg.from_env.clone(),
@@ -214,19 +237,11 @@ impl Engine {
     }
 
     fn config_error(&self) -> Option<String> {
-        self.0
-            .config_error
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        crate::lock::held(&self.0.config_error).clone()
     }
 
     fn set_config_error(&self, error: Option<String>) {
-        let mut slot = self
-            .0
-            .config_error
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut slot = crate::lock::held(&self.0.config_error);
         if *slot != error {
             if let Some(e) = &error {
                 tracing::warn!("settings not applied: {e}");
@@ -537,10 +552,7 @@ impl Engine {
     /// in effect, so two changes at once cannot each start from the old
     /// settings and leave the file and memory disagreeing.
     fn settings_held(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.0
-            .settings_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        crate::lock::held(&self.0.settings_lock)
     }
 
     /// Writes the keys to the file in one go and puts `cfg` in effect. The
@@ -549,7 +561,7 @@ impl Engine {
         if let Some(path) = &self.0.config_path {
             config::write_keys(path, &writes)
                 .map_err(|e| SettingError::Write(format!("saving {}: {e}", path.display())))?;
-            *self.0.config_seen.lock().unwrap_or_else(|e| e.into_inner()) = stamp(path);
+            *crate::lock::held(&self.0.config_seen) = stamp(path);
         }
         self.reconfigure(cfg);
         Ok(())
@@ -595,7 +607,7 @@ impl Engine {
             let mut st = self.lock();
             st.max_total = new.max_total.max(1);
             st.routes = new.routes.clone();
-            *self.0.cfg.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(new);
+            *crate::lock::write(&self.0.cfg) = Arc::new(new);
             if retry_changed {
                 let now = Instant::now();
                 for it in st.items.values_mut() {
@@ -645,7 +657,7 @@ impl Engine {
             let _settings = self.settings_held();
             let now = stamp(&path);
             {
-                let mut seen = self.0.config_seen.lock().unwrap_or_else(|e| e.into_inner());
+                let mut seen = crate::lock::held(&self.0.config_seen);
                 if *seen == now {
                     continue;
                 }
@@ -690,11 +702,7 @@ impl Engine {
             Err(e) => tracing::error!("moving partial downloads: {e}"),
         }
         tracing::info!("downloading to {}", folder.display());
-        *self
-            .0
-            .download_dir
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = folder;
+        *crate::lock::write(&self.0.download_dir) = folder;
         {
             let mut st = self.lock();
             st.moving = false;

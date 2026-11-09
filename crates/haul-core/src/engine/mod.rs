@@ -780,6 +780,35 @@ struct State {
 }
 
 impl State {
+    /// The state at start: `items` and what was learned of `hosts`, nothing
+    /// else under way.
+    fn new(
+        items: IndexMap<String, Item>,
+        hosts: IndexMap<String, HostStats>,
+        routes: BTreeMap<String, Route>,
+        paused: bool,
+        max_total: usize,
+    ) -> Self {
+        Self {
+            items,
+            hosts,
+            lanes: Lanes::default(),
+            routes,
+            paused,
+            moving: false,
+            reconnecting: false,
+            draining: None,
+            max_total: max_total.max(1),
+            dirty: false,
+            merge_due: false,
+            guarded: HashSet::new(),
+            cleared: HashSet::new(),
+            tried: passes::Tried::new(),
+            reconnects: reconnect::Reconnects::default(),
+            services: services::Services::default(),
+        }
+    }
+
     /// Whether the desktop app passes page `url` by itself.
     fn passes(&self, url: &str) -> bool {
         hosts::page_passes(url) || self.guarded.contains(url)
@@ -1119,24 +1148,7 @@ impl Engine {
 
         let paused = store::load_paused(&data_dir);
         let engine = Engine(Arc::new(Inner {
-            state: Mutex::new(State {
-                items,
-                hosts,
-                lanes: Lanes::default(),
-                routes,
-                paused,
-                moving: false,
-                reconnecting: false,
-                draining: None,
-                max_total: cfg.max_total.max(1),
-                dirty: false,
-                merge_due: false,
-                guarded: HashSet::new(),
-                cleared: HashSet::new(),
-                tried: passes::Tried::new(),
-                reconnects: reconnect::Reconnects::default(),
-                services: services::Services::default(),
-            }),
+            state: Mutex::new(State::new(items, hosts, routes, paused, cfg.max_total)),
             limiter: Limiter::new(cfg.rate_limit_mbps * 1e6),
             config_seen: Mutex::new(config_path.as_deref().and_then(settings::stamp)),
             cfg: RwLock::new(Arc::new(cfg)),
@@ -1192,7 +1204,7 @@ impl Engine {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.0.state.lock().unwrap_or_else(|e| e.into_inner())
+        crate::lock::held(&self.0.state)
     }
 
     /// Marks the queue for saving and tells watchers it changed.
@@ -1219,15 +1231,11 @@ impl Engine {
 
     /// The settings in effect.
     pub fn cfg(&self) -> Arc<Config> {
-        self.0.cfg.read().unwrap_or_else(|e| e.into_inner()).clone()
+        crate::lock::read(&self.0.cfg).clone()
     }
 
     fn clients(&self) -> Arc<Clients> {
-        self.0
-            .clients
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        crate::lock::read(&self.0.clients).clone()
     }
 
     /// The exits `host` may be reached from: every proxy of the pool (and
@@ -1285,11 +1293,7 @@ impl Engine {
     }
 
     pub fn download_dir(&self) -> PathBuf {
-        self.0
-            .download_dir
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        crate::lock::read(&self.0.download_dir).clone()
     }
 
     /// The configured proxy.
@@ -1409,6 +1413,21 @@ impl Engine {
                 .flat_map(|i| i.mirrors.iter().map(|m| m.url.clone()))
                 .collect();
             let mut wrappers = wrapper_keys(&st);
+            // The rows a named link may join, by their name's key, in the
+            // queue's order: looked up, not searched for, for each link.
+            let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
+            for it in st
+                .items
+                .values()
+                .filter(|it| it.status != Status::Done && !it.wrapper)
+            {
+                if let Some(own) = it.key_name() {
+                    by_name
+                        .entry(hosts::name_key(&own))
+                        .or_default()
+                        .push(it.id.clone());
+                }
+            }
             for link in links {
                 if !hosts::is_http(&link.url) {
                     added.invalid += 1;
@@ -1440,10 +1459,10 @@ impl Engine {
                 // copied page is not judged by its address, so it joins none.
                 if let Some(name) = &name
                     && !tentative
-                    && let Some(it) = st
-                        .items
-                        .values_mut()
-                        .find(|it| it.status != Status::Done && it.same_file(name, 0))
+                    && let Some(it) = by_name
+                        .get(&hosts::name_key(name))
+                        .and_then(|ids| ids.first())
+                        .and_then(|id| st.items.get_mut(id))
                 {
                     tracing::debug!(item = %it.id, url = %link.url, "another host for {name}");
                     it.mirrors.push(link.url.into());
@@ -1472,6 +1491,12 @@ impl Engine {
                     probe.push(it.id.clone());
                 }
                 tracing::debug!(item = %it.id, url = %it.mirrors[0], "added");
+                if let Some(own) = it.key_name() {
+                    by_name
+                        .entry(hosts::name_key(&own))
+                        .or_default()
+                        .push(it.id.clone());
+                }
                 st.items.insert(it.id.clone(), it);
                 added.added += 1;
             }
@@ -1893,52 +1918,22 @@ impl Engine {
             .extract_password
             .clone()
             .or_else(|| found.password.clone());
-        let mut known: HashSet<String> = st
+        // Each link the queue holds, by the row that holds it: whether a
+        // link is new, and which rows a file's links are on, is a lookup.
+        let mut owner: HashMap<String, String> = st
             .items
             .iter()
             .filter(|(k, _)| k.as_str() != id)
-            .flat_map(|(_, i)| i.mirrors.iter().map(|m| m.url.clone()))
+            .flat_map(|(k, i)| i.mirrors.iter().map(move |m| (m.url.clone(), k.clone())))
             .collect();
-        known.insert(url.to_string());
+        owner.insert(url.to_string(), id.to_string());
         let mut wrappers = wrapper_keys(&st);
         wrappers.insert(hosts::wrapper_key(url));
         let mut seen = Found::default();
         let mut found_hosts: Vec<String> = Vec::new();
         let mut after = id.to_string();
         let cfg = self.cfg();
-        // An archive's parts a sibling wrapper brought already, each host
-        // naming them its own way: its links join those rows by number, and
-        // every part takes the name that says most of the ones the files
-        // have, so they unpack as one archive. Never the wrappers' title,
-        // which unrelated files can share.
-        let by_part = sibling_parts(&st, id, found.title.as_deref(), &found.files);
-        if let Some(rows) = &by_part {
-            let names = rows
-                .values()
-                .filter_map(|row| st.items.get(row)?.key_name())
-                .chain(
-                    found
-                        .files
-                        .iter()
-                        .filter(|e| !hosts::lists(&e.url))
-                        .filter_map(|e| e.file_name().map(|n| hosts::tidy_name(&n))),
-                );
-            let base = best_archive_name(names);
-            for row in rows.values() {
-                if let Some(it) = st.items.get_mut(row) {
-                    let own = it.key_name();
-                    let shared = own
-                        .zip(base.as_deref())
-                        .and_then(|(n, b)| parts::rebased(&n, b));
-                    if let Some(name) = shared {
-                        it.name = Some(name);
-                    } else if it.name.is_none() {
-                        it.name = it.key_name();
-                    }
-                    it.named = true;
-                }
-            }
-        }
+        let by_part = rename_sibling_parts(&mut st, id, &found);
         for e in found.files {
             let package = if package.is_empty() {
                 e.package.clone().unwrap_or_default()
@@ -1959,10 +1954,7 @@ impl Engine {
             });
             if let Some(row) = part_row.filter(|_| !nested) {
                 seen.files += 1;
-                let urls: Vec<String> = std::iter::once(e.url)
-                    .chain(e.mirrors)
-                    .filter(|u| known.insert(u.clone()))
-                    .collect();
+                let urls = new_links(&mut owner, &row, std::iter::once(e.url).chain(e.mirrors));
                 if let Some(it) = st.items.get_mut(&row) {
                     it.mirrors.extend(urls.into_iter().map(Into::into));
                     it.merge_wrappers(Some(&id.to_string()), &[]);
@@ -1971,22 +1963,14 @@ impl Engine {
             }
             if !nested {
                 seen.files += 1;
-                // The rows that hold its links already are this wrapper's
-                // files too.
-                let listed = |m: &Mirror| m.url == e.url || e.mirrors.contains(&m.url);
-                for it in st
-                    .items
-                    .iter_mut()
-                    .filter(|(k, i)| k.as_str() != id && !i.wrapper && i.mirrors.iter().any(listed))
-                    .map(|(_, i)| i)
-                {
-                    it.merge_wrappers(Some(&id.to_string()), &[]);
-                }
+                join_listed(
+                    &mut st,
+                    &owner,
+                    id,
+                    std::iter::once(&e.url).chain(&e.mirrors),
+                );
             }
-            let mut urls: Vec<String> = std::iter::once(e.url)
-                .chain(e.mirrors)
-                .filter(|u| known.insert(u.clone()))
-                .collect();
+            let mut urls = new_links(&mut owner, "", std::iter::once(e.url).chain(e.mirrors));
             // The hosts the user prefers first, in their order: the row shows
             // one of them, and a probe asks it for the name.
             urls.sort_by_key(|u| cfg.preference(&hosts::host_of(u)).unwrap_or(usize::MAX));
@@ -1994,11 +1978,11 @@ impl Engine {
                 continue;
             }
             let mut it = if nested {
-                let mut it = Item::new(urls, None, package);
+                let mut it = Item::new(urls.clone(), None, package);
                 it.wrapper = true;
                 it
             } else {
-                let mut it = Item::new(urls, e.name, package);
+                let mut it = Item::new(urls.clone(), e.name, package);
                 it.listed_size = e.listed_size;
                 // Nothing a wrapper lists starts on its own: the user picks.
                 it.status = Status::Paused;
@@ -2018,36 +2002,31 @@ impl Engine {
                 .items
                 .get_index_of(&after)
                 .map_or(st.items.len(), |i| i + 1);
-            if let Some((new_id, _)) = self.insert_row(&mut st, at, it) {
-                after.clone_from(&new_id);
-                if unprobed {
-                    probe.push(new_id);
+            let holder = match self.insert_row(&mut st, at, it) {
+                Some((new_id, _)) => {
+                    after.clone_from(&new_id);
+                    if unprobed {
+                        probe.push(new_id.clone());
+                    }
+                    Some(new_id)
+                }
+                // Folded into a row for the same file, which holds its links now.
+                None => st
+                    .items
+                    .iter()
+                    .find(|(_, i)| i.mirrors.iter().any(|m| m.url == urls[0]))
+                    .map(|(k, _)| k.clone()),
+            };
+            if let Some(holder) = holder {
+                for u in urls {
+                    owner.insert(u, holder.clone());
                 }
             }
         }
         // A wrapper or a paste served its page: the Hosts view counts these as
         // it does a host's files.
         st.host(&hosts::host_of(url)).ok += 1;
-        if let Some(row) = st.items.get_mut(id) {
-            row.tentative = false;
-            if !row.wrapper {
-                // A row handed a wrapper's link is that wrapper now.
-                row.wrapper = true;
-                row.mirrors = vec![url.into()];
-                row.name = None;
-            }
-            row.status = Status::Done;
-            row.found = Some(seen);
-            row.found_hosts = found_hosts;
-            row.title = found.title;
-            row.reset_retries();
-            row.pre = None;
-            row.pre_for = None;
-            row.manual = false;
-            row.manual_urls.clear();
-            row.failed.clear();
-            row.not_before = None;
-        }
+        mark_unwrapped(&mut st, id, url, seen, found_hosts, found.title);
         self.touch(&mut st);
         probe
     }
@@ -2372,6 +2351,7 @@ impl Engine {
     }
 
     /// Item `id`'s links, for tests of what they merge into.
+    #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn debug_links(&self, id: &str) -> Vec<String> {
         self.lock()
@@ -2382,6 +2362,7 @@ impl Engine {
     }
 
     /// Sets item `id`'s downloaded bytes, for tests of what goes first.
+    #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn debug_set_done(&self, id: &str, done: u64) {
         if let Some(it) = self.lock().items.get_mut(id) {
@@ -2391,6 +2372,7 @@ impl Engine {
 
     /// Brings item `id`'s next automatic retry forward to now, for tests of
     /// what it does. Returns whether it had one.
+    #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn debug_retry_now(&self, id: &str) -> bool {
         let mut st = self.lock();
@@ -2688,7 +2670,7 @@ impl Engine {
         if let Some(version) = &version {
             tracing::info!("Haul {version} is out");
         }
-        *self.0.update.lock().unwrap_or_else(|e| e.into_inner()) = found;
+        *crate::lock::held(&self.0.update) = found;
         let mut st = self.lock();
         self.touch(&mut st);
         Ok(version)
@@ -2697,11 +2679,7 @@ impl Engine {
     /// Downloads the newer Haul's setup program into the data folder,
     /// checked against the published checksums. Returns where it is.
     pub async fn download_update(&self) -> Result<PathBuf, String> {
-        let update = self
-            .0
-            .update
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        let update = crate::lock::held(&self.0.update)
             .clone()
             .ok_or("no newer Haul is known")?;
         let http = self.clients().on(0);
@@ -2720,7 +2698,7 @@ impl Engine {
     }
 
     fn save(&self, force: bool) {
-        let _guard = self.0.save_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::lock::held(&self.0.save_lock);
         let (queue, hosts): (_, BTreeMap<String, _>) = {
             let mut st = self.lock();
             if !st.dirty && !force {
@@ -2776,7 +2754,7 @@ impl Engine {
         // counts are what keeps the host's limit for that address.
         st.lanes
             .retain(|exit, lane| clients.has(exit) || lane.active > 0 || lane.serving > 0);
-        *self.0.clients.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(clients);
+        *crate::lock::write(&self.0.clients) = Arc::new(clients);
         self.touch(&mut st);
         Ok(())
     }
@@ -2785,6 +2763,111 @@ impl Engine {
     fn exit_name(&self, exit: Exit) -> String {
         self.clients().name(exit)
     }
+}
+
+/// The links of `links` the queue holds nowhere yet, each once, now held by
+/// `row` (`""`: by a row still to be made, which the caller records once it
+/// has its id).
+fn new_links(
+    owner: &mut HashMap<String, String>,
+    row: &str,
+    links: impl Iterator<Item = String>,
+) -> Vec<String> {
+    links
+        .filter(|u| owner.insert(u.clone(), row.to_string()).is_none())
+        .collect()
+}
+
+/// The rows (other than wrapper `id` and other wrappers) that hold one of a
+/// listed file's `links` already are this wrapper's files too.
+fn join_listed<'a>(
+    st: &mut State,
+    owner: &HashMap<String, String>,
+    id: &str,
+    links: impl Iterator<Item = &'a String>,
+) {
+    let mut rows: Vec<&String> = links.filter_map(|u| owner.get(u)).collect();
+    rows.sort_unstable();
+    rows.dedup();
+    for row in rows {
+        if let Some(it) = st.items.get_mut(row)
+            && row != id
+            && !it.wrapper
+        {
+            it.merge_wrappers(Some(&id.to_string()), &[]);
+        }
+    }
+}
+
+/// An archive's parts a sibling wrapper brought already, each host naming
+/// them its own way: the found files' links join those rows by number, and
+/// every part takes the name that says most of the ones the files have, so
+/// they unpack as one archive. Never the wrappers' title, which unrelated
+/// files can share. Returns the rows by part number.
+fn rename_sibling_parts(
+    st: &mut State,
+    id: &str,
+    found: &hosts::Unwrapped,
+) -> Option<BTreeMap<u32, String>> {
+    let rows = sibling_parts(st, id, found.title.as_deref(), &found.files)?;
+    let names = rows
+        .values()
+        .filter_map(|row| st.items.get(row)?.key_name())
+        .chain(
+            found
+                .files
+                .iter()
+                .filter(|e| !hosts::lists(&e.url))
+                .filter_map(|e| e.file_name().map(|n| hosts::tidy_name(&n))),
+        );
+    let base = best_archive_name(names);
+    for row in rows.values() {
+        if let Some(it) = st.items.get_mut(row) {
+            let own = it.key_name();
+            let shared = own
+                .zip(base.as_deref())
+                .and_then(|(n, b)| parts::rebased(&n, b));
+            if let Some(name) = shared {
+                it.name = Some(name);
+            } else if it.name.is_none() {
+                it.name = it.key_name();
+            }
+            it.named = true;
+        }
+    }
+    Some(rows)
+}
+
+/// Marks wrapper row `id` (unwrapped from `url`) done with what it found.
+fn mark_unwrapped(
+    st: &mut State,
+    id: &str,
+    url: &str,
+    seen: Found,
+    found_hosts: Vec<String>,
+    title: Option<String>,
+) {
+    let Some(row) = st.items.get_mut(id) else {
+        return;
+    };
+    row.tentative = false;
+    if !row.wrapper {
+        // A row handed a wrapper's link is that wrapper now.
+        row.wrapper = true;
+        row.mirrors = vec![url.into()];
+        row.name = None;
+    }
+    row.status = Status::Done;
+    row.found = Some(seen);
+    row.found_hosts = found_hosts;
+    row.title = title;
+    row.reset_retries();
+    row.pre = None;
+    row.pre_for = None;
+    row.manual = false;
+    row.manual_urls.clear();
+    row.failed.clear();
+    row.not_before = None;
 }
 
 /// Takes away item `id` if it is a copied page still on trial (`why`: what
@@ -3034,24 +3117,7 @@ mod exit_tests {
     use super::*;
 
     fn state() -> State {
-        State {
-            items: IndexMap::new(),
-            hosts: IndexMap::new(),
-            lanes: Lanes::default(),
-            routes: BTreeMap::new(),
-            paused: false,
-            moving: false,
-            reconnecting: false,
-            draining: None,
-            max_total: 8,
-            dirty: false,
-            merge_due: false,
-            guarded: HashSet::new(),
-            cleared: HashSet::new(),
-            tried: passes::Tried::new(),
-            reconnects: reconnect::Reconnects::default(),
-            services: services::Services::default(),
-        }
+        State::new(IndexMap::new(), IndexMap::new(), BTreeMap::new(), false, 8)
     }
 
     /// Downloads from one host spread over the exits, a limit the host showed

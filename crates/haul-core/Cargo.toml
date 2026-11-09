@@ -37,7 +37,13 @@ url = "2.5.8"
 uuid = { version = "1.28.0", features = ["v4"] }
 zip = { version = "9.0.5", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2-zlib-rs", "deflate64", "lzma", "ppmd", "xz", "zstd"] }
 
+[features]
+# What the integration tests reach into the engine with; never in a build.
+test-hooks = []
+
 [dev-dependencies]
+# The crate itself with its test hooks, for its own integration tests.
+haul-core = { path = ".", features = ["test-hooks"] }
 axum = "0.8.9"
 futures-util = "0.3.34"
 tempfile = "3.27.0"

@@ -42,7 +42,7 @@ pub use names::*;
 use sites::Site;
 
 pub(crate) use generic::gate_message;
-pub use generic::{is_paste, pasted_links, short_title};
+pub use generic::{is_paste, is_paste_host, pasted_links, short_title};
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -347,7 +347,12 @@ fn page_extension(name: &str) -> Option<&str> {
 /// stands for further links, never for one file, whether it is added or a
 /// person hands it back.
 pub fn wraps(url: &str) -> bool {
-    known(&host_of(url)).is_some_and(Known::wraps)
+    wraps_host(&host_of(url))
+}
+
+/// [`wraps`] for host `name`.
+pub fn wraps_host(name: &str) -> bool {
+    known(name).is_some_and(Known::wraps)
 }
 /// The files in a wrapper's list of links. A wrapper lists each host's links
 /// in the same order (one link per host for a single file; part 1, part 2…

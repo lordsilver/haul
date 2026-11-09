@@ -887,7 +887,7 @@ impl Engine {
             .get(id)
             .and_then(|i| i.name.clone())
             .unwrap_or_else(|| format!("{id}.bin"));
-        let _guard = self.0.rename_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::lock::held(&self.0.rename_lock);
         let target = paths::unused_name(out_dir, &paths::safe(&name));
         std::fs::rename(part, &target)?;
         if let Some(it) = self.lock().items.get_mut(id) {

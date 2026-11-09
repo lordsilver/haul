@@ -313,7 +313,7 @@ impl Engine {
         }
         tracing::info!("unpacking {archive}");
         let progress = Arc::new(Progress::default());
-        *self.0.unpacking.lock().unwrap_or_else(|e| e.into_inner()) = Some(progress.clone());
+        *crate::lock::held(&self.0.unpacking) = Some(progress.clone());
         let result = match parts {
             Ok(parts) => {
                 let progress = progress.clone();
@@ -325,7 +325,7 @@ impl Engine {
             }
             Err(why) => Err(why),
         };
-        *self.0.unpacking.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *crate::lock::held(&self.0.unpacking) = None;
 
         let notice = match &result {
             Ok((done, _)) => {
@@ -421,10 +421,7 @@ impl Engine {
 
     /// How far the archive being unpacked is, between 0 and 1.
     pub(super) fn unpack_progress(&self) -> Option<f32> {
-        self.0
-            .unpacking
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        crate::lock::held(&self.0.unpacking)
             .as_ref()
             .map(|p| p.fraction())
     }

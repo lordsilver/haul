@@ -21,12 +21,7 @@ fn details(j: &Value) -> String {
 
 /// A session token: the one kept from before, or a new login's.
 async fn token(cx: &Cx<'_>, user: &str, pass: &str, fresh: bool) -> Result<String, ResolveError> {
-    let slot = || {
-        cx.tokens
-            .rapidgator
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-    };
+    let slot = || crate::lock::held(&cx.tokens.rapidgator);
     if !fresh && let Some(t) = slot().clone() {
         return Ok(t);
     }
@@ -61,12 +56,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     };
     let id = super::link_id(&FILE_ID, url, "rapidgator")?;
     let base = &cx.cfg.endpoints.rapidgator;
-    let had_token = cx
-        .tokens
-        .rapidgator
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_some();
+    let had_token = crate::lock::held(&cx.tokens.rapidgator).is_some();
     // A kept token may have run out: told so, Haul logs in once more and
     // asks again before failing.
     let mut fresh = false;
@@ -81,10 +71,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             .await?;
         let j: Value = super::api_json(r, "rapidgator").await?;
         if j["status"] != 200 {
-            *cx.tokens
-                .rapidgator
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = None;
+            *crate::lock::held(&cx.tokens.rapidgator) = None;
             // 401: the session is no longer good, not the file.
             if j["status"] == 401 && had_token && !fresh {
                 fresh = true;

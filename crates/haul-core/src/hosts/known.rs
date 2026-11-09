@@ -91,7 +91,7 @@ impl Known {
     pub fn last_resort(&self, cfg: &Config, pages: bool) -> bool {
         self.lacks_account(cfg)
             && !cfg.is_accountless(self.names[0])
-            && asks_a_person(&format!("https://{}/", self.names[0]), cfg, pages)
+            && asks_a_person_host(self.names[0], cfg, pages)
     }
 
     /// The downloads at once it allows one address, unless an account
@@ -381,7 +381,12 @@ pub fn page_passes(url: &str) -> bool {
 /// asking the host: a captcha for every file without its account, or a page
 /// only the desktop app passes by itself (`pages`: it is there to).
 pub fn asks_a_person(url: &str, cfg: &Config, pages: bool) -> bool {
-    let Some(k) = known(&host_of(url)) else {
+    asks_a_person_host(&host_of(url), cfg, pages)
+}
+
+/// [`asks_a_person`] for host `name`.
+pub fn asks_a_person_host(name: &str, cfg: &Config, pages: bool) -> bool {
+    let Some(k) = known(name) else {
         return false;
     };
     if k.has_account(cfg) {

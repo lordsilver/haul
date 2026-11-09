@@ -392,7 +392,12 @@ pub fn short_title(raw: &str) -> Option<String> {
 /// Whether `url` is a paste (zpaste.net, paste2.org…): a list of links,
 /// taken as a wrapper from the start.
 pub fn is_paste(url: &str) -> bool {
-    !super::generic_only() && PASTES.contains(&host_of(url).as_str())
+    is_paste_host(&host_of(url))
+}
+
+/// [`is_paste`] for host `name`.
+pub fn is_paste_host(name: &str) -> bool {
+    !super::generic_only() && PASTES.contains(&name)
 }
 
 /// The paste sites Haul recognises today, a fixed list: sites that hold

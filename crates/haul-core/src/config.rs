@@ -359,7 +359,12 @@ impl Config {
     /// Whether `url`'s host is used only when no other host has the file;
     /// `pages`: the desktop app passes pages by itself.
     pub fn is_last_resort(&self, url: &str, pages: bool) -> bool {
-        crate::hosts::known(&crate::hosts::host_of(url)).is_some_and(|k| k.last_resort(self, pages))
+        self.is_last_resort_host(&crate::hosts::host_of(url), pages)
+    }
+
+    /// [`Config::is_last_resort`] for host `name`.
+    pub fn is_last_resort_host(&self, name: &str, pages: bool) -> bool {
+        crate::hosts::known(name).is_some_and(|k| k.last_resort(self, pages))
     }
 
     /// The subfolder for files from `host`, relative to the download folder;
@@ -372,42 +377,25 @@ impl Config {
     }
 }
 
-/// The app's appearance; `System` follows the operating system.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[serde(rename_all = "lowercase")]
-#[ts(export)]
-pub enum Theme {
-    #[default]
-    System,
-    Light,
-    Dark,
-}
-
-impl Theme {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Theme::System => "system",
-            Theme::Light => "light",
-            Theme::Dark => "dark",
-        }
+crate::names::named! {
+    /// The app's appearance; `System` follows the operating system.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+    #[ts(export)]
+    pub enum Theme {
+        #[default]
+        System = "system",
+        Light = "light",
+        Dark = "dark",
     }
 }
 
-/// How a host is reached when a proxy is configured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[serde(rename_all = "lowercase")]
-#[ts(export)]
-pub enum Route {
-    Proxy,
-    Direct,
-}
-
-impl Route {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Route::Proxy => "proxy",
-            Route::Direct => "direct",
-        }
+crate::names::named! {
+    /// How a host is reached when a proxy is configured.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+    #[ts(export)]
+    pub enum Route {
+        Proxy = "proxy",
+        Direct = "direct",
     }
 }
 
@@ -630,8 +618,9 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # Passwords tried in order on an encrypted archive, after the one typed for it.
 # archive_passwords = ["password one", "password two"]
 
-# Writes Haul's debug events to haul.log too (every request, retry and mirror
-# choice), so a problem is on record the first time; false keeps notable events.
+# Writes Haul's debug events to haul.log too (every attempt, outcome and mirror
+# choice), so a problem is on record the first time; false keeps notable
+# events.
 # detailed_log = true
 
 # Lets a diagnosing tool on this computer follow everything Haul does as it
@@ -697,14 +686,15 @@ pub const TEMPLATE: &str = r#"# Haul settings. Everything here can also be chang
 # reconnect_command = "my-router-cli reconnect"
 
 # Hosts a file with mirrors downloads from first, in this order (default:
-# pixeldrain.com, vikingfile.com, mega.nz, megaup.net); the rest follow by measured speed. A file waits for a free
-# slot on a preferred host rather than starting on another one, unless the
-# preferred host is cooling down or has failed for that file.
+# pixeldrain.com, vikingfile.com, mega.nz, megaup.net); the rest follow by
+# measured speed. A file waits for a free slot on a preferred host rather
+# than starting on another one, unless the preferred host is cooling down or
+# has failed for that file.
 # preferred_hosts = ["rapidgator.net", "pixeldrain.com"]
 
 # Hosts never downloaded from: their links are left alone, and a file whose
 # links are all on these hosts fails until one of them is turned back on
-# (default: ddownload.com, whose free downloads crawl).
+# (default: ddownload.com, whose free downloads crawl, and rapidgator.net).
 # disabled_hosts = ["mediafire.com"]
 
 # Hosts that give no decent download without an account (gofile.io,
@@ -799,6 +789,30 @@ impl Default for Endpoints {
 
 #[cfg(test)]
 mod tests {
+    /// Every setting is in the file's template and in the docs, so neither
+    /// can fall behind the code.
+    #[test]
+    fn every_setting_is_in_the_template_and_the_docs() {
+        let docs = include_str!("../../../docs/configuration.md");
+        let cfg = serde_json::to_value(Config::default()).unwrap();
+        for key in cfg.as_object().unwrap().keys() {
+            let table = matches!(key.as_str(), "routes" | "folders" | "accounts");
+            let in_template = TEMPLATE.lines().any(|l| {
+                let l = l.trim_start_matches('#').trim_start();
+                if table {
+                    l == format!("[{key}]")
+                } else {
+                    l.starts_with(&format!("{key} ="))
+                }
+            });
+            assert!(in_template, "{key} is not in TEMPLATE");
+            assert!(
+                docs.contains(key.as_str()),
+                "{key} is not in docs/configuration.md"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
