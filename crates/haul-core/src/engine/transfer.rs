@@ -545,7 +545,7 @@ impl Engine {
         {
             Answer::Complete => {}
             Answer::Body(body) => {
-                if let Some(known) = self.stream(id, entry, host, &part, body, cancel).await? {
+                if let Some(known) = self.stream(id, entry, host, &part, *body, cancel).await? {
                     return Ok(known);
                 }
             }
@@ -754,14 +754,14 @@ impl Engine {
         } else {
             Overlap::new(Vec::new())
         };
-        Ok(Answer::Body(Body {
+        Ok(Answer::Body(Box::new(Body {
             resp,
             have,
             from,
             total,
             named_now,
             overlap,
-        }))
+        })))
     }
 
     /// Reads `body` into the partial file at `part`, comparing what overlaps
@@ -1004,7 +1004,7 @@ struct Ask {
 enum Answer {
     /// The partial file is the whole file already.
     Complete,
-    Body(Body),
+    Body(Box<Body>),
 }
 
 /// An answer with a body to read.

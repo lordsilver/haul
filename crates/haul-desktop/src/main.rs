@@ -11,6 +11,7 @@
 mod browser;
 mod chromium;
 mod clipboard;
+mod dialogs;
 mod passing;
 mod tray;
 
