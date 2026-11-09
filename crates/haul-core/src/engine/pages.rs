@@ -357,7 +357,7 @@ impl Engine {
     fn pass_lane<'a>(&self, st: &'a State, url: &str) -> Option<&'a super::Lane> {
         let host = hosts::host_of(url);
         let exit = *self.exits_for(&host, st).first()?;
-        st.lanes.get(&(host, exit))
+        st.lanes.get(&host, exit)
     }
 
     /// As [`Engine::pass_held_until`], for page `url` of row `it`: a host that

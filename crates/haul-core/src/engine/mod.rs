@@ -431,9 +431,80 @@ impl std::ops::AddAssign for Added {
     }
 }
 
-/// Where a download leaves this machine from: 0 is its own connection, `n`
-/// the n-th proxy of the pool ([`Config::proxy_pool`]).
-pub type Exit = usize;
+/// Where a download leaves this machine from: 0 is its own connection, a
+/// proxy's is a hash of its address ([`exit_id`]), so an exit stays the same
+/// when the pool is built again around it.
+pub type Exit = u64;
+
+/// A proxy's exit: the same for the same address, never the line's 0.
+fn exit_id(proxy: &str) -> Exit {
+    use std::hash::{Hash, Hasher};
+    // Keys fixed, so the same address gives the same exit every time.
+    let mut h = std::hash::DefaultHasher::new();
+    proxy.hash(&mut h);
+    h.finish().max(1)
+}
+
+/// Each host's lanes, one per exit it was reached from. A host has a
+/// handful of exits, so they are a short list under its name, and a known
+/// lane is found without allocating.
+#[derive(Debug, Default)]
+struct Lanes(HashMap<String, Vec<(Exit, Lane)>>);
+
+impl Lanes {
+    fn get(&self, host: &str, exit: Exit) -> Option<&Lane> {
+        self.0
+            .get(host)?
+            .iter()
+            .find(|(e, _)| *e == exit)
+            .map(|(_, lane)| lane)
+    }
+
+    /// `host`'s lane from `exit`, made when it is the first time.
+    fn lane(&mut self, host: &str, exit: Exit) -> &mut Lane {
+        if !self.0.contains_key(host) {
+            self.0.insert(host.to_string(), Vec::new());
+        }
+        let list = self.0.get_mut(host).expect("just put there");
+        let at = match list.iter().position(|(e, _)| *e == exit) {
+            Some(at) => at,
+            None => {
+                list.push((exit, Lane::default()));
+                list.len() - 1
+            }
+        };
+        &mut list[at].1
+    }
+
+    /// The lanes of `host`, from whichever exits it was reached from.
+    fn of(&self, host: &str) -> impl Iterator<Item = &Lane> {
+        self.0.get(host).into_iter().flatten().map(|(_, lane)| lane)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&str, Exit, &Lane)> {
+        self.0
+            .iter()
+            .flat_map(|(host, list)| list.iter().map(move |(e, lane)| (host.as_str(), *e, lane)))
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (&str, Exit, &mut Lane)> {
+        self.0.iter_mut().flat_map(|(host, list)| {
+            list.iter_mut()
+                .map(move |(e, lane)| (host.as_str(), *e, lane))
+        })
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Lane> {
+        self.0.values_mut().flatten().map(|(_, lane)| lane)
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(Exit, &Lane) -> bool) {
+        for list in self.0.values_mut() {
+            list.retain(|(e, lane)| keep(*e, lane));
+        }
+        self.0.retain(|_, list| !list.is_empty());
+    }
+}
 
 /// One host as seen from one exit: what it allows one address, the limit it
 /// showed and the waits it asked for, since hosts count those per address.
@@ -675,7 +746,7 @@ struct State {
     items: IndexMap<String, Item>,
     hosts: IndexMap<String, HostStats>,
     /// Each host from each exit it was reached from.
-    lanes: HashMap<(String, Exit), Lane>,
+    lanes: Lanes,
     routes: BTreeMap<String, Route>,
     paused: bool,
     /// The download folder is changing: start nothing new.
@@ -737,15 +808,12 @@ impl State {
     }
 
     fn lane(&mut self, host: &str, exit: Exit) -> &mut Lane {
-        self.lanes.entry((host.to_string(), exit)).or_default()
+        self.lanes.lane(host, exit)
     }
 
     /// The lanes of `host`, from whichever exits it was reached from.
     fn lanes_of<'a>(&'a self, host: &'a str) -> impl Iterator<Item = &'a Lane> + 'a {
-        self.lanes
-            .iter()
-            .filter(move |((h, _), _)| h == host)
-            .map(|(_, lane)| lane)
+        self.lanes.of(host)
     }
 
     /// The exit among `exits` with a free slot for `host` and the fewest of
@@ -801,7 +869,7 @@ impl State {
     fn cooling(&self, host: &str, exits: &[Exit], now: Instant) -> bool {
         exits.iter().all(|e| {
             self.lanes
-                .get(&(host.to_string(), *e))
+                .get(host, *e)
                 .is_some_and(|lane| lane.cooling(now))
         })
     }
@@ -823,45 +891,89 @@ impl Drop for Comparing {
     }
 }
 
-/// An exit as the log names it: `direct`, or `proxy 2`.
-fn exit_name(exit: Exit) -> String {
-    if exit == 0 {
-        "direct".into()
-    } else {
-        format!("proxy {exit}")
-    }
-}
-
 #[derive(Clone)]
 pub struct Engine(Arc<Inner>);
 
-/// HTTP clients for every exit, rebuilt when the proxies or the user agent
-/// change: `exits[0]` is the direct connection, `exits[n]` the n-th proxy.
+/// HTTP clients for every exit: `exits[0]` is the direct connection, then
+/// the proxies of the pool, each under its [`exit_id`].
 struct Clients {
-    exits: Vec<Http>,
+    exits: Vec<(Exit, Http)>,
+    /// Built with `proxy_fresh_connections` as it was then.
+    fresh: bool,
 }
 
 impl Clients {
     /// Exits for the proxies of the settings, then for `services`' (a VPN's
     /// servers), unless proxies are switched off.
     fn new(cfg: &Config, services: &[String]) -> Result<Self, String> {
-        let mut exits = vec![Http::new(None, crate::config::USER_AGENT)?];
+        Self::rebuilt(None, cfg, services)
+    }
+
+    /// As [`Clients::new`], keeping the clients (and so the cookies and the
+    /// clearances handed over) of the exits that were in `old` already.
+    fn rebuilt(old: Option<&Clients>, cfg: &Config, services: &[String]) -> Result<Self, String> {
+        let direct = match old {
+            Some(old) => old.exits[0].1.clone(),
+            None => Http::new(None, crate::config::USER_AGENT)?,
+        };
+        let mut exits = vec![(0, direct)];
         let services = services
             .iter()
             .map(String::as_str)
             .filter(|_| cfg.use_proxy);
         for proxy in cfg.proxy_pool().into_iter().chain(services) {
-            exits.push(Http::with(
-                Some(proxy),
-                crate::config::USER_AGENT,
-                cfg.proxy_fresh_connections,
-            )?);
+            let id = exit_id(proxy);
+            // The same address twice is one address to a host.
+            if exits.iter().any(|(e, _)| *e == id) {
+                continue;
+            }
+            let kept = old
+                .filter(|old| old.fresh == cfg.proxy_fresh_connections)
+                .and_then(|old| old.exits.iter().find(|(e, _)| *e == id));
+            let http = match kept {
+                Some((_, http)) => http.clone(),
+                None => Http::with(
+                    Some(proxy),
+                    crate::config::USER_AGENT,
+                    cfg.proxy_fresh_connections,
+                )?,
+            };
+            exits.push((id, http));
         }
-        Ok(Self { exits })
+        Ok(Self {
+            exits,
+            fresh: cfg.proxy_fresh_connections,
+        })
     }
 
     fn on(&self, exit: Exit) -> Http {
-        self.exits.get(exit).unwrap_or(&self.exits[0]).clone()
+        self.exits
+            .iter()
+            .find(|(e, _)| *e == exit)
+            .unwrap_or(&self.exits[0])
+            .1
+            .clone()
+    }
+
+    /// The proxies' exits, in the pool's order.
+    fn proxies(&self) -> impl Iterator<Item = Exit> + '_ {
+        self.exits.iter().skip(1).map(|(e, _)| *e)
+    }
+
+    fn has(&self, exit: Exit) -> bool {
+        self.exits.iter().any(|(e, _)| *e == exit)
+    }
+
+    /// An exit as the log names it: `direct`, or `proxy 2`, the second of
+    /// the pool.
+    fn name(&self, exit: Exit) -> String {
+        if exit == 0 {
+            return "direct".into();
+        }
+        match self.exits.iter().position(|(e, _)| *e == exit) {
+            Some(at) => format!("proxy {at}"),
+            None => "a proxy no longer in the pool".into(),
+        }
     }
 }
 
@@ -1009,7 +1121,7 @@ impl Engine {
             state: Mutex::new(State {
                 items,
                 hosts,
-                lanes: HashMap::new(),
+                lanes: Lanes::default(),
                 routes,
                 paused,
                 moving: false,
@@ -1123,11 +1235,11 @@ impl Engine {
     /// direct.
     fn exits_for(&self, host: &str, st: &State) -> Vec<Exit> {
         let cfg = self.cfg();
-        let proxies = self.clients().exits.len() - 1;
-        if proxies == 0 || st.routes.get(host) == Some(&Route::Direct) {
+        let clients = self.clients();
+        let mut exits: Vec<Exit> = clients.proxies().collect();
+        if exits.is_empty() || st.routes.get(host) == Some(&Route::Direct) {
             return vec![0];
         }
-        let mut exits: Vec<Exit> = (1..=proxies).collect();
         if cfg.proxy_with_direct {
             exits.push(0);
         }
@@ -2657,9 +2769,20 @@ impl Engine {
     /// Puts clients for the exits of `cfg` and `services` (a VPN's servers)
     /// in effect.
     fn set_clients(&self, cfg: &Config, services: &[String]) -> Result<(), String> {
-        let clients = Clients::new(cfg, services)?;
+        let clients = Clients::rebuilt(Some(&self.clients()), cfg, services)?;
+        let mut st = self.lock();
+        // What is gone goes, but not a lane transfers still run on: its
+        // counts are what keeps the host's limit for that address.
+        st.lanes
+            .retain(|exit, lane| clients.has(exit) || lane.active > 0 || lane.serving > 0);
         *self.0.clients.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(clients);
+        self.touch(&mut st);
         Ok(())
+    }
+
+    /// An exit as the log names it: `direct`, or `proxy 2`.
+    fn exit_name(&self, exit: Exit) -> String {
+        self.clients().name(exit)
     }
 }
 
@@ -2913,7 +3036,7 @@ mod exit_tests {
         State {
             items: IndexMap::new(),
             hosts: IndexMap::new(),
-            lanes: HashMap::new(),
+            lanes: Lanes::default(),
             routes: BTreeMap::new(),
             paused: false,
             moving: false,
@@ -2999,9 +3122,39 @@ mod exit_tests {
         };
         assert_eq!(cfg.proxy_pool(), ["socks5://a:1", "socks5://b:2"]);
         assert_eq!(cfg.proxy(), Some("socks5://a:1"));
+        let clients = Clients::new(&cfg, &[]).unwrap();
+        let b = exit_id("socks5://b:2");
+        assert_eq!(clients.name(0), "direct");
+        assert_eq!(clients.name(b), "proxy 2");
+        assert_eq!(
+            clients.name(exit_id("socks5://c:3")),
+            "a proxy no longer in the pool"
+        );
         cfg.use_proxy = false;
         assert!(cfg.proxy_pool().is_empty());
-        assert_eq!(exit_name(0), "direct");
-        assert_eq!(exit_name(2), "proxy 2");
+    }
+
+    /// A pool built again keeps the exits it still has, under the same
+    /// names, with their clients (and so their cookies).
+    #[test]
+    fn a_rebuilt_pool_keeps_the_exits_it_still_has() {
+        let mut cfg = Config {
+            proxies: vec!["socks5://a:1".into(), "socks5://b:2".into()],
+            ..Config::default()
+        };
+        let before = Clients::new(&cfg, &[]).unwrap();
+        cfg.proxies.remove(0);
+        let after = Clients::rebuilt(Some(&before), &cfg, &[]).unwrap();
+        let b = exit_id("socks5://b:2");
+        assert_eq!(after.proxies().collect::<Vec<_>>(), [b]);
+        assert!(!after.has(exit_id("socks5://a:1")));
+        assert!(
+            Arc::ptr_eq(&after.on(b).jar, &before.on(b).jar),
+            "the same cookies"
+        );
+        assert!(
+            Arc::ptr_eq(&after.on(0).jar, &before.on(0).jar),
+            "the line's too"
+        );
     }
 }

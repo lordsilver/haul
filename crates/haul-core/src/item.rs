@@ -319,7 +319,7 @@ pub(crate) struct Item {
     pub task: Option<CancellationToken>,
     /// The exit the running attempt goes out from.
     #[serde(skip)]
-    pub exit: Option<usize>,
+    pub exit: Option<crate::engine::Exit>,
     /// A wrapper's row: a link to further links, never a file. Unwrapping it
     /// adds its files, not started, and leaves it done with what it found.
     #[serde(skip_serializing_if = "std::ops::Not::not")]

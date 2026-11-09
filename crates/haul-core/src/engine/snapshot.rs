@@ -401,7 +401,7 @@ impl Engine {
             },
         );
         let now = Instant::now();
-        let has_proxy = self.clients().exits.len() > 1;
+        let has_proxy = self.clients().proxies().next().is_some();
         let cfg = self.cfg();
         let wait = |it: &Item| {
             it.not_before
@@ -514,7 +514,7 @@ impl Engine {
         let unmeasured = HostStats::new();
         let host_view = |name: &str, stats: Option<&HostStats>| {
             let exits = self.exits_for(name, &st);
-            let lane = |e: &Exit| st.lanes.get(&(name.to_string(), *e));
+            let lane = |e: &Exit| st.lanes.get(name, *e);
             let cap = st.lanes_of(name).filter_map(|l| l.cap).min();
             // Waiting only when every address it may use was asked to.
             let cooldown = exits
