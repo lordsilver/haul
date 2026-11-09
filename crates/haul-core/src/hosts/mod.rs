@@ -27,6 +27,20 @@ mod rapidgator;
 mod rootz;
 mod vikingfile;
 
+mod checksum;
+mod headers;
+mod http;
+mod known;
+mod names;
+mod sites;
+
+pub use checksum::*;
+pub(crate) use headers::*;
+pub use http::*;
+pub use known::*;
+pub use names::*;
+use sites::Site;
+
 pub(crate) use generic::gate_message;
 pub use generic::{is_paste, pasted_links, short_title};
 
@@ -107,145 +121,6 @@ pub struct Probed {
     pub name: String,
     pub size: Option<u64>,
     pub checksum: Option<Checksum>,
-}
-
-/// A hash algorithm that hosts publish checksums in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Algo {
-    Md5,
-    Sha256,
-    Sha512,
-}
-
-impl Algo {
-    /// Length of the digest in bytes.
-    fn len(self) -> usize {
-        match self {
-            Algo::Md5 => 16,
-            Algo::Sha256 => 32,
-            Algo::Sha512 => 64,
-        }
-    }
-}
-
-/// A file's checksum as its host publishes it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Checksum {
-    pub algo: Algo,
-    /// Lowercase hexadecimal.
-    pub hex: String,
-}
-
-impl Checksum {
-    /// From hexadecimal, as APIs send it; `None` unless it has the right length.
-    pub fn from_hex(algo: Algo, hex: &str) -> Option<Self> {
-        let hex = hex.trim().to_ascii_lowercase();
-        (hex.len() == algo.len() * 2 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
-            .then_some(Self { algo, hex })
-    }
-
-    /// From base64, as HTTP headers send it.
-    pub fn from_base64(algo: Algo, value: &str) -> Option<Self> {
-        let bytes = STANDARD.decode(value.trim()).ok()?;
-        (bytes.len() == algo.len()).then(|| Self {
-            algo,
-            hex: to_hex(&bytes),
-        })
-    }
-
-    /// Whether the file at `path` has this checksum, reading all of it, and
-    /// asking `steer` before every read whether to go
-    /// on, wait (while downloads are paused, say) or give up, which fails
-    /// with [`std::io::ErrorKind::Interrupted`].
-    pub fn matches_steered(&self, path: &Path, steer: &dyn Fn() -> Steer) -> std::io::Result<bool> {
-        let file = std::fs::File::open(path)?;
-        let hex = match self.algo {
-            Algo::Md5 => hash_reader::<md5::Md5>(file, steer)?,
-            Algo::Sha256 => hash_reader::<sha2::Sha256>(file, steer)?,
-            Algo::Sha512 => hash_reader::<sha2::Sha512>(file, steer)?,
-        };
-        Ok(hex == self.hex)
-    }
-}
-
-/// What a long checksum read does next.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Steer {
-    Go,
-    Wait,
-    Stop,
-}
-
-fn hash_reader<D: Digest>(
-    mut reader: impl Read,
-    steer: &dyn Fn() -> Steer,
-) -> std::io::Result<String> {
-    let mut hasher = D::new();
-    let mut buf = vec![0; 1 << 20];
-    loop {
-        loop {
-            match steer() {
-                Steer::Go => break,
-                Steer::Wait => std::thread::sleep(Duration::from_millis(250)),
-                Steer::Stop => return Err(std::io::ErrorKind::Interrupted.into()),
-            }
-        }
-        match reader.read(&mut buf)? {
-            0 => return Ok(to_hex(&hasher.finalize())),
-            n => hasher.update(&buf[..n]),
-        }
-    }
-}
-
-fn to_hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    bytes
-        .iter()
-        .flat_map(|b| [DIGITS[usize::from(b >> 4)], DIGITS[usize::from(b & 0xf)]])
-        .map(char::from)
-        .collect()
-}
-
-/// The checksum a server publishes for the whole file in its headers, by
-/// preference: `Repr-Digest` (RFC 9530), `Digest` (RFC 3230), Google Cloud
-/// Storage's `x-goog-hash`, then `Content-MD5`. That last one covers only the
-/// body of this response, so it counts only when `whole_body` says the body is
-/// the whole file (a 200, not a 206).
-pub(crate) fn header_checksum(headers: &HeaderMap, whole_body: bool) -> Option<Checksum> {
-    // `name: key=value, key=value` across every line of the header, keys in
-    // lowercase; values keep their `=` padding.
-    let pairs = |name: &str| -> Vec<(String, String)> {
-        headers
-            .get_all(name)
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .flat_map(|v| v.split(','))
-            .filter_map(|p| p.trim().split_once('='))
-            .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
-            .collect()
-    };
-    let find = |pairs: &[(String, String)], key: &str, algo: Algo| {
-        pairs
-            .iter()
-            .filter(|(k, _)| k == key)
-            .find_map(|(_, v)| Checksum::from_base64(algo, v.trim_matches(':')))
-    };
-    let repr = pairs("repr-digest");
-    let digest = pairs("digest");
-    let goog = pairs("x-goog-hash");
-    find(&repr, "sha-512", Algo::Sha512)
-        .or_else(|| find(&repr, "sha-256", Algo::Sha256))
-        .or_else(|| find(&digest, "sha-512", Algo::Sha512))
-        .or_else(|| find(&digest, "sha-256", Algo::Sha256))
-        .or_else(|| find(&digest, "md5", Algo::Md5))
-        .or_else(|| find(&goog, "md5", Algo::Md5))
-        .or_else(|| {
-            let value = headers.get("content-md5")?.to_str().ok()?;
-            whole_body
-                .then(|| Checksum::from_base64(Algo::Md5, value))
-                .flatten()
-        })
 }
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -357,452 +232,16 @@ impl From<reqwest::Error> for ResolveError {
     }
 }
 
-/// Which code serves a host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Pixeldrain,
-    Gofile,
-    Buzzheavier,
-    OneFichier,
-    Rapidgator,
-    Nitroflare,
-    Mega,
-    Vikingfile,
-    Rootz,
-    Mediafire,
-    Ddownload,
-    /// Its links are the files.
-    Direct,
-    Fileguard,
-    Filecrypt,
-    Mirrored,
-}
-
-/// What a free user gets from a host, where it is known; an account the
-/// user sets may lift it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ts_rs::TS)]
-#[ts(export)]
-pub struct Free {
-    /// Downloads at once from one address.
-    pub at_once: Option<usize>,
-    /// Bytes a day one address gets at full speed.
-    pub daily_bytes: Option<u64>,
-    /// Bytes per second past them.
-    pub slowed_to: Option<u64>,
-    /// What each file asks of a free user, said as the Hosts view lists it
-    /// ("a captcha per file").
-    pub per_file: Option<&'static str>,
-}
-
-/// A host Haul knows: the names it goes by, the code that serves it, the
-/// account settings that unlock more, what a free user gets, and whether it
-/// says how much an address has left today ([`allowance`]).
-#[derive(Debug)]
-pub struct Known {
-    pub names: &'static [&'static str],
-    kind: Kind,
-    pub accounts: &'static [AccountField],
-    pub free: Free,
-    pub tells_allowance: bool,
-    /// Its page's check passes by itself in a browser from most addresses,
-    /// so the desktop app opens the page on its own, out of sight, and
-    /// shows it only when the check wants a person after all.
-    pub page_passes: bool,
-    /// Without its account it gives no decent download: a captcha for
-    /// every file, or names only once a page is passed. So it is off
-    /// until the user sets one or switches it on without one
-    /// ([`Known::last_resort`]).
-    pub needs_account: bool,
-    /// What a file of it asks of a person when its account is not set.
-    pub free_asks: Asks,
-    /// It says what a file is (its size, whether it is still there) through
-    /// an API, without a download or its page ([`tells_size`]).
-    pub tells_size: bool,
-    /// How long its page, passed by itself, takes on its own before it could
-    /// want a person ([`page_takes`]).
-    pub page_takes: Duration,
-    /// What its account does for it, as the Hosts view says it; empty for
-    /// the usual words.
-    pub account_note: &'static str,
-}
-
-/// What a host's file asks of a person without the host's account.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Asks {
-    Nothing,
-    /// A captcha or a wait for every file.
-    Always,
-    /// A step on its page, unless the desktop app is there to pass it.
-    OnItsPage,
-}
-
-impl Known {
-    /// A wrapper's site, which stands for further links rather than files.
-    pub fn wraps(&self) -> bool {
-        matches!(
-            self.kind,
-            Kind::Fileguard | Kind::Filecrypt | Kind::Mirrored
-        )
-    }
-
-    /// Whether the user set every account setting this host takes.
-    pub fn has_account(&self, cfg: &Config) -> bool {
-        !self.accounts.is_empty()
-            && self
-                .accounts
-                .iter()
-                .all(|field| cfg.account(field.key).is_some())
-    }
-
-    /// It needs an account the user has not set.
-    pub fn lacks_account(&self, cfg: &Config) -> bool {
-        self.needs_account && !self.has_account(cfg)
-    }
-
-    /// It lacks its account, so its free download would cost the person a
-    /// step for every file (a captcha, or a page the desktop app can't pass
-    /// where `pages` is false), and the user did not ask to use it like any
-    /// other host without one ([`Config::accountless_hosts`]): its links are
-    /// used only when no other host has the file.
-    pub fn last_resort(&self, cfg: &Config, pages: bool) -> bool {
-        self.lacks_account(cfg)
-            && !cfg.is_accountless(self.names[0])
-            && asks_a_person(&format!("https://{}/", self.names[0]), cfg, pages)
-    }
-
-    /// The downloads at once it allows one address, unless an account
-    /// lifts it.
-    pub fn at_once(&self, cfg: &Config) -> Option<usize> {
-        self.free.at_once.filter(|_| !self.has_account(cfg))
-    }
-}
-
-/// A host's account, as the Hosts view asks for it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
-#[ts(export)]
-pub struct AccountForm {
-    pub host: String,
-    /// What the account does for it.
-    pub note: &'static str,
-    pub fields: Vec<AccountField>,
-    /// Every field is set.
-    pub set: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
-#[ts(export)]
-pub struct AccountField {
-    /// Its name in the settings file.
-    pub key: &'static str,
-    pub label: &'static str,
-    /// Hidden as it is typed.
-    pub secret: bool,
-}
-
-/// The account form of every host that takes one, in the order of
-/// [`KNOWN`].
-pub fn account_forms(cfg: &Config) -> Vec<AccountForm> {
-    KNOWN
-        .iter()
-        .filter(|k| !k.accounts.is_empty())
-        .map(|k| AccountForm {
-            host: k.names[0].to_string(),
-            note: match k.account_note {
-                "" if k.needs_account => {
-                    "A premium account: without one, every file asks for a captcha."
-                }
-                note => note,
-            },
-            fields: k.accounts.to_vec(),
-            set: k.has_account(cfg),
-        })
-        .collect()
-}
-
-/// A free user's limits, where none is known.
-const NO_LIMITS: Free = Free {
-    at_once: None,
-    daily_bytes: None,
-    slowed_to: None,
-    per_file: None,
-};
-
-/// What an entry of [`KNOWN`] leaves out. `names` and `kind` are always its
-/// own.
-const HOST: Known = Known {
-    names: &[],
-    kind: Kind::Direct,
-    accounts: &[],
-    free: NO_LIMITS,
-    tells_allowance: false,
-    page_passes: false,
-    needs_account: false,
-    free_asks: Asks::Nothing,
-    tells_size: false,
-    page_takes: Duration::ZERO,
-    account_note: "",
-};
-
-const fn field(key: &'static str, label: &'static str, secret: bool) -> AccountField {
-    AccountField { key, label, secret }
-}
-
-/// Every host with code of its own. Free limits are what was measured:
-/// pixeldrain's from its own refusal ("maximum number of open download
-/// connections for free/anonymous accounts", past 5) and its
-/// `/api/misc/rate_limits`.
-static KNOWN: &[Known] = &[
-    Known {
-        names: &["pixeldrain.com"],
-        kind: Kind::Pixeldrain,
-        accounts: &[field("pixeldrain_key", "API key", true)],
-        free: Free {
-            at_once: Some(5),
-            daily_bytes: Some(6_000_000_000),
-            slowed_to: Some(1_048_576),
-            ..NO_LIMITS
-        },
-        tells_allowance: true,
-        tells_size: true,
-        account_note: "Its API key.",
-        ..HOST
-    },
-    Known {
-        names: &["gofile.io"],
-        kind: Kind::Gofile,
-        accounts: &[field("gofile_token", "Account token", true)],
-        free: Free {
-            per_file: Some("Through its page, named late"),
-            ..NO_LIMITS
-        },
-        page_passes: true,
-        needs_account: true,
-        free_asks: Asks::OnItsPage,
-        account_note: "A premium account's token: without one, gofile's files come only through its page.",
-        ..HOST
-    },
-    Known {
-        names: &["buzzheavier.com"],
-        kind: Kind::Buzzheavier,
-        ..HOST
-    },
-    Known {
-        names: &["1fichier.com"],
-        kind: Kind::OneFichier,
-        accounts: &[field("1fichier_key", "API key", true)],
-        free: Free {
-            per_file: Some("Wait and captcha per file"),
-            ..NO_LIMITS
-        },
-        free_asks: Asks::Always,
-        tells_size: true,
-        account_note: "Its API key: no free-mode wait or captcha.",
-        ..HOST
-    },
-    Known {
-        names: &["rapidgator.net"],
-        kind: Kind::Rapidgator,
-        accounts: &[
-            field("rapidgator_user", "Username", false),
-            field("rapidgator_pass", "Password", true),
-        ],
-        free: Free {
-            per_file: Some("Wait and captcha per file"),
-            ..NO_LIMITS
-        },
-        needs_account: true,
-        free_asks: Asks::Always,
-        ..HOST
-    },
-    Known {
-        names: &["nitroflare.com"],
-        kind: Kind::Nitroflare,
-        accounts: &[
-            field("nitroflare_user", "User", false),
-            field("nitroflare_key", "Premium key", true),
-        ],
-        free: Free {
-            per_file: Some("Wait and captcha per file"),
-            ..NO_LIMITS
-        },
-        needs_account: true,
-        free_asks: Asks::Always,
-        ..HOST
-    },
-    Known {
-        names: &["mega.nz", "mega.co.nz", "transfer.it"],
-        kind: Kind::Mega,
-        tells_size: true,
-        ..HOST
-    },
-    Known {
-        names: &["ddownload.com", "ddl.to"],
-        kind: Kind::Ddownload,
-        // A 60-second wait and Cloudflare's Turnstile, which a browser
-        // passes out of sight. One free file per address about every two
-        // hours, which held at about 30 KB/s when tried (2026-11-05).
-        free: Free {
-            per_file: Some("1 file per 2 hours, about 30 KB/s"),
-            ..NO_LIMITS
-        },
-        page_passes: true,
-        free_asks: Asks::OnItsPage,
-        // Everyone waits a minute first.
-        page_takes: Duration::from_secs(75),
-        ..HOST
-    },
-    Known {
-        names: &["mediafire.com"],
-        kind: Kind::Mediafire,
-        // Some files' pages are behind Cloudflare's check, whose clearance
-        // does not let Haul's own requests through: the browser that passes
-        // it takes the address on the page's download button.
-        page_passes: true,
-        tells_size: true,
-        ..HOST
-    },
-    Known {
-        names: &["rootz.so"],
-        kind: Kind::Rootz,
-        // One download per address every two minutes.
-        free: Free {
-            at_once: Some(1),
-            ..NO_LIMITS
-        },
-        tells_size: true,
-        ..HOST
-    },
-    Known {
-        names: &["vikingfile.com", "vik1ngfile.site"],
-        kind: Kind::Vikingfile,
-        page_passes: true,
-        free_asks: Asks::OnItsPage,
-        tells_size: true,
-        // It may take its time generating the link, which its page's
-        // recipe gives 45 seconds before it tries again later.
-        page_takes: Duration::from_secs(30),
-        ..HOST
-    },
-    Known {
-        names: &["fileditchfiles.st"],
-        kind: Kind::Direct,
-        ..HOST
-    },
-    Known {
-        names: &["fileguard.cc"],
-        kind: Kind::Fileguard,
-        free: Free {
-            per_file: Some("Proof of work, answered by Haul"),
-            ..NO_LIMITS
-        },
-        ..HOST
-    },
-    Known {
-        names: &["filecrypt.cc"],
-        kind: Kind::Filecrypt,
-        free: Free {
-            per_file: Some("Checkbox, answered by Haul"),
-            ..NO_LIMITS
-        },
-        ..HOST
-    },
-    Known {
-        names: &["mirrored.to"],
-        kind: Kind::Mirrored,
-        ..HOST
-    },
-];
-
-/// Every host Haul knows.
-pub fn all() -> impl Iterator<Item = &'static Known> {
-    KNOWN.iter()
-}
-
-/// Whether Haul runs as though it knew no site at all (`HAUL_GENERIC_ONLY`
-/// set when it starts): every host, wrapper and paste gets the general way, so
-/// the scorecard can measure what a host Haul has never seen would get. A
-/// measurement switch, not a setting.
-pub fn generic_only() -> bool {
-    static ON: LazyLock<bool> = LazyLock::new(|| {
-        std::env::var_os("HAUL_GENERIC_ONLY").is_some_and(|v| !v.is_empty() && v != "0")
-    });
-    *ON
-}
-
-/// The known host a host name (as [`host_of`] gives it) belongs to.
-pub fn known(host: &str) -> Option<&'static Known> {
-    if generic_only() {
-        return None;
-    }
-    KNOWN.iter().find(|k| k.names.contains(&host))
-}
-
-/// How long a page that passes by itself takes on its own before it could
-/// want a person ([`Known::page_takes`]).
-pub fn page_takes(url: &str) -> Duration {
-    known(&host_of(url)).map_or(Duration::ZERO, |k| k.page_takes)
-}
-
-/// Whether `url`'s page passes its check by itself (see
-/// [`Known::page_passes`]).
-pub fn page_passes(url: &str) -> bool {
-    known(&host_of(url)).is_some_and(|k| k.page_passes)
-}
-
-/// Whether a file on `url`'s host takes a person, as far as can be told before
-/// asking the host: a captcha for every file without its account, or a page
-/// only the desktop app passes by itself (`pages`: it is there to).
-pub fn asks_a_person(url: &str, cfg: &Config, pages: bool) -> bool {
-    let Some(k) = known(&host_of(url)) else {
-        return false;
-    };
-    if k.has_account(cfg) {
-        return false;
-    }
-    match k.free_asks {
-        Asks::Always => true,
-        Asks::OnItsPage => !pages,
-        Asks::Nothing => false,
-    }
-}
-
-fn kind_of(url: &str) -> Option<Kind> {
-    known(&host_of(url)).map(|k| k.kind)
-}
-
-/// What an address may still fetch at full speed today, as a host that
-/// tells says it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub struct Allowance {
-    #[serde(rename = "transfer_limit")]
-    pub limit: u64,
-    #[serde(rename = "transfer_limit_used")]
-    pub used: u64,
-    /// Bytes per second once `used` passes `limit`.
-    #[serde(rename = "speed_limit")]
-    pub slowed_to: u64,
-}
-
-impl Allowance {
-    /// Past the day's full-speed bytes.
-    pub fn slowed(&self) -> bool {
-        self.limit > 0 && self.used >= self.limit
-    }
-}
-
 /// The allowance of the address `cx` reaches `host` from, for a host that
 /// tells ([`Known::tells_allowance`]).
 pub async fn allowance(cx: &Cx<'_>, host: &str) -> Option<Allowance> {
-    match known(host)?.kind {
-        Kind::Pixeldrain => pixeldrain::allowance(cx).await,
-        _ => None,
-    }
+    known(host)?.site.allowance(cx).await
 }
 
 /// Whether a link is worth adding when it shows up on the clipboard: a host
 /// Haul knows, or a link to a file rather than to a web page.
 pub fn is_download_link(url: &str) -> bool {
-    if kind_of(url).is_some() || is_paste(url) {
+    if known_of(url).is_some() || is_paste(url) {
         return true;
     }
     // A page that names a file (`name.rar.html`), or whose address ends
@@ -904,306 +343,12 @@ fn page_extension(name: &str) -> Option<&str> {
         .then_some(stem)
 }
 
-/// HTTP clients for one route (direct or through the proxy). Both share a
-/// cookie jar, as one browser session would.
-#[derive(Clone)]
-pub struct Http {
-    pub client: reqwest::Client,
-    pub no_redirect: reqwest::Client,
-    pub via_proxy: bool,
-    /// The User-Agent both clients send, for a page that also reports it.
-    pub user_agent: String,
-    /// The cookie jar both clients share.
-    pub jar: Arc<reqwest::cookie::Jar>,
-    proxy: Option<String>,
-    fresh: bool,
-    /// Clients that send a browser's user agent to the site (by
-    /// [`site_of`]) whose check that browser passed: Cloudflare's clearance
-    /// holds only with the user agent it was given to.
-    as_browser: Arc<Mutex<HashMap<String, AsBrowser>>>,
-}
-
-/// [`Http`]'s clients with a browser's user agent, on the same cookie jar.
-#[derive(Clone)]
-struct AsBrowser {
-    client: reqwest::Client,
-    no_redirect: reqwest::Client,
-    user_agent: String,
-}
-
-impl Http {
-    pub fn new(proxy: Option<&str>, user_agent: &str) -> Result<Self, String> {
-        Self::with(proxy, user_agent, false)
-    }
-
-    /// With `fresh`, no connection is kept for the next request, so a proxy
-    /// that gives each connection another address gives each download one.
-    pub fn with(proxy: Option<&str>, user_agent: &str, fresh: bool) -> Result<Self, String> {
-        let jar = Arc::new(reqwest::cookie::Jar::default());
-        let (client, no_redirect) = clients(proxy, user_agent, fresh, &jar)?;
-        Ok(Self {
-            client,
-            no_redirect,
-            via_proxy: proxy.is_some(),
-            user_agent: user_agent.to_string(),
-            jar,
-            proxy: proxy.map(str::to_string),
-            fresh,
-            as_browser: Arc::default(),
-        })
-    }
-
-    /// Takes the clearance a browser with `user_agent` got past the check
-    /// in front of `page`'s site (its cookies, `Set-Cookie` lines): requests
-    /// to that site carry them and send that user agent from now on
-    /// ([`Http::for_page`]), as Cloudflare lets the clearance through only
-    /// with the user agent it was given to.
-    pub fn add_clearance(&self, page: &str, cookies: &[String], user_agent: Option<&str>) {
-        let Ok(url) = url::Url::parse(page) else {
-            return;
-        };
-        // The clients first: cookies sent without the user agent they hold
-        // with would only be turned away.
-        let as_browser = match user_agent.filter(|a| !a.is_empty() && *a != self.user_agent) {
-            Some(agent) => match clients(self.proxy.as_deref(), agent, self.fresh, &self.jar) {
-                Ok((client, no_redirect)) => Some(AsBrowser {
-                    client,
-                    no_redirect,
-                    user_agent: agent.to_string(),
-                }),
-                Err(e) => {
-                    tracing::warn!("clients with the browser's user agent: {e}");
-                    return;
-                }
-            },
-            None => None,
-        };
-        if let Some(b) = as_browser {
-            self.as_browser
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(site_of(page), b);
-        }
-        for cookie in cookies {
-            self.jar.add_cookie_str(cookie, &url);
-        }
-    }
-
-    /// These clients for requests to `url`'s site: with the user agent of
-    /// the browser whose clearance they carry there ([`Http::add_clearance`]),
-    /// else as they are.
-    pub fn for_page(&self, url: &str) -> Http {
-        let as_browser = self.as_browser.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(b) = (!as_browser.is_empty())
-            .then(|| as_browser.get(&site_of(url)))
-            .flatten()
-        else {
-            return self.clone();
-        };
-        Http {
-            client: b.client.clone(),
-            no_redirect: b.no_redirect.clone(),
-            user_agent: b.user_agent.clone(),
-            ..self.clone()
-        }
-    }
-}
-
-/// A route's two clients, following redirects and not, on cookie jar `jar`.
-fn clients(
-    proxy: Option<&str>,
-    user_agent: &str,
-    fresh: bool,
-    jar: &Arc<reqwest::cookie::Jar>,
-) -> Result<(reqwest::Client, reqwest::Client), String> {
-    let build = |follow: bool| {
-        let mut b = reqwest::Client::builder()
-            .no_proxy()
-            .user_agent(user_agent)
-            .cookie_provider(jar.clone())
-            .connect_timeout(Duration::from_secs(if proxy.is_some() { 30 } else { 20 }))
-            .read_timeout(Duration::from_secs(60));
-        if !follow {
-            b = b.redirect(reqwest::redirect::Policy::none());
-        }
-        if fresh {
-            b = b.pool_max_idle_per_host(0);
-        }
-        if let Some(p) = proxy {
-            b = b.proxy(reqwest::Proxy::all(remote_dns(p)).map_err(|e| format!("proxy: {e}"))?);
-        }
-        b.build().map_err(|e| e.to_string())
-    };
-    Ok((build(true)?, build(false)?))
-}
-
-/// Resolve host names on the proxy, so DNS does not leak around it.
-fn remote_dns(proxy: &str) -> String {
-    match proxy.strip_prefix("socks5://") {
-        Some(rest) => format!("socks5h://{rest}"),
-        None => proxy.to_string(),
-    }
-}
-
-/// Session tokens resolvers reuse between calls.
-#[derive(Debug, Default)]
-pub struct Tokens {
-    pub(crate) rapidgator: Mutex<Option<String>>,
-    /// When vikingfile's `check-file` may be asked next: one lookup at a
-    /// time, spaced out, since it turns a burst away with 429.
-    pub(crate) vikingfile_next: tokio::sync::Mutex<Option<std::time::Instant>>,
-}
-
-/// Everything a resolver may use.
-pub struct Cx<'a> {
-    pub http: &'a Http,
-    pub cfg: &'a Config,
-    pub tokens: &'a Tokens,
-    /// The route to JDownloader's key service, which a `.dlc` is decrypted
-    /// through: the service's own, not that of the host the file came from.
-    pub key_service: &'a Http,
-}
-
-/// Lower-case host name without port or `www.`; a known host's other
-/// domain gives its main one.
-pub fn host_of(url: &str) -> String {
-    main_name(&domain_of(url))
-}
-
-/// A host's main domain for any of its domains ([`ALIASES`]); any other
-/// name as it is, lowercase.
-pub fn main_name(host: &str) -> String {
-    let host = host.to_ascii_lowercase();
-    match ALIASES.iter().find(|(alias, _)| *alias == host) {
-        Some((_, name)) => (*name).to_string(),
-        None => host,
-    }
-}
-
-/// Other domains of a host, counted as its main one ([`host_of`]): its
-/// settings, limits and speed are the host's, whichever domain a link is on.
-const ALIASES: &[(&str, &str)] = &[
-    ("vik1ngfile.site", "vikingfile.com"),
-    ("ddl.to", "ddownload.com"),
-    ("mega.co.nz", "mega.nz"),
-    ("rentry.org", "rentry.co"),
-];
-
-/// Every site Haul has code for, a host's other domains left out: its file
-/// hosts, wrappers and pastebins, which the Hosts view lists whether a link
-/// is on them yet or not.
-pub fn known_sites() -> Vec<String> {
-    let alias = |name: &&str| ALIASES.iter().any(|(a, _)| a == name);
-    KNOWN
-        .iter()
-        .flat_map(|k| k.names.iter())
-        .chain(generic::PASTES)
-        .filter(|name| !alias(name))
-        .map(|name| name.to_string())
-        .collect()
-}
-
-/// A link's host name, lowercase and without `www.`, as it is written.
-fn domain_of(url: &str) -> String {
-    let host = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-        .unwrap_or_default();
-    match host.strip_prefix("www.") {
-        Some(rest) => rest.to_string(),
-        None => host,
-    }
-}
-
-/// The site a link's host belongs to, as far as who runs it goes: the host
-/// name's last two labels, or three under a country's second level
-/// (`example.co.uk`); an address stays as it is.
-pub fn site_of(url: &str) -> String {
-    let host = domain_of(url);
-    if host.parse::<std::net::IpAddr>().is_ok() || host.starts_with('[') {
-        return host;
-    }
-    let labels: Vec<&str> = host.trim_end_matches('.').split('.').collect();
-    let n = labels.len();
-    let country_second_level = n >= 3
-        && labels[n - 1].len() == 2
-        && matches!(
-            labels[n - 2],
-            "co" | "com" | "net" | "org" | "gov" | "edu" | "ac" | "or" | "ne" | "go" | "gob"
-        );
-    let keep = if country_second_level { 3 } else { 2 };
-    labels[n.saturating_sub(keep)..].join(".")
-}
-
-static FILE_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.\w{2,5}$").unwrap());
-
-/// Extensions of archives, their parts, media and the like: what a page's
-/// title, or a link after `#`, names a file by.
-pub(super) const FILE_EXTENSIONS: &str = r"rar|zip|7z|iso|exe|msi|bin|mkv|mp4|avi|mov|mp3|flac|pdf|epub|cbz|cbr|tar|gz|xz|bz2|apk|dmg|img|part\d+\.rar|r\d\d|z\d\d";
-
-/// A file's name after a link's `#` (`#Archive.part01.rar`), not a key
-/// (`#k3y`, `#!id!key`) or an anchor (`#comments`).
-static FRAGMENT_NAME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!(r"(?i)^[^/=!?]+\.(?:{FILE_EXTENSIONS})$")).unwrap());
-
-/// The last part of a link's path, decoded.
-fn last_segment(url: &str) -> Option<String> {
-    let url = url::Url::parse(url).ok()?;
-    let last = url.path().trim_end_matches('/').rsplit('/').next()?;
-    Some(
-        percent_encoding::percent_decode_str(last)
-            .decode_utf8_lossy()
-            .into_owned(),
-    )
-}
-
-/// The file's id in `url`, as the first group of `link` finds it; a link it
-/// does not find one in is not `host`'s file link.
-pub(super) fn link_id(link: &Regex, url: &str, host: &str) -> Result<String, ResolveError> {
-    link.captures(url)
-        .map(|c| c[1].to_string())
-        .ok_or_else(|| ResolveError::failed(format!("{host}: not a file link: {url}")))
-}
-
-/// The name a link's file goes by: `given` when there is one, else the one
-/// its address suggests ([`guess_name`]).
-pub fn name_for(url: &str, given: Option<String>) -> Option<String> {
-    given
-        .filter(|n| !n.trim().is_empty())
-        .or_else(|| guess_name(url))
-}
-
-impl Entry {
-    /// What its file goes by ([`name_for`]).
-    pub fn file_name(&self) -> Option<String> {
-        name_for(&self.url, self.name.clone())
-    }
-}
-
-/// The file name in a link's path, when it looks like one. File hosts' pages
-/// often add `.html` to the name of the file they offer (`name.rar.html`),
-/// which names `name.rar`; a page of its own (`index.php`) names no file.
-/// A path that names none may have its file's name after `#`
-/// (`…/abc123def456#Archive.part01.rar`).
-pub fn guess_name(url: &str) -> Option<String> {
-    let in_path = last_segment(url).and_then(|last| {
-        let name = page_extension(&last).unwrap_or(&last);
-        FILE_NAME.is_match(name).then(|| name.to_string())
-    });
-    in_path.or_else(|| {
-        let fragment = url::Url::parse(url).ok()?.fragment()?.to_string();
-        let name = percent_encoding::percent_decode_str(&fragment).decode_utf8_lossy();
-        FRAGMENT_NAME.is_match(&name).then(|| name.into_owned())
-    })
-}
-
 /// Whether the link is a wrapper's, gated page or container alike: it
 /// stands for further links, never for one file, whether it is added or a
 /// person hands it back.
 pub fn wraps(url: &str) -> bool {
     known(&host_of(url)).is_some_and(Known::wraps)
 }
-
 /// The files in a wrapper's list of links. A wrapper lists each host's links
 /// in the same order (one link per host for a single file; part 1, part 2…
 /// on every host for a multi-part archive), so when every host has as many
@@ -1216,7 +361,6 @@ pub fn wraps(url: &str) -> bool {
 fn group_mirrors(urls: Vec<String>) -> Vec<Entry> {
     group_named(urls.into_iter().map(|url| (url, None)).collect())
 }
-
 /// [`group_mirrors`] for links a wrapper names: a link's own name wins over
 /// the one its address suggests.
 fn group_named(links: Vec<(String, Option<String>)>) -> Vec<Entry> {
@@ -1281,93 +425,6 @@ fn group_named(links: Vec<(String, Option<String>)>) -> Vec<Entry> {
     out
 }
 
-/// A page's text for a heading: entities decoded, `None` when empty.
-fn page_text(raw: &str) -> Option<String> {
-    let text = decode_entities(raw.trim());
-    (!text.is_empty()).then_some(text)
-}
-
-static ENTITY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z]{2,6});").unwrap());
-
-/// HTML's character references, named and numeric (filecrypt.cc writes a
-/// name's brackets as `&#40;` and `&#41;`); an unknown one stays as it is.
-fn decode_entities(text: &str) -> String {
-    // Some pages escape a reference's own `&` too (`&amp;#40;`).
-    let once = decode_once(text);
-    if once.contains('&') {
-        decode_once(&once)
-    } else {
-        once
-    }
-}
-
-fn decode_once(text: &str) -> String {
-    ENTITY
-        .replace_all(text, |c: &regex::Captures<'_>| {
-            let body = &c[1];
-            let ch = if let Some(hex) = body.strip_prefix("#x").or_else(|| body.strip_prefix("#X"))
-            {
-                u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
-            } else if let Some(dec) = body.strip_prefix('#') {
-                dec.parse().ok().and_then(char::from_u32)
-            } else {
-                match body {
-                    "amp" => Some('&'),
-                    "lt" => Some('<'),
-                    "gt" => Some('>'),
-                    "quot" => Some('"'),
-                    "apos" => Some('\''),
-                    "nbsp" => Some(' '),
-                    _ => None,
-                }
-            };
-            ch.map_or_else(|| c[0].to_string(), String::from)
-        })
-        .into_owned()
-}
-
-/// A browser's mark for a second copy of a file, ` (2)` before its
-/// extension, as some uploads keep it.
-static COPY_MARK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(.+?) \(\d{1,3}\)(\.\w{2,5})$").unwrap());
-
-/// A file name as Haul saves and shows it: character references decoded
-/// and a copy mark (`name.part1 (2).rar`) taken off, since the parts of an
-/// archive are only found by their plain names.
-pub fn tidy_name(name: &str) -> String {
-    let name = decode_entities(name.trim());
-    match COPY_MARK.captures(&name) {
-        Some(c) => format!("{}{}", &c[1], &c[2]),
-        None => name,
-    }
-}
-
-/// What a file name is recognised by on every host: [`tidy_name`], with
-/// `_` for a space as some hosts write it, runs of spaces as one, and any
-/// case.
-pub fn name_key(name: &str) -> String {
-    tidy_name(name)
-        .replace('_', " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
-
-/// Of two names for the same file, the one to keep: the one a host wrote
-/// with spaces rather than `_`, then the one without a copy mark.
-pub fn better_name(a: String, b: String) -> String {
-    let rank = |n: &str| {
-        (
-            n.matches('_').count(),
-            COPY_MARK.is_match(n),
-            n.contains('&'),
-        )
-    };
-    if rank(&b) < rank(&a) { b } else { a }
-}
-
 /// Tells a search on another thread to stop once the resolve that started it
 /// is dropped, as a paused or removed download's is.
 struct StopOnDrop(Arc<AtomicBool>);
@@ -1381,23 +438,17 @@ impl Drop for StopOnDrop {
 /// What a wrapper link points at, so two links to it count as one: every
 /// fileguard.cc link of a vault (`/<vault>/<host>`) shows the same page.
 pub fn wrapper_key(url: &str) -> String {
-    let key = match kind_of(url) {
-        Some(Kind::Fileguard) => fileguard::key(url),
-        Some(Kind::Filecrypt) => filecrypt::key(url),
-        Some(Kind::Mirrored) => mirrored::key(url),
-        _ => None,
-    };
-    key.unwrap_or_else(|| url.to_string())
+    known_of(url)
+        .and_then(|k| k.site.key(url))
+        .unwrap_or_else(|| url.to_string())
 }
 
 /// The files behind a wrapper link, once its gate is passed. A web page on
 /// a site Haul has no code for (a post that lists links, a paste) unwraps to the
 /// links it shows.
 pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
-    match kind_of(url) {
-        Some(Kind::Fileguard) => fileguard::unwrap(cx, url).await,
-        Some(Kind::Filecrypt) => filecrypt::unwrap(cx, url).await,
-        Some(Kind::Mirrored) => mirrored::unwrap(cx, url).await,
+    match known_of(url) {
+        Some(k) => k.site.unwrap(cx, url).await,
         None => {
             let (title, links, password) = generic::page(cx, url).await?;
             Ok(Unwrapped {
@@ -1405,7 +456,6 @@ pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
                 ..listed(title, links)
             })
         }
-        _ => Err(ResolveError::failed("not a wrapper link")),
     }
 }
 
@@ -1413,10 +463,7 @@ pub async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveError> {
 /// browser shows it past a gate Haul cannot answer itself; `None` when it
 /// shows nothing Haul reads there.
 pub fn shown(url: &str, html: &str) -> Option<Unwrapped> {
-    match kind_of(url) {
-        Some(Kind::Filecrypt) => filecrypt::shown(html),
-        _ => None,
-    }
+    known_of(url)?.site.shown(html)
 }
 
 /// A page's links as what unwrapping it found: one entry each, resolved
@@ -1463,7 +510,7 @@ pub fn names_a_file(url: &str) -> bool {
 /// Whether `url` may be a web page that lists links: a host Haul has no
 /// code for.
 pub fn may_list_links(url: &str) -> bool {
-    kind_of(url).is_none()
+    known_of(url).is_none()
 }
 
 /// Whether Haul's own code reads `url` once a browser has passed the
@@ -1471,7 +518,7 @@ pub fn may_list_links(url: &str) -> bool {
 /// or a host's page, but not one whose own page is passed for its file
 /// ([`page_passes`]).
 pub fn reads_past_check(url: &str) -> bool {
-    kind_of(url).is_some() && !page_passes(url)
+    known_of(url).is_some() && !page_passes(url)
 }
 
 /// The links in `text` (addresses, one per line or in a page's markup) to
@@ -1483,26 +530,8 @@ pub fn listed_links(text: &str, page: &str) -> Vec<String> {
 
 /// Direct links for `url`. Folders and lists expand to several entries.
 pub async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
-    match kind_of(url) {
-        Some(Kind::Pixeldrain) => pixeldrain::resolve(cx, url).await,
-        Some(Kind::Gofile) => gofile::resolve(cx, url).await,
-        Some(Kind::Buzzheavier) => buzzheavier::resolve(cx, url).await,
-        Some(Kind::OneFichier) => onefichier::resolve(cx, url).await,
-        Some(Kind::Rapidgator) => rapidgator::resolve(cx, url).await,
-        Some(Kind::Nitroflare) => nitroflare::resolve(cx, url).await,
-        Some(Kind::Mega) => mega::resolve(cx, url).await,
-        Some(Kind::Vikingfile) => vikingfile::resolve(cx, url).await,
-        Some(Kind::Rootz) => rootz::resolve(cx, url).await,
-        Some(Kind::Mediafire) => mediafire::resolve(cx, url).await,
-        Some(Kind::Ddownload) => ddownload::resolve(cx, url).await,
-        Some(Kind::Direct) => Ok(vec![Entry {
-            url: url.into(),
-            name: guess_name(url),
-            ..Entry::default()
-        }]),
-        Some(Kind::Fileguard) => fileguard::unwrap(cx, url).await.map(|u| u.files),
-        Some(Kind::Filecrypt) => filecrypt::unwrap(cx, url).await.map(|u| u.files),
-        Some(Kind::Mirrored) => mirrored::unwrap(cx, url).await.map(|u| u.files),
+    match known_of(url) {
+        Some(k) => k.site.resolve(cx, url).await,
         None => generic::resolve(cx, url).await,
     }
 }
@@ -1564,128 +593,25 @@ pub fn tells_size(url: &str) -> bool {
     known(&host_of(url)).is_some_and(|k| k.tells_size)
 }
 
+/// What a lookup that can tell a deleted file came to, as a [`Look`].
+pub(super) fn look_from(found: Result<Option<Probed>, ResolveError>) -> Look {
+    match found {
+        Ok(Some(p)) => Look::Found(p),
+        Err(ResolveError::Gone(m)) => Look::Gone(m),
+        Ok(None) | Err(_) => Look::Unknown,
+    }
+}
+
 /// A cheap lookup of the name, size and checksum that does not start a
 /// download, so the same file on several hosts can be merged, and a file
 /// already downloaded recognised, before anything is fetched; from a host
 /// that can also say the file was deleted, so a row knows before its turn
 /// that a link is dead.
 pub async fn look(cx: &Cx<'_>, url: &str) -> Look {
-    match kind_of(url) {
-        Some(Kind::Vikingfile) => vikingfile::look(cx, url).await,
-        Some(Kind::Rootz) => rootz::look(cx, url).await,
-        Some(Kind::Ddownload) => ddownload::look(cx, url).await,
-        Some(Kind::OneFichier) => onefichier::look(cx, url).await,
-        Some(Kind::Mega) => mega::look(cx, url).await,
-        Some(_) => probe_quietly(cx, url).await.into(),
+    match known_of(url) {
+        Some(k) => k.site.look(cx, url).await,
         None => generic::look(cx, url).await,
     }
-}
-
-/// The hosts that say only what a file is, not that it was deleted.
-async fn probe_quietly(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    match kind_of(url) {
-        Some(Kind::Pixeldrain) => pixeldrain::probe(cx, url).await,
-        Some(Kind::Mediafire) => mediafire::probe(cx, url).await,
-        // No free metadata route; resolve at download time.
-        Some(Kind::Gofile) => None,
-        // A wrapper says nothing useful before its solve; that is the
-        // resolver's work, once, at download time.
-        Some(Kind::Fileguard | Kind::Filecrypt | Kind::Mirrored) => None,
-        _ => generic::probe(cx, url).await,
-    }
-}
-
-/// RFC 5987's `filename*=UTF-8'<language>'<percent-encoded name>`, with the
-/// language usually left empty.
-static CD_EXT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)filename\*\s*=\s*UTF-8'[^']*'([^;]+)"#).unwrap());
-static CD_PLAIN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)filename\s*=\s*"?([^";]+)"#).unwrap());
-
-/// The file name in `Content-Disposition`, preferring the encoded form.
-pub(crate) fn disposition_name(headers: &HeaderMap) -> Option<String> {
-    let cd = headers.get(CONTENT_DISPOSITION)?.to_str().ok()?;
-    let raw = CD_EXT
-        .captures(cd)
-        .or_else(|| CD_PLAIN.captures(cd))?
-        .get(1)?
-        .as_str()
-        .trim();
-    let name = percent_encoding::percent_decode_str(raw)
-        .decode_utf8_lossy()
-        .trim()
-        .to_string();
-    (!name.is_empty()).then_some(name)
-}
-
-pub(crate) fn content_type(headers: &HeaderMap) -> &str {
-    headers
-        .get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-}
-
-/// `Content-Length` as sent. Read from the header because reqwest reports a
-/// HEAD response's body length, which is always zero.
-pub(crate) fn content_length(headers: &HeaderMap) -> Option<u64> {
-    headers
-        .get(CONTENT_LENGTH)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
-}
-
-/// `(start, total)` from `Content-Range: bytes START-END/TOTAL`.
-pub(crate) fn content_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
-    let v = headers.get(CONTENT_RANGE)?.to_str().ok()?.trim();
-    let rest = v.strip_prefix("bytes")?.trim_start();
-    let (range, total) = rest.split_once('/')?;
-    let start = range.split_once('-')?.0.trim().parse().ok()?;
-    Some((start, total.trim().parse().ok()))
-}
-
-/// The size a 416 states (`Content-Range: bytes */1234`), when it does.
-pub(crate) fn unsatisfied_total(headers: &HeaderMap) -> Option<u64> {
-    let v = headers.get(CONTENT_RANGE)?.to_str().ok()?;
-    v.trim()
-        .strip_prefix("bytes")?
-        .trim_start()
-        .strip_prefix("*/")?
-        .trim()
-        .parse()
-        .ok()
-}
-
-/// Seconds from `Retry-After`, or `default` when absent or a date.
-pub(crate) fn retry_after(headers: &HeaderMap, default: u64) -> u64 {
-    headers
-        .get(RETRY_AFTER)
-        .and_then(|v| v.to_str().ok()?.trim().parse().ok())
-        .unwrap_or(default)
-}
-
-/// A 429 or 503 as the wait it asks for: a rate limit, not a refusal.
-pub(crate) fn rate_limited(r: &reqwest::Response) -> Result<(), ResolveError> {
-    let status = r.status().as_u16();
-    if matches!(status, 429 | 503) {
-        return Err(ResolveError::Wait {
-            seconds: retry_after(r.headers(), 90),
-            message: format!("{status} rate limited"),
-        });
-    }
-    Ok(())
-}
-
-/// A 404, 410 or 5xx as a failure: gone or broken is not something a person
-/// can fix in a browser.
-fn gone_or_broken(r: &reqwest::Response) -> Result<(), ResolveError> {
-    let status = r.status().as_u16();
-    if matches!(status, 404 | 410) || status >= 500 {
-        return Err(ResolveError::Failed(format!("HTTP {status}")));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1755,7 +681,23 @@ mod tests {
             wraps("https://fileguard.cc/abc") && wraps("https://filecrypt.cc/Container/X.html")
         );
         assert!(!wraps("https://pixeldrain.com/u/abc"));
-        assert_eq!(known("mega.co.nz").map(|k| k.kind), Some(Kind::Mega));
+        assert_eq!(known("mega.co.nz").map(|k| k.names[0]), Some("mega.nz"));
+        // A host's other domain is one of its entry's names, so the table and
+        // the aliases cannot drift apart (not every name is an alias:
+        // transfer.it is mega's but keeps its own name). A paste site's other
+        // domain stands for the paste site.
+        for (alias, name) in ALIASES {
+            match known(name) {
+                Some(entry) => assert!(
+                    entry.names.contains(alias),
+                    "{alias} is not among {name}'s names"
+                ),
+                None => assert!(
+                    generic::PASTES.contains(name),
+                    "{name}, which {alias} stands for, is neither a known host nor a paste site"
+                ),
+            }
+        }
         // pixeldrain's free limit holds until its account is set.
         let pixeldrain = known("pixeldrain.com").unwrap();
         let mut cfg = Config::default();

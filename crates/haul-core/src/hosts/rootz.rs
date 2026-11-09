@@ -41,17 +41,15 @@ async fn lookup(cx: &Cx<'_>, url: &str) -> Result<File, ResolveError> {
         .captures(&page)
         .map(|c| c[1].to_string())
         .ok_or_else(|| ResolveError::failed("rootz: the page gave no token"))?;
-    let answer: Value = cx
+    let answer = cx
         .http
         .client
         .get(format!("{base}/api/files/download-by-short"))
         .query(&[("shortId", short.as_str())])
         .header("X-Page-Token", token)
         .send()
-        .await?
-        .json()
-        .await
-        .map_err(|e| ResolveError::Failed(format!("rootz: {e}")))?;
+        .await?;
+    let answer: Value = super::api_json(answer, "rootz").await?;
     if answer["success"] != true {
         let why = answer["error"].as_str().unwrap_or("no answer");
         return Err(ResolveError::Failed(format!("rootz: {why}")));
@@ -91,13 +89,11 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
 }
 
 pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
-    match lookup(cx, url).await {
-        Ok(file) => Look::Found(Probed {
+    super::look_from(lookup(cx, url).await.map(|file| {
+        Some(Probed {
             name: file.name,
             size: Some(file.size),
             checksum: None,
-        }),
-        Err(ResolveError::Gone(m)) => Look::Gone(m),
-        Err(_) => Look::Unknown,
-    }
+        })
+    }))
 }

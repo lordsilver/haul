@@ -65,11 +65,10 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     let base = &cx.cfg.endpoints.pixeldrain;
     let id = &caps[2];
     if &caps[1] == "l" {
-        let list: List = request(cx, format!("{base}/api/list/{id}"), &headers)
+        let r = request(cx, format!("{base}/api/list/{id}"), &headers)
             .send()
-            .await?
-            .json()
             .await?;
+        let list: List = super::api_json(r, "pixeldrain").await?;
         return Ok(list
             .files
             .into_iter()
@@ -89,13 +88,7 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     let r = request(cx, format!("{base}/api/file/{id}/info"), &headers)
         .send()
         .await?;
-    if r.status() != 200 {
-        return Err(ResolveError::Failed(format!(
-            "pixeldrain {}",
-            r.status().as_u16()
-        )));
-    }
-    let file: File = r.json().await?;
+    let file: File = super::api_json(r, "pixeldrain").await?;
     if file.availability.contains("captcha") {
         return Err(ResolveError::person(format!(
             "pixeldrain: {}",

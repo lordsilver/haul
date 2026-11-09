@@ -17,21 +17,16 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             "gofile lets only premium accounts and its own website fetch links: open the page, or set a premium gofile_token",
         ));
     };
-    let id = url
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or_default();
+    let id = super::last_path_part(url);
     let base = &cx.cfg.endpoints.gofile;
-    let j: Value = cx
+    let j = cx
         .http
         .client
         .get(format!("{base}/contents/{id}"))
         .bearer_auth(&token)
         .send()
-        .await?
-        .json()
         .await?;
+    let j: Value = super::api_json(j, "gofile").await?;
     match j["status"].as_str().unwrap_or_default() {
         "ok" => {}
         // A free account is turned away as a guest is, and passwords are

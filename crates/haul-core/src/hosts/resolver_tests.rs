@@ -137,7 +137,7 @@ async fn pixeldrain_file_list_and_captcha() {
     ));
     assert_eq!(
         pixeldrain::resolve(&cx, "https://pixeldrain.com/u/gone").await,
-        Err(ResolveError::failed("pixeldrain 404"))
+        Err(ResolveError::gone("pixeldrain: HTTP 404"))
     );
     assert_eq!(
         pixeldrain::probe(&cx, "https://pixeldrain.com/u/abc").await,
@@ -434,6 +434,89 @@ async fn rapidgator_logs_in_once_and_relogs_after_errors() {
     );
     rapidgator::resolve(&cx, good).await.unwrap();
     assert_eq!(logins.load(Ordering::SeqCst), 2, "an error drops the token");
+}
+
+/// A session that ran out is logged into again, once, before the download
+/// is asked for again.
+#[tokio::test]
+async fn rapidgator_logs_in_again_when_its_session_ran_out() {
+    let logins = Arc::new(AtomicUsize::new(0));
+    let counter = logins.clone();
+    let app = Router::new()
+        .route(
+            "/api/v2/user/login",
+            get(move || {
+                let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                async move { Json(json!({"status": 200, "response": {"token": format!("t{n}")}})) }
+            }),
+        )
+        .route(
+            "/api/v2/file/download",
+            get(|Query(q): Query<HashMap<String, String>>| async move {
+                if q["token"] == "t1" {
+                    Json(json!({"status": 401, "details": "Session not exist"}))
+                } else {
+                    Json(json!({"status": 200, "response": {"download_url": "https://dl.rapidgator.example/f"}}))
+                }
+            }),
+        );
+    let base = serve(app).await;
+    let mut cfg = config(&base);
+    cfg.accounts.insert("rapidgator_user".into(), "me".into());
+    cfg.accounts.insert("rapidgator_pass".into(), "pw".into());
+    let (http, tokens) = (http(), Tokens::default());
+    *tokens.rapidgator.lock().unwrap() = Some("t1".into());
+    logins.store(1, Ordering::SeqCst);
+    let cx = context(&http, &cfg, &tokens);
+    let good = "https://rapidgator.net/file/abcdefabcdefabcdefabcdefabcdefab";
+    let e = rapidgator::resolve(&cx, good).await.unwrap();
+    assert_eq!(e[0].url, "https://dl.rapidgator.example/f");
+    assert_eq!(logins.load(Ordering::SeqCst), 2, "one new login");
+}
+
+/// A host API that answers with a gateway's error page is the host's
+/// passing trouble: waited out or tried again, never a failed mirror.
+#[tokio::test]
+async fn an_api_answering_an_error_page_is_tried_again() {
+    for (status, waits) in [(503u16, true), (502, false)] {
+        let app = Router::new().fallback(move || async move {
+            (
+                StatusCode::from_u16(status).unwrap(),
+                [("content-type", "text/html")],
+                "<html><body>Bad gateway</body></html>",
+            )
+        });
+        let base = serve(app).await;
+        let mut cfg = config(&base);
+        for (k, v) in [
+            ("gofile_token", "t"),
+            ("nitroflare_user", "me"),
+            ("nitroflare_key", "k"),
+            ("rapidgator_user", "me"),
+            ("rapidgator_pass", "pw"),
+            ("1fichier_key", "k"),
+        ] {
+            cfg.accounts.insert(k.into(), v.into());
+        }
+        let (http, tokens) = (http(), Tokens::default());
+        let cx = context(&http, &cfg, &tokens);
+        let links = [
+            "https://gofile.io/d/abc123",
+            "https://nitroflare.com/view/ABC123",
+            "https://rapidgator.net/file/abcdefabcdefabcdefabcdefabcdefab",
+            "https://pixeldrain.com/u/abc123",
+            "https://pixeldrain.com/l/abc123",
+        ];
+        for link in links {
+            let got = resolve(&cx, link).await;
+            let ok = match &got {
+                Err(ResolveError::Wait { .. }) => waits,
+                Err(ResolveError::Network(_)) => !waits,
+                _ => false,
+            };
+            assert!(ok, "{link} answering {status}: {got:?}");
+        }
+    }
 }
 
 #[tokio::test]

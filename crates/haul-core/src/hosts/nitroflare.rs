@@ -20,15 +20,14 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     };
     let id = super::link_id(&FILE_ID, url, "nitroflare")?;
     let base = &cx.cfg.endpoints.nitroflare;
-    let j: Value = cx
+    let j = cx
         .http
         .client
         .get(format!("{base}/api/v2/getDownloadLink"))
         .query(&[("user", user), ("premiumKey", key), ("file", id.as_str())])
         .send()
-        .await?
-        .json()
         .await?;
+    let j: Value = super::api_json(j, "nitroflare").await?;
     if j["type"] != "success" {
         return Err(ResolveError::Failed(format!(
             "nitroflare: {}",

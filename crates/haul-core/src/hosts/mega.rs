@@ -240,7 +240,7 @@ fn refusal(code: i64) -> ResolveError {
 async fn api(cx: &Cx<'_>, query: &str, command: Value) -> Result<Value, ResolveError> {
     static SEQ: AtomicU64 = AtomicU64::new(1);
     let base = &cx.cfg.endpoints.mega;
-    let answer: Value = cx
+    let answer = cx
         .http
         .client
         .post(format!(
@@ -249,10 +249,8 @@ async fn api(cx: &Cx<'_>, query: &str, command: Value) -> Result<Value, ResolveE
         ))
         .json(&json!([command]))
         .send()
-        .await?
-        .json()
-        .await
-        .map_err(|e| ResolveError::Failed(format!("mega: {e}")))?;
+        .await?;
+    let answer: Value = super::api_json(answer, "mega").await?;
     // An error is a bare number, for the request or for this one command.
     let one = answer.get(0).cloned().unwrap_or(answer);
     match one.as_i64() {

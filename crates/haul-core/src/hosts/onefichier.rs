@@ -128,16 +128,15 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     }
     if let Some(key) = cx.cfg.account("1fichier_key") {
         let base = &cx.cfg.endpoints.onefichier;
-        let j: Value = cx
+        let j = cx
             .http
             .client
             .post(format!("{base}/v1/download/get_token.cgi"))
             .bearer_auth(key)
             .json(&json!({ "url": clean }))
             .send()
-            .await?
-            .json()
             .await?;
+        let j: Value = super::api_json(j, "1fichier").await?;
         if j["status"] != "OK" {
             return Err(ResolveError::Failed(format!(
                 "1fichier api: {}",

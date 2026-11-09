@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use reqwest::header::REFERER;
 
-use super::{Cx, Entry, ResolveError, Unwrapped, page_text, retry_after};
+use super::{Cx, Entry, ResolveError, Unwrapped, page_text};
 
 /// The file's id in `/files/<id>/`.
 static ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/files/([A-Za-z0-9]+)").unwrap());
@@ -44,7 +44,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     let name = NAME.captures(&page).and_then(|c| page_text(&c[1]));
     let links_url = LINKS_PAGE
         .captures(&page)
-        .map(|c| c[1].replace("&amp;", "&"))
+        .map(|c| super::decode_entities(&c[1]))
         .ok_or_else(|| ResolveError::failed("mirrored.to: no link to the file's hosts (gone?)"))?;
     // The address on the page names the public site; ask the same place.
     let links_url = match links_url.find("/files/") {
@@ -54,12 +54,12 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     let links = fetch(cx, &links_url, &page_url).await?;
     let table = TABLE
         .captures(&links)
-        .map(|c| c[1].replace("&amp;", "&"))
+        .map(|c| super::decode_entities(&c[1]))
         .ok_or_else(|| ResolveError::failed("mirrored.to: the hosts' table moved"))?;
     let table = fetch(cx, &format!("{base}{table}"), &links_url).await?;
     let mut urls = Vec::new();
     for getlink in GETLINK.captures_iter(&table) {
-        let getlink = format!("{base}{}", getlink[1].replace("&amp;", "&"));
+        let getlink = format!("{base}{}", super::decode_entities(&getlink[1]));
         // A host's page that does not answer leaves that host out.
         if let Ok(shown) = fetch(cx, &getlink, &links_url).await
             && let Some(link) = SHOWN.captures(&shown)
@@ -95,14 +95,8 @@ async fn fetch(cx: &Cx<'_>, url: &str, referer: &str) -> Result<String, ResolveE
         .header(REFERER, referer)
         .send()
         .await?;
+    super::wait_from(&r, "mirrored.to", 60)?;
     let status = r.status().as_u16();
-    if matches!(status, 429 | 503) {
-        let seconds = retry_after(r.headers(), 60);
-        return Err(ResolveError::Wait {
-            seconds,
-            message: format!("mirrored.to: {status} rate limited"),
-        });
-    }
     if status >= 400 {
         return Err(ResolveError::Failed(format!("mirrored.to: HTTP {status}")));
     }
