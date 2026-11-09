@@ -21,7 +21,7 @@ use std::{
     time::Duration,
 };
 
-use haul_core::{Engine, Event, Options, Theme, paths};
+use haul_core::{Engine, Event, Options, Theme, Told, paths, summarize};
 use haul_web::Desktop;
 use tauri::{
     AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
@@ -352,11 +352,11 @@ fn spawn_notifications(app: AppHandle, engine: &Engine) {
                 .get_webview_window(MAIN)
                 .is_some_and(|w| w.is_focused().unwrap_or(false));
             if !focused {
-                for (title, body, waiting) in summarize(&batch) {
-                    if waiting {
-                        notify_waiting(&app, &title, &body);
+                for told in summarize(&batch) {
+                    if told.kind == Told::NeedsYou {
+                        notify_waiting(&app, &told.title, &told.body);
                     } else {
-                        notify(&app, &title, &body);
+                        notify(&app, &told.title, &told.body);
                     }
                 }
             }
@@ -414,87 +414,9 @@ fn reveal_waiting(app: &AppHandle, from_waiting: bool) {
     }
 }
 
-fn summarize(events: &[Event]) -> Vec<(String, String, bool)> {
-    let mut finished = Vec::new();
-    let mut waiting = Vec::new();
-    let mut failed = Vec::new();
-    let mut notices = Vec::new();
-    for e in events {
-        match e {
-            Event::Finished { name, .. } => finished.push(name.as_str()),
-            Event::NeedsUser { name, .. } => waiting.push(name.as_str()),
-            Event::Failed { name, error, .. } => failed.push(format!("{name}: {error}")),
-            Event::ThemeChanged(_) => {}
-            Event::Notice { title, body } => notices.push((title.clone(), body.clone())),
-        }
-    }
-    let list = |names: &[&str]| {
-        let shown = names.iter().take(3).copied().collect::<Vec<_>>().join(", ");
-        if names.len() > 3 {
-            format!("{shown} and {} more", names.len() - 3)
-        } else {
-            shown
-        }
-    };
-    let mut out = Vec::new();
-    match finished.len() {
-        0 => {}
-        1 => out.push(("Downloaded".into(), finished[0].to_string(), false)),
-        n => out.push((format!("{n} downloads finished"), list(&finished), false)),
-    }
-    if !waiting.is_empty() {
-        out.push((
-            "Needs you".into(),
-            format!(
-                "{}: open it in Haul to solve the host's page",
-                list(&waiting)
-            ),
-            true,
-        ));
-    }
-    for (title, body) in notices {
-        out.push((title, body, false));
-    }
-    match failed.len() {
-        0 => {}
-        1 => out.push(("Download failed".into(), failed[0].clone(), false)),
-        n => out.push((
-            format!("{n} downloads failed"),
-            failed
-                .iter()
-                .take(3)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n"),
-            false,
-        )),
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_waiting_download_is_marked_as_needing_the_user() {
-        let events = [
-            Event::NeedsUser {
-                id: "waiting".into(),
-                name: "a.bin".into(),
-            },
-            Event::Finished {
-                id: "done".into(),
-                name: "b.bin".into(),
-            },
-        ];
-        let out = summarize(&events);
-        let waiting: Vec<_> = out.iter().filter(|(_, _, waiting)| *waiting).collect();
-        assert_eq!(waiting.len(), 1, "{out:?}");
-        assert_eq!(waiting[0].0, "Needs you");
-        assert!(waiting[0].1.contains("a.bin"));
-        assert!(out.iter().any(|(title, _, _)| title == "Downloaded"));
-    }
 
     // The uninstaller's "delete app data" removes $LOCALAPPDATA\${PRODUCTNAME}.
     #[cfg(windows)]

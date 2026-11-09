@@ -4,7 +4,7 @@ import { ConfirmButton } from '@/components/confirm-button';
 import { HostName, offHosts } from '@/components/host-picker';
 import { EmptyState, PageHeader, PageScroll, SearchBox } from '@/components/page';
 import { Button } from '@/components/ui/button';
-import { act, api, report } from '@/lib/api';
+import { act, api, wrappersBulk } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
 import type { WrapperCard } from '@/lib/bindings/WrapperCard';
 import { partsSummary } from '@/lib/captions';
@@ -13,19 +13,25 @@ import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { NeedsYou, PasteLink } from '@/views/downloads/needs-you';
 
-// A card's wrappers together: their files counted once, since a file two of
-// them list starts with the first.
-function startAll(card: WrapperCard) {
-  return Promise.all(
-    card.ids.map((id) => api<{ started?: number }>(`/api/wrapper/${encodeURIComponent(id)}/start`)),
-  ).then((rs) => {
-    const started = rs.reduce((n, r) => n + (r.started || 0), 0);
-    if (started) toast(`Started ${plural(started, 'file')} from ${card.name}`, 'success');
-  }, report);
+// Cards' wrappers together, in one request: their files counted once, since
+// a file two of them list starts with the first.
+async function startAll(cards: WrapperCard[]) {
+  const r = await wrappersBulk(
+    cards.flatMap((c) => c.ids),
+    'start',
+  );
+  if (r?.started) {
+    const from = cards.length === 1 && cards[0] ? ` from ${cards[0].name}` : '';
+    toast(`Started ${plural(r.started, 'file')}${from}`, 'success');
+  }
 }
 
-const removeAll = (card: WrapperCard) =>
-  Promise.all(card.ids.map((id) => api(`/api/wrapper/${encodeURIComponent(id)}/remove`)));
+// The card going is what says it worked.
+const removeAll = (cards: WrapperCard[]) =>
+  wrappersBulk(
+    cards.flatMap((c) => c.ids),
+    'remove',
+  );
 
 // Takes a host's links off the card's files; a file only on it goes.
 const dropHost = (card: WrapperCard, host: string) =>
@@ -160,7 +166,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
             />
           ) : null}
           {waiting ? (
-            <Button variant="outline" onClick={() => startAll(card)}>
+            <Button variant="outline" onClick={() => startAll([card])}>
               <Play />
               Start all
             </Button>
@@ -176,7 +182,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
             label="Remove"
             confirm={unstarted ? `Remove ${plural(unstarted, 'file')} too?` : undefined}
             icon={<X />}
-            action={() => removeAll(card)}
+            action={() => removeAll([card])}
           />
         </div>
       </div>
@@ -209,7 +215,7 @@ export function Wrappers({ s }: { s: State }) {
         actions={
           <>
             {files ? (
-              <Button variant="ghost" onClick={() => Promise.all(waiting.map(startAll))}>
+              <Button variant="ghost" onClick={() => startAll(waiting)}>
                 <Play />
                 Start {files}
               </Button>
@@ -217,16 +223,17 @@ export function Wrappers({ s }: { s: State }) {
             <Button
               variant="ghost"
               disabled={!failed.length}
-              onClick={() => Promise.all(failed.map((c) => act(c.open_id, 'retry')))}
+              onClick={() =>
+                wrappersBulk(
+                  failed.map((c) => c.open_id),
+                  'retry',
+                )
+              }
             >
               <RotateCw />
               Retry failed
             </Button>
-            <Button
-              variant="ghost"
-              disabled={!finished.length}
-              onClick={() => Promise.all(finished.map(removeAll)).catch(report)}
-            >
+            <Button variant="ghost" disabled={!finished.length} onClick={() => removeAll(finished)}>
               <Eraser />
               Clear finished
             </Button>

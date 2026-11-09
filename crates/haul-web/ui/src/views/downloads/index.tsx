@@ -32,7 +32,7 @@ import { clearSelection, keepOnly, selectAll, useSelection } from '@/lib/selecti
 import { toast } from '@/lib/toast';
 import { ArchiveRow } from '@/views/downloads/archive-row';
 import { entriesOf, inList, matchesQuery, orderOf, useExpanded } from '@/views/downloads/entries';
-import { COLUMNS, ItemRow } from '@/views/downloads/row';
+import { COLUMNS, ItemRow, type RowContext } from '@/views/downloads/row';
 
 const TITLES: Record<ListKey, string> = {
   all: 'Downloads',
@@ -154,16 +154,14 @@ function SelectionCommands({ picked, s }: { picked: ItemView[]; s: State }) {
   // Unfinished downloads lose their partial files, so that asks twice.
   const losing = where('remove_partial').length;
   const recycling = picked.filter((i) => i.commands.includes('recycle') && !i.existing).length;
+  // The rows going say it worked; a toast only for files moved to the bin.
   const remove = async () => {
     const n = await bulk(
       picked.map((i) => i.id),
       'remove',
     );
     clearSelection();
-    toast(
-      recycling ? `Removed ${plural(n, 'download')}, files to the ${s.bin}` : `Removed ${plural(n, 'download')}`,
-      'success',
-    );
+    if (recycling && n) toast(`Removed ${plural(n, 'download')}, files to the ${s.bin}`, 'success');
   };
   const label = `Remove ${picked.length}`;
   // Every host among the picked rows, to download them from one of.
@@ -309,6 +307,18 @@ export function Downloads({
   const visible = useMemo(() => s.items.filter((i) => inList(i, view) && matchesQuery(i, query)), [s, view, query]);
   const entries = useMemo(() => entriesOf(visible, s), [visible, s]);
   const order = useMemo(() => orderOf(entries), [entries]);
+  // Read by a row's click, never by its rendering.
+  const orderRef = useRef(order);
+  orderRef.current = order;
+  // What a row needs of the state, the same object while it does not change.
+  const offKey = s.hosts
+    .filter((h) => h.disabled)
+    .map((h) => h.name)
+    .join('\n');
+  const ctx: RowContext = useMemo(
+    () => ({ desktop: s.desktop, bin: s.bin, paused: s.paused, off: new Set(offKey ? offKey.split('\n') : []) }),
+    [s.desktop, s.bin, s.paused, offKey],
+  );
   const pickedItems = s.items.filter((i) => picked.has(i.id));
   const selecting = picked.size > 0;
 
@@ -372,8 +382,8 @@ export function Downloads({
                   <ItemRow
                     key={e.it.id}
                     it={e.it}
-                    s={s}
-                    order={order}
+                    ctx={ctx}
+                    order={orderRef}
                     picked={picked.has(e.it.id)}
                     selecting={selecting}
                   />
@@ -397,8 +407,8 @@ export function Downloads({
                       <ItemRow
                         key={it.id}
                         it={it}
-                        s={s}
-                        order={order}
+                        ctx={ctx}
+                        order={orderRef}
                         picked={picked.has(it.id)}
                         selecting={selecting}
                         member

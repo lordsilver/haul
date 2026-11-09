@@ -25,10 +25,16 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::Stream;
-use haul_core::{Added, Engine, ItemAction, Route, SettingsView, Snapshot, config};
+use haul_core::{
+    Added, Batch, Engine, ItemAction, Route, SettingError, SettingsView, Snapshot, WrapperAction,
+    config,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::{net::TcpListener, sync::watch};
+use tokio::{
+    net::TcpListener,
+    sync::{broadcast, watch},
+};
 
 mod debug;
 mod os;
@@ -72,6 +78,8 @@ struct App {
     port: u16,
     /// The state as the stream sends it ([`App::states`]).
     states: Arc<OnceLock<watch::Receiver<Arc<str>>>>,
+    /// What the engine has to tell, as the stream sends it ([`App::notices`]).
+    notices: Arc<OnceLock<broadcast::Sender<Arc<str>>>>,
 }
 
 #[derive(Serialize, ts_rs::TS)]
@@ -132,6 +140,50 @@ impl App {
             .clone()
     }
 
+    /// What the engine has to tell the person, as JSON for `notice` events:
+    /// a burst gathered over two seconds and told in a few lines, as the
+    /// desktop app's notifications are. Downloads that need a person stay a
+    /// count in the status bar. Started by the first view that asks.
+    fn notices(&self) -> broadcast::Receiver<Arc<str>> {
+        self.notices
+            .get_or_init(|| {
+                let (tx, _) = broadcast::channel(16);
+                let mut events = self.engine.subscribe();
+                let out = tx.clone();
+                tokio::spawn(async move {
+                    use tokio::sync::broadcast::error::RecvError;
+                    loop {
+                        let first = match events.recv().await {
+                            Ok(e) => e,
+                            Err(RecvError::Lagged(_)) => continue,
+                            Err(RecvError::Closed) => return,
+                        };
+                        let mut batch = vec![first];
+                        let window = tokio::time::sleep(Duration::from_secs(2));
+                        tokio::pin!(window);
+                        loop {
+                            tokio::select! {
+                                () = &mut window => break,
+                                next = events.recv() => match next {
+                                    Ok(e) => batch.push(e),
+                                    Err(RecvError::Lagged(_)) => {}
+                                    Err(RecvError::Closed) => break,
+                                },
+                            }
+                        }
+                        for told in haul_core::summarize(&batch) {
+                            if told.kind != haul_core::Told::NeedsYou {
+                                let json = serde_json::to_string(&told).unwrap_or_default();
+                                let _ = out.send(json.into());
+                            }
+                        }
+                    }
+                });
+                tx
+            })
+            .subscribe()
+    }
+
     fn view_json(&self) -> Arc<str> {
         serde_json::to_string(&self.view())
             .unwrap_or_default()
@@ -174,6 +226,7 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         desktop,
         port,
         states: Arc::default(),
+        notices: Arc::default(),
     };
     let mut router = Router::new();
     for &(path, file, content_type, body) in ASSETS {
@@ -200,6 +253,8 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
         .route("/api/item/{id}/extract", post(extract))
         .route("/api/item/{id}/{action}", post(item))
         .route("/api/wrapper/{id}/{action}", post(wrapper))
+        .route("/api/items/{action}", post(items))
+        .route("/api/wrappers/{action}", post(wrappers))
         .route("/api/wrappers/drop-host", post(drop_wrapper_host))
         .route("/api/host/{name}/folder", post(host_folder))
         .route("/api/host/{name}/preferred", post(host_preferred))
@@ -333,6 +388,16 @@ fn ok() -> Response {
     Json(json!({})).into_response()
 }
 
+/// What a settings change answers: `ok()`, a 400 for a request that asks
+/// for what cannot be, a 500 when the file could not be written.
+fn setting(result: Result<(), SettingError>) -> Response {
+    match result {
+        Ok(()) => ok(),
+        Err(SettingError::Invalid(e)) => error(StatusCode::BAD_REQUEST, e),
+        Err(SettingError::Write(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
 /// What a request with nothing else to say answers: `ok()`, or why it failed.
 fn answer(result: Result<(), String>, status: StatusCode) -> Response {
     match result {
@@ -361,7 +426,18 @@ async fn events(State(app): State<App>) -> Sse<impl Stream<Item = Result<Event, 
         };
         Some((Ok(Event::default().event("state").data(&*data)), (rx, None)))
     });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    let notices = futures_util::stream::unfold(app.notices(), |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(data) => {
+                    return Some((Ok(Event::default().event("notice").data(&*data)), rx));
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    Sse::new(futures_util::stream::select(stream, notices)).keep_alive(KeepAlive::default())
 }
 
 #[derive(Deserialize)]
@@ -507,6 +583,43 @@ async fn item(State(app): State<App>, Path((id, action)): Path<(String, String)>
     }
 }
 
+#[derive(Deserialize)]
+struct Ids {
+    ids: Vec<String>,
+}
+
+/// One action on many items, in one change: `{"ids": […]}` answers
+/// `{"done": n, "failed": [{"id", "error"}]}`.
+async fn items(
+    State(app): State<App>,
+    Path(action): Path<String>,
+    Json(body): Json<Ids>,
+) -> Response {
+    let Ok(action) = action.parse::<ItemAction>() else {
+        return error(StatusCode::BAD_REQUEST, "unknown action");
+    };
+    let batch: Batch = match action {
+        // May move files to the Recycle Bin, which can fail for some.
+        ItemAction::Remove => app.engine.remove_many(&body.ids).await,
+        _ => app.engine.items_action(&body.ids, action),
+    };
+    Json(batch).into_response()
+}
+
+/// One action on many wrappers (a card's, or every card's), in one change:
+/// `start`, `remove` or `retry`. Answers as `/api/items/{action}` does, with
+/// `started` the files started, each counted once.
+async fn wrappers(
+    State(app): State<App>,
+    Path(action): Path<String>,
+    Json(body): Json<Ids>,
+) -> Response {
+    let Ok(action) = action.parse::<WrapperAction>() else {
+        return error(StatusCode::BAD_REQUEST, "unknown action");
+    };
+    Json(app.engine.wrappers_action(&body.ids, action)).into_response()
+}
+
 #[derive(Deserialize, Default)]
 struct ExtractBody {
     #[serde(default)]
@@ -571,10 +684,7 @@ async fn host_folder(
     Path(name): Path<String>,
     Json(body): Json<Folder>,
 ) -> Response {
-    answer(
-        app.engine.set_host_folder(&name, &body.folder),
-        StatusCode::INTERNAL_SERVER_ERROR,
-    )
+    setting(app.engine.set_host_folder(&name, &body.folder))
 }
 
 #[derive(Deserialize)]
@@ -588,10 +698,7 @@ async fn host_preferred(
     Path(name): Path<String>,
     Json(body): Json<Preferred>,
 ) -> Response {
-    answer(
-        app.engine.set_preferred(&name, body.preferred),
-        StatusCode::INTERNAL_SERVER_ERROR,
-    )
+    setting(app.engine.set_preferred(&name, body.preferred))
 }
 
 /// Looks for the router on this network again.
@@ -672,10 +779,7 @@ async fn host_disabled(
     Path(name): Path<String>,
     Json(body): Json<Disabled>,
 ) -> Response {
-    answer(
-        app.engine.set_disabled(&name, body.disabled),
-        StatusCode::BAD_REQUEST,
-    )
+    setting(app.engine.set_disabled(&name, body.disabled))
 }
 
 #[derive(Deserialize)]
@@ -685,10 +789,7 @@ struct PreferredHosts {
 
 /// The preferred hosts, all of them, in a new order.
 async fn preferred_hosts(State(app): State<App>, Json(body): Json<PreferredHosts>) -> Response {
-    answer(
-        app.engine.set_preferred_hosts(&body.hosts),
-        StatusCode::BAD_REQUEST,
-    )
+    setting(app.engine.set_preferred_hosts(&body.hosts))
 }
 
 /// The user's approval to reach one host directly, or to go back to the proxy.
@@ -701,10 +802,7 @@ async fn host_route(
         "proxy" => Route::Proxy,
         _ => return error(StatusCode::BAD_REQUEST, "route is direct or proxy"),
     };
-    answer(
-        app.engine.set_route(&name, route),
-        StatusCode::INTERNAL_SERVER_ERROR,
-    )
+    setting(app.engine.set_route(&name, route))
 }
 
 async fn global(State(app): State<App>, Path(action): Path<String>) -> Response {
@@ -730,7 +828,7 @@ async fn update_settings(
     State(app): State<App>,
     Json(body): Json<serde_json::Map<String, serde_json::Value>>,
 ) -> Response {
-    answer(app.engine.update_settings(&body), StatusCode::BAD_REQUEST)
+    setting(app.engine.update_settings(&body))
 }
 
 /// Lets the user pick the download folder in the system's folder dialog.
@@ -748,7 +846,7 @@ async fn pick_download_dir(State(app): State<App>) -> Response {
         "download_dir".to_string(),
         serde_json::Value::String(folder.display().to_string()),
     )]);
-    answer(app.engine.update_settings(&change), StatusCode::BAD_REQUEST)
+    setting(app.engine.update_settings(&change))
 }
 
 /// The report, as a zip to save ([`Engine::report_zip`]): what Haul is doing,

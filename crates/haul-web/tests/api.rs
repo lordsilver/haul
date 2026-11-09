@@ -291,6 +291,35 @@ async fn streams_state_events() {
     read_until(&mut events, &mut seen, "pushed.zip").await;
 }
 
+/// What the engine has to tell (a download that failed) comes as a
+/// `notice` event, for the page to show while it has the person's
+/// attention.
+#[tokio::test]
+async fn streams_what_the_engine_has_to_tell() {
+    let app = axum::Router::new().route(
+        "/gone.bin",
+        axum::routing::get(|| async { StatusCode::NOT_FOUND }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let host = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let s = start().await;
+    let mut events = s
+        .http
+        .get(format!("{}/api/events", s.base))
+        .send()
+        .await
+        .unwrap();
+    let mut seen = String::new();
+    read_until(&mut events, &mut seen, "event: state").await;
+    s.post("/api/add", json!({ "text": format!("{host}/gone.bin") }))
+        .await;
+    s.post("/api/global/resume", json!({})).await;
+    read_until(&mut events, &mut seen, "event: notice").await;
+    read_until(&mut events, &mut seen, "Download failed").await;
+    assert!(seen.contains(r#""kind":"failed""#), "{seen}");
+}
+
 #[tokio::test]
 async fn settings_round_trip_and_secrets_stay_out_of_the_stream() {
     let s = start().await;
@@ -544,6 +573,117 @@ async fn wrappers_have_their_own_list_and_actions() {
             .status(),
         StatusCode::NOT_FOUND
     );
+}
+
+/// One request acts on many items and says what became of each; an id that
+/// is not there is named, the rest are done.
+#[tokio::test]
+async fn acts_on_many_items_in_one_request() {
+    let s = start().await;
+    s.post(
+        "/api/add",
+        json!({ "text": "https://site.example/a.bin https://site.example/b.bin https://site.example/c.bin" }),
+    )
+    .await;
+    let ids: Vec<String> = s.state().await["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids.len(), 3);
+    let mut asked = ids.clone();
+    asked.push("abc123".into());
+    let r: Value = s
+        .post("/api/items/pause", json!({ "ids": asked }))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["done"], 3);
+    assert_eq!(
+        r["failed"],
+        json!([{"id": "abc123", "error": "no such item"}])
+    );
+    let state = s.state().await;
+    for i in state["items"].as_array().unwrap() {
+        assert_eq!(i["status"], "paused");
+    }
+    let r: Value = s
+        .post("/api/items/remove", json!({ "ids": ids }))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["done"], 3);
+    assert_eq!(s.state().await["items"], json!([]));
+    assert_eq!(
+        s.post("/api/items/explode", json!({ "ids": [] }))
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let r: Value = s
+        .post("/api/wrappers/start", json!({ "ids": ["abc123"] }))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["failed"][0]["error"], "no such wrapper");
+}
+
+/// A setting that cannot be is the asker's error, a 400, wherever it is set.
+#[tokio::test]
+async fn a_setting_that_cannot_be_is_a_bad_request() {
+    let s = start().await;
+    for (path, body) in [
+        ("/api/settings", json!({"no_such_setting": 1})),
+        ("/api/host/ /disabled", json!({"disabled": true})),
+        (
+            "/api/preferred-hosts",
+            json!({"hosts": ["a.example", "A.example"]}),
+        ),
+    ] {
+        assert_eq!(
+            s.post(path, body).await.status(),
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
+}
+
+/// A settings file that cannot be written is this computer's trouble, a
+/// 500, whichever setting it was.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_settings_file_that_cannot_be_written_is_a_server_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("data");
+    let engine = Engine::start(Options {
+        data_dir: data.clone(),
+        download_dir: Some(tmp.path().join("dl")),
+        config: None,
+        recycle_bin: None,
+    })
+    .await
+    .unwrap();
+    engine.set_paused(true);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(haul_web::serve(listener, engine, None));
+    // No new file can be made in the data folder, so no new settings file.
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let http = reqwest::Client::new();
+    let status = http
+        .post(format!("{base}/api/host/a.example/disabled"))
+        .json(&json!({"disabled": true}))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
