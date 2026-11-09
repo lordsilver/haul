@@ -414,12 +414,11 @@ fn reveal_waiting(app: &AppHandle, from_waiting: bool) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
     // The uninstaller's "delete app data" removes $LOCALAPPDATA\${PRODUCTNAME}.
-    #[cfg(windows)]
     #[test]
     fn the_data_folder_is_named_after_the_product() {
         let conf = include_str!("../tauri.conf.json");
