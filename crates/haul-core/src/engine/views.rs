@@ -678,29 +678,40 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
         w
     }
     let mut groups: Vec<(String, Vec<&WrapperView>)> = Vec::new();
+    let mut group_of: HashMap<String, usize> = HashMap::new();
     for w in wrappers {
         let top = root(&by_id, w);
         let key = match (&top.title, top.status) {
             (Some(title), WrapperState::Done) => format!("t\u{0}{}\u{0}{title}", top.package),
             _ => format!("w\u{0}{}", top.id),
         };
-        match groups.iter_mut().find(|(k, _)| *k == key) {
-            Some((_, ws)) => ws.push(w),
-            None => groups.push((key, vec![w])),
+        match group_of.get(&key) {
+            Some(&at) => groups[at].1.push(w),
+            None => {
+                group_of.insert(key.clone(), groups.len());
+                groups.push((key, vec![w]));
+            }
+        }
+    }
+    // The files each wrapper brought, by its id, in the list's order: built
+    // once rather than looked for again for every card.
+    let mut files_of: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (at, it) in items.iter().enumerate() {
+        for w in it.source.iter().chain(&it.also_from) {
+            files_of.entry(w.as_str()).or_default().push(at);
         }
     }
     groups
         .into_iter()
         .map(|(key, ws)| {
             let w = ws[0];
-            let of_card: Vec<&ItemView> = items
+            let mut at: Vec<usize> = ws
                 .iter()
-                .filter(|it| {
-                    ws.iter().any(|x| {
-                        it.source.as_deref() == Some(x.id.as_str()) || it.also_from.contains(&x.id)
-                    })
-                })
+                .flat_map(|x| files_of.get(x.id.as_str()).into_iter().flatten().copied())
                 .collect();
+            at.sort_unstable();
+            at.dedup();
+            let of_card: Vec<&ItemView> = at.into_iter().map(|i| &items[i]).collect();
             // A link still being looked up is not a file of the card yet.
             let (checking, files): (Vec<&ItemView>, Vec<&ItemView>) =
                 of_card.into_iter().partition(|it| it.looking_up);

@@ -126,11 +126,11 @@ impl Engine {
                 let page = it
                     .mirrors
                     .iter()
-                    .filter(|m| it.manual_urls.contains(*m))
+                    .filter(|m| it.manual_urls.contains(m.as_str()))
                     .find(|m| self.passes_now(st, m, now))?;
                 Some(Waiting {
                     id: it.id.clone(),
-                    page: page.clone(),
+                    page: page.url.clone(),
                     turn: self.passing(st, it, now),
                     clearance: takes_clearance(st, page),
                 })
@@ -141,7 +141,7 @@ impl Engine {
                 .filter(|m| self.passes_now(st, m, now))?;
             Some(Waiting {
                 id: it.id.clone(),
-                page: page.clone(),
+                page: page.to_string(),
                 turn: true,
                 clearance: takes_clearance(st, page),
             })

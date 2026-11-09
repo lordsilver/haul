@@ -5,7 +5,7 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::Ordering},
+    sync::Arc,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -201,7 +201,7 @@ impl Engine {
             }
             *slot = error;
             drop(slot);
-            self.0.config_version.fetch_add(1, Ordering::Relaxed);
+            self.0.config_version.send_modify(|v| *v += 1);
             let mut st = self.lock();
             self.touch(&mut st);
         }
@@ -551,7 +551,7 @@ impl Engine {
                     }
                 }
             }
-            self.0.config_version.fetch_add(1, Ordering::Relaxed);
+            self.0.config_version.send_modify(|v| *v += 1);
             self.touch(&mut st);
         }
         if theme_changed {
@@ -641,7 +641,7 @@ impl Engine {
     /// Schedules the next automatic retry of a failed item, if any is left.
     pub(super) fn plan_auto_retry(&self, it: &mut Item, now: Instant) {
         // Every link is gone for good: another try would find the same.
-        let gone = it.mirrors.iter().all(|m| it.gone.contains(m));
+        let gone = it.mirrors.iter().all(|m| it.gone.contains(m.as_str()));
         it.retry_at = self.next_try(it, now).filter(|_| !gone);
     }
 

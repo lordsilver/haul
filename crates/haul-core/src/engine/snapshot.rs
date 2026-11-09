@@ -1,7 +1,10 @@
 //! What the views are sent: the state as one picture, taken under the lock
 //! and filled in with what `views.rs` works out from it.
 
-use std::{sync::atomic::Ordering, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 use serde::Serialize;
 
@@ -292,7 +295,8 @@ fn wrapper_state(it: &Item, passing: bool) -> WrapperState {
     }
 }
 
-/// One row as debug mode's status signals name it ([`Engine::row_states`]).
+/// One row as debug mode's status signals name it ([`Engine::row_changes`]).
+#[derive(Debug)]
 pub struct RowStatus {
     /// `item` or `wrapper`.
     pub row: &'static str,
@@ -303,39 +307,69 @@ pub struct RowStatus {
     pub error: String,
 }
 
+/// What [`Engine::row_changes`] found.
+#[derive(Debug, Default)]
+pub struct RowChanges {
+    /// Rows whose state differs from before, with the state they had (none
+    /// for a row that is new).
+    pub changed: Vec<(RowStatus, Option<&'static str>)>,
+    /// Rows taken off the list: id, name and the state they had.
+    pub removed: Vec<(String, String, &'static str)>,
+}
+
 impl Engine {
-    /// Where every row stands, as the views name it, without the rest of a
-    /// [`Snapshot`].
-    pub fn row_states(&self) -> Vec<RowStatus> {
+    /// The rows whose state differs from `before` (each row's state and name,
+    /// by id), with `before` brought up to date. Nothing is copied for a row
+    /// that did not change, so this costs little on every state change.
+    pub fn row_changes(&self, before: &mut HashMap<String, (&'static str, String)>) -> RowChanges {
         let st = self.lock();
         let now = Instant::now();
-        st.items
-            .values()
-            .map(|it| {
-                let passing = self.passing(&st, it, now);
+        let mut out = RowChanges::default();
+        for it in st.items.values() {
+            let passing = self.passing(&st, it, now);
+            let state = if it.wrapper {
+                wrapper_state(it, passing).as_str()
+            } else if self.look_up_page(&st, it).is_some() {
+                // In no list until its page says what it is.
+                "looking_up"
+            } else {
+                row_state(it, passing).as_str()
+            };
+            let was = before.get(&it.id).map(|(s, _)| *s);
+            if was == Some(state) {
+                continue;
+            }
+            let name = if it.wrapper {
+                it.title
+                    .clone()
+                    .or_else(|| it.mirrors.first().map(|m| m.url.clone()))
+                    .unwrap_or_default()
+            } else {
+                display_name(it)
+            };
+            before.insert(it.id.clone(), (state, name.clone()));
+            out.changed.push((
                 RowStatus {
                     row: if it.wrapper { "wrapper" } else { "item" },
                     id: it.id.clone(),
-                    name: if it.wrapper {
-                        it.title
-                            .clone()
-                            .or_else(|| it.mirrors.first().cloned())
-                            .unwrap_or_default()
-                    } else {
-                        display_name(it)
-                    },
-                    state: if it.wrapper {
-                        wrapper_state(it, passing).as_str()
-                    } else if self.look_up_page(&st, it).is_some() {
-                        // In no list until its page says what it is.
-                        "looking_up"
-                    } else {
-                        row_state(it, passing).as_str()
-                    },
+                    name,
+                    state,
                     error: it.error.clone(),
+                },
+                was,
+            ));
+        }
+        // Every row on the list is in `before` now: more there means some went.
+        if before.len() > st.items.len() {
+            before.retain(|id, (state, name)| {
+                let kept = st.items.contains_key(id);
+                if !kept {
+                    out.removed.push((id.clone(), std::mem::take(name), *state));
                 }
-            })
-            .collect()
+                kept
+            });
+        }
+        out
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -380,8 +414,8 @@ impl Engine {
         let open_urls = |it: &Item| -> Vec<String> {
             it.mirrors
                 .iter()
-                .filter(|m| it.manual_urls.contains(*m))
-                .cloned()
+                .filter(|m| it.manual_urls.contains(m.as_str()))
+                .map(|m| m.url.clone())
                 .collect()
         };
         let passing = |it: &Item| self.passing(&st, it, now);
@@ -392,11 +426,15 @@ impl Engine {
             .filter(|it| it.wrapper)
             .map(|it| WrapperView {
                 id: it.id.clone(),
-                url: it.mirrors.first().cloned().unwrap_or_default(),
+                url: it
+                    .mirrors
+                    .first()
+                    .map(|m| m.url.clone())
+                    .unwrap_or_default(),
                 host: it
                     .mirrors
                     .first()
-                    .map(|m| hosts::host_of(m))
+                    .map(|m| m.host.to_string())
                     .unwrap_or_default(),
                 title: it.title.clone(),
                 package: it.package.clone(),
@@ -427,7 +465,7 @@ impl Engine {
                 done: it.done,
                 speed: it.speed,
                 host: it.host.clone(),
-                mirrors: it.mirrors.iter().map(|m| hosts::host_of(m)).collect(),
+                mirrors: it.mirrors.iter().map(|m| m.host.to_string()).collect(),
                 wait: wait(it),
                 retry_in: retry_in(it),
                 open_urls: open_urls(it),
@@ -525,22 +563,24 @@ impl Engine {
         // turned off, so the choice can be seen and changed, and when a
         // download or a wrapper has a link on it, so it can be turned off
         // before it is tried.
-        let mut names: Vec<String> = cfg
-            .preferred_hosts
-            .iter()
-            .chain(&cfg.disabled_hosts)
-            .map(|h| h.to_ascii_lowercase())
-            .collect();
+        let mut shown: HashSet<String> = hosts.iter().map(|h| h.name.clone()).collect();
+        let mut more = |name: &str| {
+            if !name.is_empty() && !shown.contains(name) {
+                shown.insert(name.to_string());
+                hosts.push(host_view(name, None));
+            }
+        };
+        for h in cfg.preferred_hosts.iter().chain(&cfg.disabled_hosts) {
+            more(&h.to_ascii_lowercase());
+        }
         for it in st.items.values() {
-            names.extend(it.mirrors.iter().map(|m| hosts::host_of(m)));
+            for m in &it.mirrors {
+                more(&m.host);
+            }
         }
         // Every site Haul knows, so one can be set up before a link is on it.
-        names.extend(hosts::known_sites());
-        for name in names {
-            if name.is_empty() || hosts.iter().any(|h| h.name == name) {
-                continue;
-            }
-            hosts.push(host_view(&name, None));
+        for name in hosts::known_sites() {
+            more(&name);
         }
         // Any other site (a page, or a host Haul has no code for) is used
         // without a setting of its own, so the Hosts view does not list it:
@@ -564,12 +604,16 @@ impl Engine {
                 .then_with(|| a.needs_account.cmp(&b.needs_account))
                 .then_with(|| a.name.cmp(&b.name))
         });
+        let in_sets = unpack::archives(&st.items);
+        let (paused, max_total) = (st.paused, st.max_total);
+        // What follows only reads the views built above.
+        drop(st);
         let mut items = items;
         views::hosts(&mut hosts);
         views::items(&mut items, &hosts, &wrappers, cfg.recycle_on_remove);
-        let archives = views::archives(&mut items, &hosts, unpack::archives(&st.items));
+        let archives = views::archives(&mut items, &hosts, in_sets);
         let wrapper_cards = views::wrapper_cards(&wrappers, &items);
-        let counts = views::counts(&items, &wrappers, &wrapper_cards, st.paused);
+        let counts = views::counts(&items, &wrappers, &wrapper_cards, paused);
         Snapshot {
             speed: items.iter().map(|i| i.speed).sum(),
             items,
@@ -578,8 +622,8 @@ impl Engine {
             wrapper_cards,
             counts,
             hosts,
-            paused: st.paused,
-            max_total: st.max_total,
+            paused,
+            max_total,
             rate: self.0.limiter.rate(),
             proxy: has_proxy,
             pool,
@@ -589,7 +633,7 @@ impl Engine {
             recycle_on_remove: cfg.recycle_on_remove,
             skip_add_dialog: cfg.skip_add_dialog,
             bin: BIN,
-            config_version: self.0.config_version.load(Ordering::Relaxed),
+            config_version: *self.0.config_version.borrow(),
             config_error: self
                 .0
                 .config_error
@@ -615,7 +659,7 @@ impl Engine {
 
 /// Whether every link of `it` is gone for good.
 fn all_gone(it: &Item) -> bool {
-    !it.mirrors.is_empty() && it.mirrors.iter().all(|m| it.gone.contains(m))
+    !it.mirrors.is_empty() && it.mirrors.iter().all(|m| it.gone.contains(m.as_str()))
 }
 
 /// Whether `it` is a pasted web page not read yet: it may turn out a wrapper

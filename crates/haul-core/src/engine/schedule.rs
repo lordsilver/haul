@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use super::{Engine, Event, Exit, State, display_name, exit_name, noted_quietly};
 use crate::{
     hosts,
-    item::{Status, Trouble},
+    item::{Item, Mirror, Status, Trouble},
 };
 
 impl Engine {
@@ -23,6 +23,8 @@ impl Engine {
     /// speed today, while the queue holds their links: at once when one is
     /// added, then once a minute, as downloads use it up.
     pub(super) async fn watch_quotas(self) {
+        /// The least time between two looks through the queue.
+        const QUOTA_LOOK_GAP: Duration = Duration::from_secs(3);
         let mut changes = self.watch();
         let mut checked: HashMap<String, Instant> = HashMap::new();
         loop {
@@ -32,7 +34,7 @@ impl Engine {
                     .items
                     .values()
                     .filter(|i| i.status != Status::Done)
-                    .flat_map(|i| i.mirrors.iter().map(|m| hosts::host_of(m)))
+                    .flat_map(|i| i.mirrors.iter().map(|m| m.host.to_string()))
                     .filter(|h| hosts::known(h).is_some_and(|k| k.tells_allowance))
                     .collect();
                 hosts.sort();
@@ -73,11 +75,19 @@ impl Engine {
                     }
                 }
             }
-            // A link just added is asked about at once.
+            // A link just added is asked about soon, but the queue is not
+            // walked again on every change: at most every few seconds.
+            let looked = Instant::now();
             tokio::select! {
                 _ = self.0.shutdown.cancelled() => return,
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {}
-                _ = changes.changed() => {}
+                _ = changes.changed() => {
+                    let rest = QUOTA_LOOK_GAP.saturating_sub(looked.elapsed());
+                    if !self.idle(rest).await {
+                        return;
+                    }
+                    changes.borrow_and_update();
+                }
             }
         }
     }
@@ -95,6 +105,19 @@ impl Engine {
 
     fn schedule(&self) {
         let mut events = Vec::new();
+        // Copies looked for whatever the queue is doing: a wrapper's files
+        // wait for the user, paused.
+        {
+            let mut st = self.lock();
+            if std::mem::take(&mut st.merge_due) {
+                let folded = self.merge_copies(&mut st);
+                if !folded.is_empty() {
+                    self.touch(&mut st);
+                    drop(st);
+                    self.discard_parts(folded);
+                }
+            }
+        }
         {
             let mut st = self.lock();
             if st.paused || st.moving || st.reconnecting || st.draining.is_some() {
@@ -103,22 +126,38 @@ impl Engine {
             let now = Instant::now();
             let mut changed = self.auto_retry(&mut st, now);
             let mut running = st.items.values().filter(|i| i.running()).count();
+            // No free slot: nothing to sort.
+            if running >= st.max_total {
+                if changed {
+                    self.touch(&mut st);
+                }
+                return;
+            }
             // What downloads now against max_active_gb, by full size.
             let size_cap = self.size_cap();
             let mut busy = super::transfer::running_size(&st, None);
             // Downloads with data on disk go first, the nearest to done
             // first; the rest keep the queue's order.
             // (By bytes on disk where the size is not known yet.)
+            // Only the rows that could start now; the loop checks again,
+            // since a pick changes rows as it goes.
+            let startable = |i: &Item| {
+                matches!(i.status, Status::Queued | Status::Waiting)
+                    && i.probed
+                    && !i.running()
+                    && i.not_before.is_none_or(|t| now >= t)
+            };
             let mut ids: Vec<(String, f64, u64)> = st
                 .items
-                .iter()
-                .map(|(k, i)| {
+                .values()
+                .filter(|i| startable(i))
+                .map(|i| {
                     let near = if i.size > 0 {
                         i.done as f64 / i.size as f64
                     } else {
                         0.0
                     };
-                    (k.clone(), near, i.done)
+                    (i.id.clone(), near, i.done)
                 })
                 .collect();
             ids.sort_by(|a, b| {
@@ -203,7 +242,7 @@ impl Engine {
     fn pick(&self, st: &mut State, id: &str, now: Instant) -> Option<(String, Exit)> {
         let cfg = self.cfg();
         let pages = self.pages_pass();
-        let off = |m: &String| cfg.is_disabled(&hosts::host_of(m));
+        let off = |url: &str| cfg.is_disabled(&hosts::host_of(url));
         let it = &st.items[id];
         // A mirror whose page the desktop app passes by itself, waiting its
         // turn in the browser: the file waits for it rather than go to a
@@ -211,12 +250,12 @@ impl Engine {
         // host has asked this address to wait.
         // A host without its account goes only when no other host has the
         // file ([`hosts::Known::last_resort`]).
-        let usable = |m: &String| !it.failed.contains(m) && !off(m);
+        let usable = |m: &Mirror| !it.failed.contains(m.as_str()) && !cfg.is_disabled(&m.host);
         let others = it
             .mirrors
             .iter()
             .any(|m| usable(m) && !cfg.is_last_resort(m, pages));
-        let wanted = |m: &String| !(others && cfg.is_last_resort(m, pages));
+        let wanted = |url: &str| !(others && cfg.is_last_resort(url, pages));
         let pass_host = (pages && !it.page_wants_person)
             .then(|| {
                 it.manual_urls
@@ -231,12 +270,10 @@ impl Engine {
                     .map(|m| hosts::host_of(m))
             })
             .flatten();
-        let mut candidates: Vec<String> = it
+        let mut candidates: Vec<Mirror> = it
             .mirrors
             .iter()
-            .filter(|m| {
-                !it.failed.contains(*m) && !it.manual_urls.contains(*m) && !off(m) && wanted(m)
-            })
+            .filter(|m| usable(m) && !it.manual_urls.contains(m.as_str()) && wanted(m))
             .cloned()
             .collect();
         if candidates.is_empty() {
@@ -244,13 +281,15 @@ impl Engine {
             let only_off: Vec<String> = it
                 .mirrors
                 .iter()
-                .filter(|m| !it.failed.contains(*m) && off(m))
-                .map(|m| hosts::host_of(m))
+                .filter(|m| !it.failed.contains(m.as_str()) && cfg.is_disabled(&m.host))
+                .map(|m| m.host.to_string())
                 .collect();
-            let held = self
-                .pages_held_until(st, it, now)
-                .zip(it.mirrors.iter().find(|m| it.manual_urls.contains(*m)));
-            let held = held.map(|(until, page)| (until, hosts::host_of(page)));
+            let held = self.pages_held_until(st, it, now).zip(
+                it.mirrors
+                    .iter()
+                    .find(|m| it.manual_urls.contains(m.as_str())),
+            );
+            let held = held.map(|(until, page)| (until, page.host.clone()));
             let retry_at = it
                 .retry_at
                 .or_else(|| {
@@ -301,16 +340,15 @@ impl Engine {
         let picked = st.items[id].prefer.clone();
         let mut elsewhere = Vec::new();
         for m in &candidates {
-            let name = hosts::host_of(m);
-            let may_go = !slow_on.contains_key(m) || picked.as_deref() == Some(name.as_str());
-            if may_go && !self.host_cooling(st, &name, now) {
+            let may_go = !slow_on.contains_key(m.as_str()) || picked.as_deref() == Some(&*m.host);
+            if may_go && !self.host_cooling(st, &m.host, now) {
                 elsewhere.push(m.clone());
             }
         }
         // Going back to a mirror it left, the one it went on to being far
         // slower: that one, though its host slows the address.
         if let Some(m) = st.items.get_mut(id).and_then(|it| it.back_to.take())
-            && candidates.contains(&m)
+            && candidates.iter().any(|c| *c == m)
         {
             let name = hosts::host_of(&m);
             let exits = self.exits_for(&name, st);
@@ -330,7 +368,7 @@ impl Engine {
             (it.manual && it.pre.is_some())
                 .then(|| it.pre_for.clone())
                 .flatten()
-                .filter(|m| candidates.contains(m))
+                .filter(|m| candidates.iter().any(|c| c == m))
         };
         if let Some(m) = handed {
             let name = hosts::host_of(&m);
@@ -342,23 +380,22 @@ impl Engine {
         // for when only busy, passed over while it cools down or once its
         // link failed, the others standing by.
         if let Some(want) = st.items[id].prefer.clone()
-            && let Some(m) = candidates.iter().find(|m| hosts::host_of(m) == want)
+            && let Some(m) = candidates.iter().find(|m| *m.host == *want)
             && !self.host_cooling(st, &want, now)
         {
             return self
                 .free_exit(st, &want, &cfg, now)
-                .map(|exit| (m.clone(), exit));
+                .map(|exit| (m.url.clone(), exit));
         }
         // Preferred hosts first, in the user's order. One that is only busy
         // is waited for; one cooling down is passed over like any other. A
         // preferred host whose page the desktop app passes takes its place in
         // that order: the row waits for the page's turn rather than go to a
         // host after it.
-        let mut preferred: Vec<(usize, String)> = Vec::new();
+        let mut preferred: Vec<(usize, Mirror)> = Vec::new();
         for m in &candidates {
-            let name = hosts::host_of(m);
-            if let Some(rank) = cfg.preference(&name)
-                && !self.host_cooling(st, &name, now)
+            if let Some(rank) = cfg.preference(&m.host)
+                && !self.host_cooling(st, &m.host, now)
             {
                 preferred.push((rank, m.clone()));
             }
@@ -370,8 +407,8 @@ impl Engine {
                 if pass_rank.is_some_and(|page| page < rank) {
                     break;
                 }
-                if let Some(exit) = self.free_exit(st, &hosts::host_of(&m), &cfg, now) {
-                    return Some((m, exit));
+                if let Some(exit) = self.free_exit(st, &m.host, &cfg, now) {
+                    return Some((m.url, exit));
                 }
             }
             if pass_rank.is_some()
@@ -386,10 +423,10 @@ impl Engine {
             .as_ref()
             .map(|h| st.host(h).ema)
             .unwrap_or_default();
-        let mut best: Option<(String, Exit, f64)> = None;
+        let mut best: Option<(Mirror, Exit, f64)> = None;
         let mut held = false;
         for m in candidates.iter().cloned() {
-            let name = hosts::host_of(&m);
+            let name = m.host.clone();
             if pass_host.is_some() {
                 let known = hosts::known(&name).is_some();
                 let ema = st.host(&name).ema;
@@ -415,7 +452,7 @@ impl Engine {
         if best.is_none() && !held {
             return self.when_all_cool_down(st, id, &candidates, pass_host.is_some(), &cfg, now);
         }
-        best.map(|(m, exit, _)| (m, exit))
+        best.map(|(m, exit, _)| (m.url, exit))
     }
 
     /// No mirror of row `id` could start. With every one of them cooling down,
@@ -427,14 +464,14 @@ impl Engine {
         &self,
         st: &mut State,
         id: &str,
-        candidates: &[String],
+        candidates: &[Mirror],
         page_can_pass: bool,
         cfg: &crate::Config,
         now: Instant,
     ) -> Option<(String, Exit)> {
         if candidates
             .iter()
-            .any(|m| !self.host_cooling(st, &hosts::host_of(m), now))
+            .any(|m| !self.host_cooling(st, &m.host, now))
         {
             return None;
         }
@@ -443,16 +480,17 @@ impl Engine {
             return None;
         }
         let slow_on = st.items.get(id)?.slow_on.clone();
-        let (mut before, others): (Vec<&String>, Vec<&String>) =
-            candidates.iter().partition(|m| slow_on.contains_key(*m));
+        let (mut before, others): (Vec<&Mirror>, Vec<&Mirror>) = candidates
+            .iter()
+            .partition(|m| slow_on.contains_key(m.as_str()));
         // Of those, where it ran fastest first.
-        before.sort_by(|a, b| slow_on[*b].total_cmp(&slow_on[*a]));
+        before.sort_by(|a, b| slow_on[b.as_str()].total_cmp(&slow_on[a.as_str()]));
         for m in before.into_iter().chain(others) {
-            let name = hosts::host_of(m);
-            let exits = self.exits_for(&name, st);
-            if let Some(exit) = st.exit_while_slowing(&name, &exits, cfg, now) {
+            let name = &m.host;
+            let exits = self.exits_for(name, st);
+            if let Some(exit) = st.exit_while_slowing(name, &exits, cfg, now) {
                 tracing::info!(item = %id, "nowhere else to go: on {name}, though it slows this address");
-                return Some((m.clone(), exit));
+                return Some((m.url.clone(), exit));
             }
         }
         None

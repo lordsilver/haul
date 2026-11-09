@@ -8,7 +8,11 @@
 //! survives a restart, and an archive Haul stopped in the middle of is
 //! unpacked again from the start.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use indexmap::IndexMap;
 
@@ -77,56 +81,70 @@ fn origin(items: &IndexMap<String, Item>, it: &Item) -> Option<String> {
 /// The first of a pair is the one higher in the queue, which keeps its rows.
 /// A copy that has started downloading is left as it is.
 fn copies(items: &IndexMap<String, Item>) -> Vec<(Vec<String>, Vec<String>)> {
-    let sets = archives(items);
-    let sizes = |set: &ArchiveSet| -> Option<Vec<u64>> {
-        set.ids
-            .iter()
-            .map(|id| items.get(id).map(|it| it.size).filter(|s| *s > 0))
-            .collect()
-    };
     // A set is whole only once every row that came with it (same package,
     // same wrapper) has been looked up: until then a part not yet named
     // makes it look shorter than it is, as long as another's first parts.
-    let looked_up = |set: &ArchiveSet| {
-        let Some(first) = items.get(&set.ids[0]) else {
-            return false;
-        };
-        items
-            .values()
-            .filter(|o| !o.wrapper && o.package == first.package && o.source == first.source)
-            .all(|o| o.probed && o.name.is_some())
-    };
-    let untouched = |set: &ArchiveSet| {
-        set.ids.iter().all(|id| {
-            items
-                .get(id)
-                .is_some_and(|it| it.done == 0 && !it.running() && it.status != Status::Done)
+    // Worked out once for every package and wrapper, not per pair.
+    let mut looked: HashMap<(&str, Option<&str>), bool> = HashMap::new();
+    for o in items.values().filter(|o| !o.wrapper) {
+        let all = looked
+            .entry((o.package.as_str(), o.source.as_deref()))
+            .or_insert(true);
+        *all &= o.probed && o.name.is_some();
+    }
+    struct Whole {
+        ids: Vec<String>,
+        sizes: Vec<u64>,
+        origin: Option<String>,
+        untouched: bool,
+    }
+    // The sets that could be a copy or have one, each worked out once.
+    let sets: Vec<Whole> = archives(items)
+        .into_iter()
+        .filter(|set| set.missing.is_empty())
+        .filter_map(|set| {
+            let first = items.get(&set.ids[0])?;
+            if !looked
+                .get(&(first.package.as_str(), first.source.as_deref()))
+                .copied()
+                .unwrap_or(false)
+            {
+                return None;
+            }
+            let sizes: Option<Vec<u64>> = set
+                .ids
+                .iter()
+                .map(|id| items.get(id).map(|it| it.size).filter(|s| *s > 0))
+                .collect();
+            let untouched = set.ids.iter().all(|id| {
+                items
+                    .get(id)
+                    .is_some_and(|it| it.done == 0 && !it.running() && it.status != Status::Done)
+            });
+            Some(Whole {
+                origin: origin(items, first),
+                sizes: sizes?,
+                untouched,
+                ids: set.ids,
+            })
         })
-    };
+        .collect();
     let mut pairs = Vec::new();
-    let mut taken = std::collections::HashSet::new();
+    let mut taken = HashSet::new();
     for (i, keep) in sets.iter().enumerate() {
-        if taken.contains(&i) || !keep.missing.is_empty() || !looked_up(keep) {
+        if taken.contains(&i) {
             continue;
         }
-        let Some(want) = sizes(keep) else { continue };
-        let keep_origin = origin(items, &items[&keep.ids[0]]);
         for (j, copy) in sets.iter().enumerate().skip(i + 1) {
-            if taken.contains(&j)
-                || !copy.missing.is_empty()
-                || copy.ids.len() != keep.ids.len()
-                || !looked_up(copy)
-            {
+            // The cheap tells first: how many parts, and their sizes.
+            if taken.contains(&j) || copy.sizes != keep.sizes || !copy.untouched {
                 continue;
             }
-            let copy_origin = origin(items, &items[&copy.ids[0]]);
-            if keep_origin.is_some() && copy_origin.is_some() && keep_origin != copy_origin {
+            if keep.origin.is_some() && copy.origin.is_some() && keep.origin != copy.origin {
                 continue;
             }
-            if sizes(copy).as_ref() == Some(&want) && untouched(copy) {
-                taken.insert(j);
-                pairs.push((keep.ids.clone(), copy.ids.clone()));
-            }
+            taken.insert(j);
+            pairs.push((keep.ids.clone(), copy.ids.clone()));
         }
     }
     pairs
@@ -137,20 +155,24 @@ impl Engine {
     /// [`copies`]) into one: each part of the copy becomes more links of the
     /// same part, so the file downloads once, from whichever host serves
     /// each part, the others standing by.
-    pub(super) fn merge_copies(&self, st: &mut State) {
+    /// Returns the rows folded away, whose partial files are for the caller
+    /// to discard once the lock is let go ([`Engine::discard_parts`]).
+    pub(super) fn merge_copies(&self, st: &mut State) -> Vec<String> {
+        let mut folded = Vec::new();
         for (keep, copy) in copies(&st.items) {
             for (k, c) in keep.iter().zip(&copy) {
                 let Some(gone) = st.items.shift_remove(c) else {
                     continue;
                 };
                 tracing::info!(item = %k, "{} is a copy of it on another host", gone.key_name().unwrap_or_default());
+                folded.push(c.clone());
                 let Some(it) = st.items.get_mut(k) else {
                     continue;
                 };
                 it.absorb(gone);
-                let _ = std::fs::remove_file(self.part_path(c));
             }
         }
+        folded
     }
 
     /// The archive `id` is a part of, when the queue has two parts of it
@@ -235,19 +257,14 @@ impl Engine {
     /// Takes up the archives the last run left waiting or under way.
     pub(super) fn resume_extractions(&self) {
         let mut st = self.lock();
-        let mut seen = std::collections::HashSet::new();
-        let waiting: Vec<String> = st
-            .items
-            .values()
-            .filter(|it| it.extract == Extract::Waiting)
-            .map(|it| it.id.clone())
-            .collect();
-        for id in waiting {
-            if seen.contains(&id) {
-                continue;
-            }
-            if let Some(set) = Self::archive_of(&st, &id) {
-                seen.extend(set.ids.iter().cloned());
+        // The archives worked out once, not once per waiting part.
+        for set in archives(&st.items) {
+            let waits = set.ids.iter().any(|id| {
+                st.items
+                    .get(id)
+                    .is_some_and(|it| it.extract == Extract::Waiting)
+            });
+            if waits {
                 self.queue_extract(&mut st, set.name, set.ids);
             }
         }
@@ -459,5 +476,35 @@ mod tests {
         let pairs = copies(&items);
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].1, ids);
+    }
+
+    /// Many sets, one of them a copy: found, and quickly, since a wrapper's
+    /// lookups ask for this again and again.
+    #[test]
+    fn copies_among_many_sets_are_found_quickly() {
+        let mut rows = Vec::new();
+        for set in ["A", "B", "C", "D"] {
+            for n in 1..=50 {
+                // C is a copy of A; B and D differ in their sizes.
+                let size = match set {
+                    "A" | "C" => 1000 + n,
+                    "B" => 2000 + n,
+                    _ => 3000 + n,
+                };
+                rows.push(row(Some(&format!("{set}.part{n:02}.rar")), size));
+            }
+        }
+        let items = queue(rows);
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            let pairs = copies(&items);
+            assert_eq!(pairs.len(), 1);
+            assert!(items[&pairs[0].1[0]].name.as_deref() == Some("C.part01.rar"));
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

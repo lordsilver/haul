@@ -11,7 +11,7 @@ use std::{
 use super::{AUTO_RETRIES, Engine, State};
 use crate::{
     hosts::{self, Entry},
-    item::{Item, Status, Trouble},
+    item::{Item, Mirror, Status, Trouble},
 };
 
 /// How long a file waits before its host's page is passed again, after the
@@ -55,22 +55,25 @@ impl Engine {
     /// The page the desktop app opens to look row `it` up
     /// ([`Engine::looks_up`]): its first one the browser passes, not yet
     /// looked at and not failed.
-    pub(super) fn look_up_page<'a>(&self, st: &State, it: &'a Item) -> Option<&'a String> {
+    pub(super) fn look_up_page<'a>(&self, st: &State, it: &'a Item) -> Option<&'a str> {
         if !self.looks_up(it) {
             return None;
         }
         let cfg = self.cfg();
-        it.mirrors.iter().find(|m| {
-            st.passes(m)
-                && !it.failed.contains(*m)
-                && !it.looked.contains(*m)
-                && !cfg.is_disabled(&hosts::host_of(m))
-        })
+        it.mirrors
+            .iter()
+            .find(|m| {
+                st.passes(m)
+                    && !it.failed.contains(m.as_str())
+                    && !it.looked.contains(m.as_str())
+                    && !cfg.is_disabled(&m.host)
+            })
+            .map(|m| m.as_str())
     }
 
     /// Row `id`'s page being looked up, when its pass is for that.
     fn looking_up(&self, st: &State, id: &str) -> Option<String> {
-        self.look_up_page(st, st.items.get(id)?).cloned()
+        self.look_up_page(st, st.items.get(id)?).map(str::to_string)
     }
 
     /// The page looked up for row `id` told nothing this time: it is not
@@ -161,7 +164,7 @@ impl Engine {
         tracing::info!(item = %id, "{page}: {reason}");
         it.gone.insert(page.clone());
         it.failed.insert(page);
-        if it.mirrors.iter().all(|m| it.gone.contains(m)) {
+        if it.mirrors.iter().all(|m| it.gone.contains(m.as_str())) {
             tracing::info!(item = %id, "every link of this file is gone: it leaves the list");
             st.items.shift_remove(id);
             super::drop_spent_wrappers(&mut st.items);
@@ -689,8 +692,12 @@ impl Engine {
         let it = st.items.get(id)?;
         let now = Instant::now();
         let host = hosts::host_of(url);
-        let open = || it.mirrors.iter().filter(|m| it.manual_urls.contains(*m));
-        let on_host = |m: &&String| hosts::host_of(m) == host;
+        let open = || {
+            it.mirrors
+                .iter()
+                .filter(|m| it.manual_urls.contains(m.as_str()))
+        };
+        let on_host = |m: &&Mirror| *m.host == *host;
         let passed = || {
             (self.pages_pass() && !it.page_wants_person)
                 .then(|| {
@@ -705,7 +712,7 @@ impl Engine {
             .or_else(|| open().find(|m| self.pass_held_for(st, it, m, now).is_none()))
             .or_else(|| open().next())
             .or_else(|| it.mirrors.first())
-            .cloned()
+            .map(|m| m.url.clone())
     }
 
     /// Whether the desktop app passes page `url` by itself, out of sight, now:
@@ -746,12 +753,16 @@ impl Engine {
         let st = self.lock();
         let it = st.items.get(id)?;
         let now = Instant::now();
-        let open = || it.mirrors.iter().filter(|m| it.manual_urls.contains(*m));
+        let open = || {
+            it.mirrors
+                .iter()
+                .filter(|m| it.manual_urls.contains(m.as_str()))
+        };
         open()
             .find(|m| self.pass_held_for(&st, it, m, now).is_none())
             .or_else(|| open().next())
             .or_else(|| it.mirrors.first())
-            .cloned()
+            .map(|m| m.url.clone())
     }
 }
 
