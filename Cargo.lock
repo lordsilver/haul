@@ -1898,6 +1898,7 @@ dependencies = [
  "aes",
  "axum",
  "base64 0.23.1",
+ "bytes",
  "cbc",
  "dirs",
  "futures-util",
