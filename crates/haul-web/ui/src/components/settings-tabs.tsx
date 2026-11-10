@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { prefs } from '@/lib/prefs';
 import { go } from '@/lib/route';
@@ -20,6 +21,27 @@ export function savedTab(): OwnTab {
   const saved = prefs.get('settings.tab');
   const tab = SETTINGS_TABS.find((t) => t.value === saved)?.value;
   return tab && tab !== 'hosts' && tab !== 'connections' ? tab : 'general';
+}
+
+// Tells an open Settings page to show another tab.
+const PICKED = 'haul:settings-tab';
+
+// Opens Settings on `tab`, from anywhere, the page open or not.
+export function openSettings(tab: OwnTab) {
+  prefs.set('settings.tab', tab);
+  dispatchEvent(new CustomEvent<OwnTab>(PICKED, { detail: tab }));
+  go('settings');
+}
+
+// The tab Settings shows: the last one open, or the one `openSettings` asks for.
+export function useSettingsTab() {
+  const [tab, setTab] = useState<OwnTab>(savedTab);
+  useEffect(() => {
+    const picked = (e: Event) => setTab((e as CustomEvent<OwnTab>).detail);
+    addEventListener(PICKED, picked);
+    return () => removeEventListener(PICKED, picked);
+  }, []);
+  return [tab, setTab] as const;
 }
 
 // The row of tabs after the Settings title, on each of its pages.

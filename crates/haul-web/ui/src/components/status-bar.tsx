@@ -2,9 +2,11 @@ import { ArrowDown, ChevronRight, ClipboardList, Gauge, LoaderCircle, Play, Shie
 import { type ReactNode, useState } from 'react';
 import { Hint } from '@/components/hint';
 import { SavingSwitch } from '@/components/saving-switch';
+import { openSettings } from '@/components/settings-tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { UpdateEntry } from '@/components/update';
 import { save } from '@/lib/api';
 import type { SettingsView } from '@/lib/bindings/SettingsView';
@@ -63,6 +65,21 @@ function Flyout({
   );
 }
 
+// The way from a flyout to the page that sets it up in full.
+const SettingsLink = ({ close, open }: { close: () => void; open: () => void }) => (
+  <Button
+    size="sm"
+    variant="ghost"
+    onClick={() => {
+      close();
+      open();
+    }}
+  >
+    Settings
+    <ChevronRight />
+  </Button>
+);
+
 // A switch that flips at once and saves; `change` answers whether it saved.
 function FlyoutSwitch({
   label,
@@ -83,47 +100,62 @@ function FlyoutSwitch({
   );
 }
 
+// The limits one click away, in MB/s; 0 is none.
+const PRESETS = [0, 1, 2, 5, 10, 20];
+
 function SpeedLimit({ d, close }: { d: SettingsView; close: () => void }) {
   const fixed = envNote(d, 'rate_limit_mbps');
-  const [text, setText] = useState(d.rate_limit_mbps ? String(d.rate_limit_mbps) : '');
+  const current = d.rate_limit_mbps;
+  const preset = PRESETS.includes(current);
+  const [text, setText] = useState(preset ? '' : String(current));
+  const [bad, setBad] = useState(false);
   const apply = async (mbps: number) => {
-    if (await save({ rate_limit_mbps: mbps }, null)) close();
+    if (mbps === current || (await save({ rate_limit_mbps: mbps }, null))) close();
   };
-  const set = () => {
-    const n = text.trim() === '' ? 0 : Number(text);
+  const other = () => {
+    const n = text.trim() === '' ? Number.NaN : Number(text.trim().replace(',', '.'));
     if (Number.isFinite(n) && n >= 0) apply(n);
+    else setBad(true);
   };
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm text-muted-foreground">{fixed ?? 'For all downloads together.'}</p>
-      <form
-        className="flex items-center gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          set();
-        }}
+      <p className="text-sm text-muted-foreground">{fixed ?? 'For all downloads together, in MB/s.'}</p>
+      <ToggleGroup
+        type="single"
+        variant="outline"
+        size="sm"
+        className="w-full"
+        value={preset ? String(current) : ''}
+        aria-label="Speed limit in MB/s"
+        disabled={Boolean(fixed)}
+        onValueChange={(value) => value && apply(Number(value))}
       >
+        {PRESETS.map((mbps) => (
+          <ToggleGroupItem key={mbps} value={String(mbps)} className="flex-1">
+            {mbps ? mbps : 'None'}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
+      <div className="flex items-center gap-2">
         <Input
-          type="number"
-          min={0}
-          step={0.5}
+          inputMode="decimal"
           value={text}
-          placeholder="None"
-          aria-label="Speed limit in MB/s"
+          placeholder="Other, then Enter"
+          aria-label="Other speed limit in MB/s"
+          aria-invalid={bad || undefined}
           disabled={Boolean(fixed)}
-          autoFocus
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            setBad(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            other();
+          }}
         />
         <span className="text-sm text-muted-foreground">MB/s</span>
-        <Button type="submit" disabled={Boolean(fixed)}>
-          Set
-        </Button>
-      </form>
-      {d.rate_limit_mbps > 0 && !fixed ? (
-        <Button variant="ghost" className="self-start" onClick={() => apply(0)}>
-          Remove the limit
-        </Button>
-      ) : null}
+      </div>
     </div>
   );
 }
@@ -286,6 +318,7 @@ export function StatusBar({ state: s }: { state: State | null }) {
       <Flyout
         version={s.config_version}
         title="Speed limit"
+        action={(close) => <SettingsLink close={close} open={() => openSettings('downloads')} />}
         trigger={[
           <Gauge key="i" aria-hidden className="size-3.5" />,
           s.rate ? `${(s.rate / 1e6).toFixed(1)} MB/s cap` : 'No speed limit',
@@ -297,19 +330,7 @@ export function StatusBar({ state: s }: { state: State | null }) {
         version={s.config_version}
         title="Connections"
         on={pooled}
-        action={(close) => (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => {
-              close();
-              go('connections');
-            }}
-          >
-            Settings
-            <ChevronRight />
-          </Button>
-        )}
+        action={(close) => <SettingsLink close={close} open={() => go('connections')} />}
         trigger={[<Shield key="i" aria-hidden className="size-3.5" />, s.pool_summary.label]}
       >
         {() => <Pool s={s} />}

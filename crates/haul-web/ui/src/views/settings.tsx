@@ -15,7 +15,7 @@ import { type FormEvent, useState } from 'react';
 import { Infobar } from '@/components/infobar';
 import { PageHeader, PageScroll } from '@/components/page';
 import { LinesField, NumberField, SettingCard, SettingRow, SettingSwitch } from '@/components/setting-card';
-import { type OwnTab, SettingsTabs, savedTab } from '@/components/settings-tabs';
+import { type OwnTab, SettingsTabs, useSettingsTab } from '@/components/settings-tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
@@ -433,7 +433,7 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
 
 export function Settings({ s }: { s: State }) {
   const d = useSettings(s.config_version);
-  const [tab, setTab] = useState<OwnTab>(savedTab);
+  const [tab, setTab] = useSettingsTab();
   return (
     <>
       <PageHeader title="Settings" tabs={<SettingsTabs current={tab} pick={setTab} />} />
