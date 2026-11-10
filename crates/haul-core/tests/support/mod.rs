@@ -1110,7 +1110,13 @@ pub(super) async fn start_server() -> (Server, u16) {
             // Publishes the SHA-256 of what /api/file/{id} serves.
             get(|State(s): State<Server>, UrlPath(id): UrlPath<String>, headers: HeaderMap| async move {
                 log(&s, &format!("/api/file/{id}/info"), &headers);
-                Json(json!({"name": format!("{id}.bin"), "size": SIZE, "hash_sha256": sha256_hex(&content(&id, SIZE))}))
+                // One named `nohash…` publishes none, one named `badhash…`
+                // another file's.
+                let hash = (!id.starts_with("nohash")).then(|| {
+                    let of = if id.starts_with("badhash") { "another" } else { id.as_str() };
+                    sha256_hex(&content(of, SIZE))
+                });
+                Json(json!({"name": format!("{id}.bin"), "size": SIZE, "hash_sha256": hash}))
             }),
         )
         .route(

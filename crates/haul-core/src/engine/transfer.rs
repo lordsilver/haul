@@ -450,9 +450,12 @@ impl Engine {
             if self.dedupe(&mut st, id) {
                 st.items.shift_remove(id);
                 self.touch(&mut st);
+                drop(st);
+                self.settle_parts();
                 return Ok(Some(Outcome::Gone));
             }
         }
+        self.settle_parts();
         let path = or_cancel(cancel, self.existing_file(id)).await?;
         Ok(path.map(Outcome::Existing))
     }
@@ -791,6 +794,13 @@ impl Engine {
             .open(part)
             .await?;
         let mut file = BufWriter::with_capacity(1 << 20, file);
+        // The host's checksum, worked out as the bytes come when the file is
+        // read from its start; a resumed one is read once more at its end.
+        let checksum = self.lock().items.get(id).and_then(|i| i.checksum.clone());
+        let mut hashing = checksum
+            .as_ref()
+            .filter(|_| have == 0)
+            .map(|c| hosts::Hashing::new(c.algo));
         let mut differs = false;
         let mut at = from;
         let mut done = have;
@@ -872,6 +882,9 @@ impl Engine {
                     continue;
                 }
                 file.write_all(&chunk).await?;
+                if let Some(h) = &mut hashing {
+                    h.update(&chunk);
+                }
                 done += chunk.len() as u64;
                 untold += chunk.len() as u64;
                 self.0.limiter.throttle(chunk.len()).await;
@@ -909,6 +922,27 @@ impl Engine {
             return Err(Fail::Transient(format!(
                 "connection closed at {done} of {want} bytes"
             )));
+        }
+        if let Some(checksum) = checksum {
+            let same = match hashing {
+                Some(h) => Some(h.finish() == checksum.hex),
+                None => {
+                    or_cancel(
+                        cancel,
+                        self.matches_checksum(id, part.to_path_buf(), checksum.clone()),
+                    )
+                    .await?
+                }
+            };
+            if same == Some(false) {
+                // Bytes that are not the file the host described: none of them
+                // is kept, and this host's link is not tried again for it.
+                let _ = tokio::fs::remove_file(part).await;
+                return Err(Fail::Error(format!(
+                    "the file differs from its {:?} checksum; its bytes were deleted",
+                    checksum.algo
+                )));
+            }
         }
         Ok(None)
     }

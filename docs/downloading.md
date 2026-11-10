@@ -23,6 +23,7 @@ A row that found its file never sends it to the Recycle Bin on removal, since it
 ## Failures and retries
 
 - **Dead links and refusals.** A 404, a 410 or a refusal fails that mirror at once, and the next mirror takes over; the row shows the host's reason when its answer gives one.
+- **Checksums.** When a host publishes the file's checksum (pixeldrain, mediafire, gofile with an account, or a digest header), the finished file is compared with it: as the bytes come for a download from the start, or by reading the file once more after a resume. A file that differs is not kept: its bytes are deleted and that host's link fails for it, so another host or a retry starts it over.
 - **This computer.** A partial file that cannot be written (no permission, a file in the way) fails the download with a reason that starts with "this computer:" and blames no host: every mirror stays untried, and the automatic retries apply. A full disk pauses every download instead, with a notice, since every other download is about to fail the same way; make room, then resume.
 - **Network trouble.** A dropped connection, a timeout or an unreachable host is retried on the same mirror with growing pauses (2, 4, 8 seconds and so on), `resume_attempts` times (5 by default), keeping the bytes already downloaded; an attempt that got data in before it stopped starts the count over. After that the mirror counts as failed and the next one resumes the same partial file.
 - **Busy hosts.** A 403 while other downloads from the same host are under way means the host takes no more at once. Haul then runs no more from it than were running, the refused download waits for a free slot, and the next transfer from that host starts two seconds after one ends. The learned cap is not saved; after ten minutes without another refusal Haul tries one more download at once. It is learned per address: with several proxies each has its own, and when pixeldrain reports less used than before (your router got a new address, or a new day began), that address starts over. A link you pasted, or that the in-app browser caught, that stops working asks for a new one instead.
@@ -36,7 +37,7 @@ A row that found its file never sends it to the Recycle Bin on removal, since it
 
 ## Proxy
 
-With a proxy configured, every host goes through it until you allow a direct route for that host under **Settings › Hosts**. A 403 or 451 through the proxy flags the host; Haul never leaves the proxy on its own. `use_proxy = false` switches the proxy off without forgetting it. The in-app browser goes through the same proxy.
+With a proxy configured, every host goes through it until you allow a direct route for that host under **Settings › Hosts**. A 403 or 451 through the proxy flags the host; Haul never leaves the proxy on its own. What Haul asks for itself goes through it too (the update check and its download, NordVPN's list of servers); only the router and the public-address echo use your line, since your line is what they are about. `use_proxy = false` switches the proxy off without forgetting it. The in-app browser goes through the same proxy, except an `https://` one, which it cannot use: pages are then not opened rather than opened without it, and **Settings › Connections** says so.
 
 ## Needs you
 

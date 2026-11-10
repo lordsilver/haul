@@ -241,7 +241,11 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("{}: {e}", p.exe.display()))?;
-    let mut browser = Browser { child };
+    let mut browser = Browser {
+        #[cfg(windows)]
+        _job: Job::holding(&child),
+        child,
+    };
     *haul_core::lock::held(&p.handle.info) = json!({
         "url": p.url,
         "profile": p.profile.display().to_string(),
@@ -304,6 +308,69 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
 /// The browser process, ended when dropped.
 struct Browser {
     child: Child,
+    /// Ends the browser and every process it started when Haul ends,
+    /// however it ends (a crash, the task manager), not only when this drops.
+    #[cfg(windows)]
+    _job: Option<Job>,
+}
+
+/// A Windows job whose processes end when its handle closes, which the
+/// system does for a process that ended without closing it.
+#[cfg(windows)]
+struct Job(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Job {
+    /// A job holding `child`, and what it starts from now on.
+    fn holding(child: &Child) -> Option<Self> {
+        use std::os::windows::io::AsRawHandle;
+
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+
+        // SAFETY: no attributes and no name, as the call allows.
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return None;
+        }
+        let job = Job(handle);
+        // SAFETY: a plain C struct; all zeroes is its empty value.
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: `info` is the struct this information class takes, and
+        // lives through the call.
+        let set = unsafe {
+            SetInformationJobObject(
+                job.0,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&info).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        // SAFETY: both handles are open: the job's here, the child's while
+        // `child` lives.
+        let assigned = set != 0
+            && unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle().cast()) } != 0;
+        if !assigned {
+            tracing::warn!(
+                "the pass browser is not tied to Haul: {}",
+                std::io::Error::last_os_error()
+            );
+            return None;
+        }
+        Some(job)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Job {
+    fn drop(&mut self) {
+        // SAFETY: the handle is the job's, closed once, here.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
 }
 
 impl Drop for Browser {
