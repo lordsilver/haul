@@ -147,7 +147,7 @@ export function NumberField({
   const [text, setText] = useState(String(value));
   useEffect(() => setText(String(value)), [value]);
   const commit = () => {
-    const n = Number(text);
+    const n = Number(text.trim().replace(',', '.'));
     if (text.trim() === '' || !Number.isFinite(n) || n < min || (max !== undefined && n > max)) {
       setText(String(value));
       toast(max === undefined ? `${label}: ${min} or more` : `${label}: from ${min} to ${max}`, 'error');
@@ -157,11 +157,9 @@ export function NumberField({
   };
   return (
     <span className="flex items-center gap-2">
+      {/* Text, not a number input: no spin arrows, and a comma reads as a point. */}
       <Input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
+        inputMode={Number.isInteger(step) && min >= 0 ? 'numeric' : 'decimal'}
         value={text}
         aria-label={label}
         className="w-24"

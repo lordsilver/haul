@@ -300,7 +300,7 @@ impl Browser {
                 }
                 Err(e) => {
                     tracing::warn!(item = %id, "passing {url}: {e}");
-                    engine.page_wants_person(&id);
+                    engine.page_not_passed(&id, &e);
                 }
             }
         });

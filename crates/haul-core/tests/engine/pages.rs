@@ -895,6 +895,28 @@ async fn the_row_names_the_gate_the_browser_found() {
     );
 }
 
+/// A pass whose browser never showed the page says so on the row, instead
+/// of the check that sent the page to the browser, and is tried again later
+/// like any page that wanted a person.
+#[tokio::test]
+async fn a_pass_that_could_not_start_says_so() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    let page = "https://filecrypt.cc/Container/other-gate.html";
+    engine.add_text(page, "");
+    let s = wrapper_settled(&engine, "passing").await;
+    let id = s.wrappers[0].id.clone();
+    assert!(engine.page_not_passed(&id, "the browser exited at start (exit code: 0)"));
+    let s = wrapper_settled(&engine, "captcha").await;
+    let said = &s.wrappers[0].error;
+    assert!(
+        said.contains("browser did not open the page (the browser exited at start"),
+        "{said}"
+    );
+    assert!(s.wrappers[0].retry_in > 0, "tried again later");
+}
+
 /// A page passed out of sight that fails for now says why and stays due for
 /// its retries, unlike one that says its file is gone.
 #[tokio::test]

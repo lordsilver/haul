@@ -268,6 +268,23 @@ impl Engine {
         self.publish(st);
     }
 
+    /// As [`Engine::page_wants_person`], for a pass whose browser could not
+    /// show the page at all (`why`): the row says so, not what stopped Haul
+    /// reading the page before, since the page itself was never seen.
+    pub fn page_not_passed(&self, id: &str, why: &str) -> bool {
+        let tell = self.page_wants_person(id);
+        let mut st = self.lock();
+        if let Some(it) = st.items.get_mut(id) {
+            let trouble = it.trouble;
+            it.set_error(
+                format!("Haul's browser did not open the page ({why}); open it here"),
+                trouble,
+            );
+        }
+        self.publish(st);
+        tell
+    }
+
     /// As [`Engine::page_wants_person`], for a page past its checks that
     /// shows all it will: only a click from the person leads on, so it is
     /// not passed again on a timer.
