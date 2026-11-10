@@ -802,7 +802,9 @@ impl Engine {
             .filter(|_| have == 0)
             .map(|c| hosts::Hashing::new(c.algo));
         let mut differs = false;
-        let mut at = from;
+        // MEGA's files come encrypted: one cipher for the transfer, at the
+        // answer's start.
+        let mut decrypting = entry.decrypt.as_ref().map(|key| key.decrypting(from));
         let mut done = have;
         let (mut mark, mut mark_bytes) = (Instant::now(), have);
         // The slowest it may be over each window, in bytes per second; 0
@@ -850,15 +852,10 @@ impl Engine {
                 }
                 let Some(chunk) = chunk else { continue };
                 let Some(chunk) = chunk else { return Ok(()) };
-                let chunk = match &entry.decrypt {
-                    Some(key) => {
-                        let mut plain = chunk.to_vec();
-                        key.apply(&mut plain, at);
-                        plain.into()
-                    }
+                let chunk = match &mut decrypting {
+                    Some(d) => d.chunk(chunk),
                     None => chunk,
                 };
-                at += chunk.len() as u64;
                 let chunk = match overlap.take(chunk) {
                     Ok(Taken::Comparing) => continue,
                     Ok(Taken::Agreed(rest)) => {

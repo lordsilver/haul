@@ -21,11 +21,13 @@ use std::sync::{
 use aes::{
     Aes128,
     cipher::{
-        BlockCipherDecrypt, BlockCipherEncrypt, BlockModeDecrypt, KeyInit, KeyIvInit,
+        BlockCipherDecrypt, BlockModeDecrypt, KeyInit, KeyIvInit, StreamCipher, StreamCipherSeek,
         block_padding::NoPadding,
     },
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use bytes::{Bytes, BytesMut};
+use ctr::Ctr128BE;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -52,26 +54,36 @@ impl Key {
         Some(Self { key, nonce })
     }
 
-    /// Decrypts `data` in place, its first byte being the file's byte at
-    /// `offset`.
-    pub fn apply(&self, data: &mut [u8], offset: u64) {
-        let aes = Aes128::new_from_slice(&self.key).expect("a 16-byte key");
-        let mut counter = offset / 16;
-        let mut skip = (offset % 16) as usize;
-        let mut at = 0;
-        while at < data.len() {
-            let mut block = aes::Block::default();
-            block[..8].copy_from_slice(&self.nonce);
-            block[8..].copy_from_slice(&counter.to_be_bytes());
-            aes.encrypt_block(&mut block);
-            for b in &block[skip..] {
-                let Some(byte) = data.get_mut(at) else { break };
-                *byte ^= b;
-                at += 1;
-            }
-            skip = 0;
-            counter += 1;
-        }
+    /// The file's bytes decrypted from `offset` on, which needn't be on a
+    /// block's edge: a resumed download starts anywhere. The counter block
+    /// is the nonce, then the block's number.
+    pub fn decrypting(&self, offset: u64) -> Decrypting {
+        let mut iv = [0; 16];
+        iv[..8].copy_from_slice(&self.nonce);
+        let mut ctr = Ctr128BE::<Aes128>::new(&self.key.into(), &iv.into());
+        ctr.seek(offset);
+        Decrypting(ctr)
+    }
+}
+
+/// One transfer's decryption: the key schedule set up once, the counter
+/// carried from chunk to chunk.
+pub struct Decrypting(Ctr128BE<Aes128>);
+
+impl Decrypting {
+    /// Decrypts the next `data` in place.
+    pub fn apply(&mut self, data: &mut [u8]) {
+        self.0.apply_keystream(data);
+    }
+
+    /// The next chunk decrypted, in its own buffer when nothing else holds
+    /// it, else in a copy.
+    pub fn chunk(&mut self, chunk: Bytes) -> Bytes {
+        let mut plain = chunk
+            .try_into_mut()
+            .unwrap_or_else(|shared| BytesMut::from(&shared[..]));
+        self.apply(&mut plain);
+        plain.freeze()
     }
 }
 
@@ -553,21 +565,145 @@ mod tests {
         assert_eq!(link("https://mega.nz/file/AbCdEfGh"), None);
     }
 
-    #[test]
-    fn decrypts_from_any_offset() {
-        let key = Key {
-            key: *b"0123456789abcdef",
-            nonce: *b"noncenon",
-        };
-        let plain: Vec<u8> = (0..1000u32).map(|i| (i * 7) as u8).collect();
-        let mut whole = plain.clone();
-        key.apply(&mut whole, 0);
-        assert_ne!(whole, plain);
-        // Decrypted in pieces that start mid-block, as a resumed download is.
-        let mut pieces = whole.clone();
-        for (start, end) in [(0, 5), (5, 37), (37, 600), (600, 1000)] {
-            key.apply(&mut pieces[start..end], start as u64);
+    /// How Haul decrypted before 0.11.8, block by block with the key schedule
+    /// made for each call: what the cipher held for a transfer has to match.
+    fn reference(key: &Key, data: &mut [u8], offset: u64) {
+        use aes::cipher::BlockCipherEncrypt;
+        let aes = Aes128::new_from_slice(&key.key).expect("a 16-byte key");
+        let mut counter = offset / 16;
+        let mut skip = (offset % 16) as usize;
+        let mut at = 0;
+        while at < data.len() {
+            let mut block = aes::Block::default();
+            block[..8].copy_from_slice(&key.nonce);
+            block[8..].copy_from_slice(&counter.to_be_bytes());
+            aes.encrypt_block(&mut block);
+            for b in &block[skip..] {
+                let Some(byte) = data.get_mut(at) else { break };
+                *byte ^= b;
+                at += 1;
+            }
+            skip = 0;
+            counter += 1;
         }
-        assert_eq!(pieces, plain);
+    }
+
+    fn keys() -> [Key; 3] {
+        let counting: [u8; 16] = std::array::from_fn(|i| i as u8 + 1);
+        [
+            Key {
+                key: [0; 16],
+                nonce: [0; 8],
+            },
+            Key {
+                key: counting,
+                nonce: counting[..8].try_into().unwrap(),
+            },
+            Key {
+                key: *b"0123456789abcdef",
+                nonce: [0xff; 8],
+            },
+        ]
+    }
+
+    /// The chunk sizes a transfer is cut into: odd ones, across blocks' edges.
+    const SIZES: [usize; 9] = [1, 15, 16, 17, 31, 33, 4097, 7, 65_537];
+
+    /// The cipher held for a transfer gives the same bytes as the reference,
+    /// for a whole file and for one resumed at any offset, in chunks of any
+    /// size.
+    #[test]
+    fn decrypts_like_the_reference_from_any_offset() {
+        let file: Vec<u8> = (0..200_003u32).map(|i| (i * 7 + i / 251) as u8).collect();
+        for key in keys() {
+            let mut expected = file.clone();
+            reference(&key, &mut expected, 0);
+            assert_ne!(expected, file);
+            let mut whole = file.clone();
+            key.decrypting(0).apply(&mut whole);
+            assert_eq!(whole, expected, "the whole file at once");
+            for offset in [0usize, 1, 15, 16, 17, 4095, 100_001] {
+                let mut rest = file[offset..].to_vec();
+                let mut d = key.decrypting(offset as u64);
+                let mut at = 0;
+                for size in SIZES.iter().cycle() {
+                    if at == rest.len() {
+                        break;
+                    }
+                    let end = (at + size).min(rest.len());
+                    d.apply(&mut rest[at..end]);
+                    at = end;
+                }
+                assert_eq!(rest, expected[offset..], "resumed at {offset}");
+            }
+            // Far into a large file, off a block's edge.
+            let offset = 5 * (1u64 << 30) + 7;
+            let mut expected = file[..70_000].to_vec();
+            reference(&key, &mut expected, offset);
+            let mut got = file[..70_000].to_vec();
+            let mut d = key.decrypting(offset);
+            for piece in got.chunks_mut(4099) {
+                d.apply(piece);
+            }
+            assert_eq!(got, expected, "resumed at {offset}");
+        }
+    }
+
+    /// A chunk nothing else holds is decrypted in its own buffer; a shared one
+    /// in a copy, which leaves the other holder's bytes as they were.
+    #[test]
+    fn decrypts_a_chunk_in_place_or_in_a_copy() {
+        let [_, key, _] = keys();
+        let file: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
+        let mut expected = file.clone();
+        reference(&key, &mut expected, 3);
+        let mut d = key.decrypting(3);
+        let own = Bytes::from(file[..500].to_vec());
+        let at = own.as_ptr();
+        let plain = d.chunk(own);
+        assert_eq!(plain.as_ptr(), at, "decrypted where it was");
+        let shared = Bytes::from(file[500..].to_vec());
+        let held = shared.clone();
+        let rest = d.chunk(shared);
+        assert_eq!(held, file[500..], "the other holder's bytes");
+        assert_eq!([plain, rest].concat(), expected);
+    }
+
+    /// Decrypting 1 GiB (or `HAUL_BENCH_MIB`) in 64 KiB chunks, as before
+    /// 0.11.8 (a copy of each chunk, then the reference) and now; run with
+    /// `cargo test --release -p haul-core --lib time_a_decryption --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn time_a_decryption() {
+        use std::{hint::black_box, time::Instant};
+        const CHUNK: usize = 64 * 1024;
+        let mib: usize = std::env::var("HAUL_BENCH_MIB")
+            .ok()
+            .and_then(|m| m.parse().ok())
+            .unwrap_or(1024);
+        let chunks = mib * 1024 * 1024 / CHUNK;
+        let [_, key, _] = keys();
+        // Each chunk a buffer of its own, as an answer's are, reused so the
+        // time is the decryption's.
+        let run = |decrypt: &mut dyn FnMut(Bytes, u64) -> Bytes| {
+            let mut buf = vec![0x5a; CHUNK];
+            let started = Instant::now();
+            for i in 0..chunks {
+                let plain = decrypt(Bytes::from(std::mem::take(&mut buf)), (i * CHUNK) as u64);
+                buf = Vec::from(black_box(plain));
+            }
+            let secs = started.elapsed().as_secs_f64();
+            (secs, mib as f64 / secs)
+        };
+        let (secs, speed) = run(&mut |chunk, at| {
+            let mut plain = chunk.to_vec();
+            reference(&key, &mut plain, at);
+            plain.into()
+        });
+        println!("before: {mib} MiB in {secs:.2}s, {speed:.0} MiB/s");
+        let mut d = key.decrypting(0);
+        let (secs, speed) = run(&mut |chunk, _| d.chunk(chunk));
+        println!("now:    {mib} MiB in {secs:.2}s, {speed:.0} MiB/s");
     }
 }
