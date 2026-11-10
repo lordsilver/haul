@@ -207,6 +207,8 @@ pub struct Shown {
 /// next pages.
 pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
     std::fs::create_dir_all(&p.profile).map_err(|e| format!("{}: {e}", p.profile.display()))?;
+    #[cfg(windows)]
+    end_stray(&p);
     // A port of our own choosing: with `--remote-debugging-port=0` (the
     // browser picks one) Turnstile asked for its box every time, with a
     // port named it passed (docs/decisions.md).
@@ -362,6 +364,83 @@ impl Job {
             return None;
         }
         Some(job)
+    }
+}
+
+/// Ends a browser still running on `p`'s profile. A browser started on a
+/// profile another one holds hands its page to that one and exits at once
+/// (exit code 0, its DevTools never open), so every pass of the site would
+/// fail. Only passes start browsers on these profiles, one at a time, so one
+/// found here is a stray: Edge registers its command line with Windows'
+/// restart manager, which starts it again after a reboot, outside any job of
+/// Haul's, and it keeps the profile from then on.
+///
+/// Chromium finds the browser holding a profile by a message-only window of
+/// class `Chrome_MessageWindow` titled with the profile's path; so does this.
+#[cfg(windows)]
+fn end_stray(p: &Pass<'_>) {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess,
+            WaitForSingleObject,
+        },
+        UI::WindowsAndMessaging::{FindWindowExW, GetWindowThreadProcessId, HWND_MESSAGE},
+    };
+
+    let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let class = wide("Chrome_MessageWindow".as_ref());
+    let title = wide(p.profile.as_os_str());
+    // Once more should one start just as the last ends.
+    for _ in 0..3 {
+        // SAFETY: both strings are NUL-terminated and outlive the call.
+        let window = unsafe {
+            FindWindowExW(
+                HWND_MESSAGE,
+                std::ptr::null_mut(),
+                class.as_ptr(),
+                title.as_ptr(),
+            )
+        };
+        if window.is_null() {
+            return;
+        }
+        let mut pid = 0;
+        // SAFETY: `window` is a window handle, `pid` a place for its process.
+        unsafe { GetWindowThreadProcessId(window, &mut pid) };
+        // SAFETY: no handle is inherited; the result is checked.
+        let process = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+        if pid == 0 || process.is_null() {
+            tracing::warn!(
+                item = %p.item,
+                "a browser (pid {pid}) holds {}, and Haul cannot end it: {}",
+                p.profile.display(),
+                std::io::Error::last_os_error()
+            );
+            return;
+        }
+        // SAFETY: `process` is open with the rights these take, and closed
+        // once, here.
+        let ended = unsafe {
+            let ended = TerminateProcess(process, 1) != 0;
+            WaitForSingleObject(process, 5_000);
+            CloseHandle(process);
+            ended
+        };
+        tracing::warn!(
+            item = %p.item,
+            "a browser left over (pid {pid}) held {}; ended: {ended}",
+            p.profile.display()
+        );
+        haul_core::debug::emit(
+            "pass",
+            json!({ "event": "stray", "id": p.item, "url": p.url, "profile": p.profile.display().to_string(), "pid": pid, "ended": ended }),
+        );
+        if !ended {
+            return;
+        }
     }
 }
 

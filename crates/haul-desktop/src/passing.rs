@@ -29,7 +29,7 @@ pub fn spawn(engine: Engine, browser: Arc<Browser>) {
                 && let Err(e) = browser.pass(&id, &page)
             {
                 tracing::warn!(item = %id, "opening {page}: {e}");
-                engine.page_wants_person(&id);
+                engine.page_not_passed(&id, &e);
             }
             // A closed window changes nothing in the engine: look again
             // now and then too.
