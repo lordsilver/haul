@@ -3,7 +3,10 @@
 //! ([`Engine::page_passes`]) gets it opened, one page at a time and each page
 //! once per wait, so the person is asked only when the check wants them.
 
-use std::{collections::HashSet, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 use super::{Engine, State, pages::takes_clearance};
 use crate::item::Status;
@@ -118,6 +121,18 @@ impl Engine {
     /// it. Then the files not started whose page is opened only to look them
     /// up ([`Engine::looks_up`]), after every row that waits.
     fn waiting_passes(&self, st: &State, now: Instant) -> Vec<Waiting> {
+        // The rows that wait on each page, found once for every page rather
+        // than among every row for each.
+        let mut waiting_on: HashMap<&str, Vec<&crate::item::Item>> = HashMap::new();
+        for it in st.items.values() {
+            for page in &it.manual_urls {
+                waiting_on.entry(page.as_str()).or_default().push(it);
+            }
+        }
+        let passes_now = |page: &str| {
+            let rows = waiting_on.get(page).into_iter().flatten().copied();
+            self.passes_now_among(st, page, now, rows)
+        };
         let waiting = st
             .items
             .values()
@@ -127,7 +142,7 @@ impl Engine {
                     .mirrors
                     .iter()
                     .filter(|m| it.manual_urls.contains(m.as_str()))
-                    .find(|m| self.passes_now(st, m, now))?;
+                    .find(|m| passes_now(m))?;
                 Some(Waiting {
                     id: it.id.clone(),
                     page: page.url.clone(),
@@ -136,9 +151,7 @@ impl Engine {
                 })
             });
         let looked_up = st.items.values().filter_map(|it| {
-            let page = self
-                .look_up_page(st, it)
-                .filter(|m| self.passes_now(st, m, now))?;
+            let page = self.look_up_page(st, it).filter(|m| passes_now(m))?;
             Some(Waiting {
                 id: it.id.clone(),
                 page: page.to_string(),

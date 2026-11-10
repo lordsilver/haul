@@ -15,6 +15,17 @@ use crate::{
     item::{Item, Mirror, Status, Trouble},
 };
 
+/// What [`Engine::pick`] works out about a row's mirrors before choosing.
+struct Candidates {
+    mirrors: Vec<Mirror>,
+    /// The host of a page the desktop app passes for the row, in turn.
+    pass_host: Option<String>,
+}
+
+/// A rule's say in [`Engine::pick`]: `None` when it does not apply and the
+/// next rule is asked, else the choice, a mirror or none for now.
+type Say = Option<Option<(String, Exit)>>;
+
 impl Engine {
     // ---- scheduler
 
@@ -213,7 +224,7 @@ impl Engine {
                             if it.tentative {
                                 continue;
                             }
-                            if it.status == Status::Captcha && !it.page_retrying {
+                            if it.status == Status::Captcha && !it.page_retrying() {
                                 events.push(Event::NeedsUser {
                                     id: id.clone(),
                                     name: display_name(it),
@@ -238,9 +249,32 @@ impl Engine {
 
     /// The best mirror whose host has a free slot, ranked by measured speed.
     /// Hosts the user turned off are never picked. Parks the item when no
-    /// mirror is left.
+    /// mirror is left. Each rule below is asked in turn; the first that has
+    /// a say decides, a mirror or none for now.
     fn pick(&self, st: &mut State, id: &str, now: Instant) -> Option<(String, Exit)> {
         let cfg = self.cfg();
+        let mut c = self.candidates(st, id, &cfg, now)?;
+        if let Some(say) = self.back_to_where_it_ran_faster(st, id, &c, &cfg, now) {
+            return say;
+        }
+        self.leave_mirrors_that_slowed_it(st, id, &mut c, now);
+        self.handed_back(st, id, &c, &cfg, now)
+            .or_else(|| self.picked_by_the_user(st, id, &c, &cfg, now))
+            .or_else(|| self.preferred(st, id, &c, &cfg, now))
+            .unwrap_or_else(|| self.fastest(st, id, &c, &cfg, now))
+    }
+
+    /// The mirrors row `id` may start on, and the host of a page the desktop
+    /// app passes for it in turn; `None` when it has none left, the row
+    /// parked: waiting for a host, a person, a host turned back on, or
+    /// failed.
+    fn candidates(
+        &self,
+        st: &mut State,
+        id: &str,
+        cfg: &crate::Config,
+        now: Instant,
+    ) -> Option<Candidates> {
         let pages = self.pages_pass();
         let off = |url: &str| cfg.is_disabled(&hosts::host_of(url));
         let it = &st.items[id];
@@ -254,9 +288,9 @@ impl Engine {
         let others = it
             .mirrors
             .iter()
-            .any(|m| usable(m) && !cfg.is_last_resort(m, pages));
+            .any(|m| usable(m) && !cfg.is_last_resort_host(&m.host, pages));
         let wanted = |url: &str| !(others && cfg.is_last_resort(url, pages));
-        let pass_host = (pages && !it.page_wants_person)
+        let pass_host = (pages && !it.page_wants_person())
             .then(|| {
                 it.manual_urls
                     .iter()
@@ -270,7 +304,7 @@ impl Engine {
                     .map(|m| hosts::host_of(m))
             })
             .flatten();
-        let mut candidates: Vec<Mirror> = it
+        let candidates: Vec<Mirror> = it
             .mirrors
             .iter()
             .filter(|m| usable(m) && !it.manual_urls.contains(m.as_str()) && wanted(m))
@@ -293,7 +327,7 @@ impl Engine {
             let retry_at = it
                 .retry_at
                 .or_else(|| {
-                    it.page_wants_person
+                    it.page_wants_person()
                         .then(|| self.page_retry_at(st, it, now))
                         .flatten()
                 })
@@ -333,99 +367,160 @@ impl Engine {
             }
             return None;
         }
-        // A row doesn't go back to a mirror that slowed it while another could
-        // take it, whatever that host's cooldown says, unless the user picked
-        // that host.
-        let slow_on = st.items[id].slow_on.clone();
-        let picked = st.items[id].prefer.clone();
-        let mut elsewhere = Vec::new();
-        for m in &candidates {
-            let may_go = !slow_on.contains_key(m.as_str()) || picked.as_deref() == Some(&*m.host);
-            if may_go && !self.host_cooling(st, &m.host, now) {
-                elsewhere.push(m.clone());
-            }
+        Some(Candidates {
+            mirrors: candidates,
+            pass_host,
+        })
+    }
+
+    /// Going back to a mirror it left, the one it went on to being far
+    /// slower: that one, though its host slows the address.
+    fn back_to_where_it_ran_faster(
+        &self,
+        st: &mut State,
+        id: &str,
+        c: &Candidates,
+        cfg: &crate::Config,
+        now: Instant,
+    ) -> Say {
+        let m = st.items.get_mut(id).and_then(|it| it.back_to.take())?;
+        if !c.mirrors.iter().any(|c| *c == m) {
+            return None;
         }
-        // Going back to a mirror it left, the one it went on to being far
-        // slower: that one, though its host slows the address.
-        if let Some(m) = st.items.get_mut(id).and_then(|it| it.back_to.take())
-            && candidates.iter().any(|c| *c == m)
-        {
-            let name = hosts::host_of(&m);
-            let exits = self.exits_for(&name, st);
-            if let Some(exit) = st.exit_while_slowing(&name, &exits, &cfg, now) {
-                tracing::info!(item = %id, "back to {name}: where it went was far slower");
-                return Some((m, exit));
-            }
-        }
+        let name = hosts::host_of(&m);
+        let exits = self.exits_for(&name, st);
+        let exit = st.exit_while_slowing(&name, &exits, cfg, now)?;
+        tracing::info!(item = %id, "back to {name}: where it went was far slower");
+        Some(Some((m, exit)))
+    }
+
+    /// A row doesn't go back to a mirror that slowed it while another could
+    /// take it, whatever that host's cooldown says, unless the user picked
+    /// that host.
+    fn leave_mirrors_that_slowed_it(&self, st: &State, id: &str, c: &mut Candidates, now: Instant) {
+        let it = &st.items[id];
+        let elsewhere: Vec<Mirror> = c
+            .mirrors
+            .iter()
+            .filter(|m| {
+                let may_go =
+                    !it.slow_on.contains_key(m.as_str()) || it.prefer.as_deref() == Some(&*m.host);
+                may_go && !self.host_cooling(st, &m.host, now)
+            })
+            .cloned()
+            .collect();
         if !elsewhere.is_empty() {
-            candidates = elsewhere;
+            c.mirrors = elsewhere;
         }
-        // A file handed back for one of its mirrors goes from that mirror's
-        // host, which is the one serving it wherever its address points: waited
-        // for when only busy, passed over while it cools down.
-        let handed = {
-            let it = &st.items[id];
-            (it.manual && it.pre.is_some())
-                .then(|| it.pre_for.clone())
-                .flatten()
-                .filter(|m| candidates.iter().any(|c| c == m))
-        };
-        if let Some(m) = handed {
-            let name = hosts::host_of(&m);
-            if !self.host_cooling(st, &name, now) {
-                return self.free_exit(st, &name, &cfg, now).map(|exit| (m, exit));
-            }
+    }
+
+    /// A file handed back for one of its mirrors goes from that mirror's
+    /// host, which is the one serving it wherever its address points: waited
+    /// for when only busy, passed over while it cools down.
+    fn handed_back(
+        &self,
+        st: &mut State,
+        id: &str,
+        c: &Candidates,
+        cfg: &crate::Config,
+        now: Instant,
+    ) -> Say {
+        let it = &st.items[id];
+        let m = (it.manual && it.pre.is_some())
+            .then(|| it.pre_for.clone())
+            .flatten()
+            .filter(|m| c.mirrors.iter().any(|c| c == m))?;
+        let name = hosts::host_of(&m);
+        if self.host_cooling(st, &name, now) {
+            return None;
         }
-        // The host the user picked for this file, while it has it: waited
-        // for when only busy, passed over while it cools down or once its
-        // link failed, the others standing by.
-        if let Some(want) = st.items[id].prefer.clone()
-            && let Some(m) = candidates.iter().find(|m| *m.host == *want)
-            && !self.host_cooling(st, &want, now)
-        {
-            return self
-                .free_exit(st, &want, &cfg, now)
-                .map(|exit| (m.url.clone(), exit));
+        Some(self.free_exit(st, &name, cfg, now).map(|exit| (m, exit)))
+    }
+
+    /// The host the user picked for this file, while it has it: waited for
+    /// when only busy, passed over while it cools down or once its link
+    /// failed, the others standing by.
+    fn picked_by_the_user(
+        &self,
+        st: &mut State,
+        id: &str,
+        c: &Candidates,
+        cfg: &crate::Config,
+        now: Instant,
+    ) -> Say {
+        let want = st.items[id].prefer.clone()?;
+        let m = c.mirrors.iter().find(|m| *m.host == *want)?;
+        if self.host_cooling(st, &want, now) {
+            return None;
         }
-        // Preferred hosts first, in the user's order. One that is only busy
-        // is waited for; one cooling down is passed over like any other. A
-        // preferred host whose page the desktop app passes takes its place in
-        // that order: the row waits for the page's turn rather than go to a
-        // host after it.
-        let mut preferred: Vec<(usize, Mirror)> = Vec::new();
-        for m in &candidates {
+        Some(
+            self.free_exit(st, &want, cfg, now)
+                .map(|exit| (m.url.clone(), exit)),
+        )
+    }
+
+    /// Preferred hosts first, in the user's order. One that is only busy is
+    /// waited for; one cooling down is passed over like any other. A
+    /// preferred host whose page the desktop app passes takes its place in
+    /// that order: the row waits for the page's turn rather than go to a
+    /// host after it.
+    fn preferred(
+        &self,
+        st: &mut State,
+        id: &str,
+        c: &Candidates,
+        cfg: &crate::Config,
+        now: Instant,
+    ) -> Say {
+        let mut preferred: Vec<(usize, &Mirror)> = Vec::new();
+        for m in &c.mirrors {
             if let Some(rank) = cfg.preference(&m.host)
                 && !self.host_cooling(st, &m.host, now)
             {
-                preferred.push((rank, m.clone()));
+                preferred.push((rank, m));
             }
         }
-        let pass_rank = pass_host.as_deref().and_then(|h| cfg.preference(h));
-        if !preferred.is_empty() || pass_rank.is_some() {
-            preferred.sort_by_key(|(rank, _)| *rank);
-            for (rank, m) in preferred {
-                if pass_rank.is_some_and(|page| page < rank) {
-                    break;
-                }
-                if let Some(exit) = self.free_exit(st, &m.host, &cfg, now) {
-                    return Some((m.url, exit));
-                }
-            }
-            if pass_rank.is_some()
-                && let Some(it) = st.items.get_mut(id)
-            {
-                // Shown as passing until its page's turn comes.
-                it.status = Status::Captcha;
-            }
+        let pass_rank = c.pass_host.as_deref().and_then(|h| cfg.preference(h));
+        if preferred.is_empty() && pass_rank.is_none() {
             return None;
         }
+        preferred.sort_by_key(|(rank, _)| *rank);
+        for (rank, m) in preferred {
+            if pass_rank.is_some_and(|page| page < rank) {
+                break;
+            }
+            if let Some(exit) = self.free_exit(st, &m.host, cfg, now) {
+                return Some(Some((m.url.clone(), exit)));
+            }
+        }
+        if pass_rank.is_some()
+            && let Some(it) = st.items.get_mut(id)
+        {
+            // Shown as passing until its page's turn comes.
+            it.status = Status::Captcha;
+        }
+        Some(None)
+    }
+
+    /// The fastest host with a free slot, as measured; a page the desktop
+    /// app passes in turn comes before a host Haul knows nothing of or one
+    /// measured slower. With none free, [`Engine::when_all_cool_down`].
+    fn fastest(
+        &self,
+        st: &mut State,
+        id: &str,
+        c: &Candidates,
+        cfg: &crate::Config,
+        now: Instant,
+    ) -> Option<(String, Exit)> {
+        let pass_host = &c.pass_host;
         let pass_speed = pass_host
             .as_ref()
             .map(|h| st.host(h).ema)
             .unwrap_or_default();
         let mut best: Option<(Mirror, Exit, f64)> = None;
         let mut held = false;
-        for m in candidates.iter().cloned() {
+        for m in c.mirrors.iter().cloned() {
             let name = m.host.clone();
             if pass_host.is_some() {
                 let known = hosts::known(&name).is_some();
@@ -435,7 +530,7 @@ impl Engine {
                     continue;
                 }
             }
-            let Some(exit) = self.free_exit(st, &name, &cfg, now) else {
+            let Some(exit) = self.free_exit(st, &name, cfg, now) else {
                 continue;
             };
             let score = st.host(&name).score(now);
@@ -450,7 +545,7 @@ impl Engine {
             }
         }
         if best.is_none() && !held {
-            return self.when_all_cool_down(st, id, &candidates, pass_host.is_some(), &cfg, now);
+            return self.when_all_cool_down(st, id, &c.mirrors, pass_host.is_some(), cfg, now);
         }
         best.map(|(m, exit, _)| (m.url, exit))
     }

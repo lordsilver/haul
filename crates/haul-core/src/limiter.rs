@@ -19,17 +19,17 @@ impl Limiter {
     }
 
     pub fn rate(&self) -> f64 {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).0
+        crate::lock::held(&self.state).0
     }
 
     pub fn set_rate(&self, rate: f64) {
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = (rate.max(0.0), Instant::now());
+        *crate::lock::held(&self.state) = (rate.max(0.0), Instant::now());
     }
 
     /// Waits until `n` more bytes fit under the cap.
     pub async fn throttle(&self, n: usize) {
         let delay = {
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = crate::lock::held(&self.state);
             if s.0 <= 0.0 {
                 return;
             }

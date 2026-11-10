@@ -11,7 +11,7 @@ use std::{
 use super::{AUTO_RETRIES, Engine, State};
 use crate::{
     hosts::{self, Entry},
-    item::{Item, Mirror, Status, Trouble},
+    item::{Item, Mirror, PageTurn, Status, Trouble},
 };
 
 /// How long a file waits before its host's page is passed again, after the
@@ -227,14 +227,18 @@ impl Engine {
         let mut st = self.lock();
         let mut tell = true;
         if let Some(it) = st.items.get_mut(id) {
-            tell = !it.page_retrying;
-            it.page_wants_person = true;
+            tell = !it.page_retrying();
+            it.page = if it.page_retrying() {
+                PageTurn::WithPersonAgain
+            } else {
+                PageTurn::WithPerson
+            };
             if it.status == Status::Captcha && it.task.is_none() {
                 // Held for that page: its other mirrors may go now, which
                 // plans the next try if they come to nothing. A wrapper has
                 // none and waits for the person from now on, downloads paused
                 // or not, and a try of its own had nothing else left either.
-                if it.wrapper || it.page_retrying {
+                if it.wrapper || it.page_retrying() {
                     let at = self.page_retry_at(&st, &st.items[id], Instant::now());
                     if let Some(it) = st.items.get_mut(id) {
                         it.retry_at = at;
@@ -299,8 +303,8 @@ impl Engine {
         let Some(it) = st.items.get(id) else {
             return false;
         };
-        let came_due = it.page_retrying
-            && !it.page_wants_person
+        let came_due = it.page_retrying()
+            && !it.page_wants_person()
             && it.status == Status::Captcha
             && it.task.is_none();
         if !came_due && it.retry_at.is_none() {
@@ -308,7 +312,7 @@ impl Engine {
         }
         if came_due && let Some(it) = st.items.get_mut(id) {
             tracing::info!(item = %id, "its page is open with a person: its try on its own waits");
-            it.page_wants_person = true;
+            it.page = PageTurn::WithPersonAgain;
             it.auto_retries = it.auto_retries.saturating_sub(1);
         }
         let at = self.page_retry_at(st, &st.items[id], Instant::now());
@@ -738,7 +742,7 @@ impl Engine {
         };
         let on_host = |m: &&Mirror| *m.host == *host;
         let passed = || {
-            (self.pages_pass() && !it.page_wants_person)
+            (self.pages_pass() && !it.page_wants_person())
                 .then(|| {
                     open().find(|m| st.passes(m) && self.pass_held_for(st, it, m, now).is_none())
                 })
@@ -766,9 +770,21 @@ impl Engine {
 
     /// [`Engine::page_passes`] under the lock.
     pub(super) fn passes_now(&self, st: &State, url: &str, now: Instant) -> bool {
-        let free = || {
+        self.passes_now_among(st, url, now, st.items.values())
+    }
+
+    /// [`Engine::passes_now`], asking only `rows` (those that wait on page
+    /// `url`, when the caller knows them) whether one is free to go.
+    pub(super) fn passes_now_among<'a>(
+        &self,
+        st: &State,
+        url: &str,
+        now: Instant,
+        mut rows: impl Iterator<Item = &'a Item>,
+    ) -> bool {
+        let mut free = || {
             self.pass_held_until(st, url, now).is_none()
-                || st.items.values().any(|it| {
+                || rows.any(|it| {
                     it.manual_urls.contains(url) && self.pass_held_for(st, it, url, now).is_none()
                 })
         };
@@ -779,7 +795,7 @@ impl Engine {
     /// of its pages by itself, in turn, first: nothing for the person yet.
     pub(super) fn passing(&self, st: &State, it: &Item, now: Instant) -> bool {
         self.pages_pass()
-            && !it.page_wants_person
+            && !it.page_wants_person()
             && it
                 .manual_urls
                 .iter()

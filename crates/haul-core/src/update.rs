@@ -139,11 +139,7 @@ fn sha256_of(digest: &str) -> Option<String> {
 
 /// Whether `bytes` are what the hexadecimal SHA-256 `want` says.
 fn matches_sha256(bytes: &[u8], want: &str) -> bool {
-    let got: String = Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    got == want
+    crate::hosts::to_hex(&Sha256::digest(bytes)) == want
 }
 
 /// Downloads `update`'s setup program into `dir` and checks it against the

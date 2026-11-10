@@ -328,3 +328,34 @@ async fn every_kind_of_site_comes_to_what_it_should() {
     assert_eq!(failed, 0, "{failed} of the suite's rows failed:\n{table}");
     println!("{table}");
 }
+
+/// How long unpacking an archive takes, for comparing changes to how
+/// archives are read. Not run with the rest: give it an archive whose parts
+/// are in `HAUL_BENCH_PARTS` (paths, `;` between them) and run it with
+/// `--ignored --nocapture`. What it unpacks is deleted afterwards.
+#[test]
+#[ignore]
+fn time_an_extraction() {
+    let Ok(list) = std::env::var("HAUL_BENCH_PARTS") else {
+        return;
+    };
+    let parts: Vec<haul_core::extract::Part> = list
+        .split(';')
+        .map(|p| {
+            let path = std::path::PathBuf::from(p);
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            haul_core::extract::Part { path, name }
+        })
+        .collect();
+    let progress = haul_core::extract::Progress::default();
+    let started = std::time::Instant::now();
+    let out = haul_core::extract::extract(&parts, &[], &progress).unwrap();
+    println!(
+        "unpacked {} bytes in {:?}",
+        progress.done.load(std::sync::atomic::Ordering::Relaxed),
+        started.elapsed()
+    );
+    for path in out.placed {
+        let _ = std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir_all(&path));
+    }
+}

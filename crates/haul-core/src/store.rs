@@ -16,6 +16,8 @@ use crate::{engine::StartError, item::Item};
 
 pub(crate) const QUEUE: &str = "queue.json";
 pub(crate) const HOSTS: &str = "hosts.json";
+/// The queue as it was at the last start that read it whole.
+pub(crate) const QUEUE_BACKUP: &str = "queue.bak.json";
 /// Present while downloads are paused, so a restart keeps them paused.
 const PAUSED: &str = "paused";
 const LOCK: &str = "haul.lock";
@@ -66,8 +68,16 @@ fn read<T: DeserializeOwned + Default>(path: PathBuf) -> Result<T, StartError> {
     }
 }
 
+/// The queue, and a copy of it as it was read ([`QUEUE_BACKUP`]): a queue
+/// damaged later then has a way back that is not an empty one.
 pub(crate) fn load_queue(dir: &Path) -> Result<IndexMap<String, Item>, StartError> {
-    read(dir.join(QUEUE))
+    let queue = read(dir.join(QUEUE))?;
+    if dir.join(QUEUE).exists()
+        && let Err(e) = std::fs::copy(dir.join(QUEUE), dir.join(QUEUE_BACKUP))
+    {
+        tracing::warn!("keeping a copy of the queue: {e}");
+    }
+    Ok(queue)
 }
 
 /// What Haul learned about a host, kept across restarts.
@@ -94,12 +104,6 @@ pub(crate) fn load_hosts(dir: &Path) -> BTreeMap<String, SavedHost> {
         tracing::warn!("starting without the saved host speeds: {e}");
         BTreeMap::new()
     })
-}
-
-/// Writes `value` as JSON to `dir/name`; see [`write_atomic`].
-pub(crate) fn write(dir: &Path, name: &str, value: &impl Serialize) -> io::Result<()> {
-    let bytes = serde_json::to_vec(value).map_err(io::Error::other)?;
-    write_atomic(&dir.join(name), &bytes)
 }
 
 /// Replaces `path` through a temporary file, synced before the rename, so a

@@ -1893,14 +1893,16 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "haul-core"
-version = "0.11.3"
+version = "0.11.4"
 dependencies = [
  "aes",
  "axum",
  "base64 0.23.1",
+ "bytes",
  "cbc",
  "dirs",
  "futures-util",
+ "haul-core",
  "iana-time-zone",
  "indexmap 2.14.2",
  "md-5",
@@ -1931,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "haul-desktop"
-version = "0.11.3"
+version = "0.11.4"
 dependencies = [
  "arboard",
  "base64 0.23.1",
@@ -1953,7 +1955,7 @@ dependencies = [
 
 [[package]]
 name = "haul-web"
-version = "0.11.3"
+version = "0.11.4"
 dependencies = [
  "axum",
  "clap",

@@ -112,7 +112,7 @@ impl Browser {
     }
 
     fn bridge_to(&self, proxy: &str) -> Result<SocketAddr, String> {
-        let mut slot = self.bridge.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slot = haul_core::lock::held(&self.bridge);
         if slot.is_none() {
             *slot = Some(Bridge::start().map_err(|e| format!("proxy bridge: {e}"))?);
         }
@@ -221,28 +221,26 @@ impl Browser {
             passes(&all).remove(&id);
             match outcome {
                 Ok(chromium::Outcome::Files { files, agent, page }) => {
-                    // A wrapper's page Haul finds what it holds in unwraps
-                    // to that, which starts lookups: tasks, which need the
-                    // async runtime this thread is outside of.
-                    if let Some(html) = &page
-                        && tauri::async_runtime::block_on(async { engine.page_shown(&id, html) })
-                            > 0
-                    {
-                        return;
-                    }
-                    hand_over(
+                    let said = PageSaid::Files {
+                        files,
+                        shown: page,
+                        referer: Some(url.clone()),
+                        agent,
+                    };
+                    tell_engine(&app, &engine, &id, &url, said);
+                }
+                Ok(chromium::Outcome::Gone(reason)) => {
+                    tell_engine(&app, &engine, &id, &url, PageSaid::Gone(reason));
+                }
+                Ok(chromium::Outcome::Failed(reason)) => engine.page_failed(&id, &reason),
+                Ok(chromium::Outcome::Later { reason, seconds }) => {
+                    tell_engine(
                         &app,
                         &engine,
                         &id,
-                        files,
-                        Some(url.as_str()),
-                        agent.as_deref(),
+                        &url,
+                        PageSaid::Later { reason, seconds },
                     );
-                }
-                Ok(chromium::Outcome::Gone(reason)) => engine.page_gone(&id, &reason),
-                Ok(chromium::Outcome::Failed(reason)) => engine.page_failed(&id, &reason),
-                Ok(chromium::Outcome::Later { reason, seconds }) => {
-                    engine.page_later(&id, &url, &reason, seconds);
                 }
                 Ok(chromium::Outcome::Cleared { cookies, agent }) => {
                     tracing::info!(item = %id, "{host} let the browser past its check: Haul reads {url} itself");
@@ -500,7 +498,7 @@ impl Desktop for Browser {
         let passes: serde_json::Map<String, serde_json::Value> = passes(&self.passes)
             .iter()
             .map(|(id, h)| {
-                let mut info = h.info.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let mut info = haul_core::lock::held(&h.info).clone();
                 if let serde_json::Value::Object(o) = &mut info {
                     o.insert(
                         "stopping".into(),
@@ -563,38 +561,11 @@ impl Desktop for Browser {
     }
 
     fn pick_folder(&self, start: &std::path::Path) -> Option<std::path::PathBuf> {
-        use tauri_plugin_dialog::DialogExt;
-        let mut dialog = self
-            .app
-            .dialog()
-            .file()
-            .set_title("Download folder")
-            .set_directory(start);
-        if let Some(window) = self.app.get_webview_window(crate::MAIN) {
-            dialog = dialog.set_parent(&window);
-        }
-        dialog.blocking_pick_folder()?.into_path().ok()
+        crate::dialogs::pick_folder(&self.app, start)
     }
 
     fn pick_save(&self, start: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-        use tauri_plugin_dialog::DialogExt;
-        let mut dialog = self
-            .app
-            .dialog()
-            .file()
-            .set_title("Save report")
-            .set_directory(start)
-            .set_file_name(name);
-        if let Some(ext) = std::path::Path::new(name)
-            .extension()
-            .and_then(|e| e.to_str())
-        {
-            dialog = dialog.add_filter(ext.to_ascii_uppercase(), &[ext]);
-        }
-        if let Some(window) = self.app.get_webview_window(crate::MAIN) {
-            dialog = dialog.set_parent(&window);
-        }
-        dialog.blocking_save_file()?.into_path().ok()
+        crate::dialogs::pick_save(&self.app, start, name)
     }
 
     /// Tauri's installer installs over this version (`/UPDATE`, which skips
@@ -602,7 +573,7 @@ impl Desktop for Browser {
     /// anything (`/P`), and starts Haul again when done (`/R`). Haul closes
     /// first, as its files are being replaced.
     fn install_update(&self, installer: &std::path::Path) -> Result<(), String> {
-        run_installer(installer, "/P /UPDATE /R")?;
+        crate::dialogs::run_installer(installer, "/P /UPDATE /R")?;
         let app = self.app.clone();
         std::thread::spawn(move || {
             // Long enough for the answer to reach the page.
@@ -613,58 +584,62 @@ impl Desktop for Browser {
     }
 }
 
-/// Starts setup program `installer` with `args` the way Explorer does: one
-/// that asks for administrator rights (as Haul's does on an administrator's
-/// account) gets Windows' permission prompt, where starting it as a plain
-/// process fails with "The requested operation requires elevation" (error
-/// 740). Returns once it has started, or once the person declined.
-#[cfg(windows)]
-fn run_installer(installer: &std::path::Path, args: &str) -> Result<(), String> {
-    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
-
-    use windows_sys::Win32::UI::{
-        Shell::{SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW},
-        WindowsAndMessaging::SW_SHOWNORMAL,
-    };
-
-    /// ERROR_CANCELLED: the person said no to the permission prompt.
-    const DECLINED: i32 = 1223;
-    let wide = |s: &OsStr| s.encode_wide().chain([0]).collect::<Vec<u16>>();
-    let (verb, file, params) = (
-        wide(OsStr::new("open")),
-        wide(installer.as_os_str()),
-        wide(OsStr::new(args)),
-    );
-    // SAFETY: a plain C struct, all zeroes being its documented empty value;
-    // the strings it points at outlive the call.
-    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-    info.fMask = SEE_MASK_NOASYNC;
-    info.lpVerb = verb.as_ptr();
-    info.lpFile = file.as_ptr();
-    info.lpParameters = params.as_ptr();
-    info.nShow = SW_SHOWNORMAL;
-    // SAFETY: `info` is filled in as the call expects.
-    if unsafe { ShellExecuteExW(&mut info) } != 0 {
-        return Ok(());
-    }
-    let e = std::io::Error::last_os_error();
-    if e.raw_os_error() == Some(DECLINED) {
-        return Err("the update was not installed: Windows' permission prompt was declined".into());
-    }
-    Err(format!("{}: {e}", installer.display()))
+/// What a page told, wherever it was open (passed out of sight, or in
+/// Haul's own window): said to the engine the same way by [`tell_engine`].
+enum PageSaid {
+    /// It handed over files, with the cookies each goes with; or, for a
+    /// wrapper's page Haul reads (`shown`), what it holds.
+    Files {
+        files: Vec<chromium::File>,
+        shown: Option<String>,
+        referer: Option<String>,
+        agent: Option<String>,
+    },
+    /// Its file is no more.
+    Gone(String),
+    /// It could not hand out its link this time.
+    Later {
+        reason: String,
+        seconds: Option<u64>,
+    },
 }
 
-#[cfg(not(windows))]
-fn run_installer(_installer: &std::path::Path, _args: &str) -> Result<(), String> {
-    Err("only the Windows app installs updates itself".into())
+/// Tells the engine what page `url` of row `id` said. Answers whether the
+/// row has what it waited for, so its page can go.
+fn tell_engine(app: &AppHandle, engine: &Engine, id: &str, url: &str, said: PageSaid) -> bool {
+    match said {
+        PageSaid::Files {
+            files,
+            shown,
+            referer,
+            agent,
+        } => {
+            // A wrapper's page Haul finds what it holds in unwraps to that,
+            // which starts lookups: tasks, which need the async runtime the
+            // caller's thread is outside of.
+            if let Some(html) = &shown
+                && tauri::async_runtime::block_on(async { engine.page_shown(id, html) }) > 0
+            {
+                return true;
+            }
+            hand_over(app, engine, id, files, referer.as_deref(), agent.as_deref())
+        }
+        PageSaid::Gone(reason) => {
+            engine.page_gone(id, &reason);
+            true
+        }
+        PageSaid::Later { reason, seconds } => {
+            engine.page_later(id, url, &reason, seconds);
+            true
+        }
+    }
 }
 
 /// Whether to tell the person that `host`'s check wants them: once a minute
 /// at most, however many of its pages ask (a page's pastes, say).
 fn first_ask_in_a_while(host: &str) -> bool {
     static LAST: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Mutex::default);
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let mut last = haul_core::lock::held(&LAST);
     let now = Instant::now();
     if last
         .get(host)
@@ -838,11 +813,11 @@ fn hand_over(
 fn passes(
     all: &Mutex<HashMap<String, chromium::Handle>>,
 ) -> MutexGuard<'_, HashMap<String, chromium::Handle>> {
-    all.lock().unwrap_or_else(|e| e.into_inner())
+    haul_core::lock::held(all)
 }
 
 fn lock(stay: &Mutex<Stay>) -> MutexGuard<'_, Stay> {
-    stay.lock().unwrap_or_else(|e| e.into_inner())
+    haul_core::lock::held(stay)
 }
 
 /// Sends the window back to the host's page: back in its history first,
@@ -955,15 +930,24 @@ impl Capture {
     /// The page says its file is gone: the mirror failed, and the window
     /// closes without asking anyone.
     fn gone(&self, reason: &str) {
-        self.engine.page_gone(&self.id, reason);
+        tell_engine(
+            &self.app,
+            &self.engine,
+            &self.id,
+            &self.page,
+            PageSaid::Gone(reason.to_string()),
+        );
         self.close_soon();
     }
 
     /// The page could not hand out its link this time: it is tried again
     /// later, and the window closes without asking anyone.
     fn later(&self, reason: &str, seconds: Option<u64>) {
-        self.engine
-            .page_later(&self.id, &self.page, reason, seconds);
+        let said = PageSaid::Later {
+            reason: reason.to_string(),
+            seconds,
+        };
+        tell_engine(&self.app, &self.engine, &self.id, &self.page, said);
         self.close_soon();
     }
 
@@ -989,17 +973,6 @@ impl Capture {
         // Reading cookies needs the main thread, which is running this handler.
         std::thread::spawn(move || {
             let window = this.app.get_webview_window(&this.label);
-            // Unwrapping starts the files' lookups, which need the async
-            // runtime this thread is outside of.
-            if let Some(html) = &shown
-                && tauri::async_runtime::block_on(async { this.engine.page_shown(&this.id, html) })
-                    > 0
-            {
-                if let Some(window) = window {
-                    let _ = window.close();
-                }
-                return;
-            }
             let page = window.as_ref().and_then(|w| w.url().ok());
             let cookie = |link: &Url| -> Option<String> {
                 let cookies = window.as_ref()?.cookies_for_url(link.clone()).ok()?;
@@ -1020,15 +993,14 @@ impl Capture {
                     size: file.size,
                 })
                 .collect();
-            let referer = page.as_ref().map(Url::as_str);
-            if hand_over(
-                &this.app,
-                &this.engine,
-                &this.id,
+            let said = PageSaid::Files {
                 files,
-                referer,
-                this.user_agent.as_deref(),
-            ) && let Some(window) = window
+                shown,
+                referer: page.as_ref().map(Url::to_string),
+                agent: this.user_agent.clone(),
+            };
+            if tell_engine(&this.app, &this.engine, &this.id, &this.page, said)
+                && let Some(window) = window
             {
                 let _ = window.close();
             }

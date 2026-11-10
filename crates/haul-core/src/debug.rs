@@ -122,22 +122,17 @@ impl Bus {
 
     /// The last signals sent, oldest first.
     pub fn recent(&self) -> Vec<Value> {
-        self.recent
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .cloned()
-            .collect()
+        crate::lock::held(&self.recent).iter().cloned().collect()
     }
 
     /// Whether `sent` is the token.
     pub fn accepts(&self, sent: Option<&str>) -> bool {
-        let token = self.token.lock().unwrap_or_else(|e| e.into_inner());
+        let token = crate::lock::held(&self.token);
         !token.is_empty() && sent == Some(token.as_str())
     }
 
     fn set_on(&self, on: bool) {
-        let mut token = self.token.lock().unwrap_or_else(|e| e.into_inner());
+        let mut token = crate::lock::held(&self.token);
         if on == self.on.load(Ordering::Relaxed) {
             return;
         }
@@ -149,10 +144,7 @@ impl Bus {
         } else {
             token.clear();
             let _ = std::fs::remove_file(&path);
-            self.recent
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clear();
+            crate::lock::held(&self.recent).clear();
         }
         self.on.store(on, Ordering::Relaxed);
         drop(token);
@@ -186,7 +178,7 @@ fn signal_of(kind: &str, fields: Value) -> Value {
 fn send(signal: Value) {
     let Some(bus) = bus() else { return };
     {
-        let mut recent = bus.recent.lock().unwrap_or_else(|e| e.into_inner());
+        let mut recent = crate::lock::held(&bus.recent);
         if recent.len() == RECENT {
             recent.pop_front();
         }

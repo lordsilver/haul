@@ -20,7 +20,8 @@ verify_existing = false         # compare files already there with the host's ch
 auto_extract = false            # unpack an archive in parts once the last part is downloaded
 delete_after_extract = false    # an archive's parts go to the Recycle Bin once it is unpacked without error
 archive_passwords = []          # tried in order on an encrypted archive, after the one typed for it
-detailed_log = true             # write every request, retry and mirror choice to haul.log; false keeps notable events
+detailed_log = true             # write every attempt, outcome and mirror choice to haul.log; false keeps notable events
+live_debug = false              # let a diagnosing tool on this computer follow Haul live (debug mode); HAUL_DEBUG=1 for one run
 reconnect = false               # a new address from the router when yours holds downloads back, once healthy ones finish
 reconnect_command = ""           # a command that gets the new address instead of the router
 nordvpn_servers = 0              # how many of them join the proxies, least loaded first

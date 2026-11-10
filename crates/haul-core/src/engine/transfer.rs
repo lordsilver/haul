@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::Bytes;
 use reqwest::header::{ACCEPT_ENCODING, RANGE};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio_util::sync::CancellationToken;
@@ -414,14 +415,7 @@ impl Engine {
                 }
             }
             match st.items.get_mut(id) {
-                Some(it) => {
-                    it.speed = 0.0;
-                    it.task = None;
-                    it.exit = None;
-                    it.url = None;
-                    it.pace = None;
-                    it.slowed = None;
-                }
+                Some(it) => it.end_attempt(),
                 // Removed or merged away while it ran.
                 None => removed.push(id.to_string()),
             }
@@ -517,6 +511,9 @@ impl Engine {
         })
     }
 
+    /// Downloads row `id`'s file from `entry` into its partial file, going on
+    /// from the bytes there (checking another host's against this one's
+    /// first), and places it once whole.
     async fn fetch(
         &self,
         id: &str,
@@ -527,19 +524,54 @@ impl Engine {
     ) -> Result<Outcome, Fail> {
         let part = self.part_path(id);
         tokio::fs::create_dir_all(part.parent().expect("part has a parent")).await?;
-        let mut have = tokio::fs::metadata(&part)
+        let have = tokio::fs::metadata(&part)
             .await
             .map(|m| m.len())
             .unwrap_or(0);
+        let (request, ask) = self.ask(id, entry, host, http, have)?;
+        // Counted from the request to the end of the transfer.
+        let _serving = Serving::start(self, host, exit);
+        let resp = or_cancel(cancel, request.send()).await??;
+        match self
+            .answer(id, (host, exit), http, &part, &ask, resp)
+            .await?
+        {
+            Answer::Complete => {}
+            Answer::Body(body) => {
+                if let Some(known) = self.stream(id, entry, host, &part, *body, cancel).await? {
+                    return Ok(known);
+                }
+            }
+        }
+        let package = self
+            .lock()
+            .items
+            .get(id)
+            .map(|i| i.package.clone())
+            .ok_or(Fail::Cancelled)?;
+        let out_dir = self.out_dir(host, &package);
+        tokio::fs::create_dir_all(&out_dir).await?;
+        self.place(id, &part, &out_dir)?;
+        Ok(Outcome::Done)
+    }
 
-        let mut req = entry
+    /// The request for row `id`'s file, `have` bytes of it on disk: from
+    /// where they end, or, when they came from another host, from a little
+    /// before, so this host's bytes can be compared with them.
+    fn ask(
+        &self,
+        id: &str,
+        entry: &Entry,
+        host: &str,
+        http: &Http,
+        have: u64,
+    ) -> Result<(reqwest::RequestBuilder, Ask), Fail> {
+        let mut request = entry
             .headers
             .iter()
             .fold(http.client.get(&entry.url), |r, (k, v)| r.header(k, v))
             // The file as stored: its length and offsets are what resuming counts.
             .header(ACCEPT_ENCODING, "identity");
-        // Bytes another host sent are checked against this one's before going
-        // on from them: some more than needed are asked for, and compared.
         let (part_host, part_size) = {
             let st = self.lock();
             let it = st.items.get(id).ok_or(Fail::Cancelled)?;
@@ -547,13 +579,40 @@ impl Engine {
         };
         let crossing = have > 0 && part_host.as_deref() != Some(host);
         let overlap = if crossing { have.min(OVERLAP) } else { 0 };
-        let mut from = have - overlap;
+        let from = have - overlap;
         if have > 0 {
-            req = req.header(RANGE, format!("bytes={from}-"));
+            request = request.header(RANGE, format!("bytes={from}-"));
         }
-        // Counted from the request to the end of the transfer.
-        let _serving = Serving::start(self, host, exit);
-        let mut resp = or_cancel(cancel, req.send()).await??;
+        Ok((
+            request,
+            Ask {
+                have,
+                from,
+                overlap,
+                crossing,
+                part_size,
+            },
+        ))
+    }
+
+    /// What the host's answer to `ask` comes to: the file complete already, a
+    /// body to read, or a refusal.
+    async fn answer(
+        &self,
+        id: &str,
+        (host, exit): (&str, Exit),
+        http: &Http,
+        part: &Path,
+        ask: &Ask,
+        resp: reqwest::Response,
+    ) -> Result<Answer, Fail> {
+        let Ask {
+            have,
+            from,
+            crossing,
+            part_size,
+            overlap,
+        } = *ask;
         let status = resp.status().as_u16();
         hosts::rate_limited(&resp)?;
         // The host's transfer allowance for this address is used up (MEGA's
@@ -572,7 +631,7 @@ impl Engine {
             let total = hosts::unsatisfied_total(resp.headers());
             if let Some(total) = total.filter(|t| *t < have || (part_size > 0 && *t != part_size)) {
                 let why = format!("has it at {total} bytes, not {part_size}");
-                return Err(lost_partial(&part, have, &why).await);
+                return Err(lost_partial(part, have, &why).await);
             }
             return Err(Fail::Error(
                 "its link answers nothing past the start: run out, or not this file".into(),
@@ -595,7 +654,9 @@ impl Engine {
             if let Some(it) = self.lock().items.get_mut(id) {
                 it.done = have;
             }
-        } else if status != 200 && status != 206 {
+            return Ok(Answer::Complete);
+        }
+        if status != 200 && status != 206 {
             // Other downloads from the host under way: a refusal then means it
             // takes no more at once.
             // Counted on this exit: a host limits one address.
@@ -617,219 +678,239 @@ impl Engine {
                 });
             }
             return Err(Fail::Error(message));
+        }
+        let name = self.lock().items.get(id).and_then(|i| i.name.clone());
+        let wants_a_page = name.as_deref().is_some_and(|n| {
+            Path::new(n).extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm")
+            })
+        });
+        if hosts::content_type(resp.headers()).contains("text/html") && !wants_a_page {
+            return Err(Fail::NeedsUser(
+                Need::Person,
+                "got a web page, not the file (link dead or needs a browser)".into(),
+            ));
+        }
+        let range = hosts::content_range(resp.headers());
+        if status == 206 && range.is_some_and(|(start, _)| start != from) {
+            let _ = tokio::fs::remove_file(part).await;
+            return Err(Fail::Error(
+                "host resumed at the wrong offset; starting over".into(),
+            ));
+        }
+        let (have, from) = if status == 200 {
+            if crossing {
+                tracing::info!(
+                    item = id,
+                    "{host} doesn't resume: starting over, without the {have} bytes from before"
+                );
+            }
+            (0, 0)
         } else {
-            let name = self.lock().items.get(id).and_then(|i| i.name.clone());
-            let wants_a_page = name.as_deref().is_some_and(|n| {
-                Path::new(n).extension().is_some_and(|ext| {
-                    ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm")
-                })
-            });
-            if hosts::content_type(resp.headers()).contains("text/html") && !wants_a_page {
-                return Err(Fail::NeedsUser(
-                    Need::Person,
-                    "got a web page, not the file (link dead or needs a browser)".into(),
-                ));
+            (have, from)
+        };
+        let total = match (status, range) {
+            (206, Some((_, Some(total)))) => Some(total),
+            _ => hosts::content_length(resp.headers()).map(|len| from + len),
+        };
+        // The bytes here stay the other host's until this one's agree.
+        let checking = crossing && have > 0;
+        // The size it states, not one worked out from a short answer.
+        let stated = range.and_then(|(_, total)| total);
+        if checking && let Some(total) = stated.filter(|t| part_size > 0 && *t != part_size) {
+            let why = format!("has it at {total} bytes, not {part_size}");
+            return Err(lost_partial(part, have, &why).await);
+        }
+        let named_now = {
+            let mut st = self.lock();
+            let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
+            let unnamed = it.name.is_none();
+            if unnamed {
+                it.name = hosts::disposition_name(resp.headers()).map(|n| hosts::tidy_name(&n));
             }
-            let range = hosts::content_range(resp.headers());
-            if status == 206 && range.is_some_and(|(start, _)| start != from) {
-                let _ = tokio::fs::remove_file(&part).await;
-                return Err(Fail::Error(
-                    "host resumed at the wrong offset; starting over".into(),
-                ));
-            }
-            if status == 200 {
-                if crossing {
-                    tracing::info!(
-                        item = id,
-                        "{host} doesn't resume: starting over, without the {have} bytes from before"
-                    );
+            let named_now = unnamed && it.name.is_some();
+            if !checking {
+                if let Some(total) = total {
+                    it.size = total;
                 }
-                have = 0;
-                from = 0;
+                it.part_size = total.unwrap_or(0);
+                it.part_host = Some(host.to_string());
             }
-            let total = match (status, range) {
-                (206, Some((_, Some(total)))) => Some(total),
-                _ => hosts::content_length(resp.headers()).map(|len| from + len),
-            };
-            // The bytes here stay the other host's until this one's agree.
-            let checking = crossing && have > 0;
-            // The size it states, not one worked out from a short answer.
-            let stated = range.and_then(|(_, total)| total);
-            if checking && let Some(total) = stated.filter(|t| part_size > 0 && *t != part_size) {
-                let why = format!("has it at {total} bytes, not {part_size}");
-                return Err(lost_partial(&part, have, &why).await);
-            }
-            let named_now = {
-                let mut st = self.lock();
-                let it = st.items.get_mut(id).ok_or(Fail::Cancelled)?;
-                let unnamed = it.name.is_none();
-                if unnamed {
-                    it.name = hosts::disposition_name(resp.headers()).map(|n| hosts::tidy_name(&n));
-                }
-                let named_now = unnamed && it.name.is_some();
-                if !checking {
-                    if let Some(total) = total {
-                        it.size = total;
+            it.done = have;
+            it.attempt_from = have;
+            self.touch(&mut st);
+            named_now
+        };
+        // What the partial file holds where this host's answer starts.
+        let overlap = if checking {
+            Overlap::new(read_tail(part, from, overlap).await?)
+        } else {
+            Overlap::new(Vec::new())
+        };
+        Ok(Answer::Body(Box::new(Body {
+            resp,
+            have,
+            from,
+            total,
+            named_now,
+            overlap,
+        })))
+    }
+
+    /// Reads `body` into the partial file at `part`, comparing what overlaps
+    /// the bytes there first. Some hosts (1fichier among them) name the file
+    /// only as it starts: before the body comes, the same checks a name found
+    /// by a probe or a resolver gets, and the file found already (done or
+    /// downloading in another row, or in the download folder) is the
+    /// outcome then.
+    async fn stream(
+        &self,
+        id: &str,
+        entry: &Entry,
+        host: &str,
+        part: &Path,
+        body: Body,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Outcome>, Fail> {
+        let Body {
+            mut resp,
+            have,
+            from,
+            total,
+            named_now,
+            mut overlap,
+        } = body;
+        if named_now && let Some(known) = self.known_file(id, cancel).await? {
+            return Ok(Some(known));
+        }
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(have > 0)
+            .truncate(have == 0)
+            .open(part)
+            .await?;
+        let mut file = BufWriter::with_capacity(1 << 20, file);
+        let mut differs = false;
+        let mut at = from;
+        let mut done = have;
+        let (mut mark, mut mark_bytes) = (Instant::now(), have);
+        // The slowest it may be over each window, in bytes per second; 0
+        // when that is off. A speed limit of our own turns it off, since
+        // it would make every download look slow.
+        let cfg = self.cfg();
+        let floor = if cfg.rate_limit_mbps > 0.0 {
+            0.0
+        } else {
+            f64::from(cfg.min_speed_kbps) * 1024.0
+        };
+        let window = Duration::from_secs(cfg.min_speed_seconds.max(1));
+        let (mut window_at, mut window_bytes) = (Instant::now(), have);
+        if let Some(it) = self.lock().items.get_mut(id) {
+            it.pace = Some(Pace::new(Instant::now(), have));
+        }
+        // Counted here and told to the state a few times a second, not
+        // for every chunk: the state's lock is everyone's.
+        let (mut told_at, mut untold) = (Instant::now(), 0u64);
+        // Never coarser than the speeds are judged at.
+        let tell_every = TELL_EVERY.min(cfg.throttling.tick);
+        let streamed: Result<(), Fail> = async {
+            loop {
+                // Woken at the window's end too, so a stalled connection
+                // is judged as well.
+                let judge_at = tokio::time::Instant::from_std(window_at + window);
+                let chunk = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(Fail::Cancelled),
+                    c = resp.chunk() => Some(c.map_err(|e| Fail::Transient(hosts::error_text(e)))?),
+                    _ = tokio::time::sleep_until(judge_at), if floor > 0.0 => None,
+                };
+                if floor > 0.0 && window_at.elapsed() >= window {
+                    let speed = (done - window_bytes) as f64 / window_at.elapsed().as_secs_f64();
+                    if speed < floor {
+                        return Err(Fail::Error(format!(
+                            // In the setting's own unit, KiB/s.
+                            "slower than {} KiB/s for {}s ({:.0} KiB/s)",
+                            cfg.min_speed_kbps,
+                            window.as_secs(),
+                            speed / 1024.0
+                        )));
                     }
-                    it.part_size = total.unwrap_or(0);
-                    it.part_host = Some(host.to_string());
+                    (window_at, window_bytes) = (Instant::now(), done);
                 }
-                it.done = have;
-                it.attempt_from = have;
-                self.touch(&mut st);
-                named_now
-            };
-            // Some hosts (1fichier among them) name the file only as it
-            // starts: before the body comes, the same checks a name found by
-            // a probe or a resolver gets. The file may be done or downloading
-            // in another row, or be in the download folder already.
-            if named_now && let Some(known) = self.known_file(id, cancel).await? {
-                return Ok(known);
-            }
-            let file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .append(have > 0)
-                .truncate(have == 0)
-                .open(&part)
-                .await?;
-            let mut file = BufWriter::with_capacity(1 << 20, file);
-            // What the partial file holds where this host's answer starts.
-            let tail = if checking {
-                read_tail(&part, from, overlap).await?
-            } else {
-                Vec::new()
-            };
-            let (mut checked, mut differs) = (0, false);
-            let mut at = from;
-            let mut done = have;
-            let (mut mark, mut mark_bytes) = (Instant::now(), have);
-            // The slowest it may be over each window, in bytes per second; 0
-            // when that is off. A speed limit of our own turns it off, since
-            // it would make every download look slow.
-            let cfg = self.cfg();
-            let floor = if cfg.rate_limit_mbps > 0.0 {
-                0.0
-            } else {
-                f64::from(cfg.min_speed_kbps) * 1024.0
-            };
-            let window = Duration::from_secs(cfg.min_speed_seconds.max(1));
-            let (mut window_at, mut window_bytes) = (Instant::now(), have);
-            if let Some(it) = self.lock().items.get_mut(id) {
-                it.pace = Some(Pace::new(Instant::now(), have));
-            }
-            // Counted here and told to the state a few times a second, not
-            // for every chunk: the state's lock is everyone's.
-            let (mut told_at, mut untold) = (Instant::now(), 0u64);
-            // Never coarser than the speeds are judged at.
-            let tell_every = TELL_EVERY.min(cfg.throttling.tick);
-            let streamed: Result<(), Fail> = async {
-                loop {
-                    // Woken at the window's end too, so a stalled connection
-                    // is judged as well.
-                    let judge_at = tokio::time::Instant::from_std(window_at + window);
-                    let chunk = tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => return Err(Fail::Cancelled),
-                        c = resp.chunk() => Some(c.map_err(|e| Fail::Transient(hosts::error_text(e)))?),
-                        _ = tokio::time::sleep_until(judge_at), if floor > 0.0 => None,
-                    };
-                    if floor > 0.0 && window_at.elapsed() >= window {
-                        let speed = (done - window_bytes) as f64 / window_at.elapsed().as_secs_f64();
-                        if speed < floor {
-                            return Err(Fail::Error(format!(
-                                // In the setting's own unit, KiB/s.
-                                "slower than {} KiB/s for {}s ({:.0} KiB/s)",
-                                cfg.min_speed_kbps,
-                                window.as_secs(),
-                                speed / 1024.0
-                            )));
-                        }
-                        (window_at, window_bytes) = (Instant::now(), done);
+                let Some(chunk) = chunk else { continue };
+                let Some(chunk) = chunk else { return Ok(()) };
+                let chunk = match &entry.decrypt {
+                    Some(key) => {
+                        let mut plain = chunk.to_vec();
+                        key.apply(&mut plain, at);
+                        plain.into()
                     }
-                    let Some(chunk) = chunk else { continue };
-                    let Some(chunk) = chunk else { return Ok(()) };
-                    let chunk = match &entry.decrypt {
-                        Some(key) => {
-                            let mut plain = chunk.to_vec();
-                            key.apply(&mut plain, at);
-                            plain.into()
-                        }
-                        None => chunk,
-                    };
-                    at += chunk.len() as u64;
-                    let chunk = if checked < tail.len() {
-                        let n = (tail.len() - checked).min(chunk.len());
-                        if chunk[..n] != tail[checked..checked + n] {
-                            differs = true;
-                            return Ok(());
-                        }
-                        checked += n;
-                        if checked == tail.len()
-                            && let Some(it) = self.lock().items.get_mut(id)
-                        {
+                    None => chunk,
+                };
+                at += chunk.len() as u64;
+                let chunk = match overlap.take(chunk) {
+                    Ok(Taken::Comparing) => continue,
+                    Ok(Taken::Agreed(rest)) => {
+                        // This host's bytes agree: the partial file is its.
+                        if let Some(it) = self.lock().items.get_mut(id) {
                             if let Some(total) = total {
                                 it.size = total;
                                 it.part_size = total;
                             }
                             it.part_host = Some(host.to_string());
                         }
-                        chunk.slice(n..)
-                    } else {
-                        chunk
-                    };
-                    if chunk.is_empty() {
-                        continue;
+                        rest
                     }
-                    file.write_all(&chunk).await?;
-                    done += chunk.len() as u64;
-                    untold += chunk.len() as u64;
-                    self.0.limiter.throttle(chunk.len()).await;
-                    if told_at.elapsed() >= tell_every {
-                        let bytes = std::mem::take(&mut untold);
-                        self.tell_progress(id, host, done, bytes, &mut mark, &mut mark_bytes);
-                        told_at = Instant::now();
+                    Ok(Taken::Past(chunk)) => chunk,
+                    Err(Differs) => {
+                        differs = true;
+                        return Ok(());
                     }
+                };
+                if chunk.is_empty() {
+                    continue;
+                }
+                file.write_all(&chunk).await?;
+                done += chunk.len() as u64;
+                untold += chunk.len() as u64;
+                self.0.limiter.throttle(chunk.len()).await;
+                if told_at.elapsed() >= tell_every {
+                    let bytes = std::mem::take(&mut untold);
+                    self.tell_progress(id, host, done, bytes, &mut mark, &mut mark_bytes);
+                    told_at = Instant::now();
                 }
             }
-            .await;
-            // What came since the last time, before anything reads `done`.
-            self.tell_progress(id, host, done, untold, &mut mark, &mut mark_bytes);
-            file.flush().await?;
-            drop(file);
-            if differs {
-                return Err(lost_partial(&part, have, "holds other bytes there").await);
-            }
-            streamed?;
-            // Its answer ended before the bytes could be compared: nothing is
-            // known about them, and they stay.
-            if checked < tail.len() {
-                return Err(Fail::Transient(format!(
-                    "its answer ended after {checked} of the {} bytes to compare",
-                    tail.len()
-                )));
-            }
-            // What this host said the file's size is, when its answer does
-            // not: a body sent in chunks may end early without an error.
-            let expected = total.or(entry.size.filter(|s| *s > 0));
-            if let Some(want) = expected
-                && done < want
-            {
-                return Err(Fail::Transient(format!(
-                    "connection closed at {done} of {want} bytes"
-                )));
-            }
         }
-        let package = self
-            .lock()
-            .items
-            .get(id)
-            .map(|i| i.package.clone())
-            .ok_or(Fail::Cancelled)?;
-        let out_dir = self.out_dir(host, &package);
-        tokio::fs::create_dir_all(&out_dir).await?;
-        self.place(id, &part, &out_dir)?;
-        Ok(Outcome::Done)
+        .await;
+        // What came since the last time, before anything reads `done`.
+        self.tell_progress(id, host, done, untold, &mut mark, &mut mark_bytes);
+        file.flush().await?;
+        drop(file);
+        if differs {
+            return Err(lost_partial(part, have, "holds other bytes there").await);
+        }
+        streamed?;
+        // Its answer ended before the bytes could be compared: nothing is
+        // known about them, and they stay.
+        if !overlap.finished() {
+            return Err(Fail::Transient(format!(
+                "its answer ended after {} of the {} bytes to compare",
+                overlap.checked,
+                overlap.tail.len()
+            )));
+        }
+        // What this host said the file's size is, when its answer does
+        // not: a body sent in chunks may end early without an error.
+        let expected = total.or(entry.size.filter(|s| *s > 0));
+        if let Some(want) = expected
+            && done < want
+        {
+            return Err(Fail::Transient(format!(
+                "connection closed at {done} of {want} bytes"
+            )));
+        }
+        Ok(None)
     }
 
     /// Tells the state how far row `id`'s transfer from `host` is: `done`
@@ -887,13 +968,99 @@ impl Engine {
             .get(id)
             .and_then(|i| i.name.clone())
             .unwrap_or_else(|| format!("{id}.bin"));
-        let _guard = self.0.rename_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::lock::held(&self.0.rename_lock);
         let target = paths::unused_name(out_dir, &paths::safe(&name));
         std::fs::rename(part, &target)?;
         if let Some(it) = self.lock().items.get_mut(id) {
             it.path = Some(target.display().to_string());
         }
         Ok(())
+    }
+}
+
+/// What a request for a file was worked out from.
+#[derive(Clone, Copy)]
+struct Ask {
+    /// Bytes of the partial file.
+    have: u64,
+    /// Where the request asks the host to start.
+    from: u64,
+    /// The bytes asked for again, to compare: up to [`OVERLAP`].
+    overlap: u64,
+    /// The partial file's bytes came from another host.
+    crossing: bool,
+    /// The size the host the bytes came from gave.
+    part_size: u64,
+}
+
+/// What a host's answer to an [`Ask`] came to, when it is no refusal.
+enum Answer {
+    /// The partial file is the whole file already.
+    Complete,
+    Body(Box<Body>),
+}
+
+/// An answer with a body to read.
+struct Body {
+    resp: reqwest::Response,
+    /// Bytes of the partial file this answer goes on from.
+    have: u64,
+    /// Where the answer starts in the file.
+    from: u64,
+    /// The file's size, when the answer says it.
+    total: Option<u64>,
+    /// The file got its name from this answer.
+    named_now: bool,
+    overlap: Overlap,
+}
+
+/// The bytes of the partial file where a host's answer starts, compared with
+/// what the host sends before any of it is kept.
+#[derive(Debug)]
+struct Overlap {
+    tail: Vec<u8>,
+    checked: usize,
+}
+
+/// The answer holds other bytes than the partial file at the same place.
+#[derive(Debug, PartialEq, Eq)]
+struct Differs;
+
+/// What a chunk of an answer came to, against the overlap.
+#[derive(Debug, PartialEq, Eq)]
+enum Taken {
+    /// All of it agreed, and there is more to compare.
+    Comparing,
+    /// The comparison ended with it, agreeing: what follows the overlap.
+    Agreed(Bytes),
+    /// Past the overlap (or there was none): all of it is new.
+    Past(Bytes),
+}
+
+impl Overlap {
+    fn new(tail: Vec<u8>) -> Self {
+        Self { tail, checked: 0 }
+    }
+
+    /// Every byte to compare came and agreed.
+    fn finished(&self) -> bool {
+        self.checked == self.tail.len()
+    }
+
+    fn take(&mut self, chunk: Bytes) -> Result<Taken, Differs> {
+        if self.finished() {
+            return Ok(Taken::Past(chunk));
+        }
+        let n = (self.tail.len() - self.checked).min(chunk.len());
+        if chunk[..n] != self.tail[self.checked..self.checked + n] {
+            return Err(Differs);
+        }
+        self.checked += n;
+        Ok(if self.finished() {
+            Taken::Agreed(chunk.slice(n..))
+        } else {
+            Taken::Comparing
+        })
     }
 }
 
@@ -963,7 +1130,35 @@ pub(super) fn running_size(st: &State, except: Option<&str>) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::Fail;
+    use super::{Bytes, Differs, Fail, Overlap, Taken};
+
+    /// The bytes an answer starts with are compared with the partial file's
+    /// across chunks of any size; what follows them is kept.
+    #[test]
+    fn an_overlap_is_compared_across_chunks() {
+        let mut o = Overlap::new(b"abcdef".to_vec());
+        assert_eq!(o.take(Bytes::from_static(b"ab")), Ok(Taken::Comparing));
+        assert_eq!(
+            o.take(Bytes::from_static(b"cdefgh")),
+            Ok(Taken::Agreed(Bytes::from_static(b"gh")))
+        );
+        assert!(o.finished());
+        assert_eq!(
+            o.take(Bytes::from_static(b"ij")),
+            Ok(Taken::Past(Bytes::from_static(b"ij")))
+        );
+        let mut o = Overlap::new(b"abc".to_vec());
+        assert_eq!(o.take(Bytes::from_static(b"abX")), Err(Differs));
+        let mut none = Overlap::new(Vec::new());
+        assert!(none.finished());
+        assert_eq!(
+            none.take(Bytes::from_static(b"x")),
+            Ok(Taken::Past(Bytes::from_static(b"x")))
+        );
+        let mut short = Overlap::new(b"abcd".to_vec());
+        assert_eq!(short.take(Bytes::from_static(b"ab")), Ok(Taken::Comparing));
+        assert!(!short.finished(), "an answer that ends here proves nothing");
+    }
 
     #[test]
     fn a_full_disk_is_told_apart_from_other_local_trouble() {

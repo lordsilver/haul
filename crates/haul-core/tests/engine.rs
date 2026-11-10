@@ -708,6 +708,42 @@ async fn a_host_that_wants_its_account_can_be_used_without_one() {
     );
 }
 
+/// A queue read whole at start is copied aside, and a damaged one says
+/// where that copy is.
+#[tokio::test]
+async fn a_damaged_queue_points_at_its_copy() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text(&format!("{}/files/a.bin", t.ip), "");
+    engine.shutdown().await;
+    drop(engine);
+    let engine = start_when_free(|| t.options()).await;
+    let backup = t.root.join("data/queue.bak.json");
+    assert!(
+        std::fs::read_to_string(&backup).unwrap().contains("a.bin"),
+        "the copy holds the queue"
+    );
+    engine.shutdown().await;
+    drop(engine);
+    std::fs::write(t.root.join("data/queue.json"), "{ not json").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let error = loop {
+        match Engine::start(t.options()).await {
+            Err(StartError::Locked(_)) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await
+            }
+            Err(e) => break e.to_string(),
+            Ok(_) => panic!("a damaged queue started"),
+        }
+    };
+    assert!(error.contains("queue.bak.json"), "{error}");
+    assert!(
+        std::fs::read_to_string(&backup).unwrap().contains("a.bin"),
+        "a damaged queue is not copied over the good one"
+    );
+}
+
 #[tokio::test]
 async fn edits_to_the_settings_file_apply_while_running() {
     let t = Setup::new().await;

@@ -62,39 +62,41 @@ pub struct Moment {
 
 #[derive(Default)]
 struct Histories {
-    items: HashMap<String, VecDeque<Moment>>,
-    /// Ids in the order they were last written to.
-    recent: VecDeque<String>,
+    /// Each download's last events, with when it was last written to (a
+    /// count of writes, not a time).
+    items: HashMap<String, (u64, VecDeque<Moment>)>,
+    clock: u64,
 }
 
 static HISTORIES: LazyLock<Mutex<Histories>> = LazyLock::new(Mutex::default);
 
 /// The last events of download `id`, oldest first.
 pub fn history(id: &str) -> Vec<Moment> {
-    HISTORIES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    crate::lock::held(&HISTORIES)
         .items
         .get(id)
-        .map(|h| h.iter().cloned().collect())
+        .map(|(_, h)| h.iter().cloned().collect())
         .unwrap_or_default()
 }
 
 fn remember(id: String, moment: Moment) {
-    let mut h = HISTORIES.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(at) = h.recent.iter().position(|i| *i == id) {
-        h.recent.remove(at);
-    }
-    h.recent.push_back(id.clone());
-    let events = h.items.entry(id).or_default();
+    let mut h = crate::lock::held(&HISTORIES);
+    h.clock += 1;
+    let clock = h.clock;
+    let new = !h.items.contains_key(&id);
+    let (stamp, events) = h.items.entry(id).or_default();
+    *stamp = clock;
     events.push_back(moment);
     if events.len() > HISTORY {
         events.pop_front();
     }
-    while h.recent.len() > ITEMS {
-        if let Some(old) = h.recent.pop_front() {
-            h.items.remove(&old);
-        }
+    // Over the limit, the downloads written to longest ago go, a tenth at
+    // once, so the sort is rare.
+    if new && h.items.len() > ITEMS {
+        let mut stamps: Vec<u64> = h.items.values().map(|(s, _)| *s).collect();
+        stamps.sort_unstable();
+        let keep_from = stamps[h.items.len() - ITEMS * 9 / 10];
+        h.items.retain(|_, (s, _)| *s >= keep_from);
     }
 }
 
@@ -357,7 +359,7 @@ impl<'a> MakeWriter<'a> for LogFile {
     type Writer = Guard<'a>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        Guard(self.0.lock().unwrap_or_else(|e| e.into_inner()))
+        Guard(crate::lock::held(&self.0))
     }
 }
 
@@ -528,5 +530,27 @@ mod tests {
         w.write_all(b"next\n").unwrap();
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "next\n");
         assert_eq!(std::fs::read_to_string(&kept[0]).unwrap(), "line\n");
+    }
+
+    /// Past the limit, the downloads written to longest ago go, and one
+    /// written to again stays however long ago it came.
+    #[test]
+    fn histories_keep_the_downloads_written_to_last() {
+        let moment = || Moment {
+            at: String::new(),
+            level: "INFO".into(),
+            message: "m".into(),
+        };
+        remember("evict-first".into(), moment());
+        remember("evict-kept".into(), moment());
+        for n in 0..ITEMS {
+            remember(format!("evict-{n}"), moment());
+            if n % 100 == 0 {
+                remember("evict-kept".into(), moment());
+            }
+        }
+        assert!(history("evict-first").is_empty(), "the oldest went");
+        assert!(!history("evict-kept").is_empty());
+        assert!(!history(&format!("evict-{}", ITEMS - 1)).is_empty());
     }
 }
