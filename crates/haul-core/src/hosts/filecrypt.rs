@@ -452,12 +452,14 @@ fn heading(html: &str) -> Option<String> {
 }
 
 /// The file name of each row of a solved page's link table, in order; `None`
-/// for a row that shows none (`n/a`). Rows with the same name are taken for
-/// one file on several hosts, so `n/a` must not count as a name.
+/// for a row that shows none: `n/a`, or what filecrypt.cc showed when it could
+/// not read the file's host (the title of Cloudflare's check, "Just a
+/// moment..."), which is no file's name. Rows with the same name are taken
+/// for one file on several hosts, so neither must count as a name.
 fn row_names(html: &str) -> Vec<Option<String>> {
     ROW_NAME
         .captures_iter(html)
-        .map(|c| page_text(&c[1]).filter(|name| !name.eq_ignore_ascii_case("n/a")))
+        .map(|c| page_text(&c[1]).filter(|name| super::names::FILE_NAME.is_match(name)))
         .collect()
 }
 
@@ -776,6 +778,16 @@ mod tests {
             row_names(&html),
             [Some("a.rar".into()), None],
             "in their rows"
+        );
+        let html = format!(
+            "<table>{}{}</table>",
+            row("Just a moment...", "11AA"),
+            row("b.part08.rar", "22BB")
+        );
+        assert_eq!(
+            row_names(&html),
+            [None, Some("b.part08.rar".into())],
+            "a host's page title is no file's name"
         );
     }
 

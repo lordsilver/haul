@@ -889,6 +889,53 @@ async fn containers_of_the_same_sizes_merge() {
     );
 }
 
+/// Containers of one set where a host's table names only some files, or
+/// shows something else than a file's name in a row, still make one archive:
+/// every part's links on one row, under the name that says most.
+#[tokio::test]
+async fn containers_with_unnamed_rows_still_merge() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text(&format!("{}/blog/per-host-mixed", t.ip), "");
+    let s = wait_for(&engine, "the three containers unwrapped", |s| {
+        s.wrappers
+            .iter()
+            .filter(|w| w.host == "filecrypt.cc" && w.status.as_str() == "done")
+            .count()
+            == 3
+    })
+    .await;
+    let mut names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
+    names.sort_unstable();
+    assert!(
+        !names.iter().any(|n| n.contains("moment")),
+        "no row named after a page's title: {names:?}"
+    );
+    let parts: Vec<_> = s
+        .items
+        .iter()
+        .filter(|i| i.name.starts_with("Example.Archive.part"))
+        .collect();
+    assert_eq!(parts.len(), 4, "{names:?}");
+    // Part 3 is unnamed only in the third table: it still joins by its
+    // link's name.
+    for p in &parts {
+        let hosts = p.mirrors.len();
+        let want = if p.name.ends_with("part1.rar") || p.name.ends_with("part2.rar") {
+            2
+        } else {
+            3
+        };
+        assert!(
+            hosts >= want,
+            "{} has {hosts} links: {:?}",
+            p.name,
+            p.mirrors
+        );
+    }
+    assert_eq!(s.archives.len(), 1, "{:?}", s.archives);
+}
+
 /// A clearly other size, even of the last part alone as sets split alike
 /// show, is another set of files: both stay whole, each under its own name.
 #[tokio::test]
