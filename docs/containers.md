@@ -1,6 +1,6 @@
 # Containers and wrappers
 
-A container is a file that holds links: a `.dlc` from JDownloader, or plain text with links in it. Dropping one on the window, opening it, passing it on the command line or importing it through the [HTTP API](api.md) shows the links in the Add dialog — nothing downloads until **Add** — or adds them at once with **Settings › Add dropped links and files right away**. From there each link behaves as if it had been pasted; what that means is in [How downloads behave](downloading.md).
+A container is a file that holds links: a `.dlc` from JDownloader, or plain text with links in it. Dropping one on the window, opening it, passing it on the command line or importing it through the [HTTP API](api.md) shows the links in the Add dialog — nothing downloads until **Add** — or adds them at once with **Settings › Downloads › Add dropped links right away**. From there each link behaves as if it had been pasted; what that means is in [How downloads behave](downloading.md).
 
 ## Text files
 

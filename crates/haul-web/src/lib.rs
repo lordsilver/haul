@@ -22,7 +22,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{MethodRouter, get, post},
 };
 use futures_util::Stream;
 use haul_core::{
@@ -235,50 +235,54 @@ pub fn router(engine: Engine, desktop: Option<Arc<dyn Desktop>>, port: u16) -> R
             router = router.route("/favicon.ico", get(move || page(file, content_type, body)));
         }
     }
-    router
-        .route("/api/state", get(state))
-        .route("/api/events", get(events))
-        .route("/api/add", post(add))
-        .route("/api/paste", post(paste))
-        .route(
-            "/api/container",
-            post(container).layer(DefaultBodyLimit::max(64 << 20)),
-        )
-        .route(
-            "/api/container/read",
-            post(read_container).layer(DefaultBodyLimit::max(64 << 20)),
-        )
-        .route("/api/item/{id}/direct", post(direct))
-        .route("/api/item/{id}/browse", post(browse))
-        .route("/api/item/{id}/reveal", post(reveal))
-        .route("/api/item/{id}/extract", post(extract))
-        .route("/api/item/{id}/{action}", post(item))
-        .route("/api/wrapper/{id}/{action}", post(wrapper))
-        .route("/api/items/{action}", post(items))
-        .route("/api/wrappers/{action}", post(wrappers))
-        .route("/api/wrappers/drop-host", post(drop_wrapper_host))
-        .route("/api/host/{name}/folder", post(host_folder))
-        .route("/api/host/{name}/preferred", post(host_preferred))
-        .route("/api/host/{name}/disabled", post(host_disabled))
-        .route("/api/host/{name}/accountless", post(host_accountless))
-        .route("/api/preferred-hosts", post(preferred_hosts))
-        .route("/api/host/{name}/route/{mode}", post(host_route))
-        .route("/api/global/{action}", post(global))
-        .route("/api/router", post(find_router))
-        .route("/api/reconnect", post(reconnect))
-        .route("/api/download-from", post(download_from))
-        .route("/api/update/check", post(check_update))
-        .route("/api/update/install", post(install_update))
-        .route("/api/nordvpn/servers", post(nordvpn_servers))
-        .route("/api/settings", get(settings).post(update_settings))
-        .route("/api/settings/download-dir/pick", post(pick_download_dir))
-        .route("/api/diagnostics", get(diagnostics))
-        .route("/api/diagnostics/save", post(save_diagnostics))
-        .route("/api/open/{place}", post(open_place))
+    api_routes()
+        .into_iter()
+        .fold(router, |router, (path, method)| router.route(path, method))
         .merge(debug::routes(&app))
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .layer(middleware::map_response(json_errors))
         .with_state(app)
+}
+
+/// The API's routes, which [`router`] serves and a test finds in
+/// `docs/api.md`.
+fn api_routes() -> Vec<(&'static str, MethodRouter<App>)> {
+    let upload = || DefaultBodyLimit::max(64 << 20);
+    vec![
+        ("/api/state", get(state)),
+        ("/api/events", get(events)),
+        ("/api/add", post(add)),
+        ("/api/paste", post(paste)),
+        ("/api/container", post(container).layer(upload())),
+        ("/api/container/read", post(read_container).layer(upload())),
+        ("/api/item/{id}/direct", post(direct)),
+        ("/api/item/{id}/browse", post(browse)),
+        ("/api/item/{id}/reveal", post(reveal)),
+        ("/api/item/{id}/extract", post(extract)),
+        ("/api/item/{id}/{action}", post(item)),
+        ("/api/wrapper/{id}/{action}", post(wrapper)),
+        ("/api/items/{action}", post(items)),
+        ("/api/wrappers/{action}", post(wrappers)),
+        ("/api/wrappers/drop-host", post(drop_wrapper_host)),
+        ("/api/host/{name}/folder", post(host_folder)),
+        ("/api/host/{name}/preferred", post(host_preferred)),
+        ("/api/host/{name}/disabled", post(host_disabled)),
+        ("/api/host/{name}/accountless", post(host_accountless)),
+        ("/api/preferred-hosts", post(preferred_hosts)),
+        ("/api/host/{name}/route/{mode}", post(host_route)),
+        ("/api/global/{action}", post(global)),
+        ("/api/router", post(find_router)),
+        ("/api/reconnect", post(reconnect)),
+        ("/api/download-from", post(download_from)),
+        ("/api/update/check", post(check_update)),
+        ("/api/update/install", post(install_update)),
+        ("/api/nordvpn/servers", post(nordvpn_servers)),
+        ("/api/settings", get(settings).post(update_settings)),
+        ("/api/settings/download-dir/pick", post(pick_download_dir)),
+        ("/api/diagnostics", get(diagnostics)),
+        ("/api/diagnostics/save", post(save_diagnostics)),
+        ("/api/open/{place}", post(open_place)),
+    ]
 }
 
 /// axum answers some errors itself, in plain text (a body or a path that does
@@ -972,7 +976,43 @@ async fn open_place(State(app): State<App>, Path(place): Path<String>) -> Respon
 
 #[cfg(test)]
 mod tests {
-    use super::{WAITING_ROUTE, WRAPPERS_ROUTE, add_route};
+    use super::{WAITING_ROUTE, WRAPPERS_ROUTE, add_route, api_routes, debug};
+
+    /// Every route the server answers is in the docs: the API's in
+    /// `docs/api.md`, debug mode's in `docs/debugging.md`. A `{name}` in a
+    /// route stands for any one segment, which the docs may spell out
+    /// (`{id}`, `start`, `{direct\|proxy}`).
+    #[test]
+    fn every_route_is_documented() {
+        // Whether `doc` holds `route` as a path of its own, every `{name}`
+        // segment matching one segment there.
+        let documented = |doc: &str, route: &str| {
+            let want: Vec<&str> = route.split('/').collect();
+            doc.split(|c: char| c.is_whitespace() || c == '`')
+                .filter(|word| word.starts_with("/api/"))
+                .any(|word| {
+                    let path = word.split('?').next().unwrap_or_default();
+                    let have: Vec<&str> = path.split('/').collect();
+                    have.len() == want.len()
+                        && have
+                            .iter()
+                            .zip(&want)
+                            .all(|(h, w)| (w.starts_with('{') && !h.is_empty()) || h == w)
+                })
+        };
+        for (routes, doc, name) in [
+            (api_routes(), include_str!("../../../docs/api.md"), "api.md"),
+            (
+                debug::api_routes(),
+                include_str!("../../../docs/debugging.md"),
+                "debugging.md",
+            ),
+        ] {
+            for (route, _) in routes {
+                assert!(documented(doc, route), "{route} is not in docs/{name}");
+            }
+        }
+    }
 
     /// The UI's own list of its views and routes, which these must match.
     const ROUTES: &str = include_str!("../ui/src/lib/route.ts");
