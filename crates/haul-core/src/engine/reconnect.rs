@@ -596,8 +596,17 @@ fn is_public(address: &str) -> bool {
     }
 }
 
+/// How long the user's reconnect command may run.
+const COMMAND_LIMIT: Duration = Duration::from_secs(120);
+
 /// Runs the user's reconnect command in the system's shell.
 async fn run(command: &str) -> Result<(), String> {
+    run_for(command, COMMAND_LIMIT).await
+}
+
+/// Runs `command` for at most `limit`: past it, the command is ended rather
+/// than left running after Haul gave up on it.
+async fn run_for(command: &str, limit: Duration) -> Result<(), String> {
     let mut cmd = if cfg!(windows) {
         let mut c = tokio::process::Command::new("cmd");
         c.args(["/C", command]);
@@ -607,9 +616,16 @@ async fn run(command: &str) -> Result<(), String> {
         c.args(["-c", command]);
         c
     };
-    let out = tokio::time::timeout(Duration::from_secs(120), cmd.output())
+    cmd.kill_on_drop(true);
+    // The desktop app has no console, so one would open just for this.
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = tokio::time::timeout(limit, cmd.output())
         .await
-        .map_err(|_| "the reconnect command ran past two minutes".to_string())?
+        .map_err(|_| format!("the reconnect command ran past {}s", limit.as_secs()))?
         .map_err(|e| format!("the reconnect command: {e}"))?;
     if out.status.success() {
         Ok(())
@@ -663,5 +679,25 @@ mod address_tests {
             assert!(!is_public(local), "{local}");
         }
         assert!(!is_public("unknown (no router to ask)"));
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    /// A command that runs past its limit is ended, not left running.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_past_its_limit_is_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran-on");
+        let command = format!("sleep 1 && touch '{}'", marker.display());
+        let e = run_for(&command, Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(e.contains("ran past"), "{e}");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(!marker.exists(), "the command was ended");
     }
 }

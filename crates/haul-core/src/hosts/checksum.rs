@@ -62,6 +62,41 @@ impl Checksum {
     }
 }
 
+/// A checksum worked out as the bytes come, for a download read from its
+/// start.
+pub enum Hashing {
+    Md5(md5::Md5),
+    Sha256(sha2::Sha256),
+    Sha512(sha2::Sha512),
+}
+
+impl Hashing {
+    pub fn new(algo: Algo) -> Self {
+        match algo {
+            Algo::Md5 => Self::Md5(Digest::new()),
+            Algo::Sha256 => Self::Sha256(Digest::new()),
+            Algo::Sha512 => Self::Sha512(Digest::new()),
+        }
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) {
+        match self {
+            Self::Md5(h) => h.update(bytes),
+            Self::Sha256(h) => h.update(bytes),
+            Self::Sha512(h) => h.update(bytes),
+        }
+    }
+
+    /// The checksum, as lowercase hexadecimal.
+    pub fn finish(self) -> String {
+        match self {
+            Self::Md5(h) => to_hex(&h.finalize()),
+            Self::Sha256(h) => to_hex(&h.finalize()),
+            Self::Sha512(h) => to_hex(&h.finalize()),
+        }
+    }
+}
+
 /// What a long checksum read does next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Steer {

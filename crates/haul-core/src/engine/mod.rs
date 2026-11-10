@@ -71,6 +71,18 @@ const SAVE_BACKOFF: [Duration; 4] = [
 /// How often what was learned of the hosts is written, at most.
 const HOSTS_EVERY: Duration = Duration::from_secs(30);
 
+/// What becomes of a folded row's partial file.
+#[derive(Debug)]
+enum PartMove {
+    /// It carries over to the row it was folded into, unless that one has
+    /// a partial file of its own; then it goes.
+    Onto {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    Delete(PathBuf),
+}
+
 /// What the saver remembers between saves.
 #[derive(Default)]
 struct Saver {
@@ -807,6 +819,9 @@ struct State {
     /// A lookup learned a size: archives copied on other hosts are looked
     /// for on the scheduler's next turn ([`Engine::merge_copies`]).
     merge_due: bool,
+    /// What becomes of folded rows' partial files, done outside the lock
+    /// ([`Engine::settle_parts`]).
+    part_moves: Vec<PartMove>,
     /// Pages that answered with a browser check (Cloudflare's) a browser
     /// usually passes by itself: the desktop app passes them out of sight,
     /// as a host's whose page passes ([`hosts::page_passes`]).
@@ -846,6 +861,7 @@ impl State {
             max_total: max_total.max(1),
             dirty: false,
             merge_due: false,
+            part_moves: Vec::new(),
             guarded: HashSet::new(),
             cleared: HashSet::new(),
             tried: passes::Tried::new(),
@@ -1094,6 +1110,8 @@ struct Inner {
     rename_lock: Mutex<()>,
     /// Held while settings change ([`Engine::settings_held`]).
     settings_lock: Mutex<()>,
+    /// Held while the download folder moves: one move at a time.
+    move_lock: tokio::sync::Mutex<()>,
     shutdown: CancellationToken,
     /// A newer Haul, when GitHub has one.
     update: Mutex<Option<crate::update::Update>>,
@@ -1219,6 +1237,7 @@ impl Engine {
             save_lock: Mutex::new(()),
             rename_lock: Mutex::new(()),
             settings_lock: Mutex::new(()),
+            move_lock: tokio::sync::Mutex::new(()),
             shutdown: CancellationToken::new(),
             update: Mutex::new(None),
             _lock: lock,
@@ -1326,6 +1345,14 @@ impl Engine {
     /// first exit.
     fn http_for(&self, host: &str, st: &State) -> Http {
         self.clients().on(self.exits_for(host, st)[0])
+    }
+
+    /// The client for a service Haul asks for itself (GitHub, NordVPN's
+    /// list) at `url`: through the proxy as any host goes, unless the person
+    /// let its host go direct. Only the router and the public-address echo
+    /// use the line whatever is set, since the line is what they are about.
+    fn service_http(&self, url: &str) -> Http {
+        self.http_for(&hosts::host_of(url), &self.lock())
     }
 
     /// The route to JDownloader's key service, which decrypts `.dlc` files.
@@ -1671,11 +1698,13 @@ impl Engine {
                 if self.dedupe(&mut st, id) {
                     st.items.shift_remove(id);
                     self.publish(st);
+                    self.settle_parts();
                     self.discard_parts([id.to_string()]);
                     return;
                 }
             }
         }
+        self.settle_parts();
         // The row is not probed yet, so nothing starts it meanwhile.
         let existing = match learned {
             true => self.existing_file(id).await,
@@ -1865,9 +1894,30 @@ impl Engine {
         let Some(checksum) = checksum.filter(|_| size > 0 && self.cfg().verify_existing) else {
             return Some(path);
         };
-        // A checksum means reading the whole file: one at a time, and not
-        // while downloads are paused. Dropping this future (a cancelled
-        // attempt) stops the read too.
+        match self.matches_checksum(id, path.clone(), checksum).await {
+            Some(true) => Some(path),
+            Some(false) => {
+                tracing::info!(
+                    item = id,
+                    "{} differs from the host's checksum: another file",
+                    path.display()
+                );
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Whether the file at `path` has `checksum`, for row `id`, which shows
+    /// that it compares; `None` when it could not be read or the attempt went.
+    /// Reading a whole file goes one at a time, and not while downloads are
+    /// paused. Dropping this future (a cancelled attempt) stops the read too.
+    pub(super) async fn matches_checksum(
+        &self,
+        id: &str,
+        path: PathBuf,
+        checksum: hosts::Checksum,
+    ) -> Option<bool> {
         self.set_verifying(id, Verifying::Waiting);
         let comparing = Comparing {
             engine: self.clone(),
@@ -1895,15 +1945,7 @@ impl Engine {
         .await;
         drop(comparing);
         match same {
-            Ok(Ok(true)) => Some(path),
-            Ok(Ok(false)) => {
-                tracing::info!(
-                    item = id,
-                    "{} differs from the host's checksum: another file",
-                    path.display()
-                );
-                None
-            }
+            Ok(Ok(same)) => Some(same),
             Ok(Err(e)) => {
                 tracing::warn!(item = id, "reading {}: {e}", path.display());
                 None
@@ -2094,7 +2136,9 @@ impl Engine {
     /// Takes what unwrapping wrapper row `id` (from `url`) found, and looks
     /// its new rows up.
     fn take_unwrapped(&self, id: &str, url: &str, found: hosts::Unwrapped) {
-        for id in self.unwrapped(id, url, found) {
+        let probe = self.unwrapped(id, url, found);
+        self.settle_parts();
+        for id in probe {
             self.spawn_probe(id);
         }
     }
@@ -2102,8 +2146,10 @@ impl Engine {
     /// Folds other rows for the same file into `id`. Returns true when `id`
     /// itself should go: the file is done already, or another row is fetching
     /// it or `id` waits for the user (the other row then gets `id`'s mirrors).
-    /// A folded row's partial file carries over when both sizes are known and
-    /// equal, and is deleted otherwise.
+    /// All of that is decided before anything is folded, so a row is never
+    /// folded into `id` that then goes too. A folded row's partial file
+    /// carries over when both sizes are known and equal, and is deleted
+    /// otherwise, once the lock is let go ([`Engine::settle_parts`]).
     fn dedupe(&self, st: &mut State, id: &str) -> bool {
         let Some(it) = st.items.get(id) else {
             return false;
@@ -2118,40 +2164,66 @@ impl Engine {
             .filter(|(k, o)| k.as_str() != id && o.same_file(&name, size))
             .map(|(k, _)| k.clone())
             .collect();
+        if others.iter().any(|o| st.items[o].status == Status::Done) {
+            return true;
+        }
         // A row that waits for the user (a wrapper's file, not started) joins
-        // the row already there instead of taking it over, which keeps going.
+        // the row already there instead of taking it over, which keeps going;
+        // so does any row while another fetches the file.
         let waits = st.items[id].status == Status::Paused && !st.items[id].running();
+        let joins = if waits {
+            others.first()
+        } else {
+            others.iter().find(|o| st.items[*o].running())
+        };
+        if let Some(other) = joins.cloned() {
+            let extra: Vec<Mirror> = st.items[id]
+                .mirrors
+                .iter()
+                .filter(|m| !st.items[&other].mirrors.contains(m))
+                .cloned()
+                .collect();
+            let (source, also) = (st.items[id].source.clone(), st.items[id].also_from.clone());
+            let o = st.items.get_mut(&other).expect("listed above");
+            o.mirrors.extend(extra);
+            o.merge_wrappers(source.as_ref(), &also);
+            return true;
+        }
         for other in others {
-            let o = &st.items[&other];
-            if o.status == Status::Done {
-                return true;
-            }
-            if o.running() || waits {
-                let extra: Vec<Mirror> = st.items[id]
-                    .mirrors
-                    .iter()
-                    .filter(|m| !st.items[&other].mirrors.contains(m))
-                    .cloned()
-                    .collect();
-                let (source, also) = (st.items[id].source.clone(), st.items[id].also_from.clone());
-                let o = st.items.get_mut(&other).expect("listed above");
-                o.mirrors.extend(extra);
-                o.merge_wrappers(source.as_ref(), &also);
-                return true;
-            }
             let o = st.items.shift_remove(&other).expect("listed above");
             let other_size = o.size;
             st.items.get_mut(id).expect("checked above").absorb(o);
             let (from, to) = (self.part_path(&other), self.part_path(id));
-            if from.exists() {
-                if size > 0 && other_size == size && !to.exists() {
-                    let _ = std::fs::rename(&from, &to);
-                } else {
+            st.part_moves.push(if size > 0 && other_size == size {
+                PartMove::Onto { from, to }
+            } else {
+                PartMove::Delete(from)
+            });
+        }
+        false
+    }
+
+    /// Does what [`Engine::dedupe`] decided for the partial files of the rows
+    /// it folded, outside the lock.
+    fn settle_parts(&self) {
+        let moves = std::mem::take(&mut self.lock().part_moves);
+        for m in moves {
+            match m {
+                PartMove::Onto { from, to } => {
+                    if !from.exists() {
+                        continue;
+                    }
+                    if to.exists() {
+                        let _ = std::fs::remove_file(&from);
+                    } else {
+                        let _ = std::fs::rename(&from, &to);
+                    }
+                }
+                PartMove::Delete(from) => {
                     let _ = std::fs::remove_file(&from);
                 }
             }
         }
-        false
     }
 
     /// `max_active_gb` in bytes; 0 when there is no such limit.
@@ -2706,7 +2778,7 @@ impl Engine {
     /// the setting says. Returns the version when it is newer than this one.
     pub async fn look_for_update(&self) -> Result<Option<String>, String> {
         let cfg = self.cfg();
-        let http = self.clients().on(0);
+        let http = self.service_http(&cfg.endpoints.github_api);
         let found =
             crate::update::latest(&http, &cfg.endpoints.github_api, env!("CARGO_PKG_VERSION"))
                 .await?;
@@ -2726,7 +2798,11 @@ impl Engine {
         let update = crate::lock::held(&self.0.update)
             .clone()
             .ok_or("no newer Haul is known")?;
-        let http = self.clients().on(0);
+        let url = update
+            .installer
+            .as_ref()
+            .map_or(self.cfg().endpoints.github_api.clone(), |i| i.url.clone());
+        let http = self.service_http(&url);
         crate::update::fetch_installer(&http, &update, &self.0.data_dir.join("update")).await
     }
 

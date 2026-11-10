@@ -38,6 +38,12 @@ url = "2.5.8"
 uuid = { version = "1.28.0", features = ["v4"] }
 zip = { version = "9.0.5", default-features = false, features = ["aes-crypto", "bzip2", "deflate-flate2-zlib-rs", "deflate64", "lzma", "ppmd", "xz", "zstd"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
 [features]
 # What the integration tests reach into the engine with; never in a build.
 test-hooks = []
@@ -48,3 +54,4 @@ haul-core = { path = ".", features = ["test-hooks"] }
 axum = "0.8.9"
 futures-util = "0.3.34"
 tempfile = "3.27.0"
+tokio = { version = "1.53.2", features = ["test-util"] }

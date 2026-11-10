@@ -220,6 +220,7 @@ fn kind_of(path: &Path) -> Result<Option<Kind>, String> {
 fn join(parts: &[Part], dest: &Path, name: &str, progress: &Progress) -> Result<PathBuf, Failure> {
     let mut from = Joined::open(parts)?;
     progress.total.store(from.len(), Ordering::Relaxed);
+    room_for(dest, from.len())?;
     clear_staging(dest);
     let staging = Staging(dest.join(format!(
         "{STAGING}{}",
@@ -280,17 +281,23 @@ fn seven_zip(
     };
     let total = archive.files.iter().map(|f| f.size()).sum();
     progress.total.store(total, Ordering::Relaxed);
+    room_for(out, total)?;
     joined.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    sevenz_rust2::decompress_with_extract_fn_and_password(
-        joined,
-        out,
-        key,
-        |entry, reader, dest| {
-            let mut counted = Counted(reader, &progress.done);
-            sevenz_rust2::default_entry_extract_fn(entry, &mut counted, dest)
-        },
-    )
-    .map_err(failure)
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut reader = sevenz_rust2::ArchiveReader::new(joined, key).map_err(failure)?;
+    reader
+        .for_each_entries(|entry, data| {
+            // A name that would lead out of the folder is left out, as a
+            // zip's is, and the rest unpacks.
+            let Some(rel) = enclosed(entry.name()) else {
+                tracing::warn!("left out of the 7-Zip archive: {}", entry.name());
+                io::copy(data, &mut io::sink())?;
+                return Ok(true);
+            };
+            let mut counted = Counted(data, &progress.done);
+            sevenz_rust2::default_entry_extract_fn(entry, &mut counted, &out.join(rel))
+        })
+        .map_err(failure)
 }
 
 /// A zip, its encrypted entries (ZipCrypto or AES) opened with `password`.
@@ -309,6 +316,7 @@ fn zip(
         .filter_map(|i| archive.by_index_raw(i).ok().map(|f| f.size()))
         .sum();
     progress.total.store(total, Ordering::Relaxed);
+    room_for(out, total)?;
     for i in 0..archive.len() {
         let encrypted = archive.by_index_raw(i).is_ok_and(|f| f.encrypted());
         let file = match (encrypted, password) {
@@ -352,6 +360,71 @@ fn zip(
         }
     }
     Ok(())
+}
+
+/// Fails before anything is written when the disk `dir` is on clearly lacks
+/// room for the `need` bytes an archive unpacks to: it would only fill the
+/// disk and fail there. Where free space cannot be read, it goes ahead.
+fn room_for(dir: &Path, need: u64) -> Result<(), Failure> {
+    // The folder may not be made yet: its disk is its nearest folder's.
+    let Some(free) = dir.ancestors().find(|d| d.is_dir()).and_then(free_space) else {
+        return Ok(());
+    };
+    if free >= need {
+        return Ok(());
+    }
+    let gb = |n: u64| n as f64 / 1e9;
+    Err(format!(
+        "needs {:.1} GB, {:.1} GB free on the disk of {}",
+        gb(need),
+        gb(free),
+        dir.display()
+    )
+    .into())
+}
+
+/// The bytes free to this user on the disk `dir` is on.
+#[cfg(unix)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+
+    let path = CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: a plain C struct, filled by the call; zeroes are its empty value.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `path` is a valid C string and `stat` lives through the call.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    // `u64` on Linux, narrower on other systems.
+    #[allow(clippy::useless_conversion)]
+    let free = u64::from(stat.f_bavail).saturating_mul(u64::from(stat.f_frsize));
+    Some(free)
+}
+
+/// The bytes free to this user on the disk `dir` is on.
+#[cfg(windows)]
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+    let mut free = 0u64;
+    // SAFETY: `wide` is a NUL-terminated path; the other two outputs may be null.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(free)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn free_space(_dir: &Path) -> Option<u64> {
+    None
 }
 
 /// Moves what was unpacked from the hidden folder beside the parts.
@@ -496,6 +569,34 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// A 7-Zip entry named `../outside.txt` is written nowhere outside the
+    /// folder it unpacks into; the rest of the archive is.
+    #[test]
+    fn a_7z_entry_cannot_leave_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let parts = parts_in(dir.path(), &[("ESC.7z", "dl/sub/ESC.7z")]);
+        let progress = Progress::default();
+        let out = extract(&parts, &[], &progress).unwrap();
+        let sub = dir.path().join("dl/sub");
+        assert!(sub.join("inside.txt").exists(), "{:?}", out.placed);
+        for place in [sub.join("outside.txt"), dir.path().join("dl/outside.txt")] {
+            assert!(!place.exists(), "{} was written", place.display());
+        }
+    }
+
+    /// An archive that clearly does not fit fails before anything is
+    /// written, saying how much it needs; one that fits goes ahead.
+    #[test]
+    fn an_archive_without_room_fails_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_yet = dir.path().join("not/made/yet");
+        assert!(room_for(&not_yet, 1).is_ok());
+        let Err(Failure::Other(why)) = room_for(&not_yet, u64::MAX) else {
+            panic!("room for everything");
+        };
+        assert!(why.contains("needs") && why.contains("free"), "{why}");
     }
 
     /// The files every fixture holds: `Example/video.bin` (60000 bytes)

@@ -197,6 +197,24 @@ async fn a_person_can_look_for_updates_with_the_setting_off() {
     assert!(engine.snapshot().update.is_some());
 }
 
+/// With a proxy set, the update check goes through it as any host does:
+/// GitHub here is reachable only through the stand-in proxy.
+#[tokio::test]
+async fn the_update_check_goes_through_the_proxy() {
+    let t = Setup::new().await;
+    let mut cfg = t.config();
+    cfg.proxies = vec![t.ip.clone()];
+    cfg.endpoints.github_api = "http://api.example".into();
+    cfg.check_updates = false;
+    let engine = t.engine_with(cfg).await;
+    assert_eq!(
+        engine.look_for_update().await,
+        Ok(Some("99.0.0".to_string())),
+    );
+    let asked = t.server.requests("/repos/lordsilver/haul/releases/latest");
+    assert_eq!(asked.len(), 1, "{asked:?}");
+}
+
 /// An action on many rows is one change of the state, not one per row.
 #[tokio::test]
 async fn an_action_on_many_rows_is_one_change() {
@@ -260,6 +278,74 @@ async fn a_file_that_cannot_be_written_blames_no_host() {
     }
 }
 
+/// A download that differs from the checksum its host published is not
+/// kept: its bytes go, and that host's link is not tried again for it.
+#[tokio::test]
+async fn a_download_that_differs_from_its_checksum_is_not_kept() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://pixeldrain.com/u/badhash-x", "");
+    let s = wait_for(&engine, "the failure", |s| {
+        s.items
+            .first()
+            .is_some_and(|i| i.status.as_str() == "error")
+    })
+    .await;
+    assert!(
+        s.items[0].error.contains("differs from its"),
+        "{}",
+        s.items[0].error
+    );
+    assert!(!t.partial(&s.items[0].id).exists(), "its bytes went");
+    assert!(!t.root.join("dl/badhash-x.bin").exists(), "nothing placed");
+}
+
+/// A resumed download is compared with its checksum once it is whole:
+/// bytes from before that are wrong where no overlap check looks are
+/// caught, and right ones pass.
+#[tokio::test]
+async fn a_resumed_download_is_compared_once_whole() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text(
+        "https://pixeldrain.com/u/good https://pixeldrain.com/u/spoilt",
+        "",
+    );
+    let s = wait_for(&engine, "the rows", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.size > 0)
+    })
+    .await;
+    std::fs::create_dir_all(t.root.join("dl/.partial")).unwrap();
+    for it in &s.items {
+        let key = it.name.trim_end_matches(".bin");
+        let mut bytes = content(key, SIZE)[..SIZE / 2].to_vec();
+        if key == "spoilt" {
+            // Wrong near the start, far before the bytes an overlap compares.
+            bytes[10] ^= 0xff;
+        }
+        std::fs::write(t.partial(&it.id), bytes).unwrap();
+    }
+    engine.set_paused(false);
+    let s = wait_for(&engine, "both settled", |s| {
+        s.items
+            .iter()
+            .all(|i| matches!(i.status.as_str(), "done" | "error"))
+    })
+    .await;
+    let status = |name: &str| {
+        s.items
+            .iter()
+            .find(|i| i.name == name)
+            .unwrap()
+            .status
+            .as_str()
+    };
+    assert_eq!(status("good.bin"), "done");
+    assert_eq!(t.downloaded("good.bin"), content("good", SIZE));
+    assert_eq!(status("spoilt.bin"), "error");
+}
+
 /// A file on several hosts downloads from the one the user picked, even
 /// over the hosts they prefer in general.
 #[tokio::test]
@@ -268,8 +354,13 @@ async fn a_file_downloads_from_the_host_picked_for_it() {
     let engine = t.engine().await;
     engine.set_paused(true);
     // pixeldrain.com, preferred from the start, and a direct link: one file.
+    // (pixeldrain publishes no checksum for it here: the stand-ins hold
+    // other bytes under one name.)
     engine.add_text(
-        &format!("https://pixeldrain.com/u/pick\n{}/files/pick.bin", t.ip),
+        &format!(
+            "https://pixeldrain.com/u/nohash-pick\n{}/files/nohash-pick.bin",
+            t.ip
+        ),
         "",
     );
     let s = wait_for(&engine, "one row on two hosts", |s| {
@@ -289,13 +380,13 @@ async fn a_file_downloads_from_the_host_picked_for_it() {
     engine.item_action(&id, ItemAction::Resume);
     wait_for(&engine, "done", all_done).await;
     assert!(
-        !t.server.requests("/files/pick.bin").is_empty(),
+        !t.server.requests("/files/nohash-pick.bin").is_empty(),
         "the picked host served it"
     );
     // pixeldrain was only asked what the file is, never for it.
     assert!(
         t.server
-            .requests("/api/file/pick")
+            .requests("/api/file/nohash-pick")
             .iter()
             .all(|r| r.contains("/info")),
         "pixeldrain stood by"
@@ -511,6 +602,64 @@ async fn a_pasted_link_goes_to_the_one_download_that_waits_for_it() {
     assert_eq!(pasted.open_add, None);
     wait_for(&engine, "done", all_done).await;
     assert_eq!(t.downloaded("e.bin"), content("e.bin", SIZE));
+}
+
+/// A new row named the same as a finished one goes, and folds nothing into
+/// itself on the way: an idle row for the same file keeps its links.
+#[tokio::test]
+async fn a_row_that_goes_takes_no_other_row_with_it() {
+    let t = Setup::new().await;
+    std::fs::create_dir_all(t.root.join("data")).unwrap();
+    // In this order in the queue: the idle row first.
+    let queue = json!({
+        "aidle00000": {"mirrors": [format!("{}/files/x.bin", t.name)], "name": "x.bin", "size": SIZE, "status": "paused"},
+        "bdone00000": {"mirrors": [format!("{}/other/x.bin", t.ip)], "name": "x.bin", "size": SIZE, "status": "done"},
+        "cnew000000": {"mirrors": [format!("{}/files/x.bin?fresh", t.ip)], "name": null, "size": 0, "status": "queued"},
+    });
+    std::fs::write(t.root.join("data/queue.json"), queue.to_string()).unwrap();
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    let s = wait_for(&engine, "the new row looked up", |s| {
+        s.items.iter().all(|i| i.id != "cnew000000")
+    })
+    .await;
+    let idle = s.items.iter().find(|i| i.id == "aidle00000");
+    assert!(idle.is_some(), "the idle row stays: {:?}", s.items);
+    assert_eq!(engine.debug_links("aidle00000").len(), 1);
+}
+
+/// A partial file that cannot move to the new download folder keeps the
+/// downloads where they are, says why, and leaves every partial file there.
+#[tokio::test]
+async fn a_move_that_cannot_finish_keeps_the_old_folder() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_paused(true);
+    engine.add_text(&format!("{0}/files/a.bin {0}/files/b.bin", t.ip), "");
+    let s = wait_for(&engine, "the rows", |s| s.items.len() == 2).await;
+    std::fs::create_dir_all(t.root.join("dl/.partial")).unwrap();
+    for it in &s.items {
+        std::fs::write(t.partial(&it.id), b"bytes").unwrap();
+    }
+    // Where the new folder's partial folder should be, a file.
+    let new = t.root.join("elsewhere");
+    std::fs::create_dir_all(&new).unwrap();
+    std::fs::write(new.join(".partial"), b"in the way").unwrap();
+    let change = json!({ "download_dir": new.display().to_string() });
+    engine.update_settings(change.as_object().unwrap()).unwrap();
+    let s = wait_for(&engine, "the move to give up", |s| s.config_error.is_some()).await;
+    assert!(
+        s.config_error
+            .as_deref()
+            .unwrap()
+            .contains("could not move"),
+        "{:?}",
+        s.config_error
+    );
+    assert_eq!(s.download_dir, t.root.join("dl").display().to_string());
+    for it in &s.items {
+        assert!(t.partial(&it.id).exists(), "{} stays", it.name);
+    }
 }
 
 #[tokio::test]

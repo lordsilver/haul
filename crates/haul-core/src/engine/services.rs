@@ -75,7 +75,7 @@ impl Engine {
     /// countries before the service is set up.
     pub async fn nordvpn_list(&self) -> Result<usize, String> {
         let api = self.cfg().endpoints.nordvpn.clone();
-        let list = vpn::nordvpn_servers(&self.clients().on(0).client, &api).await?;
+        let list = vpn::nordvpn_servers(&self.service_http(&api).client, &api).await?;
         let n = list.len();
         {
             let mut st = self.lock();
@@ -104,7 +104,7 @@ impl Engine {
         let mut checked = None;
         if wanted && stale {
             let api = cfg.endpoints.nordvpn.clone();
-            match vpn::nordvpn_servers(&self.clients().on(0).client, &api).await {
+            match vpn::nordvpn_servers(&self.service_http(&api).client, &api).await {
                 Ok(list) => {
                     let mut st = self.lock();
                     let s = &mut st.services;

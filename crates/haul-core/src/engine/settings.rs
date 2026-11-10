@@ -686,6 +686,12 @@ impl Engine {
     /// Moves to a new download folder: running transfers stop, their partial
     /// files move along, and they resume there.
     async fn move_downloads(self, folder: PathBuf) {
+        // One move at a time: a second waits, and starts from where the
+        // first left the files.
+        let _moving = self.0.move_lock.lock().await;
+        if folder == self.download_dir() {
+            return;
+        }
         {
             let mut st = self.lock();
             st.moving = true;
@@ -694,15 +700,29 @@ impl Engine {
         self.stop_all(Duration::from_secs(10)).await;
         let from = self.download_dir().join(".partial");
         let to = folder.join(".partial");
-        let moved = tokio::task::spawn_blocking(move || move_partials(&from, &to)).await;
+        let moved = tokio::task::spawn_blocking(move || move_partials(&from, &to))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
         match moved {
-            Ok(Ok(n)) if n > 0 => tracing::info!("moved {n} partial downloads"),
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => tracing::error!("moving partial downloads: {e}"),
-            Err(e) => tracing::error!("moving partial downloads: {e}"),
+            Ok(n) => {
+                if n > 0 {
+                    tracing::info!("moved {n} partial downloads");
+                }
+                tracing::info!("downloading to {}", folder.display());
+                *crate::lock::write(&self.0.download_dir) = folder;
+            }
+            // What could not move would be left behind, its download
+            // starting over: the downloads stay where they are.
+            Err(why) => {
+                let old = self.download_dir();
+                tracing::error!("moving partial downloads: {why}");
+                self.set_config_error(Some(format!(
+                    "the partial downloads could not move to {}: {why}; downloads stay in {}",
+                    folder.display(),
+                    old.display()
+                )));
+            }
         }
-        tracing::info!("downloading to {}", folder.display());
-        *crate::lock::write(&self.0.download_dir) = folder;
         {
             let mut st = self.lock();
             st.moving = false;
@@ -838,30 +858,45 @@ fn usable_folder(path: &Path) -> Result<(), String> {
 
 /// Moves every partial file from one `.partial` folder to another, copying
 /// when the two are on different drives. Returns how many moved.
-fn move_partials(from: &Path, to: &Path) -> std::io::Result<usize> {
+fn move_partials(from: &Path, to: &Path) -> Result<usize, String> {
     let entries = match std::fs::read_dir(from) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(e) => return Err(e),
+        Err(e) => return Err(format!("{}: {e}", from.display())),
     };
-    std::fs::create_dir_all(to)?;
-    let mut moved = 0;
-    for entry in entries {
-        let entry = entry?;
-        // Which Haul owns a folder is the folder's own to say.
-        if entry.file_name() == super::PARTIAL_OWNER {
-            let _ = std::fs::remove_file(entry.path());
-            continue;
-        }
-        let target = to.join(entry.file_name());
-        if std::fs::rename(entry.path(), &target).is_err() {
-            std::fs::copy(entry.path(), &target)?;
-            std::fs::remove_file(entry.path())?;
-        }
-        moved += 1;
+    let files: Vec<_> = entries
+        .flatten()
+        .filter(|e| e.file_name() != super::PARTIAL_OWNER)
+        .map(|e| e.file_name())
+        .collect();
+    if files.is_empty() {
+        return Ok(0);
     }
+    std::fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    let mut moved = Vec::new();
+    for name in files {
+        if let Err(e) = move_file(&from.join(&name), &to.join(&name)) {
+            // All of them or none: the ones moved go back.
+            for back in moved.iter().rev() {
+                let _ = move_file(&to.join(back), &from.join(back));
+            }
+            return Err(format!("{}: {e}", Path::new(&name).display()));
+        }
+        moved.push(name);
+    }
+    // Which Haul owns a folder is the folder's own to say.
+    let _ = std::fs::remove_file(from.join(super::PARTIAL_OWNER));
     let _ = std::fs::remove_dir(from);
-    Ok(moved)
+    Ok(moved.len())
+}
+
+/// Moves one file, copying it when the two places are on different drives.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_err() {
+        std::fs::copy(from, to)?;
+        std::fs::remove_file(from)?;
+    }
+    Ok(())
 }
 
 /// A proxy address Haul can use: `socks5://`, `socks5h://`, `http://` or

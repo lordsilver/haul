@@ -925,6 +925,9 @@ pub struct PoolSummary {
     pub sources: Vec<PoolSource>,
     /// Why the pool is only the line although proxies or VPN are on.
     pub why: Option<String>,
+    /// What does not go through the proxies as downloads do: pages opened in
+    /// Haul and passed out of sight cannot go through an `https://` proxy.
+    pub pages_note: Option<String>,
 }
 
 /// What the services found, for [`pool`].
@@ -1048,8 +1051,16 @@ pub(super) fn pool(cfg: &Config, p: super::PoolView, vpn: VpnFound) -> PoolSumma
             None => "Nothing added yet: every proxy and VPN source is off.".to_string(),
         })
     };
+    let pages_note = cfg
+        .proxy_pool()
+        .iter()
+        .any(|p| p.starts_with("https://"))
+        .then(|| {
+            "Pages you open in Haul, and pages Haul passes by itself, cannot go through an https:// proxy: Haul does not open them rather than go without it. Use the same proxy's http:// or socks5:// address for them.".to_string()
+        });
     PoolSummary {
         label,
+        pages_note,
         configured: !sources.is_empty(),
         sources,
         why,
@@ -1582,6 +1593,13 @@ mod tests {
         };
         let p = pool(&cfg, view(true, 2, 0), none());
         assert_eq!(p.label, "Line + 2 proxies");
+        assert_eq!(p.pages_note, None, "socks5 carries pages");
+        let https = Config {
+            proxies: vec!["https://g:443".into()],
+            ..cfg.clone()
+        };
+        let note = pool(&https, view(true, 2, 0), none()).pages_note;
+        assert!(note.is_some_and(|n| n.contains("https://")));
         let names: Vec<&str> = p.sources.iter().map(|s| s.name).collect();
         assert_eq!(names, ["Your line", "Proxies"]);
         assert_eq!(p.sources[0].status, "One more address beside them");

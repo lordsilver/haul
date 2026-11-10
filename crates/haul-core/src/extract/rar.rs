@@ -65,6 +65,7 @@ pub(super) fn rar(
         listing.skip()?;
     }
     progress.total.store(total, Ordering::Relaxed);
+    super::room_for(out, total)?;
 
     let mut archive = dll::Rar::open(&first, true, password, &progress.done)?;
     while let Some(entry) = archive.next()? {

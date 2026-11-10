@@ -161,9 +161,14 @@ pub async fn fetch_installer(http: &Http, update: &Update, dir: &Path) -> Result
     if !matches_sha256(&bytes, &installer.sha256) {
         return Err(format!("{} does not match its checksum", installer.name));
     }
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let path = dir.join(&installer.name);
-    std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    // The name as GitHub sent it, made a plain file name in `dir`.
+    let path = dir.join(crate::paths::safe(&installer.name));
+    tokio::fs::write(&path, &bytes)
+        .await
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)
 }
 

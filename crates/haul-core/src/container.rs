@@ -25,11 +25,33 @@ pub struct Link {
 
 static URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>]+"#).unwrap());
 
-/// Every http(s) link in `text`, without trailing punctuation.
+/// Every http(s) link in `text`, without the punctuation of the sentence
+/// around it.
 pub fn extract_urls(text: &str) -> Vec<String> {
     URL.find_iter(text)
-        .map(|m| m.as_str().trim_end_matches(['.', ',', ')']).to_string())
+        .map(|m| without_trailing(m.as_str()).to_string())
         .collect()
+}
+
+/// `link` without punctuation that ends a sentence (`.`, `,`, `;`, `!`), and
+/// without a closing bracket it does not open itself: `(see …/a)` loses the
+/// `)`, `…/Example_(1)` keeps it.
+fn without_trailing(mut link: &str) -> &str {
+    let unbalanced =
+        |s: &str, open: char, close: char| s.matches(close).count() > s.matches(open).count();
+    while let Some(last) = link.chars().last() {
+        let cut = match last {
+            '.' | ',' | ';' | '!' => true,
+            ')' => unbalanced(link, '(', ')'),
+            ']' => unbalanced(link, '[', ']'),
+            _ => false,
+        };
+        if !cut {
+            break;
+        }
+        link = &link[..link.len() - 1];
+    }
+    link
 }
 
 /// Links from a container file, recognised by its name.
@@ -196,6 +218,23 @@ pub async fn parse_dlc(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_link_keeps_the_brackets_it_opens() {
+        assert_eq!(
+            extract_urls("get https://site.example/files/Example_(1) now"),
+            ["https://site.example/files/Example_(1)"]
+        );
+        assert_eq!(
+            extract_urls("(see https://site.example/a)."),
+            ["https://site.example/a"]
+        );
+        assert_eq!(
+            extract_urls("[https://site.example/b]; and https://site.example/c!"),
+            ["https://site.example/b", "https://site.example/c"]
+        );
+    }
+
     use super::*;
     use aes::cipher::BlockModeEncrypt;
     use base64::engine::general_purpose::STANDARD;

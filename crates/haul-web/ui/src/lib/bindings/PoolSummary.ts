@@ -16,4 +16,9 @@ configured: boolean, sources: Array<PoolSource>,
 /**
  * Why the pool is only the line although proxies or VPN are on.
  */
-why: string | null, };
+why: string | null, 
+/**
+ * What does not go through the proxies as downloads do: pages opened in
+ * Haul and passed out of sight cannot go through an `https://` proxy.
+ */
+pages_note: string | null, };

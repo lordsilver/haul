@@ -330,7 +330,9 @@ function Page({ s, d }: { s: State; d: SettingsView }) {
               pool.sources.map((x) => `${x.name}: ${x.status}`).join(' · ')
             )
           }
-        />
+        >
+          {pool.pages_note ? <p className="text-sm text-warn-strong">{pool.pages_note}</p> : null}
+        </SettingCard>
       ) : null}
       <Section>Your line</Section>
       <YourLine s={s} d={d} />
