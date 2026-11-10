@@ -682,12 +682,11 @@ mod address_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod command_tests {
     use super::*;
 
     /// A command that runs past its limit is ended, not left running.
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_command_past_its_limit_is_ended() {
         let dir = tempfile::tempdir().unwrap();
