@@ -96,21 +96,21 @@ export function PageScroll({ children, ...props }: Omit<ComponentProps<'div'>, '
 }
 
 // What a page says when it has nothing to show; `children` go below the words.
+// It has no border: a dashed box reads as a drop zone, and the whole window
+// takes drops.
 export function EmptyState({
   icon: Icon,
   title,
   description,
-  bordered = true,
   children,
 }: {
   icon: LucideIcon;
   title: ReactNode;
   description: ReactNode;
-  bordered?: boolean;
   children?: ReactNode;
 }) {
   return (
-    <Empty className={cn('flex-1', bordered && 'border')}>
+    <Empty className="flex-1">
       <EmptyHeader>
         <EmptyMedia variant="icon">
           <Icon />

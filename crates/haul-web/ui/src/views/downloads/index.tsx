@@ -58,8 +58,7 @@ const EMPTY: Record<Exclude<ListKey, 'all'>, [LucideIcon, string, string]> = {
 };
 
 // What the list says when it has no rows. With no downloads at all it says
-// how to add some; it is no box to drop into, since the whole window takes
-// drops.
+// how to add some.
 function Nothing({ s, view, query }: { s: State; view: ListKey; query: string }) {
   const start = !query && (!s.items.length || view === 'all');
   const [Icon, title, text] = query
@@ -71,7 +70,7 @@ function Nothing({ s, view, query }: { s: State; view: ListKey; query: string })
           'Or paste links with Ctrl+V. Files can be .dlc containers or text files with links in them.',
         ]
       : EMPTY[view];
-  return <EmptyState icon={Icon} title={title} description={text} bordered={!start} />;
+  return <EmptyState icon={Icon} title={title} description={text} />;
 }
 
 // App-wide state only: a download that needs the user has its own row and
