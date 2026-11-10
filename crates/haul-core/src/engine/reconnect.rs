@@ -19,6 +19,7 @@ use crate::{
     config::secret,
     item::{Status, Trouble},
     router::{self, RedialError, Router},
+    throttle::Verdict,
 };
 
 /// A host's wait for this address worth a redial.
@@ -48,6 +49,13 @@ impl Reconnects {
         self.note_at = super::unix_now();
         self.failed = failed;
     }
+}
+
+/// Why a new address would help, and the rows held back that say so.
+#[derive(Debug)]
+pub(super) struct Wanted {
+    why: String,
+    rows: Vec<String>,
 }
 
 /// What the settings view shows about getting a new address.
@@ -342,7 +350,16 @@ impl Engine {
     /// host it downloads from, and one waiting only when every one of its hosts
     /// holds this address back: a row doing well, or that can go elsewhere,
     /// wants nothing whatever its other mirrors are up to.
-    pub(super) fn wants_new_address(&self) -> Option<String> {
+    pub(super) fn wants_new_address(&self) -> Option<Wanted> {
+        self.wanted(None)
+    }
+
+    /// [`Engine::wants_new_address`], or with `held` the rows a hold for one
+    /// was decided for ([`Engine::drain`]): each still stands for it while its
+    /// host keeps slowing this address and it hasn't recovered, though its own
+    /// reading may waver for a moment (the download beside it dipping reads as
+    /// a slow line), so only a real change lifts the hold.
+    fn wanted(&self, held: Option<&[String]>) -> Option<Wanted> {
         let cfg = self.cfg();
         if !cfg.reconnect {
             return None;
@@ -382,6 +399,14 @@ impl Engine {
                     )
                 })
         };
+        let mut wanted: Option<Wanted> = None;
+        let mut want = |id: &str, why: String| {
+            let w = wanted.get_or_insert_with(|| Wanted {
+                why,
+                rows: Vec::new(),
+            });
+            w.rows.push(id.to_string());
+        };
         for it in st.items.values() {
             if !matches!(
                 it.status,
@@ -395,14 +420,20 @@ impl Engine {
                     continue;
                 }
                 if let Some(why) = quota_slowed(host) {
-                    return Some(why);
+                    want(&it.id, why);
+                    continue;
                 }
                 let slowing = st
                     .lanes
                     .get(host, DIRECT)
                     .is_some_and(|l| l.slowing && l.slowing_sure);
-                if slowing && it.slowed.as_ref().is_some_and(|s| s.sure) {
-                    return Some(format!("{host} is slowing this address"));
+                let slowed = if held.is_some_and(|rows| rows.contains(&it.id)) {
+                    it.pace.as_ref().is_some_and(|p| p.verdict != Verdict::Fine)
+                } else {
+                    it.slowed.as_ref().is_some_and(|s| s.sure)
+                };
+                if slowing && slowed {
+                    want(&it.id, format!("{host} is slowing this address"));
                 }
                 continue;
             }
@@ -425,7 +456,8 @@ impl Engine {
             }
             for host in mirrors.iter().filter(|h| line_helps(h)) {
                 if let Some(why) = quota_slowed(host) {
-                    return Some(why);
+                    want(&it.id, why);
+                    break;
                 }
                 let Some(direct) = st.lanes.get(host, DIRECT) else {
                     continue;
@@ -438,18 +470,22 @@ impl Engine {
                 if let Some(until) = direct.cooldown
                     && until.saturating_duration_since(now) >= LONG_WAIT
                 {
-                    return Some(if direct.slowing {
-                        format!("{host} is slowing this address")
-                    } else {
-                        format!(
-                            "{host} asked this address to wait {} minutes",
-                            until.saturating_duration_since(now).as_secs() / 60
-                        )
-                    });
+                    want(
+                        &it.id,
+                        if direct.slowing {
+                            format!("{host} is slowing this address")
+                        } else {
+                            format!(
+                                "{host} asked this address to wait {} minutes",
+                                until.saturating_duration_since(now).as_secs() / 60
+                            )
+                        },
+                    );
+                    break;
                 }
             }
         }
-        None
+        wanted
     }
 
     /// Redials on its own whenever [`Engine::wants_new_address`] says so, once
@@ -464,8 +500,8 @@ impl Engine {
             if !self.idle(self.cfg().throttling.redial_check).await {
                 return;
             }
-            if let Some(why) = self.wants_new_address() {
-                self.drain(&why).await;
+            if let Some(want) = self.wants_new_address() {
+                self.drain(want).await;
             }
         }
     }
@@ -500,11 +536,14 @@ impl Engine {
     /// Gets a new address without cutting off anything that runs well: nothing
     /// new starts while the downloads running well on the line go on to their
     /// end, then [`Engine::reconnect`] stops what is left (only those a host is
-    /// slowing) and redials, and everything goes again. Past the limit the
-    /// redial is put off and the queue goes on; it comes up again after the
-    /// usual gap. Downloads through a proxy aren't waited for: a redial doesn't
+    /// slowing) and redials, and everything goes again. The hold ends early
+    /// only for a real change: the rows it is for are done, gone or recovered,
+    /// or redials can't come on their own any more. Past the limit the redial
+    /// is put off and the queue goes on; it comes up again after the usual
+    /// gap. Downloads through a proxy aren't waited for: a redial doesn't
     /// touch them.
-    async fn drain(&self, why: &str) {
+    async fn drain(&self, want: Wanted) {
+        let why = want.why.as_str();
         let throttling = self.cfg().throttling.clone();
         if !self.could_drain(throttling.drain_limit) {
             tracing::debug!("a new address would help ({why}): after what's running");
@@ -515,7 +554,7 @@ impl Engine {
         let deadline = Instant::now() + throttling.drain_limit;
         let finished = loop {
             // Gone by itself (the slow one finished, the host recovered).
-            if self.wants_new_address().is_none() {
+            if self.wanted(Some(&want.rows)).is_none() {
                 self.set_draining(None);
                 return;
             }

@@ -257,6 +257,8 @@ Then, whichever comes first:
 4. As they end, the existing `Engine::reconnect` runs: it stops what is left on the line, which is only the slowed ones, redials, and clears what was learned about the old address.
 5. Everything goes again, the stopped rows resuming from their partial files.
 
+The hold, once decided, stands for the rows it was decided for while their host keeps slowing the address and they haven't recovered (`Engine::wanted` with the held rows). Until November 2026 it asked `wants_new_address` afresh every tick, which also requires each row to read as slowed right then; a healthy download beside the slowed one dipping for a moment reads as a slow line and clears that, so the hold ended for one tick and the scheduler started new files on the line before the redial. It now ends early only when those rows finish, go elsewhere or run well, or redials can no longer come on their own.
+
 Draining is limited to 10 minutes. At the limit Haul gives up on this redial rather than abort anything: the queue goes on, and it asks again after the usual 10 minutes between redials. A person pressing **Get a new IP** is not drained: they asked, and were told what stops.
 
 A redial that doesn't help must not repeat, since it cuts the line for the whole home. When a host is still slow on the address a redial just gave it, it doesn't limit by address, and no further redial is made for it during this run.

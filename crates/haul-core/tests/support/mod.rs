@@ -170,6 +170,8 @@ pub(super) struct Server {
     pub(super) public_kept: Arc<std::sync::atomic::AtomicBool>,
     /// /eases stops slowing, as a host lifting its limit does.
     pub(super) eased: Arc<std::sync::atomic::AtomicBool>,
+    /// /dips sends at two fifths of its rate, as a line busy for a moment.
+    pub(super) dipped: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// A file sent at the KiB/s `rate` says for each moment, from where it is
@@ -385,6 +387,25 @@ pub(super) async fn start_server() -> (Server, u16) {
                         300
                     } else {
                         40
+                    }
+                })
+            }),
+        )
+        .route(
+            "/dips/{rate}/{name}",
+            // A steady speed in KiB/s, two fifths of it while dipped.
+            get(|State(s): State<Server>, method: Method, UrlPath((rate, name)): UrlPath<(usize, String)>, headers: HeaderMap| async move {
+                if method == Method::HEAD {
+                    return file_response(content(&name, SIZE), &headers);
+                }
+                let path = format!("/dips/{rate}/{name}");
+                log(&s, &path, &headers);
+                let dipped = s.dipped.clone();
+                paced(&s, path, content(&name, SIZE), &headers, true, move || {
+                    if dipped.load(Ordering::SeqCst) {
+                        rate * 2 / 5
+                    } else {
+                        rate
                     }
                 })
             }),

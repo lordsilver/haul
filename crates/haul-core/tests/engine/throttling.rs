@@ -889,6 +889,55 @@ async fn a_new_address_waits_for_healthy_downloads_to_finish() {
     assert_eq!(engine.snapshot().reconnect.draining, None);
 }
 
+/// Once the queue is held for a new address, the hold stands while the host
+/// still slows the address: the healthy download beside the slowed one dipping
+/// for a moment reads as a slow line, and the slowed row stops saying it is
+/// slowed until it passes, but nothing new starts meanwhile.
+#[tokio::test]
+async fn a_hold_for_a_new_address_outlasts_a_dip_beside_it() {
+    let t = Setup::new().await;
+    let engine = t
+        .engine_with(Config {
+            reconnect: true,
+            ..quick(&t)
+        })
+        .await;
+    engine.add_text(&format!("{}/eases/x.bin", t.ip), "");
+    engine.add_text(&format!("{}/dips/200/h.bin", t.name), "");
+    wait_for(&engine, "the hold", |s| s.reconnect.draining.is_some()).await;
+    t.server.dipped.store(true, Ordering::SeqCst);
+    wait_for(&engine, "the dip read as the line", |s| {
+        row(s, "x.bin").slowed.is_none()
+    })
+    .await;
+    engine.add_text(&format!("{}/files/new.bin", t.name), "");
+    a_few_windows().await;
+    let s = engine.snapshot();
+    assert!(s.reconnect.draining.is_some(), "the hold stands");
+    assert_eq!(row(&s, "new.bin").status, "queued");
+    assert!(t.server.requests("/files/new.bin").is_empty());
+    t.server.dipped.store(false, Ordering::SeqCst);
+    wait_for(&engine, "everything done", all_done).await;
+    let log = |line: &str| t.server.at(line).unwrap_or_else(|| panic!("no {line}"));
+    let (finished, redial, started) = (
+        log("done /dips/200/h.bin"),
+        log("/redial"),
+        log("/files/new.bin"),
+    );
+    assert!(
+        finished < redial && redial < started,
+        "{finished} {redial} {started}"
+    );
+    assert_eq!(
+        t.server.requests("/dips/200/h.bin").len(),
+        1,
+        "never stopped"
+    );
+    assert_eq!(t.server.redials.load(Ordering::SeqCst), 1);
+    assert_eq!(t.downloaded("x.bin"), content("x.bin", SIZE));
+    assert_eq!(t.downloaded("h.bin"), content("h.bin", SIZE));
+}
+
 /// Holding the queue has a limit: past it the redial is put off, nothing is
 /// aborted, and what was held back starts.
 #[tokio::test]
