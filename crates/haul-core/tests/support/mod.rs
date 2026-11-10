@@ -103,6 +103,26 @@ fn fc_sized(host: &str, name: &str, sizes: [&str; 2]) -> String {
     format!("{}<table>{rows}</table>", fc_solved_with("Folder", &links))
 }
 
+/// A solved container of four parts on `at`, with its link table: each
+/// row's name is `names`' (by part), or what `link` gives the file's link.
+fn fc_table(at: &str, link: impl Fn(usize) -> String, names: [&str; 4]) -> String {
+    let links: Vec<String> = (1..=4)
+        .map(|n| format!("http://{at}/{}", link(n)))
+        .collect();
+    let rows: String = names
+        .iter()
+        .map(|n| {
+            format!(
+                r#"<tr class="kwj3"><td class="status"><i class="online small"></i></td><td title="{n}">{n}<span><a href="http://{at}" class="external_link">{at}</a></span></td><td>n/a</td><td><a href="/Link/abc.html" class="button download"></a></td></tr>"#
+            )
+        })
+        .collect();
+    format!(
+        "{}<table>{rows}</table>",
+        fc_solved_with("Example.Set", &links)
+    )
+}
+
 /// A solved container whose link table has no names: two different folders
 /// on `host`, each row showing `n/a` where a file's name goes.
 fn fc_unnamed(host: &str) -> String {
@@ -930,7 +950,8 @@ pub(super) async fn start_server() -> (Server, u16) {
                 match page.as_str() {
                     "abc.html" | "open.html" | "cf-once.html" | "host-a.html" | "host-b.html"
                     | "unnamed.html" | "for-account.html" | "ids-a.html" | "ids-b.html" | "same-a.html" | "same-b.html"
-                    | "other-a.html" | "other-b.html" => FC_GATE.into_response(),
+                    | "other-a.html" | "other-b.html" | "mix-ids.html" | "mix-unnamed.html"
+                    | "mix-named.html" => FC_GATE.into_response(),
                     // Another gate than the checkbox, past the check in front
                     // of the site.
                     "other-gate.html" => "<h2>Security Check</h2><div class=\"other\"></div>".into_response(),
@@ -993,6 +1014,27 @@ pub(super) async fn start_server() -> (Server, u16) {
                     fc_sized(host, "Archive.Three", ["2.00 GB", "880.00 MB"])
                 } else if page == "other-b.html" {
                     fc_sized(&other, "Archive.Four", ["2.00 GB", "500.00 MB"])
+                } else if page == "mix-ids.html" {
+                    // Named after an id, as the host names them.
+                    let id = "0123abcd-0000-4000-8000-0123456789ab";
+                    let name = |n: usize| format!("{id}.part{n}.rar");
+                    fc_table(host, |n| format!("files/{}", name(n)), [
+                        &name(1), &name(2), &name(3), &name(4),
+                    ])
+                } else if page == "mix-unnamed.html" {
+                    // Folders on a host whose table names only some files.
+                    fc_table(&other, |n| format!("d/fold{n}"), [
+                        "n/a", "n/a", "Example.Archive.part3.rar", "Example.Archive.part4.rar",
+                    ])
+                } else if page == "mix-named.html" {
+                    // A row that shows what the host's page said instead of
+                    // its file's name, last in the table.
+                    let order = [1, 2, 4, 3];
+                    fc_table(
+                        host,
+                        |n| format!("files/Example.Archive.part{}.rar?c", order[n - 1]),
+                        ["Example.Archive.part1.rar", "Example.Archive.part2.rar", "Example.Archive.part4.rar", "Just a moment..."],
+                    )
                 } else if page == "ids-a.html" || page == "ids-b.html" {
                     // Named after nothing but ids on both hosts, under a
                     // title that says nothing either.
@@ -1189,6 +1231,11 @@ pub(super) async fn start_server() -> (Server, u16) {
                     "two-sets" => r#"<html><head><title>Example T</title></head><body>
                         <a href="https://filecrypt.cc/Container/other-a.html">Set A</a>
                         <a href="https://filecrypt.cc/Container/other-b.html">Set B</a>
+                        </body></html>"#,
+                    "per-host-mixed" => r#"<html><head><title>Example M</title></head><body>
+                        <a href="https://filecrypt.cc/Container/mix-ids.html">Mirror A</a>
+                        <a href="https://filecrypt.cc/Container/mix-unnamed.html">Mirror B</a>
+                        <a href="https://filecrypt.cc/Container/mix-named.html">Mirror C</a>
                         </body></html>"#,
                     "per-host-ids" => r#"<html><head><title>Example I</title></head><body>
                         <a href="https://filecrypt.cc/Container/ids-a.html">Mirror A</a>

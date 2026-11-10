@@ -2035,7 +2035,7 @@ impl Engine {
                     found_hosts.push(host);
                 }
             }
-            let part_row = by_part.as_ref().and_then(|rows| {
+            let part_row = by_part.as_ref().and_then(|(rows, _)| {
                 let name = e.file_name()?;
                 rows.get(&parts::PartName::parse(&name)?.number).cloned()
             });
@@ -2048,6 +2048,15 @@ impl Engine {
                 }
                 continue;
             }
+            // A part the sibling wrappers lack takes the name their parts
+            // share, so the archive stays one.
+            let name = match by_part.as_ref().and_then(|(_, base)| base.as_deref()) {
+                Some(base) if !nested => e
+                    .file_name()
+                    .and_then(|n| parts::rebased(&hosts::tidy_name(&n), base))
+                    .or(e.name),
+                _ => e.name,
+            };
             if !nested {
                 seen.files += 1;
                 join_listed(
@@ -2069,7 +2078,7 @@ impl Engine {
                 it.wrapper = true;
                 it
             } else {
-                let mut it = Item::new(urls.clone(), e.name, package);
+                let mut it = Item::new(urls.clone(), name, package);
                 it.listed_size = e.listed_size;
                 // Nothing a wrapper lists starts on its own: the user picks.
                 it.status = Status::Paused;
@@ -2958,12 +2967,13 @@ fn join_listed<'a>(
 /// them its own way: the found files' links join those rows by number, and
 /// every part takes the name that says most of the ones the files have, so
 /// they unpack as one archive. Never the wrappers' title, which unrelated
-/// files can share. Returns the rows by part number.
+/// files can share. Returns the rows by part number, and that name for the
+/// found parts that join no row (numbers the siblings lack).
 fn rename_sibling_parts(
     st: &mut State,
     id: &str,
     found: &hosts::Unwrapped,
-) -> Option<BTreeMap<u32, String>> {
+) -> Option<(BTreeMap<u32, String>, Option<String>)> {
     let rows = sibling_parts(st, id, found.title.as_deref(), &found.files)?;
     let names = rows
         .values()
@@ -2990,7 +3000,7 @@ fn rename_sibling_parts(
             it.named = true;
         }
     }
-    Some(rows)
+    Some((rows, base))
 }
 
 /// Marks wrapper row `id` (unwrapped from `url`) done with what it found.
@@ -3062,14 +3072,18 @@ fn about_the_same(a: u64, b: u64) -> bool {
     a.abs_diff(b).saturating_mul(50) <= a.max(b)
 }
 
-/// The rows another wrapper of the same page added under the same title
-/// for the parts `entries` hold, by part number. A set of files a page links
+/// The rows other wrappers of the same page added under the same title for
+/// the parts `entries` hold, by part number. A set of files a page links
 /// once per host (a container per host) is one archive: part n of each is
 /// the same file, though each host names it its own way. `None` unless
-/// `entries` are an archive's parts and that wrapper's files are parts of
-/// one archive with the very same numbers, none of a clearly other size than
-/// the page shows for its counterpart: a shared title and count alone can be
-/// two sets of files.
+/// `entries` are an archive's parts and another wrapper holds as many files,
+/// those it names being parts of one archive of the same form, none past
+/// that count and none of a clearly other size than the page shows for its
+/// counterpart: a shared title alone can be two sets of files, and a set
+/// split in other sizes has another count. A file a wrapper names no part
+/// (a host whose table shows no name, or something else than a file's)
+/// counts for neither side and keeps its own row. Every such wrapper adds
+/// the rows of the numbers the earlier ones lack.
 fn sibling_parts(
     st: &State,
     id: &str,
@@ -3078,23 +3092,29 @@ fn sibling_parts(
 ) -> Option<std::collections::BTreeMap<u32, String>> {
     let title = hosts::name_key(title?);
     let source = st.items.get(id)?.source.clone();
-    // Its own parts: every entry one, of one archive, each number once.
+    // The parts among the names, of one archive form, each number once;
+    // names that are no part are passed over.
     let numbers = |names: &mut dyn Iterator<Item = Option<String>>| {
         let mut form = None;
         let mut seen = std::collections::BTreeSet::new();
-        for name in names {
-            let part = parts::PartName::parse(&name?)?;
+        for part in names.filter_map(|n| parts::PartName::parse(&n?)) {
             if *form.get_or_insert(part.form) != part.form || !seen.insert(part.number) {
                 return None;
             }
         }
         (seen.len() >= 2).then_some((form?, seen))
     };
-    let own = numbers(
-        &mut entries
-            .iter()
-            .filter(|e| !hosts::lists(&e.url))
-            .map(Entry::file_name),
+    // Its parts' form, when they all fit within `count` files.
+    let fits = |found: Option<(parts::Form, std::collections::BTreeSet<u32>)>, count: usize| {
+        let (form, seen) = found?;
+        seen.last()
+            .is_some_and(|n| *n as usize <= count)
+            .then_some((form, count))
+    };
+    let files: Vec<&Entry> = entries.iter().filter(|e| !hosts::lists(&e.url)).collect();
+    let own = fits(
+        numbers(&mut files.iter().map(|e| e.file_name())),
+        files.len(),
     )?;
     // What the page shows for each of its parts.
     let listed: HashMap<u32, u64> = entries
@@ -3104,7 +3124,8 @@ fn sibling_parts(
             Some((parts::PartName::parse(&name)?.number, e.listed_size?))
         })
         .collect();
-    st.items.values().find_map(|w| {
+    let mut by_number = std::collections::BTreeMap::new();
+    for w in st.items.values() {
         let sibling = w.wrapper
             && w.id != id
             && w.source == source
@@ -3112,15 +3133,16 @@ fn sibling_parts(
                 .as_deref()
                 .is_some_and(|t| hosts::name_key(t) == title);
         if !sibling {
-            return None;
+            continue;
         }
         let rows: Vec<&Item> = st
             .items
             .values()
             .filter(|i| !i.wrapper && i.listed_by(&w.id))
             .collect();
-        if numbers(&mut rows.iter().map(|i| i.key_name()))? != own {
-            return None;
+        let count = w.found.as_ref().map_or(0, |f| f.files);
+        if fits(numbers(&mut rows.iter().map(|i| i.key_name())), count) != Some(own) {
+            continue;
         }
         let other_size = rows.iter().any(|i| {
             let number = i.key_name().and_then(|n| parts::PartName::parse(&n));
@@ -3130,16 +3152,15 @@ fn sibling_parts(
                 .is_some_and(|(a, b)| !about_the_same(a, b))
         });
         if other_size {
-            return None;
+            continue;
         }
-        Some(
-            rows.iter()
-                .filter_map(|i| {
-                    Some((parts::PartName::parse(&i.key_name()?)?.number, i.id.clone()))
-                })
-                .collect(),
-        )
-    })
+        for i in &rows {
+            if let Some(part) = i.key_name().and_then(|n| parts::PartName::parse(&n)) {
+                by_number.entry(part.number).or_insert_with(|| i.id.clone());
+            }
+        }
+    }
+    (!by_number.is_empty()).then_some(by_number)
 }
 
 /// Whether a failure is only a note on its card, told nobody: a paste
