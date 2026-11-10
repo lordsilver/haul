@@ -1,0 +1,25 @@
+# cargo deny check advisories bans sources (CI runs it on Linux).
+
+[graph]
+# The desktop app builds for both; check what each pulls in.
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+all-features = true
+
+[advisories]
+# Known vulnerabilities fail; so does a crate yanked from crates.io. An
+# unmaintained crate fails only when Haul uses it itself: the ones Tauri
+# brings are Tauri's to replace.
+yanked = "deny"
+unmaintained = "workspace"
+
+[bans]
+# Several versions of one crate come with Tauri and the Windows crates;
+# they are not worth failing the build over.
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Only crates.io: no git repository or other registry slips in.
+unknown-registry = "deny"
+unknown-git = "deny"

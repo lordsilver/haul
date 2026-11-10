@@ -13,7 +13,7 @@ use axum::{
     http::{StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{MethodRouter, get, post},
 };
 use haul_core::debug;
 use serde::Deserialize;
@@ -26,14 +26,25 @@ use crate::{App, error};
 const WAIT_MAX: u64 = 600;
 
 pub(crate) fn routes(app: &App) -> Router<App> {
-    Router::new()
-        .route("/api/debug/stream", get(stream))
-        .route("/api/debug/recent", get(recent))
-        .route("/api/debug/inspect", get(inspect))
-        .route("/api/debug/wait", axum::routing::post(wait))
-        .route("/api/debug/pass/{id}", get(look).post(eval))
-        .route("/api/debug/emit", axum::routing::post(emit))
+    api_routes()
+        .into_iter()
+        .fold(Router::new(), |router, (path, method)| {
+            router.route(path, method)
+        })
         .route_layer(middleware::from_fn_with_state(app.clone(), token))
+}
+
+/// Debug mode's routes, which [`routes`] serves and a test finds in
+/// `docs/debugging.md`.
+pub(crate) fn api_routes() -> Vec<(&'static str, MethodRouter<App>)> {
+    vec![
+        ("/api/debug/stream", get(stream)),
+        ("/api/debug/recent", get(recent)),
+        ("/api/debug/inspect", get(inspect)),
+        ("/api/debug/wait", post(wait)),
+        ("/api/debug/pass/{id}", get(look).post(eval)),
+        ("/api/debug/emit", post(emit)),
+    ]
 }
 
 async fn token(req: Request, next: Next) -> Response {

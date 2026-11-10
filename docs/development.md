@@ -6,9 +6,15 @@ The engine is `crates/haul-core`, the server and its API `crates/haul-web`, and 
 
 The web UI lives in `crates/haul-web/ui` (React, TypeScript, Tailwind and shadcn/ui, built with Vite). Git keeps the built page in `ui/dist`, so building Haul needs no Node.
 
-To change it, with Node 26 and pnpm (`mise install` sets them up): `pnpm install`, then `pnpm dev` for a live page that talks to a Haul already running on port 8765, and `pnpm check && pnpm build` before committing the sources together with `dist`. CI fails when `dist` does not match the sources.
+To change it, with Node 26 and pnpm (`mise install` sets them up): `pnpm install`, then `pnpm dev` for a live page that talks to a Haul already running on port 8765, and `pnpm check && pnpm test && pnpm build` before committing the sources together with `dist`. CI fails when `dist` does not match the sources.
+
+`pnpm test` runs the page's own tests ([Vitest](https://vitest.dev)), each `*.test.ts` beside the module it tests. They cover what the page decides for itself: picking rows, the list's entries and search, the captions, the messages it words and reading `#/add/` links. What a row is and what it may do comes from the engine, and its tests are in Rust.
 
 `cargo test` regenerates the page's types from the Rust ones (`ui/src/lib/bindings`).
+
+## Dependencies
+
+CI checks the dependencies on Linux: `cargo deny check advisories bans sources` (settings in `deny.toml`) fails on a crate with a known vulnerability, a yanked one, or one from anywhere but crates.io, and `pnpm audit --prod` on a known vulnerability in what the page ships. Run the first in the repository root and the second in `crates/haul-web/ui` to check before pushing; a failure is usually fixed with `cargo update -p <crate>` or `pnpm update <package>`.
 
 ## Workflow actions
 

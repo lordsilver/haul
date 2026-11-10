@@ -61,7 +61,7 @@ export function followRoute(): string | null {
 // links (`100%-done`), which fails decoding as a whole: each character's
 // escapes (one to four, as its first byte says) are decoded on their own
 // then, and those that are no character kept as they came.
-function decoded(text: string): string {
+export function decoded(text: string): string {
   try {
     return decodeURIComponent(text);
   } catch {

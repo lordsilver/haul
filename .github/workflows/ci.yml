@@ -44,6 +44,14 @@ jobs:
         run: |
           gh extension install github/gh-actions-lock --pin v0.4.0
           gh actions-lock --verify
+      # Known vulnerabilities, yanked crates, and crates from anywhere but
+      # crates.io (deny.toml).
+      - name: Check the crates
+        if: runner.os == 'Linux'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          command-arguments: advisories bans sources
       - name: Install Rust
         id: rust
         shell: bash
@@ -82,13 +90,15 @@ jobs:
         run: cargo fmt --all --check
       # The built UI is committed (haul-web embeds it, and a Rust-only build
       # needs no Node), so it has to match its sources.
-      - name: Check and build the UI
+      - name: Check, test and build the UI
         if: runner.os == 'Linux'
         working-directory: crates/haul-web/ui
         run: |
           npm install --global pnpm@12.15.0
           pnpm install --frozen-lockfile
+          pnpm audit --prod
           pnpm check
+          pnpm test
           pnpm build
           if [ -n "$(git status --porcelain -- dist)" ]; then
             git status --short -- dist

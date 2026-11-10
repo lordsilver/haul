@@ -4,7 +4,7 @@
 
 Everything under **Settings** is stored in `config.toml` in the data folder: the app writes each change to the file, keeping your comments and layout, and changes you save in the file apply within a second. If the file stops parsing, the previous settings stay in effect and the app shows the error until it is fixed; if it disappears while Haul runs, they stay in effect too.
 
-**Settings › Settings file › Open** creates the file with every key explained. The keys, with their defaults:
+**Settings › General › Data folder › Settings file** opens the file, creating it with every key explained. The keys, with their defaults:
 
 ```toml
 download_dir = "D:/Downloads"   # default: Downloads\Haul

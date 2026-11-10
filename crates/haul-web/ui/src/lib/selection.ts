@@ -52,6 +52,9 @@ export function keepOnly(ids: Set<string>) {
 
 export const useSelection = store.use;
 
+// The rows picked now, outside React.
+export const pickedNow = () => picked;
+
 // Whether a click on a row picks it. A selection starts at a checkbox (or
 // with Ctrl or Shift), so a stray click on a row picks nothing; once one has
 // started, a click anywhere on a row adds or drops it, as in Gmail.
