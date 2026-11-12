@@ -666,7 +666,12 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         // that moves the tab, a redirect the guard did not see): the page
         // is sent back to where it belongs, a few times at most, rather than
         // the pass ending on the ad as if the site wanted a person.
-        if let Some(home) = cdp.keep.as_ref().and_then(|k| k.site.clone())
+        // Home is where the page loaded first, or, before it has, the site
+        // of its own address: an ad can move it before its first load ends.
+        if let Some(home) = cdp
+            .keep
+            .as_ref()
+            .map(|k| k.site.clone().unwrap_or_else(|| hosts::site_of(p.url)))
             && let Some(href) = current_address(&mut cdp, s)
             && href.starts_with("http")
             && hosts::site_of(&href) != home
