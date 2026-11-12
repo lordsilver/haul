@@ -220,8 +220,9 @@ impl Engine {
                         let it = &st.items[&id];
                         if it.status != before {
                             changed = true;
-                            // A copied page on trial is nobody's download yet.
-                            if it.tentative {
+                            // A copied page on trial, or a file nobody
+                            // started, is nobody's download yet.
+                            if it.tentative || it.unstarted {
                                 continue;
                             }
                             if it.status == Status::Captcha && !it.page_retrying() {

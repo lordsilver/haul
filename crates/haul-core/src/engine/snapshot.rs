@@ -105,6 +105,8 @@ pub struct ItemView {
     /// as a page on trial, until it is named (and joins the same file on
     /// other hosts), found gone (and leaves), or its page told nothing.
     pub looking_up: bool,
+    /// Its place among the pages waiting for Haul's browser, while it waits.
+    pub queue: Option<InQueue>,
     /// Seconds until a waiting item may try again.
     pub wait: u64,
     /// Seconds until a failed item, or the page of one under Needs you, is
@@ -200,6 +202,16 @@ pub struct WrapperView {
     pub lists_nothing: bool,
     /// Its host says what it stands for is no more: not tried again.
     pub gone: bool,
+    /// Its place among the pages waiting for Haul's browser, while it waits.
+    pub queue: Option<InQueue>,
+}
+
+/// A place in the queue of pages waiting for Haul's browser: 3rd of 6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct InQueue {
+    pub place: u32,
+    pub of: u32,
 }
 
 /// A host's daily allowance at full speed, over the addresses it was asked
@@ -435,6 +447,14 @@ impl Engine {
         };
         let passing = |it: &Item| self.passing(&st, it, now);
         let looking_up = |it: &Item| self.look_up_page(&st, it).is_some();
+        let of = st.pass_queue.len() as u32;
+        let queue = |it: &Item| {
+            let at = st.pass_queue.iter().position(|(id, _, _)| *id == it.id)?;
+            Some(InQueue {
+                place: at as u32 + 1,
+                of,
+            })
+        };
         let wrappers: Vec<WrapperView> = st
             .items
             .values()
@@ -464,6 +484,7 @@ impl Engine {
                 open_hosts: open_hosts(it),
                 found: it.found,
                 hosts: it.found_hosts.clone(),
+                queue: queue(it),
             })
             .collect();
         let unpacked = self.unpack_progress();
@@ -519,6 +540,7 @@ impl Engine {
                 download_from: it.prefer.clone(),
                 tentative: it.tentative || being_read(it) || looking_up(it),
                 looking_up: looking_up(it),
+                queue: queue(it),
             })
             .collect();
         let route = |name: &str| {

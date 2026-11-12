@@ -498,16 +498,19 @@ impl Engine {
         } else {
             it.failed.insert(url.to_string());
         }
-        it.status = if it.failed.len() < it.mirrors.len() {
-            Status::Queued
-        } else {
-            Status::Error
+        let left = it.failed.len() < it.mirrors.len();
+        it.status = match (left, it.unstarted) {
+            // Nobody started it: a lost mirror leaves it waiting for them.
+            (true, true) => Status::Paused,
+            (true, false) => Status::Queued,
+            (false, _) => Status::Error,
         };
-        if it.status == Status::Error {
+        if it.status == Status::Error && !it.unstarted {
             self.plan_auto_retry(it, Instant::now());
         }
         let it = &st.items[id];
-        (it.status == Status::Error && !noted_quietly(st, it)).then(|| Event::Failed {
+        // Told only of a file the person started.
+        (it.status == Status::Error && !it.unstarted && !noted_quietly(st, it)).then(|| Event::Failed {
             id: id.to_string(),
             name: display_name(it),
             error: it.error.clone(),

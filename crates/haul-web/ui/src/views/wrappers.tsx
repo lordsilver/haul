@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { act, wrappersBulk } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
 import type { WrapperCard } from '@/lib/bindings/WrapperCard';
-import { partsSummary } from '@/lib/captions';
+import { partsSummary, passingCaption } from '@/lib/captions';
 import { wrappers } from '@/lib/client';
 import { duration, plural } from '@/lib/format';
 import { toast } from '@/lib/toast';
@@ -69,11 +69,11 @@ function Hosts({ card, s }: { card: WrapperCard; s: State }) {
 function status(card: WrapperCard): string {
   switch (card.status) {
     case 'unwrapping':
-      return 'Unwrapping…';
+      return 'Reading…';
     case 'waiting':
       return card.wait ? `Trying again in ${duration(card.wait)}` : 'Waiting to try again';
     case 'passing':
-      return 'Haul opens its page by itself, in turn';
+      return passingCaption(card.queue);
     case 'captcha':
       return card.need_you > 1 ? `${card.need_you} need you` : 'Needs you';
     case 'paused':

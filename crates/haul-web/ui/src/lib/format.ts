@@ -24,7 +24,10 @@ export function plural(n: number, one: string, many = `${one}s`): string {
 }
 
 export function ordinal(n: number): string {
-  return n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`;
+  const teen = Math.floor(n / 10) % 10 === 1;
+  const last = n % 10;
+  const suffix = teen ? 'th' : last === 1 ? 'st' : last === 2 ? 'nd' : last === 3 ? 'rd' : 'th';
+  return `${n}${suffix}`;
 }
 
 export const isWebLink = (url: string) => /^https?:\/\//i.test(url);

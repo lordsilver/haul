@@ -1,13 +1,22 @@
 import type { ArchiveView } from '@/lib/bindings/ArchiveView';
+import type { InQueue } from '@/lib/bindings/InQueue';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import type { Tally } from '@/lib/bindings/Tally';
-import { bytes, duration, plural } from '@/lib/format';
+import { bytes, duration, ordinal, plural } from '@/lib/format';
 
 // A file already in the download folder, being compared with the host's
 // checksum.
 function diskCaption(it: ItemView, paused: boolean): string {
   if (paused) return 'Waiting to compare with the file on disk (paused)';
   return it.verifying === 'comparing' ? 'Comparing with the file on disk…' : 'Waiting to compare with the file on disk';
+}
+
+// A page Haul's browser passes out of sight: its place while it waits, or
+// that the browser has it now.
+export function passingCaption(queue: InQueue | null): string {
+  return queue
+    ? `Waiting for Haul's browser, ${ordinal(queue.place)} of ${queue.of}`
+    : "Haul's browser is reading its page";
 }
 
 // What a download is doing, in a few words under its bar.
@@ -33,7 +42,7 @@ export function caption(it: ItemView, paused: boolean): string {
     case 'captcha':
       return 'Needs you';
     case 'passing':
-      return 'Haul opens its page by itself, in turn';
+      return passingCaption(it.queue);
     case 'done':
       return `${it.existing ? 'Already downloaded' : 'Completed'}${it.size ? ` · ${bytes(it.size)}` : ''}`;
     case 'error':

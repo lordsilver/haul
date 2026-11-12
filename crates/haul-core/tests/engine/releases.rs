@@ -595,7 +595,7 @@ fn cases() -> Vec<Release> {
                 Note("another copy, 2 parts on 1fichier, is gone"),
                 "CARD-05",
             )
-            .fails_until(NoFailureTold, "QUIET-01")
+            .holds(NoFailureTold)
             .holds(SameEveryOrder),
         Release::new(
             "a part missing from some containers",
@@ -641,9 +641,9 @@ fn cases() -> Vec<Release> {
                 Note("another copy, 34 parts on 1fichier, is gone"),
                 "CARD-05",
             )
-            .fails_until(NoFailureTold, "QUIET-01")
+            .holds(NoFailureTold)
             .fails_until(Notifications(1), "QUIET-04")
-            .fails_until(SeparateCounts, "QUIET-03")
+            .holds(SeparateCounts)
             .holds(OneReadPerContainer)
             .holds(Asks(0))
             .holds(SameEveryOrder),
@@ -999,7 +999,10 @@ impl Desktop {
 #[derive(Default)]
 struct Seen {
     unnamed: Option<String>,
-    unwrapping: usize,
+    /// The status bar lumped different work into one count somewhere.
+    lumped: bool,
+    /// The most links it said it was checking at once.
+    checking: usize,
     listed: HashMap<String, String>,
     /// The most cards at once, and every card's key and name.
     most_cards: usize,
@@ -1016,7 +1019,9 @@ impl Seen {
                 self.unnamed = Some(i.name.clone());
             }
         }
-        self.unwrapping = self.unwrapping.max(s.counts.unwrapping);
+        let counts = serde_json::to_value(&s.counts).unwrap();
+        self.lumped |= counts.get("unwrapping").is_some();
+        self.checking = self.checking.max(s.counts.checking);
         self.most_cards = self.most_cards.max(s.wrapper_cards.len());
         for c in &s.wrapper_cards {
             self.cards.insert((c.key.clone(), c.name.clone()));
@@ -1583,9 +1588,10 @@ fn check(r: &Release, run: &Run, c: &Check) -> Result<(), String> {
                 Err(more.join(", "))
             }
         }
-        Check::SeparateCounts => match run.seen.unwrapping {
-            0 => Ok(()),
-            n => Err(format!("\"Unwrapping {n}\"")),
+        Check::SeparateCounts => match (run.seen.lumped, run.seen.checking) {
+            (true, _) => Err("\"Unwrapping N links\"".into()),
+            (false, 0) => Err("never said it checks links".into()),
+            (false, _) => Ok(()),
         },
         Check::SameEveryOrder => Ok(()),
     }

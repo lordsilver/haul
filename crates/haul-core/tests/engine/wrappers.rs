@@ -403,7 +403,7 @@ async fn a_wrappers_unnamed_file_is_looked_up_through_its_page() {
             .all(|i| i.tentative && i.list.is_none())
     );
     assert_eq!((s.counts.all, s.counts.ready), (2, 2));
-    assert_eq!(s.counts.unwrapping, 3);
+    assert_eq!(s.counts.checking, 3, "the files being looked up");
     assert_eq!(
         (s.wrapper_cards[0].files, s.wrapper_cards[0].checking),
         (2, 3)
@@ -475,7 +475,7 @@ async fn a_failed_wrapper_runs_again_when_its_retry_comes_due() {
     assert!(engine.debug_retry_now(&s.wrappers[0].id));
     let s = wrapper_settled(&engine, "done").await;
     assert_eq!(s.wrappers[0].found.map(|f| f.files), Some(2));
-    assert_eq!(s.counts.unwrapping, 0, "nothing left unwrapping");
+    assert_eq!(s.counts.reading, 0, "nothing left to read");
 }
 
 /// So it does after a restart, which forgets that the wrapper was looked at.
@@ -493,7 +493,7 @@ async fn a_failed_wrapper_runs_again_after_a_restart() {
     assert!(s.wrappers[0].retry_in > 0, "due for a retry again");
     assert!(engine.debug_retry_now(&s.wrappers[0].id));
     let s = wrapper_settled(&engine, "done").await;
-    assert_eq!(s.counts.unwrapping, 0, "nothing left unwrapping");
+    assert_eq!(s.counts.reading, 0, "nothing left to read");
 }
 
 /// A wrapper's retry is unwrapped at once, as when it was added, whatever

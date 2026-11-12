@@ -44,7 +44,10 @@ describe('caption', () => {
 
   test('the other states', () => {
     expect(caption(item({ status: 'captcha' }), false)).toBe('Needs you');
-    expect(caption(item({ status: 'passing' }), false)).toBe('Haul opens its page by itself, in turn');
+    expect(caption(item({ status: 'passing' }), false)).toBe("Haul's browser is reading its page");
+    expect(caption(item({ status: 'passing', queue: { place: 3, of: 6 } }), false)).toBe(
+      "Waiting for Haul's browser, 3rd of 6",
+    );
     expect(caption(item({ status: 'done', size: 1e6 }), false)).toBe('Completed · 1.0 MB');
     expect(caption(item({ status: 'done', existing: true }), false)).toBe('Already downloaded');
   });

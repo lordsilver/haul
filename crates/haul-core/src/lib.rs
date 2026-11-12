@@ -30,7 +30,8 @@ pub use config::{Config, Route, Theme};
 pub use engine::{
     Activity, Added, Ask, Batch, BatchFailure, Browsing, Command, Engine, Event, Friction,
     HostView, ItemAction, ItemView, Options, PassPlan, RowState, SettingError, SettingsView,
-    Snapshot, StartError, Telling, Told, WrapperAction, WrapperState, WrapperView, summarize,
+    Burst, Snapshot, StartError, Telling, Told, WrapperAction, WrapperState, WrapperView, gather,
+    summarize, summarize_burst,
 };
 pub use item::{Extract, Found, Verifying};
 

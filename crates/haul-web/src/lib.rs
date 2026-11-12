@@ -141,7 +141,7 @@ impl App {
     }
 
     /// What the engine has to tell the person, as JSON for `notice` events:
-    /// a burst gathered over two seconds and told in a few lines, as the
+    /// a burst ([`haul_core::gather`]) told in a few lines, as the
     /// desktop app's notifications are. Downloads that need a person stay a
     /// count in the status bar. Started by the first view that asks.
     fn notices(&self) -> broadcast::Receiver<Arc<str>> {
@@ -151,27 +151,8 @@ impl App {
                 let mut events = self.engine.subscribe();
                 let out = tx.clone();
                 tokio::spawn(async move {
-                    use tokio::sync::broadcast::error::RecvError;
-                    loop {
-                        let first = match events.recv().await {
-                            Ok(e) => e,
-                            Err(RecvError::Lagged(_)) => continue,
-                            Err(RecvError::Closed) => return,
-                        };
-                        let mut batch = vec![first];
-                        let window = tokio::time::sleep(Duration::from_secs(2));
-                        tokio::pin!(window);
-                        loop {
-                            tokio::select! {
-                                () = &mut window => break,
-                                next = events.recv() => match next {
-                                    Ok(e) => batch.push(e),
-                                    Err(RecvError::Lagged(_)) => {}
-                                    Err(RecvError::Closed) => break,
-                                },
-                            }
-                        }
-                        for told in haul_core::summarize(&batch) {
+                    while let Some(burst) = haul_core::gather(&mut events).await {
+                        for told in haul_core::summarize_burst(&burst) {
                             if told.kind != haul_core::Told::NeedsYou {
                                 let json = serde_json::to_string(&told).unwrap_or_default();
                                 let _ = out.send(json.into());

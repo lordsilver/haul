@@ -56,10 +56,10 @@ pub use reconnect::ReconnectView;
 pub use services::ServicesView;
 
 pub use settings::{SettingError, SettingsView};
-pub use snapshot::{HostView, ItemView, PoolView, QuotaView, Snapshot, WrapperView};
+pub use snapshot::{HostView, InQueue, ItemView, PoolView, QuotaView, Snapshot, WrapperView};
 pub use views::{
     Alert, ArchiveView, Command, Counts, HostGroup, List, PoolSource, PoolSummary, RowState,
-    SiteKind, Tally, WrapperCard, WrapperState,
+    Passing, SiteKind, Tally, WrapperCard, WrapperState,
 };
 
 /// The waits between saves of a changed queue, longer after each that failed.
@@ -352,6 +352,92 @@ pub struct Telling {
     pub rows: Vec<String>,
 }
 
+/// How many events wait for a slow listener before the oldest are lost
+/// (and counted, [`Burst::missed`]).
+const EVENT_BACKLOG: usize = 1024;
+
+/// Events that came together, as one telling gathers them ([`gather`]).
+#[derive(Debug, Default)]
+pub struct Burst {
+    pub events: Vec<Event>,
+    /// Events lost to a listener that fell behind: told as "and n more".
+    pub missed: u64,
+}
+
+/// A burst ends after this long without an event…
+const BURST_QUIET: Duration = Duration::from_secs(2);
+/// …or this long after its first, whichever comes first.
+const BURST_LONGEST: Duration = Duration::from_secs(10);
+
+/// Waits for the next burst of events on `rx`: from its first event until
+/// two seconds pass without one, ten at most, so one burst is told once.
+/// Events lost because the listener fell behind are counted, never dropped
+/// silently. `None` once the engine is gone.
+pub async fn gather(rx: &mut broadcast::Receiver<Event>) -> Option<Burst> {
+    gather_within(rx, BURST_QUIET, BURST_LONGEST).await
+}
+
+async fn gather_within(
+    rx: &mut broadcast::Receiver<Event>,
+    quiet: Duration,
+    longest: Duration,
+) -> Option<Burst> {
+    use broadcast::error::RecvError;
+    let mut burst = Burst::default();
+    loop {
+        match rx.recv().await {
+            Ok(e) => {
+                burst.events.push(e);
+                break;
+            }
+            Err(RecvError::Lagged(n)) => {
+                tracing::warn!("the notifications fell {n} event(s) behind");
+                burst.missed += n;
+                break;
+            }
+            Err(RecvError::Closed) => return None,
+        }
+    }
+    let end = tokio::time::Instant::now() + longest;
+    loop {
+        let wait = tokio::time::sleep_until(end.min(tokio::time::Instant::now() + quiet));
+        tokio::select! {
+            () = wait => break,
+            next = rx.recv() => match next {
+                Ok(e) => burst.events.push(e),
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!("the notifications fell {n} event(s) behind");
+                    burst.missed += n;
+                }
+                Err(RecvError::Closed) => break,
+            },
+        }
+    }
+    Some(burst)
+}
+
+/// A burst as the few things worth saying ([`summarize`]), with the events
+/// lost on the way counted in its last line.
+pub fn summarize_burst(burst: &Burst) -> Vec<Telling> {
+    let mut out = summarize(&burst.events);
+    if burst.missed > 0 {
+        let more = format!("and {} more", burst.missed);
+        match out.last_mut() {
+            Some(t) => {
+                t.body.push_str(if t.body.is_empty() { "" } else { ", " });
+                t.body.push_str(&more);
+            }
+            None => out.push(Telling {
+                title: "Haul has news".into(),
+                body: format!("{} things happened at once: see the lists", burst.missed),
+                kind: Told::Notice,
+                rows: Vec::new(),
+            }),
+        }
+    }
+    out
+}
+
 /// A burst of events as the few things worth saying: downloads finished
 /// together are one, as are failures, and downloads waiting for a person.
 pub fn summarize(events: &[Event]) -> Vec<Telling> {
@@ -452,6 +538,71 @@ pub fn summarize(events: &[Event]) -> Vec<Telling> {
 #[cfg(test)]
 mod summarize_tests {
     use super::*;
+
+    fn failed(n: usize) -> Event {
+        Event::Failed {
+            id: format!("row{n}"),
+            name: format!("file{n}.bin"),
+            error: "site.example: gone".into(),
+        }
+    }
+
+    /// A burst ends two seconds after its last event, not two after its
+    /// first: events a second apart are one burst.
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_lasts_until_it_goes_quiet() {
+        let (tx, mut rx) = broadcast::channel(EVENT_BACKLOG);
+        let sender = tokio::spawn(async move {
+            for n in 0..5 {
+                tx.send(failed(n)).unwrap();
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            tx.send(failed(9)).unwrap();
+        });
+        let burst = gather(&mut rx).await.unwrap();
+        assert_eq!(burst.events.len(), 5);
+        let next = gather(&mut rx).await.unwrap();
+        assert_eq!(next.events.len(), 1);
+        sender.await.unwrap();
+    }
+
+    /// One that never goes quiet is told after ten seconds.
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_is_told_after_ten_seconds_at_most() {
+        let (tx, mut rx) = broadcast::channel(EVENT_BACKLOG);
+        tokio::spawn(async move {
+            for n in 0..30 {
+                let _ = tx.send(failed(n));
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+        let burst = gather(&mut rx).await.unwrap();
+        assert!((10..=11).contains(&burst.events.len()), "{}", burst.events.len());
+    }
+
+    /// 100 failures at once are one telling that counts 100, and a
+    /// listener that fell behind says how many it lost (a 64-event channel
+    /// loses 36 of them).
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_is_told_once_and_nothing_is_dropped_silently() {
+        let (tx, mut rx) = broadcast::channel(EVENT_BACKLOG);
+        for n in 0..100 {
+            tx.send(failed(n)).unwrap();
+        }
+        let told = summarize_burst(&gather(&mut rx).await.unwrap());
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].title, "100 downloads failed");
+
+        let (tx, mut rx) = broadcast::channel(64);
+        for n in 0..100 {
+            tx.send(failed(n)).unwrap();
+        }
+        let burst = gather(&mut rx).await.unwrap();
+        assert_eq!((burst.events.len(), burst.missed), (64, 36));
+        let told = summarize_burst(&burst);
+        assert!(told[0].body.ends_with("and 36 more"), "{}", told[0].body);
+    }
 
     #[test]
     fn a_burst_is_told_in_a_few_lines() {
@@ -1263,7 +1414,7 @@ impl Engine {
             tokens: Tokens::default(),
             wake: Notify::new(),
             version: watch::Sender::new(0),
-            events: broadcast::Sender::new(64),
+            events: broadcast::Sender::new(EVENT_BACKLOG),
             probes: Semaphore::new(4),
             verifier: Semaphore::new(1),
             extractor: Semaphore::new(1),
@@ -1825,7 +1976,8 @@ impl Engine {
                     it.manual_urls.insert(url.url.clone());
                     it.set_error(message, Trouble::Needs(need));
                     it.status = Status::Captcha;
-                    event = Some(Event::NeedsUser {
+                    // A file nobody started wants nobody yet.
+                    event = (!it.unstarted).then(|| Event::NeedsUser {
                         id: id.clone(),
                         name: display_name(it),
                     });
@@ -2123,6 +2275,7 @@ impl Engine {
                 it.listed_size = e.listed_size;
                 // Nothing a wrapper lists starts on its own: the user picks.
                 it.status = Status::Paused;
+                it.unstarted = true;
                 it.size = e.size.unwrap_or(0);
                 // Its size from its host, when the wrapper gave none; the
                 // name the wrapper gave stays.
@@ -2628,7 +2781,7 @@ impl Engine {
         let mut started = 0;
         for it in st.items.values_mut() {
             if it.listed_by(id) && it.status == Status::Paused && !it.wrapper {
-                it.status = Status::Queued;
+                it.start();
                 started += 1;
             }
         }

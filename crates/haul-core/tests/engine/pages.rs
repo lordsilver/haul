@@ -136,7 +136,7 @@ async fn a_page_being_read_is_in_no_list_until_it_shows_what_it_is() {
     assert_eq!(s.items[0].list, None, "in no list while it is read");
     assert_eq!(s.counts.all, 0, "not counted among the downloads");
     assert_eq!(
-        s.counts.unwrapping, 1,
+        s.counts.reading, 1,
         "the status bar says it is worked on"
     );
 
@@ -271,7 +271,8 @@ async fn a_copied_guarded_page_goes_if_it_wants_a_person() {
     .await;
     let id = s.items[0].id.clone();
     assert!(s.items[0].tentative && engine.is_tentative(&id));
-    assert_eq!((s.counts.all, s.counts.unwrapping), (0, 1));
+    let passing = s.counts.passing;
+    assert_eq!((s.counts.all, passing.now + passing.queued), (0, 1));
     assert!(!engine.page_wants_person(&id), "the page went");
     let s = engine.snapshot();
     assert!(s.items.is_empty() && s.counts.need_you == 0);
@@ -303,7 +304,7 @@ async fn a_copied_page_named_like_a_file_is_still_judged() {
     let mut names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
     names.sort();
     assert_eq!(names, ["postone.bin", "posttwo.bin"]);
-    assert_eq!(s.counts.unwrapping, 0);
+    assert_eq!(s.counts.reading, 0);
     while let Ok(e) = events.try_recv() {
         assert!(!matches!(e, Event::NeedsUser { .. }), "{e:?}");
     }
@@ -331,7 +332,7 @@ async fn a_copied_page_that_hands_back_a_file_is_a_download() {
     let it = &s.items[0];
     assert!(!it.tentative);
     assert_eq!(it.list.map(|l| l.as_str()), Some("done"));
-    assert_eq!((s.counts.all, s.counts.unwrapping), (1, 0));
+    assert_eq!((s.counts.all, s.counts.reading), (1, 0));
 }
 
 /// Where the desktop app passes pages, a host whose page passes and that

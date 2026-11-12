@@ -139,6 +139,7 @@ impl Engine {
                 let it = &st.items[id];
                 let mut row = Item::new(it.mirrors.clone(), None, it.package.clone());
                 row.status = Status::Paused;
+                row.unstarted = it.unstarted;
                 row.probed = true;
                 row.source.clone_from(&it.source);
                 row.also_from.clone_from(&it.also_from);
@@ -704,6 +705,7 @@ impl Engine {
             let name = hosts::name_for(url, name_hint);
             let mut file = Item::new(vec![url.to_string()], name.clone(), package);
             file.status = Status::Paused;
+            file.unstarted = true;
             file.source = Some(id.to_string());
             file.probed = true;
             if !headers.is_empty() {
