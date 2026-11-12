@@ -33,7 +33,7 @@ A page that lists links and gives an archive password in its text (_Password: ab
 
 What Haul does with each kind of site is checked in two halves.
 
-- **The model suite** (`crates/haul-core/tests/suite.rs`) runs on every CI run: one row per kind of site Haul supports, any site through the general way and each host, wrapper and paste with code of its own, against local stand-ins that answer the way that kind of site does. A failing row prints the whole table, so a regression shows beside everything that still works.
+- **The model suite** (`crates/haul-core/tests/suite.rs`) runs on every CI run: one row per kind of site Haul supports, any site through the general way and each host, wrapper and paste with code of its own, against local stand-ins that answer the way that kind of site does. Some rows run in stand-in mode ([debugging](debugging.md#real-sites-stood-in-for)), where a stand-in claims a real site's name as the desktop app's test copies use it. A failing row prints the whole table, so a regression shows beside everything that still works.
 - **The live scorecard** (the `haul-scorecard` skill) runs real links through a test copy on the user's machine, when asked: what each host came to, in seconds, and why. Run a second time with `HAUL_GENERIC_ONLY=1`, Haul ignores every site's own code (its table entry, the paste list and page recipes), so the score says what a host Haul has never seen would get. That switch is for measuring, not a setting.
 
 A new host, or an exception found on a real one, becomes a model row, described generically. It is fixed by changing a general rule, not by a branch for one site, and every older row must keep passing.

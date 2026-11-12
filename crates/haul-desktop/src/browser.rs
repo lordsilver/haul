@@ -195,20 +195,20 @@ impl Browser {
                 })
             };
             let names: Vec<&str> = browsers.iter().map(|b| b.name).collect();
+            // The engine knows the page by its link; the browser goes to
+            // its stand-in in stand-in mode.
+            let reached = hosts::reach(&url);
+            let scripts = page_scripts(lists);
             // Passed again at once while the browser closes the page by
             // itself, the row's pass running meanwhile.
             let outcome = run_tries(&names, &handle.stop, &id, &url, |browser| {
                 chromium::pass(chromium::Pass {
                     exe: &browsers[browser].exe,
                     item: &id,
-                    url: &url,
+                    url: &reached,
                     profile: paths::pass_profile(engine.data_dir(), &site, browser > 0),
                     proxy,
-                    scripts: if lists {
-                        &[LISTS, OVERLAYS, HANDOFF]
-                    } else {
-                        &[OVERLAYS, HANDOFF]
-                    },
+                    scripts: &scripts,
                     show_after: SHOW_AFTER + hosts::page_takes(&url),
                     handle: handle.clone(),
                     take_links: if lists { Some(&take) } else { None },
@@ -329,7 +329,10 @@ impl Browser {
         quiet: bool,
     ) -> Result<(), String> {
         let label = format!("browse-{id}");
-        let page: Url = url.parse().map_err(|e| format!("{url}: {e}"))?;
+        // The engine knows the page by its link; the window goes to its
+        // stand-in in stand-in mode, and keeps to that.
+        let reached = hosts::reach(url);
+        let page: Url = reached.parse().map_err(|e| format!("{url}: {e}"))?;
         let host = hosts::host_of(url);
         // Pages for a proxied host go through the same proxy as its downloads.
         let bridge = self.bridge_for(&host)?;
@@ -352,7 +355,7 @@ impl Browser {
         } else {
             Keep::Host
         };
-        let stay = Arc::new(Mutex::new(Stay::new(url, keep)));
+        let stay = Arc::new(Mutex::new(Stay::new(&reached, keep)));
         let capture = Capture {
             app: self.app.clone(),
             engine: self.engine.clone(),
@@ -372,6 +375,11 @@ impl Browser {
             .menu(page_menu(&self.app, id).map_err(|e| e.to_string())?)
             .inner_size(1100.0, 800.0)
             .data_directory(profile)
+            .initialization_script(if hosts::stand_in().is_some() {
+                STAND_IN
+            } else {
+                ""
+            })
             .initialization_script(OVERLAYS)
             .initialization_script(if lists { LISTS } else { "" })
             .initialization_script(HANDOFF)
@@ -756,6 +764,21 @@ const OVERLAYS: &str = include_str!("overlays.js");
 const HANDOFF: &str = include_str!("handoff.js");
 /// Tells `handoff.js` the page lists links, to hand over as they show.
 const LISTS: &str = "window.__haulLists = true;";
+/// Tells `handoff.js` that `<site>.localhost` stands for `<site>`
+/// ([`hosts::reach`]).
+const STAND_IN: &str = "window.__haulStandIn = true;";
+
+/// The scripts a page passed out of sight runs before its own: the flags
+/// for `handoff.js` (stand-in mode, a page that lists links), then the two
+/// scripts.
+fn page_scripts(lists: bool) -> Vec<&'static str> {
+    let flags = [(hosts::stand_in().is_some(), STAND_IN), (lists, LISTS)];
+    flags
+        .into_iter()
+        .filter_map(|(on, flag)| on.then_some(flag))
+        .chain([OVERLAYS, HANDOFF])
+        .collect()
+}
 
 /// How long a page opened out of sight gets to pass its check by itself.
 /// Passes that work take 10 to 15 seconds, more on a slow line; a page that

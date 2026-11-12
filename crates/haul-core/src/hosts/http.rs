@@ -6,8 +6,8 @@ use super::*;
 /// cookie jar, as one browser session would.
 #[derive(Clone)]
 pub struct Http {
-    pub client: reqwest::Client,
-    pub no_redirect: reqwest::Client,
+    pub client: Client,
+    pub no_redirect: Client,
     pub via_proxy: bool,
     /// The User-Agent both clients send, for a page that also reports it.
     pub user_agent: String,
@@ -24,8 +24,8 @@ pub struct Http {
 /// [`Http`]'s clients with a browser's user agent, on the same cookie jar.
 #[derive(Clone)]
 pub(super) struct AsBrowser {
-    client: reqwest::Client,
-    no_redirect: reqwest::Client,
+    client: Client,
+    no_redirect: Client,
     user_agent: String,
 }
 
@@ -57,7 +57,9 @@ impl Http {
     /// ([`Http::for_page`]), as Cloudflare lets the clearance through only
     /// with the user agent it was given to.
     pub fn add_clearance(&self, page: &str, cookies: &[String], user_agent: Option<&str>) {
-        let Ok(url) = url::Url::parse(page) else {
+        // Where the requests go: in stand-in mode the stand-in, which the
+        // browser got the cookies from.
+        let Ok(url) = url::Url::parse(&reach(page)) else {
             return;
         };
         // The clients first: cookies sent without the user agent they hold
@@ -104,13 +106,47 @@ impl Http {
     }
 }
 
+/// A reqwest client whose every request goes where [`reach`] sends it: to
+/// its stand-in in stand-in mode, else where it says.
+#[derive(Clone, Debug, Default)]
+pub struct Client(reqwest::Client);
+
+impl Client {
+    pub fn get(&self, url: impl AsRef<str>) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::GET, url)
+    }
+
+    pub fn post(&self, url: impl AsRef<str>) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::POST, url)
+    }
+
+    pub fn head(&self, url: impl AsRef<str>) -> reqwest::RequestBuilder {
+        self.request(reqwest::Method::HEAD, url)
+    }
+
+    pub fn request(
+        &self,
+        method: reqwest::Method,
+        url: impl AsRef<str>,
+    ) -> reqwest::RequestBuilder {
+        self.0.request(method, reach(url.as_ref()).as_ref())
+    }
+}
+
+impl From<reqwest::Client> for Client {
+    fn from(client: reqwest::Client) -> Self {
+        Self(client)
+    }
+}
+
 /// A route's two clients, following redirects and not, on cookie jar `jar`.
 pub(super) fn clients(
     proxy: Option<&str>,
     user_agent: &str,
     fresh: bool,
     jar: &Arc<reqwest::cookie::Jar>,
-) -> Result<(reqwest::Client, reqwest::Client), String> {
+) -> Result<(Client, Client), String> {
+    let stand_in = stand_in().is_some();
     let build = |follow: bool| {
         let mut b = reqwest::Client::builder()
             .no_proxy()
@@ -124,10 +160,18 @@ pub(super) fn clients(
         if fresh {
             b = b.pool_max_idle_per_host(0);
         }
-        if let Some(p) = proxy {
-            b = b.proxy(reqwest::Proxy::all(remote_dns(p)).map_err(|e| format!("proxy: {e}"))?);
+        if stand_in {
+            b = b.dns_resolver(super::stand_in::Resolver);
         }
-        b.build().map_err(|e| e.to_string())
+        if let Some(p) = proxy {
+            let mut p = reqwest::Proxy::all(remote_dns(p)).map_err(|e| format!("proxy: {e}"))?;
+            if stand_in {
+                // Stand-ins are on this computer, out of the proxy's reach.
+                p = p.no_proxy(reqwest::NoProxy::from_string("localhost"));
+            }
+            b = b.proxy(p);
+        }
+        b.build().map(Client).map_err(|e| e.to_string())
     };
     Ok((build(true)?, build(false)?))
 }

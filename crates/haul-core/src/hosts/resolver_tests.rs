@@ -633,10 +633,11 @@ async fn generic_links_and_probes() {
     assert_eq!(e[0].size, Some(999));
     // A host that never answers HEAD still gets its chance: the stalled HEAD
     // times out and the same ranged GET is sent instead.
-    let client = reqwest::Client::builder()
+    let client: Client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(300))
         .build()
-        .unwrap();
+        .unwrap()
+        .into();
     let quick = Http {
         no_redirect: client.clone(),
         client,

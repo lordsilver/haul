@@ -54,7 +54,7 @@ const FRITZ: [&str; 2] = [
 ];
 
 /// The router on this network, when one answers; at `at` when given.
-pub async fn find(http: &reqwest::Client, at: &str) -> Option<Router> {
+pub async fn find(http: &crate::hosts::Client, at: &str) -> Option<Router> {
     let places = if at.is_empty() {
         let mut places = search().await;
         places.extend(FRITZ.iter().map(|p| (*p).to_string()));
@@ -99,7 +99,7 @@ async fn search() -> Vec<String> {
 }
 
 /// The router a description at `place` is, when it has a WAN connection.
-async fn describe(http: &reqwest::Client, place: &str) -> Option<Router> {
+async fn describe(http: &crate::hosts::Client, place: &str) -> Option<Router> {
     let text = http
         .get(place)
         .timeout(Duration::from_secs(5))
@@ -170,7 +170,7 @@ impl From<String> for RedialError {
 }
 
 impl Router {
-    async fn call(&self, http: &reqwest::Client, action: &str) -> Result<String, String> {
+    async fn call(&self, http: &crate::hosts::Client, action: &str) -> Result<String, String> {
         let r = http
             .post(&self.control)
             .header("Content-Type", r#"text/xml; charset="utf-8""#)
@@ -196,12 +196,12 @@ impl Router {
     }
 
     /// The address the internet sees, as the router says.
-    pub async fn address(&self, http: &reqwest::Client) -> Option<String> {
+    pub async fn address(&self, http: &crate::hosts::Client) -> Option<String> {
         let text = self.call(http, "GetExternalIPAddress").await.ok()?;
         field(&text, "NewExternalIPAddress").filter(|a| !a.is_empty() && a != "0.0.0.0")
     }
 
-    async fn connected(&self, http: &reqwest::Client) -> bool {
+    async fn connected(&self, http: &crate::hosts::Client) -> bool {
         self.call(http, "GetStatusInfo")
             .await
             .ok()
@@ -213,7 +213,7 @@ impl Router {
     /// after something else made it redial.
     pub async fn settled(
         &self,
-        http: &reqwest::Client,
+        http: &crate::hosts::Client,
         before: Option<String>,
     ) -> Result<String, RedialError> {
         wait_for_new(before, || async {
@@ -227,7 +227,7 @@ impl Router {
     /// `login`. Returns the new address.
     pub async fn redial(
         &self,
-        http: &reqwest::Client,
+        http: &crate::hosts::Client,
         login: Option<(&str, &str)>,
     ) -> Result<String, RedialError> {
         let before = self.address(http).await;
@@ -279,7 +279,7 @@ where
 
 /// TR-064's WAN service: PPP (DSL) when the router has it, else IP.
 async fn tr064_redial(
-    http: &reqwest::Client,
+    http: &crate::hosts::Client,
     desc: &str,
     user: &str,
     password: &str,

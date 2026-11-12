@@ -39,7 +39,7 @@ Every signal but `log` goes to `haul.log` too, debug mode or not (target `haul_c
 **Settings**, **About**, **Save report…** (or `GET /api/diagnostics`) writes one zip, laid out for whoever diagnoses it; the desktop app asks where to save it, starting in the download folder:
 
 - `timeline.txt`: the last 4 MB of `haul.log` and of the log before it, oldest first, a line per event: `MM-DD HH:MM:SS.mmm L target [row name] message key=value…`, each run headed by `==== … Haul <version> starts (os, pid) ====`. Read it first.
-- `report.json`, each fact once: `about` (version, system, data folder, whether the detailed log and the live connection are on, paused, speed, update), `settings` (no secrets: keys say only whether they are set), `counts`, `rows` (every download and wrapper in the queue's order: the engine's fields as `/api/debug/inspect` gives them, `view` with what the UI shows of it that those don't say, and its last events as `history` when the detailed log is off), `cards` (the Wrappers view's), `archives`, `hosts` (those this run dealt with or the settings name, each as the Hosts view shows it, `measured` with the engine's measures that it doesn't show, and its `lanes`, one per exit), `network` (proxies, pool, router, VPN services), `engine` (paused, moving, redialing, draining, pages behind checks) and `desktop` (its passes out of sight and windows). Under `view`, `measured` and `hosts`, a field left out is at its default (`null`, `false`, `0`, empty).
+- `report.json`, each fact once: `about` (version, system, data folder, whether the detailed log and the live connection are on, the port of stand-in mode when it was on, paused, speed, update), `settings` (no secrets: keys say only whether they are set), `counts`, `rows` (every download and wrapper in the queue's order: the engine's fields as `/api/debug/inspect` gives them, `view` with what the UI shows of it that those don't say, and its last events as `history` when the detailed log is off), `cards` (the Wrappers view's), `archives`, `hosts` (those this run dealt with or the settings name, each as the Hosts view shows it, `measured` with the engine's measures that it doesn't show, and its `lanes`, one per exit), `network` (proxies, pool, router, VPN services), `engine` (paused, moving, redialing, draining, pages behind checks) and `desktop` (its passes out of sight and windows). Under `view`, `measured` and `hosts`, a field left out is at its default (`null`, `false`, `0`, empty).
 - `haul.log` and `haul.1.log`, whole but for the keys below; `pages/<site>-wants-person.png`, the last page of each site that wanted a person.
 
 Every link in every file of the report loses its `#…` part (mega.nz keys), the logs included. Queries stay everywhere, since some hosts (1fichier) name the file in theirs. A redial command is shown as `(set)`, since it often holds the router's login.
@@ -99,6 +99,17 @@ Run a test copy of the app with its own data folder and port (`HAUL_DATA_DIR`, `
 ### Pages passed out of sight, without a real site
 
 A page that answers `403` with `cf-mitigated: challenge` is passed in Edge like one behind Cloudflare. A small server in WSL is reachable from Windows at both `127.0.0.1` and `localhost`, which count as two sites. Serve pages that list nothing, swap their links after a delay, or keep a Turnstile field empty forever. Add them, then wait for each `pass` `end` and check its `outcome`.
+
+### Real sites, stood in for
+
+Stand-in mode lets a local server be any site, so a test copy runs wrappers, pastes and hosts end to end without reaching a real one. It needs both, at the start: debug mode asked for by the environment or the command line (`HAUL_DEBUG=1`, `haul --debug`; the Live connection setting never turns it on) and `HAUL_STAND_IN=<port>`. Haul then logs a warning, and the report's `about` names the port.
+
+- `<site>.localhost:<port>` stands for `<site>`: Haul names it, recognises it (known hosts, wrappers, pastes, the desktop app's page recipes) and keeps its browser profile as `<site>`.
+- Every address with a real name goes to its stand-in, from Haul's HTTP client and from the desktop app's page windows and Edge: `https://filecrypt.cc/Container/X.html` is asked of `http://filecrypt.cc.localhost:<port>/Container/X.html`, with that `Host`. So a stand-in may list links in their real form. Addresses on this computer (`127.0.0.1`, `localhost`, a stand-in's own) go where they say.
+- Haul's client resolves every `*.localhost` name to `127.0.0.1` itself, since Windows and many Linux setups don't; Edge and WebView2 do so on their own. Addresses on `.localhost` skip a configured proxy.
+- A stand-in that redirects, or whose page navigates, gives `.localhost` addresses: a redirect or a navigation in the page to a real address is followed as it is.
+
+The `haul-windows-test` skill's `standin.py` is such a server, with a release page, pastes, filecrypt containers and file hosts.
 
 ### A test, step by step
 

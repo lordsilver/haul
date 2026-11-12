@@ -215,6 +215,8 @@ impl Engine {
                 "data_dir": snapshot.data_dir,
                 "detailed_log": cfg.detailed_log,
                 "live_debug": crate::debug::enabled(),
+                // A test copy's: every site was its stand-in on this port.
+                "stand_in": crate::hosts::stand_in(),
                 "paused": snapshot.paused,
                 "speed": snapshot.speed,
                 "update": take(&mut view, "update"),

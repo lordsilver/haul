@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::{Value, json};
 
-use super::{Cx, Entry, Look, Probed, ResolveError};
+use super::{Cx, Entry, Look, Probed, ResolveError, domain_of};
 
 static OK_LINK: LazyLock<[Regex; 2]> = LazyLock::new(|| {
     [
@@ -54,9 +54,9 @@ fn file_id(url: &str) -> Option<String> {
             .map(str::to_string)
     });
     from_query.or_else(|| {
-        u.host_str()?
+        domain_of(url)
             .strip_suffix(".1fichier.com")
-            .filter(|s| !s.is_empty() && *s != "www")
+            .filter(|s| !s.is_empty())
             .map(str::to_string)
     })
 }

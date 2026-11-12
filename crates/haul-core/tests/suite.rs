@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use haul_core::{Engine, Options, Snapshot};
+use haul_core::{Engine, Options, Snapshot, config::Endpoints};
 
 #[allow(dead_code)]
 mod support;
@@ -34,13 +34,16 @@ enum Outcome {
     Waits,
 }
 
-/// How the engine reaches the stand-in: straight at its address, or through
+/// How the engine reaches the stand-in: straight at its address, through
 /// it as a proxy, so a real host's address (`https://pixeldrain.com/…`) gets
-/// the stand-in's answer.
+/// the stand-in's answer, or in stand-in mode (`HAUL_STAND_IN`), where
+/// `<site>.localhost:<port>` is `<site>` and every real address goes there,
+/// as in a test copy of the desktop app.
 #[derive(Clone, Copy)]
 enum Reach {
     Direct,
     AsProxy,
+    StandIn,
 }
 
 struct Case {
@@ -50,7 +53,8 @@ struct Case {
     link: fn(&Setup) -> String,
     reach: Reach,
     expect: Outcome,
-    /// The file a `File` outcome must hold: its name at the stand-in.
+    /// The file a `File` outcome must hold, or one a `Listed` outcome must
+    /// then download: its name at the stand-in.
     file: Option<&'static str>,
     /// Words its reason must hold, such as the gate it names.
     says: Option<&'static str>,
@@ -216,7 +220,47 @@ fn cases() -> Vec<Case> {
             file: None,
             says: None,
         },
+        // Stand-in mode: a stand-in claims a real site by its name.
+        Case {
+            site: "stand-in filecrypt.cc, by its .localhost address",
+            link: |t| t.stand_in("filecrypt.cc", "/Container/real-links.html"),
+            reach: StandIn,
+            expect: Listed(2),
+            file: Some("one.bin"),
+            says: None,
+        },
+        Case {
+            site: "stand-in filecrypt.cc, by its real address",
+            link: |_| "https://www.filecrypt.cc/Container/real-links.html".into(),
+            reach: StandIn,
+            expect: Listed(2),
+            file: Some("two.bin"),
+            says: None,
+        },
+        Case {
+            site: "stand-in paste2.org: a paste that lists no links",
+            link: |t| t.stand_in("paste2.org", "/paste/abc123"),
+            reach: StandIn,
+            expect: Gone,
+            file: None,
+            says: None,
+        },
     ]
+}
+
+impl Setup {
+    /// `path` on `site`'s stand-in, in stand-in mode.
+    fn stand_in(&self, site: &str, path: &str) -> String {
+        format!("http://{site}.localhost:{}{path}", self.port())
+    }
+
+    fn port(&self) -> u16 {
+        self.ip
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse().ok())
+            .unwrap()
+    }
 }
 
 /// Where `snapshot` has left the case's one row or wrapper, once it settled.
@@ -253,7 +297,7 @@ fn said(s: &Snapshot) -> String {
 async fn run(case: &Case) -> Result<(Outcome, String), String> {
     let t = Setup::new().await;
     let options = match case.reach {
-        Reach::Direct => t.options(),
+        Reach::Direct | Reach::StandIn => t.options(),
         Reach::AsProxy => {
             let mut config = t.config();
             config.proxies = vec![t.ip.clone()];
@@ -267,8 +311,22 @@ async fn run(case: &Case) -> Result<(Outcome, String), String> {
     if let Some(config) = options.config.as_mut() {
         config.endpoints.rapidgator = t.ip.clone();
     }
+    // Stand-in mode is one for the whole process: the rows run one at a
+    // time, and it is off again before the next.
+    let stand_in = matches!(case.reach, Reach::StandIn);
+    if stand_in && let Some(config) = options.config.as_mut() {
+        config.endpoints = Endpoints::default();
+    }
+    haul_core::hosts::set_stand_in(stand_in.then(|| t.port()));
+    let got = settle(case, &t, options).await;
+    haul_core::hosts::set_stand_in(None);
+    got
+}
+
+/// [`run`]'s engine, from start to where the case's row settled.
+async fn settle(case: &Case, t: &Setup, options: Options) -> Result<(Outcome, String), String> {
     let engine = Engine::start(options).await.map_err(|e| e.to_string())?;
-    engine.add_text(&(case.link)(&t), "");
+    engine.add_text(&(case.link)(t), "");
     let deadline = Instant::now() + Duration::from_secs(20);
     let got = loop {
         let s = engine.snapshot();
@@ -289,7 +347,28 @@ async fn run(case: &Case) -> Result<(Outcome, String), String> {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    if got.0 == Outcome::File
+    if matches!(got.0, Outcome::Listed(_)) && case.file.is_some() {
+        // What the wrapper listed downloads, every file of it, once started.
+        let wrapper = engine.snapshot().wrappers[0].id.clone();
+        engine.start_wrapper(&wrapper);
+        while !all_done(&engine.snapshot()) {
+            if Instant::now() > deadline {
+                let rows: Vec<String> = engine
+                    .snapshot()
+                    .items
+                    .iter()
+                    .map(|i| format!("{} {} {}", i.name, i.status.as_str(), i.error))
+                    .collect();
+                engine.shutdown().await;
+                return Err(format!(
+                    "{:?}, but its files never downloaded: {rows:?}",
+                    got.0
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    if matches!(got.0, Outcome::File | Outcome::Listed(_))
         && let Some(name) = case.file
         && t.downloaded(name) != content(name, SIZE)
     {
