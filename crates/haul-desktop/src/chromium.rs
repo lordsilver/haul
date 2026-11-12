@@ -26,6 +26,7 @@ use haul_core::{
     hosts,
     pass_ends::{Closed, Process},
     presser::{Candidate, Presser},
+    walker::{Next, Step, Walker},
 };
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
@@ -170,6 +171,10 @@ pub enum Outcome {
         cookies: Vec<String>,
         agent: Option<String>,
     },
+    /// The walked page went, by its own steps, to a page on a site Haul
+    /// has code for (a wrapper, a host, a paste), at this address: Haul
+    /// goes on from there itself ([`Pass::walk`]).
+    LedTo(String),
     /// The page showed links Haul took ([`Pass::take_links`]).
     Listed,
     /// The page still wants someone after its time (its check asks for a
@@ -216,6 +221,12 @@ pub struct Pass<'a> {
     /// front of the page's site, with the clearance it got
     /// ([`Outcome::Cleared`]): for a page Haul reads itself once it may.
     pub hand_clearance: bool,
+    /// The page is on a site Haul has no code for, walked as a person would
+    /// ([`haul_core::walker`]): its captcha waited for, its steps
+    /// ("Continue", "Get Link", a download) pressed page after page, and
+    /// let to another site only as a press's doing, until it shows links
+    /// Haul takes, hands over a file or reaches a site Haul knows.
+    pub walk: bool,
 }
 
 /// Offered a page's addresses; true once it took some.
@@ -339,6 +350,7 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
                 "agent": agent,
             }),
             Ok(Outcome::Listed) => json!("listed"),
+            Ok(Outcome::LedTo(to)) => json!({ "led_to": to }),
             Ok(Outcome::WantsPerson(look)) => {
                 json!({ "wants_person": serde_json::from_str::<Value>(&look.page).unwrap_or(Value::Null) })
             }
@@ -569,6 +581,9 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         }
         // Waiting, but answering the page's paused navigations meanwhile.
         cdp.pump(Duration::from_millis(500));
+        if let Some(to) = cdp.led_to.take() {
+            return Ok(Outcome::LedTo(to));
+        }
         if let Some(download) = cdp.download.take() {
             let agent = cdp
                 .call(
@@ -660,8 +675,20 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
                 .and_then(|a| a["result"]["value"].as_str().map(str::to_string));
             return Ok(Outcome::Cleared { cookies, agent });
         }
-        if start.elapsed() >= p.show_after {
+        // A walk ends by its own clock ([`haul_core::walker`]), and by its
+        // longest here when the page never let it look (still loading).
+        let limit = if p.walk {
+            Walker::LONGEST
+        } else {
+            p.show_after
+        };
+        if start.elapsed() >= limit {
             return Ok(Outcome::WantsPerson(look(&mut cdp, s)));
+        }
+        if p.walk
+            && let Some(over) = walk(&mut cdp, s, p)
+        {
+            return Ok(over);
         }
         if p.press_download
             && let Some(text) = press_download(&mut cdp, s, &mut presser)
@@ -815,8 +842,12 @@ fn set_up(endpoint: &str, p: &Pass<'_>) -> Result<(Cdp, String, String), String>
             s,
         )?;
     }
-    if p.keep_to_site {
+    // A walk decides where the page may go, which takes its navigations.
+    if p.keep_to_site || p.walk {
         cdp.keep_to_site(p.item, &target, s)?;
+    }
+    if p.walk {
+        cdp.walk = Some(Walker::new(Instant::now()));
     }
     if let Err(e) = cdp.take_downloads() {
         tracing::warn!("the browser will not report downloads: {e}");
@@ -1116,6 +1147,12 @@ struct Cdp {
     download: Option<Download>,
     /// Navigations of the page refused so far ([`Cdp::keep_to_site`]).
     refused: u32,
+    /// The walk of a page on a site Haul has no code for ([`Pass::walk`]),
+    /// which decides where its main frame may go.
+    walk: Option<Walker>,
+    /// Where the walked page went on a site Haul has code for, refused so
+    /// Haul goes on from there itself ([`Outcome::LedTo`]).
+    led_to: Option<String>,
 }
 
 /// A file the browser would have saved: its final address, past redirects.
@@ -1165,6 +1202,8 @@ impl Cdp {
             keep: None,
             download: None,
             refused: 0,
+            walk: None,
+            led_to: None,
         })
     }
 
@@ -1228,7 +1267,24 @@ impl Cdp {
                 let url = p["request"]["url"].as_str().unwrap_or_default();
                 let main = p["frameId"].as_str() == Some(keep.frame.as_str());
                 let site = url.starts_with("http").then(|| hosts::site_of(url));
-                let refuse = main && site.is_some() && keep.site.is_some() && site != keep.site;
+                let elsewhere = main && site.is_some() && site != keep.last;
+                let refuse = match self.walk.as_mut() {
+                    // A walked page goes to another site only as a press's
+                    // doing, and not onto a site Haul has code for, where
+                    // Haul goes on itself.
+                    Some(walk) if elsewhere => {
+                        let real = hosts::real(url);
+                        if hosts::walk_ends_at(&real) && !hosts::names_a_file(url) {
+                            tracing::info!(item = %keep.item, url = %real, "the walked page leads to a site Haul knows");
+                            self.led_to = Some(real.into_owned());
+                            true
+                        } else {
+                            !walk.may_leave(Instant::now())
+                        }
+                    }
+                    Some(_) => false,
+                    None => main && site.is_some() && keep.site.is_some() && site != keep.site,
+                };
                 if main && !refuse && site.is_some() {
                     keep.last = site.clone();
                 }
@@ -1546,6 +1602,182 @@ fn click_at(cdp: &mut Cdp, s: Option<&str>, x: f64, y: f64) -> Result<(), String
     Ok(())
 }
 
+/// The steps a walked page offers ([`haul_core::walker`]), and whether its
+/// captcha still waits for its answer: what a person would press to go on
+/// (shown, enabled, a few words that say go on, get the link, verify or
+/// download, and not a paid tier's, an app's or a sign-up's), those in view
+/// and on the page's own site first. Each is keyed by its place among the
+/// page's buttons and its words, and says where it links when that is
+/// another site. `null` while the page loads.
+const WALK_STEPS: &str = r#"(() => {
+  if (document.readyState === 'loading') return null;
+  const GO = /\b(continue|get\s*link|go\s*to\s*link|go\s*to\s*url|next|skip(\s*ad)?|verify|proceed|click\s*here|unlock|open\s*link|i'?m?\s*(am\s*)?not\s*a\s*robot|human|generate|show\s*link|visit\s*link|get\s*url|go|download|link)\b/i;
+  const AD = /\b(premium|usenet|vpn|install|sponsor|advert|sign\s*up|register|log\s*in|login|subscribe|notification|allow|app|extension|faster|high.?speed|payment|payout|proof|torrent)\b/i;
+  const site = (host) => host.split('.').slice(-2).join('.');
+  const shown = (el) => {
+    const box = el.getBoundingClientRect();
+    if (box.width < 8 || box.height < 8) return false;
+    for (let e = el; e && e.nodeType === 1; e = e.parentElement) {
+      const s = getComputedStyle(e);
+      if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) < 0.1) return false;
+    }
+    return true;
+  };
+  const words = (el) => (el.innerText || el.value || el.getAttribute('aria-label') || el.title || '').trim().replace(/\s+/g, ' ');
+  const all = [...document.querySelectorAll('button, input[type=submit], input[type=button], a, [role=button], [onclick]')];
+  const steps = all.flatMap((el, at) => {
+    const text = words(el).slice(0, 50);
+    if (!text || text.length > 40 || !GO.test(text) || AD.test(text) || !shown(el)) return [];
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true' || /\bdisabled\b/.test(el.className)) return [];
+    let leads = null;
+    const href = el.tagName === 'A' ? el.getAttribute('href') || '' : '';
+    if (href && !/^(#|javascript:)/i.test(href)) {
+      try {
+        const to = new URL(href, location.href);
+        if (/^https?:$/.test(to.protocol) && site(to.hostname) !== site(location.hostname)) leads = to.href;
+      } catch {}
+    }
+    const box = el.getBoundingClientRect();
+    const rank = (leads ? 2 : 0) + (box.top >= 0 && box.bottom <= innerHeight ? 0 : 1);
+    return [{ key: `${at} ${text}`, text, leads, rank }];
+  });
+  steps.sort((a, b) => a.rank - b.rank);
+  const waits = [...document.querySelectorAll('[name=cf-turnstile-response], [name=g-recaptcha-response], [name=h-captcha-response]')].some((e) => !e.value);
+  return { url: location.href, waits, steps };
+})()"#;
+
+/// Brings the step keyed `KEY` ([`WALK_STEPS`]) into view, keeps what it
+/// opens in this tab, and gives the middle of it to click. What lies over
+/// it there is seen to first: an empty layer or an ad's frame stops taking
+/// clicks; a layer with words is a dialog (a cookie banner), answered with
+/// its accept or close button when it has one (`answer`), or told of
+/// (`blocked`). `null` when the page changed under it.
+const WALK_STEP_AT: &str = r#"((key) => {
+  const at = parseInt(key, 10);
+  const el = document.querySelectorAll('button, input[type=submit], input[type=button], a, [role=button], [onclick]')[at];
+  const words = (e) => (e.innerText || e.value || e.getAttribute('aria-label') || e.title || '').trim().replace(/\s+/g, ' ');
+  if (!el || `${at} ${words(el).slice(0, 50)}` !== key) return null;
+  const form = el.closest('form');
+  if (form && form.target && form.target !== '_self') form.target = '_self';
+  const link = el.closest('a[target]');
+  if (link) link.target = '_self';
+  el.scrollIntoView({ block: 'center', behavior: 'instant' });
+  let best = null;
+  for (const n of [el, ...el.querySelectorAll('*')]) {
+    const r = n.getBoundingClientRect();
+    const area = r.width * r.height;
+    if (area > 0 && (!best || area > best.area)) best = { area, r };
+  }
+  if (!best) return null;
+  const x = best.r.x + best.r.width / 2;
+  const y = best.r.y + best.r.height / 2;
+  const YES = /^(accept|agree|consent|i agree|allow all|accept all|got it|ok|okay|close|no,? thanks|continue|×|x|yes)\b/i;
+  for (let k = 0; k < 8; k++) {
+    const over = document.elementFromPoint(x, y);
+    if (!over || over === el || el.contains(over) || over.contains(el)) break;
+    const said = (over.innerText || '').trim();
+    if (said && over.tagName !== 'IFRAME') {
+      let root = over;
+      for (let p = over; p && p !== document.body; p = p.parentElement) {
+        const s = getComputedStyle(p);
+        if (s.position === 'fixed' || s.position === 'absolute' || p.getAttribute('role') === 'dialog' || p.tagName === 'DIALOG') root = p;
+      }
+      const yes = [...root.querySelectorAll('button, a, [role=button], input[type=button], input[type=submit]')]
+        .map((b) => ({ t: words(b).slice(0, 40), r: b.getBoundingClientRect() }))
+        .find((b) => b.t && b.r.width > 4 && YES.test(b.t));
+      const blocked = said.replace(/\s+/g, ' ').slice(0, 160);
+      return yes ? { blocked, answer: { text: yes.t, x: yes.r.x + yes.r.width / 2, y: yes.r.y + yes.r.height / 2 } } : { blocked };
+    }
+    over.style.setProperty('pointer-events', 'none', 'important');
+  }
+  return { x, y };
+})(KEY)"#;
+
+/// One move of the walk ([`Pass::walk`]) on the page as it is now: a step
+/// pressed, the page loaded again for a new captcha, or nothing yet. Once
+/// the walk is over, the pass's outcome: the page wants a person while its
+/// captcha never answered itself, and has shown all it will otherwise.
+fn walk(cdp: &mut Cdp, s: Option<&str>, p: &Pass<'_>) -> Option<Outcome> {
+    let seen = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({ "expression": WALK_STEPS, "returnByValue": true }),
+            s,
+        )
+        .ok()?["result"]["value"]
+        .clone();
+    let address = seen["url"].as_str()?.to_string();
+    let steps: Vec<Step> = seen["steps"]
+        .as_array()?
+        .iter()
+        .filter_map(|c| {
+            Some(Step {
+                key: c["key"].as_str()?.to_string(),
+                text: c["text"].as_str().unwrap_or_default().to_string(),
+                leads: c["leads"].as_str().map(|l| hosts::real(l).into_owned()),
+            })
+        })
+        .collect();
+    let waits = seen["waits"].as_bool().unwrap_or(false);
+    let next = cdp
+        .walk
+        .as_mut()?
+        .next(&address, &steps, waits, Instant::now());
+    let emit = |event: &str, more: Value| {
+        let mut signal = json!({ "event": event, "id": p.item, "url": p.url, "at": address });
+        if let (Value::Object(signal), Value::Object(more)) = (&mut signal, more) {
+            signal.extend(more);
+        }
+        haul_core::debug::emit("pass", signal);
+    };
+    match next {
+        Next::Wait => None,
+        Next::Over if waits => Some(Outcome::WantsPerson(look(cdp, s))),
+        Next::Over => Some(Outcome::Settled),
+        Next::Reload => {
+            emit("reload", json!({}));
+            let _ = cdp.call("Page.reload", json!({}), s);
+            None
+        }
+        Next::Press(step) => {
+            let step = step.clone();
+            let find = WALK_STEP_AT.replace("KEY", &serde_json::to_string(&step.key).ok()?);
+            let at = cdp
+                .call(
+                    "Runtime.evaluate",
+                    json!({ "expression": find, "returnByValue": true }),
+                    s,
+                )
+                .ok()?["result"]["value"]
+                .clone();
+            let answer = &at["answer"];
+            if let (Some(x), Some(y)) = (answer["x"].as_f64(), answer["y"].as_f64()) {
+                // The dialog took the press: answered, and the step is
+                // pressed next time as if for the first.
+                emit(
+                    "dialog",
+                    json!({ "said": at["blocked"], "button": answer["text"] }),
+                );
+                let _ = click_at(cdp, s, x, y);
+                cdp.walk.as_mut()?.not_pressed(&step);
+                return None;
+            }
+            if at["blocked"].is_string() {
+                emit("dialog", json!({ "said": at["blocked"] }));
+                return None;
+            }
+            let (Some(x), Some(y)) = (at["x"].as_f64(), at["y"].as_f64()) else {
+                // The page changed under it.
+                cdp.walk.as_mut()?.not_pressed(&step);
+                return None;
+            };
+            click_at(cdp, s, x, y).ok()?;
+            emit("press", json!({ "button": step.text, "leads": step.leads }));
+            None
+        }
+    }
+}
+
 /// Clicks the middle of the first element `selector` finds, with the
 /// mouse events a person's click makes (DevTools' input, which the page
 /// cannot tell from a person's).
@@ -1859,6 +2091,7 @@ mod drive_tests {
             press_download: false,
             keep_to_site: false,
             hand_clearance: false,
+            walk: false,
         }
     }
 

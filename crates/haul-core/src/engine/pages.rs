@@ -616,6 +616,26 @@ impl Engine {
         count
     }
 
+    /// The page opened for row `id` (on a site Haul has no code for) led,
+    /// walked out of sight, to address `to` on a site Haul knows: a link
+    /// shortener's destination, the container or file behind its pages. The
+    /// row becomes a wrapper of that one link, as a page that lists it
+    /// does, whatever the row came from: a page that goes to a known site
+    /// by its own steps is no file's page. Returns false when the row is
+    /// gone or `to` is the row's own page. Called within the async
+    /// runtime: the link's lookup starts as a task.
+    pub fn page_led_to(&self, id: &str, to: &str) -> bool {
+        let Some(page) = self.page_for(id) else {
+            return false;
+        };
+        if hosts::wrapper_key(&page) == hosts::wrapper_key(to) {
+            return false;
+        }
+        tracing::info!(item = %id, "{page} leads to {to}");
+        self.take_unwrapped(id, &page, hosts::listed(None, vec![to.to_string()]));
+        true
+    }
+
     /// Whether the links page `url` shows may stand in for row `id`
     /// ([`Engine::page_listed`]): the row is that page, a wrapper or a link
     /// added on its own that turned out to be a page, on a site Haul has no

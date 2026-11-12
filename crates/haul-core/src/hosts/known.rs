@@ -386,6 +386,20 @@ pub fn presses_download(url: &str, lists: bool) -> bool {
     !lists && !page_passes(url) && !super::wraps(url) && !super::is_paste(url)
 }
 
+/// Whether a pass of `url`'s page walks it ([`crate::walker`]): a page on a
+/// site Haul has no code for, which may be a file's page, a list of links,
+/// or a link shortener that leads to either through pages of its own and
+/// of other sites.
+pub fn walks(url: &str) -> bool {
+    known_of(url).is_none() && !super::is_paste(url)
+}
+
+/// Whether `url` is on a site Haul has code for (a host, a wrapper, a
+/// paste): where a walk ends, since Haul goes on from there itself.
+pub fn walk_ends_at(url: &str) -> bool {
+    url.starts_with("http") && !walks(url)
+}
+
 #[cfg(test)]
 mod presses_tests {
     use super::presses_download;
@@ -402,6 +416,19 @@ mod presses_tests {
         ));
         assert!(!presses_download("https://site.example/file/abc123", true));
         assert!(presses_download("https://site.example/file/abc123", false));
+    }
+
+    #[test]
+    fn a_page_on_a_site_haul_has_no_code_for_is_walked_to_one_it_has() {
+        use super::{walk_ends_at, walks};
+        assert!(walks("https://short.example/abc123"));
+        assert!(!walks("https://filecrypt.cc/Container/AAAAAAAA.html"));
+        assert!(!walks("https://paste2.org/paste/example-set"));
+        assert!(!walks("https://pixeldrain.com/u/abc123"));
+        assert!(walk_ends_at("https://filecrypt.cc/Container/AAAAAAAA.html"));
+        assert!(walk_ends_at("https://paste2.org/paste/example-set"));
+        assert!(!walk_ends_at("https://ads.example/landing"));
+        assert!(!walk_ends_at("about:blank"));
     }
 }
 
