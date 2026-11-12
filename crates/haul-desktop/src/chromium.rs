@@ -554,6 +554,8 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
     let mut offered: Vec<String> = Vec::new();
     // Download buttons pressed, and those found to be ads'.
     let mut presser = Presser::default();
+    // Times the page was brought back from another site.
+    let mut sent_back = 0;
     let mut refused = cdp.refused;
     // A browser is alive while its DevTools answers, whatever became of the
     // process Haul started: a starter, or a browser that hands over to
@@ -659,6 +661,26 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
                 .ok()
                 .and_then(|a| a["result"]["value"].as_str().map(str::to_string));
             return Ok(Outcome::Cleared { cookies, agent });
+        }
+        // An ad that got the page off its site past the guard (a pop-under
+        // that moves the tab, a redirect the guard did not see): the page
+        // is sent back to where it belongs, a few times at most, rather than
+        // the pass ending on the ad as if the site wanted a person.
+        if let Some(home) = cdp.keep.as_ref().and_then(|k| k.site.clone())
+            && let Some(href) = current_address(&mut cdp, s)
+            && href.starts_with("http")
+            && hosts::site_of(&href) != home
+            && !hosts::names_a_file(&href)
+        {
+            sent_back += 1;
+            haul_core::debug::emit(
+                "pass",
+                json!({ "event": "sent back", "id": p.item, "url": href, "times": sent_back }),
+            );
+            if sent_back <= SEND_BACK_AT_MOST {
+                let _ = cdp.call("Page.navigate", json!({ "url": p.url }), s);
+                continue;
+            }
         }
         if start.elapsed() >= p.show_after {
             return Ok(Outcome::WantsPerson(look(&mut cdp, s)));
@@ -834,6 +856,22 @@ const EXITED_AT_START: Duration = Duration::from_secs(5);
 /// The browser's DevTools WebSocket, from its `/json/version` once it
 /// listens. (`DevToolsActivePort` in the profile is written only when the
 /// browser picks the port itself.)
+/// Times a pass brings its page back from another site before it lets the
+/// page be.
+const SEND_BACK_AT_MOST: u32 = 5;
+
+/// The address the page's main frame is at, as it says.
+fn current_address(cdp: &mut Cdp, s: Option<&str>) -> Option<String> {
+    cdp.call(
+        "Runtime.evaluate",
+        json!({ "expression": "location.href", "returnByValue": true }),
+        s,
+    )
+    .ok()?["result"]["value"]
+        .as_str()
+        .map(str::to_string)
+}
+
 /// Asks the browser on DevTools' `port` to close, and waits a little for the
 /// process Haul started to exit; what is left is killed as before.
 fn close_gently(browser: &mut Browser, port: u16) {

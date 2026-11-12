@@ -66,7 +66,8 @@ pub struct Friction {
 pub(super) type Frictions = BTreeMap<String, Friction>;
 
 /// How long a release's reading may take before it is told as read anyway.
-const READ_AT_MOST: std::time::Duration = std::time::Duration::from_secs(60);
+/// Its sources are passed one at a time, each taking up to a minute or so.
+const READ_AT_MOST: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 impl Engine {
     /// The releases whose page and sources have been read and whose first
