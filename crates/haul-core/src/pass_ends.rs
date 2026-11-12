@@ -3,8 +3,8 @@
 //!
 //! A pass that ends "closed" without anyone stopping it is the browser's
 //! doing, not the page's: nobody is asked about it. It is tried again at
-//! once, [`AGAIN`] times, then once in the other browser (Chrome for Edge,
-//! Edge for Chrome) when there is one, and only then fails, as the browser
+//! once, [`AGAIN`] times, then once in the second browser the desktop app
+//! found (Chrome, after Edge) when there is one, and only then fails, as the browser
 //! failing, with its reason. A pass Haul stopped (its row went or stopped
 //! waiting, or a person opened the page) is not tried again.
 
@@ -21,8 +21,12 @@ pub enum Closed {
     NoDevTools(Process),
     /// DevTools answers, but no longer has the pass's page.
     PageGone(Process),
-    /// The browser never showed the page: it exited at start, or never
-    /// opened DevTools.
+    /// DevTools answered, then failed while Haul set up the page (attached
+    /// to it, added its scripts, sent it to its address): the browser went
+    /// away, or would not take the page.
+    SetUp { error: String, process: Process },
+    /// The browser never opened DevTools: it exited at start, or took too
+    /// long.
     NotStarted(String),
 }
 
@@ -55,6 +59,12 @@ impl Closed {
             Closed::Stopped => "Haul stopped it".into(),
             Closed::NoDevTools(p) => format!("its DevTools stopped answering: {}", process(p)),
             Closed::PageGone(p) => format!("its page was closed: {}", process(p)),
+            Closed::SetUp { error, process: p } => {
+                format!(
+                    "it failed while Haul set up its page ({error}): {}",
+                    process(p)
+                )
+            }
             Closed::NotStarted(why) => why.clone(),
         }
     }
@@ -65,6 +75,7 @@ impl Closed {
             Closed::Stopped => "stopped",
             Closed::NoDevTools(_) => "devtools",
             Closed::PageGone(_) => "page",
+            Closed::SetUp { .. } => "setup",
             Closed::NotStarted(_) => "not_started",
         }
     }
@@ -78,8 +89,8 @@ pub enum Next {
     /// Passes the page again at once, in browser number `browser` of those
     /// [`Tries::new`] was given.
     Again { browser: usize },
-    /// The first try never showed the page: told as such a pass is today,
-    /// with its reason.
+    /// The first try's browser never opened DevTools: told as such a pass
+    /// is today, with its reason.
     NotStarted(String),
     /// Gives up, as the browser failing rather than the page wanting a
     /// person: the page fails with this reason.
@@ -192,7 +203,7 @@ mod tests {
         assert_eq!(t.ended(gone()), Next::Again { browser: 1 });
         assert_eq!(t.browser(), 1);
         let Next::Fail(why) = t.ended(gone()) else {
-            panic!("fails after the other browser");
+            panic!("fails after the second browser");
         };
         assert_eq!(
             why,
@@ -233,6 +244,17 @@ mod tests {
     }
 
     #[test]
+    fn a_first_try_whose_browser_went_during_set_up_is_tried_again() {
+        let mut t = both();
+        let set_up = Closed::SetUp {
+            error: "DevTools: Connection reset without closing handshake".into(),
+            process: Process::default(),
+        };
+        assert_eq!(set_up.kind(), "setup");
+        assert_eq!(t.ended(set_up), Next::Again { browser: 0 });
+    }
+
+    #[test]
     fn a_later_try_that_never_started_counts_as_a_try() {
         let mut t = both();
         assert_eq!(t.ended(gone()), Next::Again { browser: 0 });
@@ -242,7 +264,7 @@ mod tests {
         }
         assert_eq!(t.ended(not_started()), Next::Again { browser: 1 });
         let Next::Fail(why) = t.ended(not_started()) else {
-            panic!("fails after the other browser");
+            panic!("fails after the second browser");
         };
         assert!(
             why.ends_with("the last time the browser did not open DevTools in time"),

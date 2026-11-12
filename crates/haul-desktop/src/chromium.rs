@@ -427,7 +427,8 @@ impl Job {
 ///
 /// After a pass (`when` is `after`, else `before`) it ends the browser that
 /// answered for one Haul started that exited, which may be outside Haul's
-/// job: every browser on the pass's profile ends with the pass.
+/// job: every browser on the pass's profile ends with the pass. Those in
+/// the job get [`STRAY_AFTER`] to go first, so none is told as left over.
 #[cfg(windows)]
 fn end_stray(p: &Pass<'_>, when: &str) {
     use std::os::windows::ffi::OsStrExt;
@@ -444,17 +445,27 @@ fn end_stray(p: &Pass<'_>, when: &str) {
     let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
     let class = wide("Chrome_MessageWindow".as_ref());
     let title = wide(p.profile.as_os_str());
+    // SAFETY: both strings are NUL-terminated and outlive the call.
+    let holder = || unsafe {
+        FindWindowExW(
+            HWND_MESSAGE,
+            std::ptr::null_mut(),
+            class.as_ptr(),
+            title.as_ptr(),
+        )
+    };
+    // After a pass, the browsers in Haul's job are on their way out, the job
+    // closed: only one still holding the profile after a while is a
+    // leftover.
+    if when == "after" {
+        let until = Instant::now() + STRAY_AFTER;
+        while !holder().is_null() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
     // Once more should one start just as the last ends.
     for _ in 0..3 {
-        // SAFETY: both strings are NUL-terminated and outlive the call.
-        let window = unsafe {
-            FindWindowExW(
-                HWND_MESSAGE,
-                std::ptr::null_mut(),
-                class.as_ptr(),
-                title.as_ptr(),
-            )
-        };
+        let window = holder();
         if window.is_null() {
             return;
         }
@@ -495,6 +506,11 @@ fn end_stray(p: &Pass<'_>, when: &str) {
     }
 }
 
+/// How long a browser in Haul's job gets to go after a pass before one
+/// still holding the pass's profile counts as left over ([`end_stray`]).
+#[cfg(windows)]
+const STRAY_AFTER: Duration = Duration::from_secs(3);
+
 #[cfg(windows)]
 impl Drop for Job {
     fn drop(&mut self) {
@@ -512,44 +528,18 @@ impl Drop for Browser {
 
 fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, String> {
     let endpoint = wait_for_endpoint(browser, port)?;
-    let mut cdp = Cdp::connect(&endpoint)?;
-    let targets = cdp.call("Target.getTargets", json!({}), None)?;
-    let target = pages(&targets)
-        .first()
-        .cloned()
-        .ok_or("the browser opened no page")?;
-    let attached = cdp.call(
-        "Target.attachToTarget",
-        json!({ "targetId": target, "flatten": true }),
-        None,
-    )?;
-    let session = attached["sessionId"]
-        .as_str()
-        .ok_or("no DevTools session")?
-        .to_string();
+    let (mut cdp, target, session) = match set_up(&endpoint, p) {
+        Ok(set) => set,
+        // DevTools answered, then the browser went away or would not take
+        // the page: a close like any other, tried again.
+        Err(error) => {
+            return Ok(Outcome::Closed(Closed::SetUp {
+                error,
+                process: process(browser, port),
+            }));
+        }
+    };
     let s = Some(session.as_str());
-    // Scripts for new documents run only with the page domain on (unlike
-    // the runtime domain, it tells no automation apart).
-    cdp.call("Page.enable", json!({}), s)?;
-    cdp.call(
-        "Page.addScriptToEvaluateOnNewDocument",
-        json!({ "source": "window.__haulDevTools = true;" }),
-        s,
-    )?;
-    for script in p.scripts {
-        cdp.call(
-            "Page.addScriptToEvaluateOnNewDocument",
-            json!({ "source": script }),
-            s,
-        )?;
-    }
-    if p.keep_to_site {
-        cdp.keep_to_site(p.item, &target, s)?;
-    }
-    if let Err(e) = cdp.take_downloads() {
-        tracing::warn!("the browser will not report downloads: {e}");
-    }
-    cdp.call("Page.navigate", json!({ "url": p.url }), s)?;
     let start = Instant::now();
     // The addresses the page last offered: a new page with as many (a
     // paste's list after its gate) is offered too.
@@ -751,6 +741,51 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
             return Ok(Outcome::Files { files, agent, page });
         }
     }
+}
+
+/// Connects to the browser's DevTools at `endpoint`, attaches to its page,
+/// adds the pass's scripts and sends the page to `p.url`: the connection,
+/// the page's target and its session.
+fn set_up(endpoint: &str, p: &Pass<'_>) -> Result<(Cdp, String, String), String> {
+    let mut cdp = Cdp::connect(endpoint)?;
+    let targets = cdp.call("Target.getTargets", json!({}), None)?;
+    let target = pages(&targets)
+        .first()
+        .cloned()
+        .ok_or("the browser opened no page")?;
+    let attached = cdp.call(
+        "Target.attachToTarget",
+        json!({ "targetId": target, "flatten": true }),
+        None,
+    )?;
+    let session = attached["sessionId"]
+        .as_str()
+        .ok_or("no DevTools session")?
+        .to_string();
+    let s = Some(session.as_str());
+    // Scripts for new documents run only with the page domain on (unlike
+    // the runtime domain, it tells no automation apart).
+    cdp.call("Page.enable", json!({}), s)?;
+    cdp.call(
+        "Page.addScriptToEvaluateOnNewDocument",
+        json!({ "source": "window.__haulDevTools = true;" }),
+        s,
+    )?;
+    for script in p.scripts {
+        cdp.call(
+            "Page.addScriptToEvaluateOnNewDocument",
+            json!({ "source": script }),
+            s,
+        )?;
+    }
+    if p.keep_to_site {
+        cdp.keep_to_site(p.item, &target, s)?;
+    }
+    if let Err(e) = cdp.take_downloads() {
+        tracing::warn!("the browser will not report downloads: {e}");
+    }
+    cdp.call("Page.navigate", json!({ "url": p.url }), s)?;
+    Ok((cdp, target, session))
 }
 
 /// How long DevTools' port is still watched after the process Haul started
@@ -1491,6 +1526,8 @@ mod drive_tests {
         HandsFileLate,
         /// It stops answering after a few calls, as a browser that went.
         Goes,
+        /// It stops answering while Haul sets up its page.
+        GoesAtSetUp,
         /// Its page is closed.
         ClosesPage,
     }
@@ -1547,7 +1584,7 @@ mod drive_tests {
             };
             let call: Value = serde_json::from_str(text.as_str()).unwrap();
             let n = calls.fetch_add(1, Ordering::SeqCst);
-            if acts == Acts::Goes && n >= 12 {
+            if acts == Acts::Goes && n >= 12 || acts == Acts::GoesAtSetUp && n >= 2 {
                 return;
             }
             let method = call["method"].as_str().unwrap_or_default();
@@ -1726,6 +1763,43 @@ mod drive_tests {
         assert!(
             matches!(outcome, Ok(Outcome::Closed(Closed::Stopped))),
             "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_browser_that_goes_while_its_page_is_set_up_closes_the_pass() {
+        let (port, _) = devtools(Acts::GoesAtSetUp);
+        let exe = std::env::current_exe().unwrap();
+        let mut b = browser(exits_in_a_second());
+        let outcome = drive(&mut b, port, &pass_of(&exe, Handle::default()));
+        let Ok(Outcome::Closed(Closed::SetUp { error, process })) = outcome else {
+            panic!("expected a close while setting up, got {outcome:?}");
+        };
+        assert!(error.starts_with("DevTools"), "{error}");
+        assert_eq!(process.answers.as_deref(), Some("Stand-in/1.0"));
+    }
+
+    #[test]
+    fn a_process_that_exits_with_nothing_on_its_port_fails_after_a_while() {
+        let port = TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut b = browser(exits_at_once());
+        let start = Instant::now();
+        let Err(why) = wait_for_endpoint(&mut b, port) else {
+            panic!("nothing answers");
+        };
+        assert!(why.starts_with("the browser exited at start ("), "{why}");
+        assert!(
+            why.ends_with("and nothing opened DevTools on its port"),
+            "{why}"
+        );
+        let took = start.elapsed();
+        assert!(
+            took >= EXITED_AT_START && took < EXITED_AT_START + Duration::from_secs(3),
+            "{took:?}"
         );
     }
 }

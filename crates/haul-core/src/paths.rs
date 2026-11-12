@@ -37,13 +37,13 @@ pub fn pass_profiles(data_dir: &Path) -> PathBuf {
 }
 
 /// The profile `site`'s pages are passed in: the first browser's among
-/// [`pass_profiles`], and the other's (`browser`, as `chrome` or `edge`)
-/// in a folder of its own there, since one browser's profile is not the
-/// other's to open.
-pub fn pass_profile(data_dir: &Path, browser: Option<&str>, site: &str) -> PathBuf {
-    match browser {
-        None => pass_profiles(data_dir).join(site),
-        Some(browser) => pass_profiles(data_dir).join(browser).join(site),
+/// [`pass_profiles`], and the second's (Chrome, the only browser tried after
+/// another, Edge) in `chrome` there, since Edge's profile is not Chrome's to
+/// open.
+pub fn pass_profile(data_dir: &Path, site: &str, second: bool) -> PathBuf {
+    match second {
+        false => pass_profiles(data_dir).join(site),
+        true => pass_profiles(data_dir).join("chrome").join(site),
     }
 }
 

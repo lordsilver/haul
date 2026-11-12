@@ -194,17 +194,15 @@ impl Browser {
                     engine.page_listed(&id, &s.links, &s.text, s.title.as_deref()) > 0
                 })
             };
-            let mut tries = Tries::new(browsers.iter().map(|b| b.name.to_string()).collect());
+            let names: Vec<&str> = browsers.iter().map(|b| b.name).collect();
             // Passed again at once while the browser closes the page by
             // itself, the row's pass running meanwhile.
-            let outcome = loop {
-                let browser = &browsers[tries.browser()];
-                let other = (tries.browser() > 0).then(|| browser.name.to_ascii_lowercase());
-                let pass = chromium::Pass {
-                    exe: &browser.exe,
+            let outcome = run_tries(&names, &handle.stop, &id, &url, |browser| {
+                chromium::pass(chromium::Pass {
+                    exe: &browsers[browser].exe,
                     item: &id,
                     url: &url,
-                    profile: paths::pass_profile(engine.data_dir(), other.as_deref(), &site),
+                    profile: paths::pass_profile(engine.data_dir(), &site, browser > 0),
                     proxy,
                     scripts: if lists {
                         &[LISTS, OVERLAYS, HANDOFF]
@@ -226,32 +224,8 @@ impl Browser {
                     // A page Haul reads itself, once the browser is past the
                     // check in front of its site.
                     hand_clearance: engine.takes_clearance(&url),
-                };
-                let how = match chromium::pass(pass) {
-                    Ok(chromium::Outcome::Closed(how)) => how,
-                    Err(e) => Closed::NotStarted(e),
-                    Ok(said) => break Ended::Page(said),
-                };
-                // Stopped while it ended some other way: stopped all the same.
-                let how = match handle.stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    true => Closed::Stopped,
-                    false => how,
-                };
-                match tries.ended(how) {
-                    Next::Again { browser } => {
-                        let name = browsers[browser].name;
-                        let number = tries.number();
-                        tracing::warn!(item = %id, "passing {url} again, in {name} (try {number})");
-                        haul_core::debug::emit(
-                            "pass",
-                            json!({ "event": "again", "id": id, "url": url, "browser": name, "try": number }),
-                        );
-                    }
-                    Next::Stop => break Ended::Stopped,
-                    Next::NotStarted(e) => break Ended::NotStarted(e),
-                    Next::Fail(reason) => break Ended::Browser(reason),
-                }
-            };
+                })
+            });
             passes(&all).remove(&id);
             match outcome {
                 Ended::Page(chromium::Outcome::Files { files, agent, page }) => {
@@ -327,26 +301,21 @@ impl Browser {
                         crate::notify_waiting(&app, &format!("{host} wants you"), &body);
                     }
                 }
-                // Told apart by `tries`, which never lets one through.
-                Ended::Page(chromium::Outcome::Closed(_)) => {}
-                // Stopped because the row went or stopped waiting: nobody
-                // is asked.
-                Ended::Stopped if abandoned.load(std::sync::atomic::Ordering::Relaxed) => {}
-                // Stopped because a person opened the page in Haul's window:
-                // theirs now.
-                Ended::Stopped => {
-                    engine.page_wants_person(&id);
-                }
-                // The browser kept closing the page by itself: its failure,
-                // not the page's, and nobody is asked.
-                Ended::Browser(reason) => {
-                    tracing::warn!(item = %id, "passing {url}: {reason}");
-                    engine.page_failed(&id, &reason);
-                }
-                Ended::NotStarted(e) => {
-                    tracing::warn!(item = %id, "passing {url}: {e}");
-                    engine.page_not_passed(&id, &e);
-                }
+                ended => match tell_of(ended, abandoned.load(std::sync::atomic::Ordering::Relaxed))
+                {
+                    Tell::Nothing => {}
+                    Tell::WantsPerson => {
+                        engine.page_wants_person(&id);
+                    }
+                    Tell::Failed(reason) => {
+                        tracing::warn!(item = %id, "passing {url}: {reason}");
+                        engine.page_failed(&id, &reason);
+                    }
+                    Tell::NotPassed(e) => {
+                        tracing::warn!(item = %id, "passing {url}: {e}");
+                        engine.page_not_passed(&id, &e);
+                    }
+                },
             }
         });
         Ok(())
@@ -538,7 +507,79 @@ fn refused(id: &str, url: &str, why: Go) {
     );
 }
 
+/// Runs a page's tries: `run(browser)` passes it once in browser number
+/// `browser` of `names`. One that closes by itself runs again as [`Tries`]
+/// says, until the page says something, Haul stops it (`stop`), or the tries
+/// are used up.
+fn run_tries(
+    names: &[&str],
+    stop: &std::sync::atomic::AtomicBool,
+    id: &str,
+    url: &str,
+    mut run: impl FnMut(usize) -> Result<chromium::Outcome, String>,
+) -> Ended {
+    let mut tries = Tries::new(names.iter().map(|n| n.to_string()).collect());
+    loop {
+        let how = match run(tries.browser()) {
+            Ok(chromium::Outcome::Closed(how)) => how,
+            Err(e) => Closed::NotStarted(e),
+            Ok(said) => return Ended::Page(said),
+        };
+        // Stopped while it ended some other way: stopped all the same.
+        let how = match stop.load(std::sync::atomic::Ordering::Relaxed) {
+            true => Closed::Stopped,
+            false => how,
+        };
+        match tries.ended(how) {
+            Next::Again { browser } => {
+                let name = names[browser];
+                let number = tries.number();
+                tracing::warn!(item = %id, "passing {url} again, in {name} (try {number})");
+                haul_core::debug::emit(
+                    "pass",
+                    json!({ "event": "again", "id": id, "url": url, "browser": name, "try": number }),
+                );
+            }
+            Next::Stop => return Ended::Stopped,
+            Next::NotStarted(e) => return Ended::NotStarted(e),
+            Next::Fail(reason) => return Ended::Browser(reason),
+        }
+    }
+}
+
+/// What the engine is told of a pass that ended without the page's word.
+#[derive(Debug, PartialEq)]
+enum Tell {
+    Nothing,
+    /// The page is the person's ([`Engine::page_wants_person`]).
+    WantsPerson,
+    /// The page failed for now, nobody asked ([`Engine::page_failed`]).
+    Failed(String),
+    /// The browser never showed it ([`Engine::page_not_passed`]).
+    NotPassed(String),
+}
+
+/// What the engine is told of `ended`, a pass that ended without the page's
+/// word; `abandoned` when Haul stopped it because its row went or stopped
+/// waiting.
+fn tell_of(ended: Ended, abandoned: bool) -> Tell {
+    match ended {
+        // Told by the page; `run_tries` never lets a close through.
+        Ended::Page(_) => Tell::Nothing,
+        // Stopped because the row went or stopped waiting: nobody is asked.
+        Ended::Stopped if abandoned => Tell::Nothing,
+        // Stopped because a person opened the page in Haul's window: theirs
+        // now.
+        Ended::Stopped => Tell::WantsPerson,
+        // The browser kept closing the page by itself: its failure, not the
+        // page's, and nobody is asked.
+        Ended::Browser(reason) => Tell::Failed(reason),
+        Ended::NotStarted(e) => Tell::NotPassed(e),
+    }
+}
+
 /// How a page's pass ended, its tries told.
+#[derive(Debug)]
 enum Ended {
     /// With the page's word.
     Page(chromium::Outcome),
@@ -1118,5 +1159,79 @@ mod tests {
             later("https://haul.invalid/gone?reason=limit"),
             Some(Said::Gone("limit".into()))
         );
+    }
+
+    fn closed() -> Result<chromium::Outcome, String> {
+        Ok(chromium::Outcome::Closed(Closed::NoDevTools(
+            haul_core::pass_ends::Process::default(),
+        )))
+    }
+
+    const URL: &str = "https://site.example/abc123";
+
+    #[test]
+    fn a_page_the_browser_keeps_closing_fails_without_asking_anyone() {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut ran = Vec::new();
+        let ended = run_tries(&["Edge", "Chrome"], &stop, "abc123", URL, |browser| {
+            ran.push(browser);
+            closed()
+        });
+        assert_eq!(
+            ran,
+            [0, 0, 0, 0, 1],
+            "four tries in Edge, then one in Chrome"
+        );
+        let Tell::Failed(reason) = tell_of(ended, false) else {
+            panic!("the page fails, under nobody's name");
+        };
+        assert!(
+            reason.starts_with("Haul's browser closed the page by itself"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn a_page_the_browser_shows_after_closing_is_taken() {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut n = 0;
+        let ended = run_tries(&["Edge"], &stop, "abc123", URL, |_| {
+            n += 1;
+            if n < 3 {
+                closed()
+            } else {
+                Ok(chromium::Outcome::Listed)
+            }
+        });
+        assert!(
+            matches!(ended, Ended::Page(chromium::Outcome::Listed)),
+            "{ended:?}"
+        );
+        assert_eq!(tell_of(ended, false), Tell::Nothing);
+    }
+
+    #[test]
+    fn a_pass_stopped_while_it_closed_is_not_tried_again() {
+        let stop = std::sync::atomic::AtomicBool::new(true);
+        let mut n = 0;
+        let ended = run_tries(&["Edge", "Chrome"], &stop, "abc123", URL, |_| {
+            n += 1;
+            closed()
+        });
+        assert_eq!(n, 1);
+        assert!(matches!(ended, Ended::Stopped), "{ended:?}");
+        // Abandoned: nobody is asked; else a person opened it in Haul.
+        assert!(matches!(tell_of(Ended::Stopped, true), Tell::Nothing));
+        assert_eq!(tell_of(Ended::Stopped, false), Tell::WantsPerson);
+    }
+
+    #[test]
+    fn a_first_try_that_never_opened_devtools_is_told_as_before() {
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let why = "the browser did not open DevTools in time";
+        let ended = run_tries(&["Edge", "Chrome"], &stop, "abc123", URL, |_| {
+            Err(why.into())
+        });
+        assert_eq!(tell_of(ended, false), Tell::NotPassed(why.into()));
     }
 }

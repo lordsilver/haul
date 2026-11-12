@@ -39,7 +39,7 @@ powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object
 ```
 
 - WSL cannot reach Windows' loopback; Windows' own `curl.exe`, started from WSL, can, and its output comes back to WSL. PowerShell's `Invoke-RestMethod` cannot stream.
-- Start a fresh data folder (`rm -rf "$T/data"`) for a first-run test; the Edge profiles under `data/webview/chromium/<site>` carry Cloudflare clearances between runs.
+- Start a fresh data folder (`rm -rf "$T/data"`) for a first-run test; the Edge profiles under `data/webview/chromium/<site>` (and Chrome's under `data/webview/chromium/chrome/<site>`, for a pass Edge kept closing) carry Cloudflare clearances between runs.
 - A link already in the list is a duplicate, query string or not: give each try a fresh address (`/guard/stuck-2`).
 - The Edge processes of the test copy carry `haul-test` in their command line; count them with `Get-CimInstance Win32_Process -Filter "Name='msedge.exe'"`.
 
