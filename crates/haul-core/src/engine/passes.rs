@@ -36,6 +36,11 @@ pub struct PassPlan {
 /// turned away all the same, for what the page shows past the check.
 pub(super) type Tried = HashSet<(String, String, bool)>;
 
+/// The rows waiting their turn for a pass, in their order: each row's page
+/// and since when it waits. Kept between plans, so the log says when a row
+/// joined the queue, its place, and when its pass started or it left.
+pub(super) type Queue = Vec<(String, String, Instant)>;
+
 /// A row waiting on a page the browser passes by itself.
 struct Waiting {
     id: String,
@@ -95,6 +100,12 @@ impl Engine {
             st.tried.insert(key(w));
             (w.id.clone(), w.page.clone())
         });
+        let queued: Vec<&Waiting> = waiting
+            .iter()
+            .filter(|w| w.turn && !st.tried.contains(&key(w)))
+            .filter(|w| !with_person.contains(&w.id.as_str()))
+            .collect();
+        tell_queue(&mut st.pass_queue, &queued, start.as_ref(), now);
         if changed {
             self.touch(&mut st);
         }
@@ -161,4 +172,59 @@ impl Engine {
         });
         waiting.chain(looked_up).collect()
     }
+}
+
+/// Signals what changed in the pass queue since the last plan (`pass_queue`
+/// in the log): rows that joined it, with their place, the row whose pass
+/// starts, with how long it waited, and rows that left it unpassed.
+fn tell_queue(
+    queue: &mut Queue,
+    queued: &[&Waiting],
+    start: Option<&(String, String)>,
+    now: Instant,
+) {
+    use serde_json::json;
+
+    let of = queued.len();
+    let was = |id: &str| {
+        queue
+            .iter()
+            .find(|(q, ..)| q == id)
+            .map(|(_, _, since)| *since)
+    };
+    let mut next: Queue = Vec::with_capacity(of);
+    for (place, w) in queued.iter().enumerate() {
+        let since = was(&w.id).unwrap_or_else(|| {
+            crate::debug::emit(
+                "pass_queue",
+                json!({ "event": "queued", "id": w.id, "url": w.page, "place": place + 1, "of": of }),
+            );
+            now
+        });
+        next.push((w.id.clone(), w.page.clone(), since));
+    }
+    if let Some((id, url)) = start {
+        // A row whose pass starts as it comes is first in the queue too.
+        if was(id).is_none() {
+            crate::debug::emit(
+                "pass_queue",
+                json!({ "event": "queued", "id": id, "url": url, "place": 1, "of": of + 1 }),
+            );
+        }
+        let waited = was(id).map_or(0, |since| now.duration_since(since).as_secs());
+        crate::debug::emit(
+            "pass_queue",
+            json!({ "event": "started", "id": id, "url": url, "waited_secs": waited, "behind": of }),
+        );
+    }
+    for (id, url, _) in queue.iter() {
+        let gone = !next.iter().any(|(q, ..)| q == id) && start.is_none_or(|(s, _)| s != id);
+        if gone {
+            crate::debug::emit(
+                "pass_queue",
+                json!({ "event": "left", "id": id, "url": url }),
+            );
+        }
+    }
+    *queue = next;
 }

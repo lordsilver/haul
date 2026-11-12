@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use haul_core::{Engine, Event, Options, Theme, Told, paths, summarize};
+use haul_core::{Engine, Event, Options, Theme, Told, paths};
 use haul_web::Desktop;
 use tauri::{
     AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
@@ -194,19 +194,25 @@ pub fn show_main(app: &AppHandle) {
 }
 
 pub fn notify(app: &AppHandle, title: &str, body: &str) {
-    show_notification(app, title, body, false);
+    show_notification(app, title, body, false, &[]);
 }
 
-/// The "Needs you" notification. Its id tells a click on it that a host is
-/// waiting, so the click can go straight to the download.
-pub fn notify_waiting(app: &AppHandle, title: &str, body: &str) {
-    show_notification(app, title, body, true);
+/// The "Needs you" notification about rows `rows`. Its id tells a click on
+/// it that a host is waiting, so the click can go straight to the download.
+pub fn notify_waiting(app: &AppHandle, rows: &[String], title: &str, body: &str) {
+    show_notification(app, title, body, true, rows);
 }
 
-fn show_notification(app: &AppHandle, title: &str, body: &str, waiting: bool) {
+/// Shows a notification about rows `rows` (none for one about no row),
+/// counted for their releases' friction ([`Engine::notified`]).
+fn show_notification(app: &AppHandle, title: &str, body: &str, waiting: bool, rows: &[String]) {
+    let releases = app
+        .try_state::<Engine>()
+        .map(|engine| engine.notified(rows))
+        .unwrap_or_default();
     haul_core::debug::emit(
         "notification",
-        serde_json::json!({ "title": title, "body": body, "waiting": waiting }),
+        serde_json::json!({ "title": title, "body": body, "waiting": waiting, "rows": rows, "releases": releases }),
     );
     let builder = app.notification().builder().title(title).body(body);
     let builder = if waiting {
@@ -345,20 +351,14 @@ fn spawn_notifications(app: AppHandle, engine: &Engine) {
             }
             // A page Haul passes by itself asks for nobody, unless its window
             // comes forward (which tells the user then).
-            batch.retain(|e| {
-                !matches!(e, Event::NeedsUser { id, .. }
-                    if engine.page_for(id).is_some_and(|u| engine.page_passes(&u)))
-            });
+            let tellings = engine.tellings(&batch);
             let focused = app
                 .get_webview_window(MAIN)
                 .is_some_and(|w| w.is_focused().unwrap_or(false));
             if !focused {
-                for told in summarize(&batch) {
-                    if told.kind == Told::NeedsYou {
-                        notify_waiting(&app, &told.title, &told.body);
-                    } else {
-                        notify(&app, &told.title, &told.body);
-                    }
+                for told in tellings {
+                    let waiting = told.kind == Told::NeedsYou;
+                    show_notification(&app, &told.title, &told.body, waiting, &told.rows);
                 }
             }
         }

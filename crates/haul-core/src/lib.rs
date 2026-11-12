@@ -28,9 +28,9 @@ pub mod vpn;
 
 pub use config::{Config, Route, Theme};
 pub use engine::{
-    Activity, Added, Batch, BatchFailure, Browsing, Command, Engine, Event, HostView, ItemAction,
-    ItemView, Options, PassPlan, RowState, SettingError, SettingsView, Snapshot, StartError,
-    Telling, Told, WrapperAction, WrapperState, WrapperView, summarize,
+    Activity, Added, Ask, Batch, BatchFailure, Browsing, Command, Engine, Event, Friction,
+    HostView, ItemAction, ItemView, Options, PassPlan, RowState, SettingError, SettingsView,
+    Snapshot, StartError, Telling, Told, WrapperAction, WrapperState, WrapperView, summarize,
 };
 pub use item::{Extract, Found, Verifying};
 

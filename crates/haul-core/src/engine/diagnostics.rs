@@ -7,7 +7,9 @@
 //! - `report.json`: Haul and its system, the settings without secrets, what
 //!   the UI shows (`view`), what the engine holds beyond that (`engine`: each
 //!   row's links and what became of each, its timers, the hosts and their
-//!   lanes) and the desktop app's (`desktop`: its passes out of sight);
+//!   lanes), the friction count of each release (`friction`: each time a
+//!   person was asked, the notifications and clicks) and the desktop app's
+//!   (`desktop`: its passes out of sight);
 //! - the logs themselves, and the last picture of each site's page that
 //!   wanted a person (under `pages/`).
 //!
@@ -225,6 +227,9 @@ impl Engine {
             "counts": take(&mut view, "counts"),
             "rows": rows,
             "cards": take(&mut view, "wrapper_cards"),
+            // Per release: each time a person was asked, the notifications
+            // shown and the clicks it took (plan §4.7, the friction count).
+            "friction": self.friction(),
             "archives": take(&mut view, "archives"),
             "hosts": all,
             "network": {

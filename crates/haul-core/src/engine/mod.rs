@@ -35,6 +35,7 @@ use crate::{
 };
 
 mod diagnostics;
+mod friction;
 mod inspect;
 mod pages;
 mod passes;
@@ -48,6 +49,7 @@ mod transfer;
 mod unpack;
 mod views;
 
+pub use friction::{Ask, Friction};
 pub use pages::Pasted;
 pub use passes::{Browsing, PassPlan};
 pub use reconnect::ReconnectView;
@@ -344,6 +346,10 @@ pub struct Telling {
     pub title: String,
     pub body: String,
     pub kind: Told,
+    /// The rows it is about, for the friction count
+    /// ([`Engine::notified`]).
+    #[serde(skip)]
+    pub rows: Vec<String>,
 }
 
 /// A burst of events as the few things worth saying: downloads finished
@@ -353,11 +359,22 @@ pub fn summarize(events: &[Event]) -> Vec<Telling> {
     let mut waiting = Vec::new();
     let mut failed = Vec::new();
     let mut notices = Vec::new();
+    let (mut finished_rows, mut waiting_rows, mut failed_rows) =
+        (Vec::new(), Vec::new(), Vec::new());
     for e in events {
         match e {
-            Event::Finished { name, .. } => finished.push(name.as_str()),
-            Event::NeedsUser { name, .. } => waiting.push(name.as_str()),
-            Event::Failed { name, error, .. } => failed.push(format!("{name}: {error}")),
+            Event::Finished { name, id } => {
+                finished.push(name.as_str());
+                finished_rows.push(id.clone());
+            }
+            Event::NeedsUser { name, id } => {
+                waiting.push(name.as_str());
+                waiting_rows.push(id.clone());
+            }
+            Event::Failed { name, error, id } => {
+                failed.push(format!("{name}: {error}"));
+                failed_rows.push(id.clone());
+            }
             Event::ThemeChanged(_) => {}
             Event::Notice { title, body } => notices.push((title.clone(), body.clone())),
         }
@@ -370,7 +387,20 @@ pub fn summarize(events: &[Event]) -> Vec<Telling> {
             shown
         }
     };
-    let tell = |title: String, body: String, kind| Telling { title, body, kind };
+    let tell = |title: String, body: String, kind| {
+        let rows = match kind {
+            Told::Finished => finished_rows.clone(),
+            Told::NeedsYou => waiting_rows.clone(),
+            Told::Failed => failed_rows.clone(),
+            Told::Notice => Vec::new(),
+        };
+        Telling {
+            title,
+            body,
+            kind,
+            rows,
+        }
+    };
     let mut out = Vec::new();
     match finished.len() {
         0 => {}
@@ -833,6 +863,11 @@ struct State {
     cleared: HashSet<String>,
     /// Pages the desktop app passed during their rows' current waits.
     tried: passes::Tried,
+    /// The rows waiting in the pass queue, as the last plan saw them, for
+    /// its signals ([`Engine::plan_passes`]).
+    pass_queue: passes::Queue,
+    /// What each release cost the person ([`Engine::friction`]).
+    friction: friction::Frictions,
     /// Getting a new address from the router.
     reconnects: reconnect::Reconnects,
     /// VPN services whose servers join the proxies.
@@ -865,6 +900,8 @@ impl State {
             guarded: HashSet::new(),
             cleared: HashSet::new(),
             tried: passes::Tried::new(),
+            pass_queue: passes::Queue::default(),
+            friction: friction::Frictions::new(),
             reconnects: reconnect::Reconnects::default(),
             services: services::Services::default(),
         }
@@ -1833,7 +1870,9 @@ impl Engine {
 
     /// Tells whoever listens, when there is something to tell.
     fn emit(&self, event: impl IntoIterator<Item = Event>) {
-        for e in event {
+        let events: Vec<Event> = event.into_iter().collect();
+        self.asked(&events);
+        for e in events {
             let _ = self.0.events.send(e);
         }
     }
@@ -2147,6 +2186,7 @@ impl Engine {
     /// Takes what unwrapping wrapper row `id` (from `url`) found, and looks
     /// its new rows up.
     fn take_unwrapped(&self, id: &str, url: &str, found: hosts::Unwrapped) {
+        crate::debug::emit("listing", listing(id, url, &found));
         let probe = self.unwrapped(id, url, found);
         self.settle_parts();
         for id in probe {
@@ -2330,6 +2370,10 @@ impl Engine {
             return Some(Vec::new());
         }
         tracing::debug!(item = %it.id, "{action:?} by the user");
+        if matches!(action, ItemAction::Retry | ItemAction::RetryManual) {
+            friction::clicked(st, id);
+        }
+        let it = st.items.get_mut(id)?;
         match action {
             ItemAction::Pause => {
                 it.status = Status::Paused;
@@ -3214,6 +3258,26 @@ fn display_name(it: &Item) -> String {
         return it.title.clone().unwrap_or_else(link);
     }
     it.key_name().unwrap_or_else(link)
+}
+
+/// What source row `id` (from `url`) listed, row by row, for the `listing`
+/// signal: each file's place, links, name and sizes as the source gave them.
+fn listing(id: &str, url: &str, found: &hosts::Unwrapped) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = found
+        .files
+        .iter()
+        .enumerate()
+        .map(|(at, e)| {
+            serde_json::json!({
+                "at": at + 1,
+                "urls": std::iter::once(&e.url).chain(&e.mirrors).collect::<Vec<_>>(),
+                "name": e.name,
+                "listed_size": e.listed_size,
+                "size": e.size,
+            })
+        })
+        .collect();
+    serde_json::json!({ "id": id, "url": url, "title": found.title, "rows": rows })
 }
 
 /// The wrappers in the queue, by what they point at.

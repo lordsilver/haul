@@ -99,6 +99,14 @@ pub fn marks_in(page: &str) -> Vec<(Gate, Vec<&'static str>)> {
         .collect()
 }
 
+/// The gate a message of Haul's names, by its [`Gate::name`].
+pub fn named_in(message: &str) -> Option<Gate> {
+    MARKS
+        .iter()
+        .map(|(gate, _)| *gate)
+        .find(|gate| message.contains(gate.name()))
+}
+
 fn first_marked(page: &str) -> Option<Gate> {
     MARKS
         .iter()
