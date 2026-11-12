@@ -35,13 +35,11 @@ pub fn stand_in() -> Option<u16> {
 }
 
 /// Puts stand-in mode on, for stand-ins on `port`, or off. Haul calls it
-/// once, as debug mode starts ([`crate::debug::enable`]); a test may call
-/// it around a case of its own.
+/// once, as debug mode starts ([`crate::debug::enable`]), and
+/// [`crate::logging::init`] says so in the log; a test may call it around
+/// a case of its own.
 pub fn set_stand_in(port: Option<u16>) {
     PORT.store(port.unwrap_or(0), Ordering::Relaxed);
-    if let Some(port) = port {
-        tracing::warn!("stand-in mode: every site is reached at <site>.localhost:{port}");
-    }
 }
 
 /// The port `HAUL_STAND_IN` names, if it names one.
@@ -101,6 +99,42 @@ fn reach_on(url: &str, port: u16) -> Cow<'_, str> {
     }
 }
 
+/// What a stand-in's address stands for: in stand-in mode,
+/// `http://<site>.localhost:<port>/…` on the stand-in's port is
+/// `https://<site>/…`, the inverse of [`reach`], so an address an answer
+/// gives (a file's final address, a page's base) is the same as the one a
+/// list names; every other address as it is.
+pub fn real(url: &str) -> Cow<'_, str> {
+    match stand_in() {
+        Some(port) => real_on(url, port),
+        None => Cow::Borrowed(url),
+    }
+}
+
+fn real_on(url: &str, port: u16) -> Cow<'_, str> {
+    let Ok(mut u) = url::Url::parse(url) else {
+        return Cow::Borrowed(url);
+    };
+    let Some(url::Host::Domain(name)) = u.host() else {
+        return Cow::Borrowed(url);
+    };
+    let Some(name) = name.strip_suffix(SUFFIX).filter(|n| !n.is_empty()) else {
+        return Cow::Borrowed(url);
+    };
+    if u.scheme() != "http" || u.port() != Some(port) {
+        return Cow::Borrowed(url);
+    }
+    let name = name.to_string();
+    let moved = u.set_scheme("https").is_ok()
+        && u.set_port(None).is_ok()
+        && u.set_host(Some(&name)).is_ok();
+    if moved {
+        Cow::Owned(u.into())
+    } else {
+        Cow::Borrowed(url)
+    }
+}
+
 /// Haul's resolver in stand-in mode: a stand-in's name is this computer,
 /// whatever the system's own resolver makes of `*.localhost` (Windows'
 /// and many Linux setups' give nothing); every other name is looked up as
@@ -153,6 +187,44 @@ mod tests {
         ] {
             assert_eq!(reach_on(url, 8799), url, "{url}");
         }
+    }
+
+    #[test]
+    fn a_stand_in_s_address_is_the_real_one() {
+        assert_eq!(
+            real_on(
+                "http://filecrypt.cc.localhost:8799/Container/AAAAAAAA.html?x#y",
+                8799
+            ),
+            "https://filecrypt.cc/Container/AAAAAAAA.html?x#y"
+        );
+        for url in [
+            "http://filecrypt.cc.localhost:8800/Container/AAAAAAAA.html",
+            "http://localhost:8799/files/a.rar",
+            "http://127.0.0.1:8799/files/a.rar",
+            "https://site.example/files/a.rar",
+            "not a link",
+        ] {
+            assert_eq!(real_on(url, 8799), url, "{url}");
+        }
+        let real = "https://www.pixeldrain.com/api/file/abc123?download";
+        assert_eq!(
+            real_on(&reach_on(real, 8799), 8799),
+            real,
+            "the inverse of reach"
+        );
+    }
+
+    /// Unit tests never turn the mode on: off, a `.localhost` name is a
+    /// name like any other.
+    #[test]
+    fn off_a_stand_in_s_name_stays_as_it_is() {
+        let url = "http://filecrypt.cc.localhost:8799/Container/AAAAAAAA.html";
+        assert_eq!(stand_in(), None);
+        assert_eq!(super::super::host_of(url), "filecrypt.cc.localhost");
+        assert_eq!(super::super::site_of(url), "cc.localhost");
+        assert_eq!(real(url), url);
+        assert_eq!(reach("https://filecrypt.cc/x"), "https://filecrypt.cc/x");
     }
 
     #[test]

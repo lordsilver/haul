@@ -68,7 +68,7 @@ Windows reaches the server at `127.0.0.1:8799` and `localhost:8799`, which Haul 
 
 ## Real sites, stood in for
 
-Stand-in mode (`docs/debugging.md`, "Real sites, stood in for") makes `<site>.localhost:<port>` stand for `<site>` in a test copy: Haul recognises it as that site, and every real address it asks for, from its own client, the page windows or Edge, goes to `http://<site>.localhost:<port>` instead. So wrappers, pastes and hosts are tested end to end with no real site and none of the user's access. Start the test copy with the server's port as `HAUL_STAND_IN`, next to `HAUL_DEBUG=1` (a build from `links/01-standins` on; it has no effect without debug mode asked for at the start):
+Stand-in mode (`docs/debugging.md`, "Real sites, stood in for") makes `<site>.localhost:<port>` stand for `<site>` in a test copy: Haul recognises it as that site, and every real address it asks for, from its own client, the page windows or Edge, goes to `http://<site>.localhost:<port>` instead. So wrappers, pastes and hosts are tested end to end with no real site and none of the user's access. Start the test copy with the server's port as `HAUL_STAND_IN`, next to `HAUL_DEBUG=1` (Haul 0.12.0 and later; it has no effect without debug mode asked for at the start):
 
 ```sh
 powershell.exe -NoProfile -Command "\$env:HAUL_DATA_DIR='$W\\data'; \$env:HAUL_PORT='8791'; \$env:HAUL_DEBUG='1'; \$env:HAUL_STAND_IN='8799'; Start-Process -FilePath '$W\\Haul.exe'"

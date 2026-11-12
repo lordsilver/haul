@@ -312,16 +312,22 @@ async fn run(case: &Case) -> Result<(Outcome, String), String> {
         config.endpoints.rapidgator = t.ip.clone();
     }
     // Stand-in mode is one for the whole process: the rows run one at a
-    // time, and it is off again before the next.
+    // time, the other tests here wait their turn, and it is off again
+    // before the next.
     let stand_in = matches!(case.reach, Reach::StandIn);
     if stand_in && let Some(config) = options.config.as_mut() {
         config.endpoints = Endpoints::default();
     }
+    let _one = ONE_AT_A_TIME.lock().await;
     haul_core::hosts::set_stand_in(stand_in.then(|| t.port()));
     let got = settle(case, &t, options).await;
     haul_core::hosts::set_stand_in(None);
     got
 }
+
+/// What a test holds while it uses stand-in mode, or one that must not
+/// see it.
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// [`run`]'s engine, from start to where the case's row settled.
 async fn settle(case: &Case, t: &Setup, options: Options) -> Result<(Outcome, String), String> {
@@ -406,6 +412,67 @@ async fn every_kind_of_site_comes_to_what_it_should() {
     let table = table.join("\n");
     assert_eq!(failed, 0, "{failed} of the suite's rows failed:\n{table}");
     println!("{table}");
+}
+
+/// In stand-in mode a file is known by its real address, whichever form
+/// it was added in and wherever its stand-in answered from: two links to
+/// one file, one in each form, are one row with one link.
+#[tokio::test]
+async fn a_stand_in_s_file_keeps_its_real_address() {
+    let t = Setup::new().await;
+    let mut config = t.config();
+    config.endpoints = Endpoints::default();
+    let _one = ONE_AT_A_TIME.lock().await;
+    haul_core::hosts::set_stand_in(Some(t.port()));
+    let engine = Engine::start(Options {
+        config: Some(config),
+        ..t.options()
+    })
+    .await
+    .unwrap();
+    let real = "https://site.example/files/plain.bin";
+    engine.add_text(
+        &format!("{}\n{real}", t.stand_in("site.example", "/files/plain.bin")),
+        "",
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let insides = loop {
+        let insides = engine.debug_inspect();
+        let items = insides["items"].as_array().cloned().unwrap_or_default();
+        if items.iter().any(|i| i["status"] == "done") || Instant::now() > deadline {
+            break items;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    engine.shutdown().await;
+    haul_core::hosts::set_stand_in(None);
+    assert_eq!(insides.len(), 1, "one row: {insides:#?}");
+    assert_eq!(insides[0]["status"], "done", "{insides:#?}");
+    assert_eq!(
+        insides[0]["mirrors"],
+        serde_json::json!([real]),
+        "{insides:#?}"
+    );
+    assert_eq!(t.downloaded("plain.bin"), content("plain.bin", SIZE));
+}
+
+/// A clearance a browser got from a stand-in is kept for the stand-in,
+/// where Haul's requests for the real site go in stand-in mode.
+#[tokio::test]
+async fn a_stand_in_s_clearance_is_kept_where_requests_go() {
+    use reqwest::cookie::CookieStore;
+    let _one = ONE_AT_A_TIME.lock().await;
+    haul_core::hosts::set_stand_in(Some(8799));
+    let http = haul_core::hosts::Http::new(None, "Haul").unwrap();
+    http.add_clearance(
+        "https://filecrypt.cc/Container/AAAAAAAA.html",
+        &["cf_clearance=abc123; Path=/".to_string()],
+        None,
+    );
+    haul_core::hosts::set_stand_in(None);
+    let at = |u: &str| http.jar.cookies(&u.parse().unwrap());
+    assert!(at("http://filecrypt.cc.localhost:8799/Container/BBBBBBBB.html").is_some());
+    assert!(at("https://filecrypt.cc/Container/BBBBBBBB.html").is_none());
 }
 
 /// How long unpacking an archive takes, for comparing changes to how

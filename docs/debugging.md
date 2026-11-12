@@ -107,7 +107,7 @@ Stand-in mode lets a local server be any site, so a test copy runs wrappers, pas
 - `<site>.localhost:<port>` stands for `<site>`: Haul names it, recognises it (known hosts, wrappers, pastes, the desktop app's page recipes) and keeps its browser profile as `<site>`.
 - Every address with a real name goes to its stand-in, from Haul's HTTP client and from the desktop app's page windows and Edge: `https://filecrypt.cc/Container/X.html` is asked of `http://filecrypt.cc.localhost:<port>/Container/X.html`, with that `Host`. So a stand-in may list links in their real form. Addresses on this computer (`127.0.0.1`, `localhost`, a stand-in's own) go where they say.
 - Haul's client resolves every `*.localhost` name to `127.0.0.1` itself, since Windows and many Linux setups don't; Edge and WebView2 do so on their own. Addresses on `.localhost` skip a configured proxy.
-- A stand-in that redirects, or whose page navigates, gives `.localhost` addresses: a redirect or a navigation in the page to a real address is followed as it is.
+- An address an answer gives (a file's final address after redirects, the base a page's links are read against) is kept in its real form, so one file is never known by two addresses. A stand-in that redirects, or whose page navigates, gives `.localhost` addresses: a redirect or a navigation in the page to a real address is followed as it is.
 
 The `haul-windows-test` skill's `standin.py` is such a server, with a release page, pastes, filecrypt containers and file hosts.
 

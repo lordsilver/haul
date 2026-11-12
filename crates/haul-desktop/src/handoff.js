@@ -14,8 +14,8 @@
   // An address as Haul names it: in stand-in mode (browser.rs sets
   // __haulStandIn), `http://<site>.localhost:<port>/…` stands for
   // `https://<site>/…`, as hosts::reach in haul-core has it.
-  const real = (address) =>
-    window.__haulStandIn ? address.replace(/^http:\/\/([^/?#]+)\.localhost(:\d+)?(?=[/?#]|$)/i, "https://$1") : address;
+  // (One statement: browser.rs's tests run it.)
+  const real = (address) => (window.__haulStandIn ? address.replace(/^http:\/\/([^/?#]+)\.localhost(:\d+)?(?=[/?#]|$)/i, "https://$1") : address);
   // The page's site, as the recipes name it.
   const site = new URL(real(location.href)).hostname;
   let handed = false;

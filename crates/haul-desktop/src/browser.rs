@@ -1133,6 +1133,56 @@ impl Capture {
 mod tests {
     use super::*;
 
+    /// `handoff.js`'s `real` gives a stand-in's address in its real form,
+    /// as `hosts::real` does, and leaves every other address alone. Run in
+    /// Node (CI has it); skipped where there is none.
+    #[test]
+    fn handoff_names_a_stand_in_by_its_real_address() {
+        let start = HANDOFF
+            .find("const real = ")
+            .expect("handoff.js defines real");
+        let end = start + HANDOFF[start..].find(";\n").expect("one statement");
+        let cases = [
+            (
+                "http://filecrypt.cc.localhost:8799/Container/AAAAAAAA.html",
+                "https://filecrypt.cc/Container/AAAAAAAA.html",
+            ),
+            (
+                "http://api.gofile.io.localhost:8799/contents/abc123?wt=x",
+                "https://api.gofile.io/contents/abc123?wt=x",
+            ),
+            ("http://gofile.io.localhost:8799", "https://gofile.io"),
+            (
+                "http://localhost:8799/files/a.rar",
+                "http://localhost:8799/files/a.rar",
+            ),
+            (
+                "http://127.0.0.1:8799/files/a.rar",
+                "http://127.0.0.1:8799/files/a.rar",
+            ),
+            ("https://site.example/a.rar", "https://site.example/a.rar"),
+        ];
+        let inputs = serde_json::to_string(&cases.map(|(i, _)| i)).unwrap();
+        let script = format!(
+            "const window = {{ __haulStandIn: true }}; {}; console.log(JSON.stringify({inputs}.map(real)));",
+            &HANDOFF[start..end]
+        );
+        let Ok(out) = std::process::Command::new("node")
+            .args(["-e", &script])
+            .output()
+        else {
+            eprintln!("no node here: skipped");
+            return;
+        };
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let got: Vec<String> = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(got, cases.map(|(_, want)| want));
+    }
+
     #[test]
     fn a_page_hands_off_its_files() {
         let files = r#"[{"url":"https://cdn.example/a b.rar","name":"a b.rar","size":5},{"url":"https://cdn.example/c.rar"},{"url":"javascript:alert(1)"}]"#;

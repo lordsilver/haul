@@ -353,7 +353,7 @@ async fn refusal(r: reqwest::Response, what: &str) -> Result<reqwest::Response, 
     // Cloudflare's check in front of the page (with a 403, or a 503): a
     // browser passes it, which the desktop app does out of sight.
     if super::generic::challenged(r.headers()) {
-        let url = r.url().to_string();
+        let url = super::real(r.url().as_str()).into_owned();
         return Err(super::generic::guarded_by(&url, r).await);
     }
     rate_limited(&r)?;
