@@ -833,16 +833,26 @@ fn answers(port: u16) -> Option<String> {
 /// What became of the process Haul started, and what answers on DevTools'
 /// port, as a pass ends.
 fn process(browser: &mut Browser, port: u16) -> Process {
+    // A browser that went drops its DevTools connection before Windows has
+    // it gone (a killed Edge took about 0.3 s): it gets a moment to be, so
+    // one that died is not told as running.
+    let until = Instant::now() + PROCESS_GOING;
+    let exited = loop {
+        match browser.child.try_wait() {
+            Ok(Some(status)) => break Some(status.to_string()),
+            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(50)),
+            _ => break None,
+        }
+    };
     Process {
-        exited: browser
-            .child
-            .try_wait()
-            .ok()
-            .flatten()
-            .map(|s| s.to_string()),
+        exited,
         answers: answers(port),
     }
 }
+
+/// How long the process Haul started gets to be gone once DevTools stopped
+/// answering or lost the page, before it is told as still running.
+const PROCESS_GOING: Duration = Duration::from_secs(1);
 
 /// The process Haul started exited (`status`) while DevTools answers: says
 /// so, with what answers and its process, whose windows are kept off the
@@ -1665,6 +1675,28 @@ mod drive_tests {
         std::thread::sleep(Duration::from_secs(1));
     }
 
+    /// A process that exits a moment after its DevTools went, as a killed
+    /// browser does: this test binary, running [`lives_briefly`].
+    fn exits_shortly() -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "chromium::drive_tests::lives_briefly",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    #[ignore = "run by exits_shortly"]
+    fn lives_briefly() {
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
     fn browser(child: Child) -> Browser {
         Browser {
             #[cfg(windows)]
@@ -1801,5 +1833,17 @@ mod drive_tests {
             took >= EXITED_AT_START && took < EXITED_AT_START + Duration::from_secs(3),
             "{took:?}"
         );
+    }
+
+    #[test]
+    fn a_browser_that_dies_just_after_devtools_goes_is_told_as_exited() {
+        let (port, _) = devtools(Acts::GoesAtSetUp);
+        let exe = std::env::current_exe().unwrap();
+        let mut b = browser(exits_shortly());
+        let outcome = drive(&mut b, port, &pass_of(&exe, Handle::default()));
+        let Ok(Outcome::Closed(Closed::SetUp { process, .. })) = outcome else {
+            panic!("expected a close while setting up, got {outcome:?}");
+        };
+        assert!(process.exited.is_some(), "{process:?}");
     }
 }
