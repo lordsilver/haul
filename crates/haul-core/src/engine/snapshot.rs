@@ -301,6 +301,8 @@ fn row_state(it: &Item, passing: bool) -> RowState {
     match it.status {
         Status::Queued if !it.probed => RowState::Checking,
         Status::Captcha if passing => RowState::Passing,
+        // Haul's browser failed: it waits to try again, nobody's job.
+        Status::Captcha if matches!(it.trouble, Trouble::Browser(_)) => RowState::Waiting,
         other => other.into(),
     }
 }
@@ -310,6 +312,7 @@ fn wrapper_state(it: &Item, passing: bool) -> WrapperState {
         Status::Queued | Status::Resolving | Status::Downloading => WrapperState::Unwrapping,
         // A page or paste behind Cloudflare's check, say.
         Status::Captcha if passing => WrapperState::Passing,
+        Status::Captcha if matches!(it.trouble, Trouble::Browser(_)) => WrapperState::Waiting,
         Status::Captcha => WrapperState::Captcha,
         Status::Waiting => WrapperState::Waiting,
         Status::Paused => WrapperState::Paused,

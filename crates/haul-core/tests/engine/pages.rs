@@ -912,9 +912,10 @@ async fn the_row_names_the_gate_the_browser_found() {
     );
 }
 
-/// A pass whose browser never showed the page says so on the row, instead
-/// of the check that sent the page to the browser, and is tried again later
-/// like any page that wanted a person.
+/// A pass whose browser never showed the page is the browser's failure, a
+/// state of its own (plan BROWSER-03): the row says which, nobody is asked
+/// for it, the person hears of it once, and it is passed again later using
+/// none of the page's own tries.
 #[tokio::test]
 async fn a_pass_that_could_not_start_says_so() {
     let t = Setup::new().await;
@@ -924,14 +925,27 @@ async fn a_pass_that_could_not_start_says_so() {
     engine.add_text(page, "");
     let s = wrapper_settled(&engine, "passing").await;
     let id = s.wrappers[0].id.clone();
-    assert!(!engine.page_not_passed(&id, "the browser exited at start (exit code: 0)"));
-    let s = wrapper_settled(&engine, "captcha").await;
+    assert!(
+        engine.page_not_passed(&id, "the browser exited at start (exit code: 0)"),
+        "told once"
+    );
+    let s = wrapper_settled(&engine, "waiting").await;
     let said = &s.wrappers[0].error;
     assert!(
-        said.contains("browser did not open the page (the browser exited at start"),
+        said.contains("Haul's browser exited as it started (the browser exited at start"),
         "{said}"
     );
     assert!(s.wrappers[0].retry_in > 0, "tried again later");
+    assert_eq!(s.counts.need_you, 0, "nobody's job");
+    assert_eq!(engine.waiting_for_person(), (vec![], vec![]));
+    // Its retry passes the page again, in turn, with no try of its own used.
+    assert!(engine.debug_retry_now(&id));
+    wrapper_settled(&engine, "passing").await;
+    assert_eq!(auto_retries(&engine, &id), 0);
+    assert!(
+        !engine.page_not_passed(&id, "the browser exited at start (exit code: 0)"),
+        "not told again"
+    );
 }
 
 /// A page Haul's browser kept closing by itself, in every try it gets, fails
