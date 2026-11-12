@@ -315,6 +315,13 @@ static HREF: LazyLock<Regex> =
 static BARE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"https?://[^\s"'<>()\[\]{}]+"#).unwrap());
 
+/// An address written out in a paste's text, with or without `http(s)://`
+/// (`site.example/abc123`): those without are kept only on hosts, wrappers
+/// and pastes Haul knows ([`pasted_links`]).
+static WRITTEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}/[^\s"'<>()\[\]{}]+"#).unwrap()
+});
+
 /// The tags of what a page embeds (videos, sounds, pictures): their
 /// addresses are what the page plays or shows, not links it lists.
 static EMBEDDED: LazyLock<Regex> = LazyLock::new(|| {
@@ -462,7 +469,7 @@ fn paste_text(page: &str) -> String {
 fn paste_text_links(page: &str, url: &str) -> Vec<String> {
     let text = SCRIPT.replace_all(page, " ");
     let text = super::decode_entities(&TAG.replace_all(&text, " "));
-    let shown: Vec<String> = BARE
+    let shown: Vec<String> = WRITTEN
         .find_iter(&text)
         .map(|m| m.as_str().to_string())
         .collect();
@@ -479,7 +486,17 @@ pub fn pasted_links(shown: &[String], page: &str) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     shown
         .iter()
-        .filter_map(|s| url::Url::parse(s).ok())
+        .filter_map(|s| {
+            let lower = s.to_ascii_lowercase();
+            if lower.starts_with("http://") || lower.starts_with("https://") {
+                return url::Url::parse(s).ok();
+            }
+            // Written without its scheme: an address only on a site Haul
+            // knows, where a file's or a list's name would be anything else.
+            let u = url::Url::parse(&format!("https://{s}")).ok()?;
+            let host = host_of(u.as_str());
+            (super::known(&host).is_some() || PASTES.contains(&host.as_str())).then_some(u)
+        })
         .filter(|u| matches!(u.scheme(), "http" | "https"))
         .filter(|u| host_of(u.as_str()) != site && (u.path().len() > 1 || u.query().is_some()))
         .map(|u| u.to_string())
@@ -636,6 +653,20 @@ mod tests {
         assert!(
             pasted_links(&shown, "https://blog.example/post").is_empty(),
             "only a paste's text is a list"
+        );
+    }
+
+    /// Addresses written without `https://` count on hosts, wrappers and
+    /// pastes Haul knows, and nowhere else.
+    #[test]
+    fn a_paste_lists_known_addresses_written_without_a_scheme() {
+        let page = "<pre>Part 1: pixeldrain.com/u/abc123\nPart 2: filecrypt.cc/Container/AAAAAAAA.html\nsee readme.example/notes and example.com/x</pre>";
+        assert_eq!(
+            paste_text_links(page, "https://paste2.org/paste/example-set"),
+            [
+                "https://pixeldrain.com/u/abc123",
+                "https://filecrypt.cc/Container/AAAAAAAA.html"
+            ]
         );
     }
 

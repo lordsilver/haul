@@ -115,7 +115,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
       : status(card);
   // Pastes that list nothing, beside wrappers that found their files: a
   // quiet note, not a failure.
-  const empty = card.empty ? `${plural(card.empty, 'paste lists', 'pastes list')} no links` : '';
+  const empty = card.empty ? `${plural(card.empty, 'note')} with no links` : '';
   // Links Haul still opens out of sight to learn which file they are: no
   // file of the card until then.
   const checking = card.checking ? `checking ${plural(card.checking, 'link')}` : '';

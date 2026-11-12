@@ -294,9 +294,11 @@
     const look = () => {
       // Addresses written out in the page's text apart: on a paste they are
       // its list, whatever host they are on; a button is as likely an ad.
+      // Those written without `https://` go to Rust too, which keeps them
+      // only on sites it knows.
       const text = new Set();
-      for (const m of (document.body?.innerText ?? "").matchAll(/https?:\/\/[^\s"'<>()[\]{}]+/g)) text.add(m[0]);
-      const links = new Set(text);
+      for (const m of (document.body?.innerText ?? "").matchAll(/(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}\/[^\s"'<>()[\]{}]+/gi)) text.add(m[0]);
+      const links = new Set([...text].filter((t) => /^https?:/i.test(t)));
       for (const a of document.querySelectorAll("a[href]")) if (/^https?:/.test(a.href)) links.add(a.href);
       const key = [...links].join("\n");
       if (key === offered) return;
