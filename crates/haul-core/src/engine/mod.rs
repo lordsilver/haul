@@ -2680,6 +2680,7 @@ impl Engine {
                 it.manual_urls.clear();
                 it.page = PageTurn::InTurn;
                 it.told_person = false;
+                it.unread = false;
                 // The person's own try: the page's first pass again.
                 it.auto_retries = 0;
                 it.retry_at = None;
@@ -3391,6 +3392,7 @@ fn mark_unwrapped(
         row.name = None;
     }
     row.status = Status::Done;
+    row.unread = false;
     row.found = Some(seen);
     row.found_hosts = found_hosts;
     row.title = title;

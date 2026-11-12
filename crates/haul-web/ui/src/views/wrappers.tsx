@@ -119,7 +119,10 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
   // Links Haul still opens out of sight to learn which file they are: no
   // file of the card until then.
   const checking = card.checking ? `${plural(card.checking, 'link')} not checked yet` : '';
-  const line = [card.host, state, checking, empty].filter(Boolean).join(' · ');
+  // Sources whose gate did not pass by themselves, which the release does
+  // without: nobody is asked, and Haul tries them again now and then.
+  const unread = card.unread ? `${plural(card.unread, 'source')} not read` : '';
+  const line = [card.host, state, checking, empty, unread].filter(Boolean).join(' · ');
   const reason = card.reason;
   // When a failed one, or the page of one waiting for a person, is tried
   // again on its own, after its reason.
@@ -176,6 +179,22 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
             <Button variant="outline" onClick={() => startAll([card])}>
               <Play />
               Start all
+            </Button>
+          ) : null}
+          {/* Sources set aside unread: the release is whole without them. */}
+          {card.unread ? (
+            <Button
+              variant="ghost"
+              onClick={() =>
+                s.wrappers
+                  .filter((w) => w.unread && card.ids.includes(w.id))
+                  .forEach((w) => {
+                    act(w.id, 'retry_manual');
+                  })
+              }
+            >
+              <RotateCw />
+              Read them
             </Button>
           ) : null}
           {card.status === 'error' ? (

@@ -204,6 +204,9 @@ pub struct WrapperView {
     pub gone: bool,
     /// Its place among the pages waiting for Haul's browser, while it waits.
     pub queue: Option<InQueue>,
+    /// Set aside unread: its gate did not pass by itself, and its release is
+    /// whole without it.
+    pub unread: bool,
 }
 
 /// A place in the queue of pages waiting for Haul's browser: 3rd of 6.
@@ -499,6 +502,7 @@ impl Engine {
                 found: it.found,
                 hosts: it.found_hosts.clone(),
                 queue: queue(it),
+                unread: it.unread,
             })
             .collect();
         let unpacked = self.unpack_progress();

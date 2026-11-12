@@ -260,6 +260,21 @@ impl Engine {
     /// part of an archive, each with a usable link (or, with no archive,
     /// every file usable). This is the rule as far as the queue can tell
     /// today; FLOW-02 decides it from the release's sets instead.
+    /// Whether row `id`'s release needs its page ([`Engine::needed`]).
+    pub(super) fn release_needs(&self, st: &State, id: &str) -> bool {
+        let Some(it) = st.items.get(id) else {
+            return true;
+        };
+        let page = it
+            .mirrors
+            .iter()
+            .find(|m| it.manual_urls.contains(m.as_str()))
+            .or_else(|| it.mirrors.first())
+            .map(|m| m.url.clone())
+            .unwrap_or_default();
+        self.needed(st, &release_of(&st.items, id), id, &page)
+    }
+
     fn needed(&self, st: &State, release: &str, id: &str, page: &str) -> bool {
         let cfg = self.cfg();
         let usable = |it: &Item, but: &str| {

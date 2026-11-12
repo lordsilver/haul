@@ -80,6 +80,11 @@ need_you: number,
  */
 queue: InQueue | null, 
 /**
+ * Its sources set aside unread: their gate did not pass by itself, and
+ * the release is whole without them (plan FLOW-02).
+ */
+unread: number, 
+/**
  * What the card says besides its files, in the person's words: a cut
  * of the release that is gone, say.
  */

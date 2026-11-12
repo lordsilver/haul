@@ -630,6 +630,9 @@ pub struct WrapperCard {
     pub need_you: usize,
     /// Its place among the pages waiting for Haul's browser, while it waits.
     pub queue: Option<InQueue>,
+    /// Its sources set aside unread: their gate did not pass by itself, and
+    /// the release is whole without them (plan FLOW-02).
+    pub unread: usize,
     /// What the card says besides its files, in the person's words: a cut
     /// of the release that is gone, say.
     pub notes: Vec<String>,
@@ -704,14 +707,15 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
             let lists_nothing =
                 |x: &WrapperView| x.status == WrapperState::Error && x.lists_nothing;
             let quiet = ws.iter().any(|x| !lists_nothing(x));
-            let set_aside = |x: &WrapperView| quiet && lists_nothing(x);
+            let set_aside = |x: &WrapperView| quiet && lists_nothing(x) || x.unread;
             // The card shows what needs attention first among them.
             let urgent = WRAPPER_URGENCY
                 .iter()
                 .find_map(|s| ws.iter().find(|x| x.status == *s && !set_aside(x)))
                 .copied()
                 .unwrap_or(w);
-            let empty = ws.iter().filter(|x| set_aside(x)).count();
+            let empty = ws.iter().filter(|x| set_aside(x) && !x.unread).count();
+            let unread = ws.iter().filter(|x| x.unread).count();
             let card_tally = tally(files.iter().copied());
             let mut hosts: Vec<String> = Vec::new();
             for h in ws.iter().flat_map(|x| &x.hosts) {
@@ -756,9 +760,10 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 open_id: urgent.id.clone(),
                 need_you: ws
                     .iter()
-                    .filter(|x| x.status == WrapperState::Captcha)
+                    .filter(|x| x.status == WrapperState::Captcha && !x.unread)
                     .count(),
                 queue: urgent.queue,
+                unread,
                 notes: Vec::new(),
                 tally: card_tally,
             }
@@ -884,7 +889,7 @@ pub(super) fn counts(
         need_you: in_list(List::Attention)
             + wrappers
                 .iter()
-                .filter(|w| w.status == WrapperState::Captcha)
+                .filter(|w| w.status == WrapperState::Captcha && !w.unread)
                 .count(),
         ready: items
             .iter()
@@ -1209,6 +1214,7 @@ mod tests {
             hosts: vec![format!("{id}.example")],
             source: None,
             lists_nothing: false,
+            unread: false,
             gone: false,
             queue: None,
         }

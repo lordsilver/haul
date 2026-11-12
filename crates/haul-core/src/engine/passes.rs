@@ -134,7 +134,7 @@ impl Engine {
         let (wrappers, downloads): (Vec<_>, Vec<_>) = st
             .items
             .values()
-            .filter(|it| it.status == Status::Captcha && !it.tentative)
+            .filter(|it| it.status == Status::Captcha && !it.tentative && !it.unread)
             .filter(|it| !self.passing(&st, it, now))
             .partition(|it| it.wrapper);
         let ids = |rows: Vec<&crate::item::Item>| rows.iter().map(|it| it.id.clone()).collect();

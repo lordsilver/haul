@@ -239,6 +239,17 @@ impl Engine {
             // once they are spent, the person is told, once.
             let left = self.page_retry_at(&st, it, Instant::now()).is_some();
             tell = !left && !it.told_person;
+            // A source its release does without: set aside, unread, and
+            // tried again quietly once a day (plan FLOW-02).
+            if tell && it.wrapper && !self.release_needs(&st, id) {
+                tracing::info!(item = %id, "its release is whole without it: set aside unread, nobody asked");
+                let it = st.items.get_mut(id).expect("looked up above");
+                it.unread = true;
+                it.page = PageTurn::WithPerson;
+                it.retry_at = Some(Instant::now() + UNREAD_RETRY);
+                self.publish(st);
+                return false;
+            }
             if tell {
                 self.ask_in(&mut st, id);
                 if let Some(it) = st.items.get_mut(id) {
@@ -880,6 +891,10 @@ impl Engine {
             .map(|m| m.url.clone())
     }
 }
+
+/// How long a source set aside unread waits before it is tried again,
+/// quietly ([`Engine::page_wants_person`]).
+const UNREAD_RETRY: Duration = Duration::from_secs(24 * 3600);
 
 /// Whether the desktop app, passing page `url`, hands Haul the clearance
 /// ([`Engine::takes_clearance`]).
