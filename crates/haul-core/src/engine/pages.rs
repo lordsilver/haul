@@ -376,6 +376,7 @@ impl Engine {
         let now = Instant::now();
         if limited_lookup {
             tracing::info!(item = %id, "page later, looked up again after the host's wait: {reason}");
+            st.budgets.of(&hosts::host_of(page), now).limited(now);
             st.tried
                 .retain(|(row, passed, _)| !(row == id && passed == page));
         }

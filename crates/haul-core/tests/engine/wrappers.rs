@@ -414,12 +414,22 @@ async fn a_wrappers_unnamed_file_is_looked_up_through_its_page() {
         with_person: &|_| false,
         has_page: &|_| false,
     };
+    // At gofile's pace (plan LOOK-01): two at once, then one per three
+    // seconds.
     let mut planned = Vec::new();
-    for _ in 0..3 {
-        let (id, page) = engine.plan_passes(&idle).start.expect("a lookup");
-        assert!(page.starts_with("https://gofile.io/d/"), "{page}");
-        planned.push((id, page));
+    let began = std::time::Instant::now();
+    while planned.len() < 3 {
+        if let Some((id, page)) = engine.plan_passes(&idle).start {
+            assert!(page.starts_with("https://gofile.io/d/"), "{page}");
+            planned.push((id, page));
+        }
+        assert!(began.elapsed() < Duration::from_secs(10), "a lookup");
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    assert!(
+        began.elapsed() >= Duration::from_millis(2500),
+        "the third waits its turn"
+    );
     assert_eq!(engine.plan_passes(&idle).start, None, "each page once");
     let row = |name: &str| {
         planned

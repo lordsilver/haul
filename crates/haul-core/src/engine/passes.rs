@@ -48,6 +48,8 @@ struct Waiting {
     /// Its pass's turn, rather than shown to the person after it.
     turn: bool,
     clearance: bool,
+    /// Opened only to look its file up.
+    lookup: bool,
 }
 
 impl Engine {
@@ -89,10 +91,16 @@ impl Engine {
             || waiting
                 .iter()
                 .any(|w| w.turn && st.tried.contains(&key(w)) && (b.has_page)(&w.id));
+        // A page opened only to look a file up waits for its host's turn
+        // (plan LOOK-01).
+        let due = |w: &Waiting| !w.lookup || st.budgets.ready(&crate::hosts::host_of(&w.page), now);
         let next = (!busy)
             .then(|| {
                 waiting.iter().find(|w| {
-                    w.turn && !st.tried.contains(&key(w)) && !with_person.contains(&w.id.as_str())
+                    w.turn
+                        && !st.tried.contains(&key(w))
+                        && !with_person.contains(&w.id.as_str())
+                        && due(w)
                 })
             })
             .flatten();
@@ -100,6 +108,12 @@ impl Engine {
             st.tried.insert(key(w));
             (w.id.clone(), w.page.clone())
         });
+        // A lookup's pass takes its host's turn.
+        if let Some(w) = next.filter(|w| w.lookup) {
+            st.budgets
+                .of(&crate::hosts::host_of(&w.page), now)
+                .take(now);
+        }
         let queued: Vec<&Waiting> = waiting
             .iter()
             .filter(|w| w.turn && !st.tried.contains(&key(w)))
@@ -159,6 +173,7 @@ impl Engine {
                     page: page.url.clone(),
                     turn: self.passing(st, it, now),
                     clearance: takes_clearance(st, page),
+                    lookup: false,
                 })
             });
         let looked_up = st.items.values().filter_map(|it| {
@@ -168,6 +183,7 @@ impl Engine {
                 page: page.to_string(),
                 turn: true,
                 clearance: takes_clearance(st, page),
+                lookup: true,
             })
         });
         waiting.chain(looked_up).collect()
