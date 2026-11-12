@@ -105,6 +105,9 @@ pub struct ItemView {
     /// as a page on trial, until it is named (and joins the same file on
     /// other hosts), found gone (and leaves), or its page told nothing.
     pub looking_up: bool,
+    /// Of those, one whose page or host is being asked now, or is due to be:
+    /// what the status bar counts as being checked.
+    pub looking_now: bool,
     /// Its place among the pages waiting for Haul's browser, while it waits.
     pub queue: Option<InQueue>,
     /// Seconds until a waiting item may try again.
@@ -301,10 +304,19 @@ fn row_state(it: &Item, passing: bool) -> RowState {
     match it.status {
         Status::Queued if !it.probed => RowState::Checking,
         Status::Captcha if passing => RowState::Passing,
-        // Haul's browser failed: it waits to try again, nobody's job.
-        Status::Captcha if matches!(it.trouble, Trouble::Browser(_)) => RowState::Waiting,
+        // Haul's browser failed, or its page has tries of its own left: it
+        // waits to try again, nobody's job yet.
+        Status::Captcha if matches!(it.trouble, Trouble::Browser(_)) || tries_left(it) => {
+            RowState::Waiting
+        }
         other => other.into(),
     }
+}
+
+/// A page that wanted a person and has tries of its own left: nobody was
+/// told, and nobody is asked yet (plan FLOW-01).
+fn tries_left(it: &Item) -> bool {
+    it.page_wants_person() && !it.told_person && it.retry_at.is_some()
 }
 
 fn wrapper_state(it: &Item, passing: bool) -> WrapperState {
@@ -312,7 +324,9 @@ fn wrapper_state(it: &Item, passing: bool) -> WrapperState {
         Status::Queued | Status::Resolving | Status::Downloading => WrapperState::Unwrapping,
         // A page or paste behind Cloudflare's check, say.
         Status::Captcha if passing => WrapperState::Passing,
-        Status::Captcha if matches!(it.trouble, Trouble::Browser(_)) => WrapperState::Waiting,
+        Status::Captcha if matches!(it.trouble, Trouble::Browser(_)) || tries_left(it) => {
+            WrapperState::Waiting
+        }
         Status::Captcha => WrapperState::Captcha,
         Status::Waiting => WrapperState::Waiting,
         Status::Paused => WrapperState::Paused,
@@ -561,6 +575,7 @@ impl Engine {
                 download_from: it.prefer.clone(),
                 tentative: it.tentative || being_read(it) || looking_up(it) || dead(it),
                 looking_up: looking_up(it),
+                looking_now: self.look_up_page(&st, it).is_some(),
                 queue: queue(it),
             })
             .collect();

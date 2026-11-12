@@ -647,9 +647,11 @@ async fn a_wrappers_page_that_wants_a_person_is_tried_again_by_itself() {
     let s = wrapper_settled(&engine, "passing").await;
     let id = s.wrappers[0].id.clone();
     assert!(!engine.page_wants_person(&id), "its own tries first");
-    let s = wrapper_settled(&engine, "captcha").await;
+    // Waiting for its own next try: nobody's job yet.
+    let s = wrapper_settled(&engine, "waiting").await;
     assert!(s.wrapper_cards[0].retry_in > 0, "the card says when");
-    assert_eq!(s.wrapper_cards[0].need_you, 1);
+    assert!(s.wrapper_cards[0].again > 0, "and says it on the card");
+    assert_eq!((s.wrapper_cards[0].need_you, s.counts.need_you), (0, 0));
     for round in 1..=3 {
         assert!(engine.debug_retry_now(&id), "try {round}");
         wrapper_settled(&engine, "passing").await;
@@ -659,7 +661,8 @@ async fn a_wrappers_page_that_wants_a_person_is_tried_again_by_itself() {
             round == 3,
             "told after its last try"
         );
-        let s = wrapper_settled(&engine, "captcha").await;
+        // Waiting for its next try, or with the person after the last.
+        let s = wrapper_settled(&engine, if round < 3 { "waiting" } else { "captcha" }).await;
         if round < 3 {
             assert!(s.wrappers[0].retry_in > 0, "try {round} is not the last");
         }
@@ -915,8 +918,15 @@ async fn a_wrapper_that_wants_a_person_says_so_while_paused() {
     engine.add_text("https://filecrypt.cc/Container/cf-always.html", "");
     let s = wrapper_settled(&engine, "passing").await;
     assert!(!engine.page_wants_person(&s.wrappers[0].id));
-    let s = wrapper_settled(&engine, "captcha").await;
-    assert_eq!(s.wrapper_cards[0].need_you, 1);
+    let s = wrapper_settled(&engine, "waiting").await;
+    assert!(
+        s.wrapper_cards[0].again > 0,
+        "the card says when it tries again"
+    );
+    assert_eq!(
+        s.wrapper_cards[0].need_you, 0,
+        "nobody's job while it has tries"
+    );
 }
 
 /// A gate Haul has no code for goes to the browser, which may be let through,

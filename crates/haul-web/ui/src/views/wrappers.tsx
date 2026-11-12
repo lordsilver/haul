@@ -8,7 +8,7 @@ import { act, wrappersBulk } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
 import type { WrapperCard } from '@/lib/bindings/WrapperCard';
 import { partsSummary, passingCaption } from '@/lib/captions';
-import { hosts as hostsApi, wrappers } from '@/lib/client';
+import { wrappers } from '@/lib/client';
 import { bytes, clockIn, duration, plural } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -40,18 +40,13 @@ const dropHost = (card: WrapperCard, host: string) =>
     toast(`Dropped ${host} from ${plural(r.dropped, 'file')}`, 'success');
   });
 
-// What one host is worth on the card: its files alive, gone, and what the
-// sources listed as offline (their claim, not the host's).
+// What one host is worth on the card, when it is not every file: how many
+// it has of them, or that its copy is gone.
 function worth(card: WrapperCard, host: string): string {
+  const all = card.summary ? card.summary.parts || card.summary.files : 0;
   const h = card.host_parts.find((p) => p.host === host);
-  if (!h) return '';
-  return [
-    h.alive ? `${h.alive}` : '',
-    h.gone ? `${h.gone} gone` : '',
-    h.listed_offline ? `${h.listed_offline} listed as offline` : '',
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  if (!h?.alive) return 'gone';
+  return all && h.alive < all ? `${h.alive} of ${all}` : '';
 }
 
 // The hosts the card's files are on, each with what it is worth and a
@@ -64,11 +59,6 @@ function Hosts({ card, s }: { card: WrapperCard; s: State }) {
         <span key={host} className="inline-flex items-center gap-0.5 rounded-full border bg-background pl-2.5 text-xs">
           <HostName host={host} off={off.has(host)} />
           {worth(card, host) ? <span className="pl-1 text-muted-foreground">{worth(card, host)}</span> : null}
-          {off.has(host) ? (
-            <Button variant="ghost" size="xs" className="rounded-full" onClick={() => hostsApi.disabled(host, false)}>
-              Turn on
-            </Button>
-          ) : null}
           <ConfirmButton
             label={`Drop ${host}: its links go from these files`}
             confirm="Drop its links?"
@@ -91,7 +81,9 @@ function status(card: WrapperCard): string {
     case 'unwrapping':
       return 'Reading…';
     case 'waiting':
-      return card.wait ? `Trying again in ${duration(card.wait)}` : 'Waiting to try again';
+      if (card.wait) return `Trying again in ${duration(card.wait)}`;
+      // Its reason's line says when Haul tries again by itself.
+      return card.again ? '' : 'Waiting to try again';
     case 'passing':
       return passingCaption(card.queue);
     case 'captcha':

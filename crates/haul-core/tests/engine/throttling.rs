@@ -103,8 +103,10 @@ async fn a_host_limit_holds_every_row_on_that_host() {
     let wanted = "http://ddownload.com/dd/ghi789";
     let wants = ddownload_waiting_its_pass(&engine, wanted).await;
     assert!(!engine.page_wants_person(&wants), "its own tries first");
-    wait_for(&engine, "the row under Needs you", |s| {
-        s.counts.need_you == 1
+    wait_for(&engine, "the row waiting for its own try", |s| {
+        s.items
+            .iter()
+            .any(|i| i.id == wants && i.status.as_str() == "waiting")
     })
     .await;
 
