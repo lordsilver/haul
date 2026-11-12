@@ -78,4 +78,9 @@ need_you: number,
 /**
  * Its place among the pages waiting for Haul's browser, while it waits.
  */
-queue: InQueue | null, tally: Tally, };
+queue: InQueue | null, 
+/**
+ * What the card says besides its files, in the person's words: a cut
+ * of the release that is gone, say.
+ */
+notes: Array<string>, tally: Tally, };

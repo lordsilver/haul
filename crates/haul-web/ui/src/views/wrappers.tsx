@@ -118,7 +118,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
   const empty = card.empty ? `${plural(card.empty, 'note')} with no links` : '';
   // Links Haul still opens out of sight to learn which file they are: no
   // file of the card until then.
-  const checking = card.checking ? `checking ${plural(card.checking, 'link')}` : '';
+  const checking = card.checking ? `${plural(card.checking, 'link')} not checked yet` : '';
   const line = [card.host, state, checking, empty].filter(Boolean).join(' · ');
   const reason = card.reason;
   // When a failed one, or the page of one waiting for a person, is tried
@@ -154,6 +154,12 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
               {again ? <span className="text-muted-foreground"> · {again}</span> : null}
             </div>
           ) : null}
+          {/* What the card says besides its files: a cut of the release that is gone. */}
+          {card.notes.map((note) => (
+            <div key={note} className="text-sm text-muted-foreground">
+              {note.charAt(0).toUpperCase() + note.slice(1)}
+            </div>
+          ))}
           {/* The hosts its files are on: the same files often have one wrapper per host. */}
           {card.hosts.length ? <Hosts card={card} s={s} /> : null}
         </div>

@@ -36,6 +36,7 @@ use crate::{
 
 mod diagnostics;
 mod friction;
+mod identity;
 mod inspect;
 mod pages;
 mod passes;
@@ -2846,18 +2847,24 @@ impl Engine {
     /// Starts the files a wrapper added that are waiting to be started.
     /// Returns how many, or `None` when there is no such wrapper.
     pub fn start_wrapper(&self, id: &str) -> Option<usize> {
+        let cfg = self.cfg();
         let mut st = self.lock();
-        let started = Self::start_wrapper_in(&mut st, id)?;
+        let started = Self::start_wrapper_in(&mut st, &cfg, id)?;
         self.publish(st);
         Some(started)
     }
 
-    fn start_wrapper_in(st: &mut State, id: &str) -> Option<usize> {
+    fn start_wrapper_in(st: &mut State, cfg: &Config, id: &str) -> Option<usize> {
         if !st.items.get(id)?.wrapper {
             return None;
         }
+        // Of two live cuts of the release, the main one only (D-9).
+        let plan = release_plan(st, cfg, &friction::release_of(&st.items, id));
         let mut started = 0;
         for it in st.items.values_mut() {
+            if plan.stands_by(&it.id) {
+                continue;
+            }
             if it.listed_by(id) && it.status == Status::Paused && !it.wrapper {
                 it.start();
                 started += 1;
@@ -2872,10 +2879,11 @@ impl Engine {
     pub fn wrappers_action(&self, ids: &[String], action: WrapperAction) -> Batch {
         let mut batch = Batch::default();
         let mut discard = Vec::new();
+        let cfg = self.cfg();
         let mut st = self.lock();
         for id in ids {
             let done = match action {
-                WrapperAction::Start => Self::start_wrapper_in(&mut st, id).map(|n| {
+                WrapperAction::Start => Self::start_wrapper_in(&mut st, &cfg, id).map(|n| {
                     batch.started += n;
                 }),
                 WrapperAction::Remove => self.remove_wrapper_in(&mut st, id).map(|gone| {
@@ -3438,6 +3446,31 @@ fn sibling_parts(
         }
     }
     (!by_number.is_empty()).then_some(by_number)
+}
+
+/// The rows of release `root` (a row and everything found from it) as
+/// sets, splits and the main split ([`identity::resolve`]).
+fn release_plan(st: &State, cfg: &Config, root: &str) -> identity::Plan {
+    let rows: Vec<&Item> = st
+        .items
+        .values()
+        .filter(|it| !it.wrapper && friction::release_of(&st.items, &it.id) == root)
+        .collect();
+    let known: Vec<identity::Known<'_>> = rows
+        .iter()
+        .map(|it| identity::Known {
+            id: &it.id,
+            name: it.name.as_deref(),
+            live: it
+                .mirrors
+                .iter()
+                .filter(|m| !it.gone.contains(m.as_str()))
+                .map(|m| &*m.host)
+                .collect(),
+            hosts: it.mirrors.iter().map(|m| &*m.host).collect(),
+        })
+        .collect();
+    identity::resolve(&known, |h| cfg.preference(h), |h| !cfg.is_disabled(h))
 }
 
 /// Whether a failure is only a note on its card, told nobody: a paste
