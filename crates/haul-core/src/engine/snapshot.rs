@@ -672,12 +672,20 @@ impl Engine {
             .map(|w| (w.id.clone(), super::friction::release_of(&st.items, &w.id)))
             .collect();
         let roots: HashSet<&String> = release_of.values().collect();
+        let mut cards_of: HashMap<String, (Option<views::CardSummary>, Vec<views::HostParts>)> =
+            HashMap::new();
         let notes: HashMap<String, Vec<String>> = roots
             .into_iter()
             .map(|root| {
                 let root = root.clone();
                 let plan = super::release_plan(&st, &cfg, &root);
-                let notes = plan
+                let (summary, hosts, only_off) = card_of_release(&st, &cfg, &root, &plan);
+                cards_of.insert(root.clone(), (summary, hosts));
+                let mut notes: Vec<String> = Vec::new();
+                if only_off {
+                    notes.push("only switched-off hosts have these files".into());
+                }
+                let gone: Vec<String> = plan
                     .dead_splits()
                     .map(|split| {
                         // A host by its name alone, as a person says it.
@@ -693,6 +701,7 @@ impl Engine {
                         )
                     })
                     .collect();
+                notes.extend(gone);
                 (root, notes)
             })
             .collect();
@@ -707,6 +716,10 @@ impl Engine {
         for card in &mut wrapper_cards {
             let root = card.ids.first().and_then(|id| release_of.get(id));
             card.notes = root.and_then(|r| notes.get(r)).cloned().unwrap_or_default();
+            if let Some((summary, hosts)) = root.and_then(|r| cards_of.get(r)) {
+                card.summary = summary.clone();
+                card.host_parts = hosts.clone();
+            }
         }
         let counts = views::counts(&items, &wrappers, &wrapper_cards, paused);
         Snapshot {
@@ -751,6 +764,83 @@ fn all_gone(it: &Item) -> bool {
 /// Whether `it` is a pasted web page not read yet: it may turn out a wrapper
 /// or a file, so it waits in no list, or it would flash through the downloads
 /// on its way to the wrappers.
+/// What release `root`'s card says of it: its summary, each host's worth,
+/// and whether only switched-off hosts have live links to its files.
+fn card_of_release(
+    st: &super::State,
+    cfg: &crate::Config,
+    root: &str,
+    plan: &super::identity::Plan,
+) -> (Option<views::CardSummary>, Vec<views::HostParts>, bool) {
+    let rows: Vec<&Item> = st
+        .items
+        .values()
+        .filter(|it| !it.wrapper && !it.tentative)
+        .filter(|it| super::friction::release_of(&st.items, &it.id) == root)
+        .filter(|it| !(it.unstarted && it.done == 0 && all_gone(it)))
+        .collect();
+    // What the sources marked offline, by link.
+    let offline: HashSet<&str> = st
+        .items
+        .values()
+        .filter(|w| w.wrapper && super::friction::release_of(&st.items, &w.id) == root)
+        .flat_map(|w| &w.listing)
+        .filter(|l| l.listed_alive == Some(false))
+        .flat_map(|l| l.urls.iter().map(String::as_str))
+        .collect();
+    let mut hosts: Vec<views::HostParts> = Vec::new();
+    for it in &rows {
+        for m in &it.mirrors {
+            let at = match hosts.iter().position(|h| h.host == *m.host) {
+                Some(at) => at,
+                None => {
+                    hosts.push(views::HostParts {
+                        host: m.host.to_string(),
+                        alive: 0,
+                        gone: 0,
+                        listed_offline: 0,
+                        off: cfg.is_disabled(&m.host),
+                    });
+                    hosts.len() - 1
+                }
+            };
+            let h = &mut hosts[at];
+            if it.gone.contains(m.as_str()) {
+                h.gone += 1;
+            } else {
+                h.alive += 1;
+            }
+            if offline.contains(m.as_str()) {
+                h.listed_offline += 1;
+            }
+        }
+    }
+    let live_on = hosts.iter().filter(|h| !h.off && h.alive > 0).count();
+    let only_off = !rows.is_empty() && live_on == 0 && hosts.iter().any(|h| h.off && h.alive > 0);
+    if rows.is_empty() {
+        return (None, hosts, false);
+    }
+    let main = plan.main.map_or(plan.sets.first(), |m| plan.sets.get(m));
+    let (parts, ids): (u32, Vec<&str>) = match main {
+        Some(set) if plan.sets.len() == 1 || plan.main.is_some() => {
+            (set.parts, set.ids.iter().map(String::as_str).collect())
+        }
+        _ => (0, rows.iter().map(|it| it.id.as_str()).collect()),
+    };
+    let bytes = ids
+        .iter()
+        .filter_map(|id| st.items.get(*id))
+        .map(|it| it.size)
+        .sum();
+    let summary = views::CardSummary {
+        parts,
+        files: ids.len(),
+        bytes,
+        hosts: live_on,
+    };
+    (Some(summary), hosts, only_off)
+}
+
 /// A wrapper's link not started that nothing has named yet: in no list
 /// while a host or its page may still name it.
 fn unplaced(it: &Item) -> bool {

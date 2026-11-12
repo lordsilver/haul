@@ -528,6 +528,17 @@ async fn a_containers_listing_survives_a_restart_and_its_files() {
     let id = s.wrappers[0].id.clone();
     let listing = engine.debug_listing(&id);
     assert!(!listing.is_empty());
+    // The card says what it holds, and what each host is worth (CARD-02,
+    // CARD-06).
+    let card = &s.wrapper_cards[0];
+    assert_eq!(card.summary.as_ref().map(|s| s.files), Some(2));
+    assert!(
+        card.host_parts
+            .iter()
+            .all(|h| h.alive > 0 && h.gone == 0 && !h.off),
+        "{:?}",
+        card.host_parts
+    );
     assert_eq!(listing[0].at, 1);
     assert!(listing.iter().all(|l| !l.urls.is_empty()));
     assert!(engine.item_action(&s.items[0].id, ItemAction::Remove));

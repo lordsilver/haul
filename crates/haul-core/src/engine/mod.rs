@@ -60,8 +60,8 @@ pub use services::ServicesView;
 pub use settings::{SettingError, SettingsView};
 pub use snapshot::{HostView, InQueue, ItemView, PoolView, QuotaView, Snapshot, WrapperView};
 pub use views::{
-    Alert, ArchiveView, Command, Counts, HostGroup, List, Passing, PoolSource, PoolSummary,
-    RowState, SiteKind, Tally, WrapperCard, WrapperState,
+    Alert, ArchiveView, CardSummary, Command, Counts, HostGroup, HostParts, List, Passing,
+    PoolSource, PoolSummary, RowState, SiteKind, Tally, WrapperCard, WrapperState,
 };
 
 /// The waits between saves of a changed queue, longer after each that failed.

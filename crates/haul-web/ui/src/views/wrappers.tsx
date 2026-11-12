@@ -8,8 +8,8 @@ import { act, wrappersBulk } from '@/lib/api';
 import type { State } from '@/lib/bindings/State';
 import type { WrapperCard } from '@/lib/bindings/WrapperCard';
 import { partsSummary, passingCaption } from '@/lib/captions';
-import { wrappers } from '@/lib/client';
-import { clockIn, duration, plural } from '@/lib/format';
+import { hosts as hostsApi, wrappers } from '@/lib/client';
+import { bytes, clockIn, duration, plural } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { NeedsYou, PasteLink } from '@/views/downloads/needs-you';
@@ -40,8 +40,22 @@ const dropHost = (card: WrapperCard, host: string) =>
     toast(`Dropped ${host} from ${plural(r.dropped, 'file')}`, 'success');
   });
 
-// The hosts the card's files are on, each with a button that drops it; a
-// host that is off is greyed out.
+// What one host is worth on the card: its files alive, gone, and what the
+// sources listed as offline (their claim, not the host's).
+function worth(card: WrapperCard, host: string): string {
+  const h = card.host_parts.find((p) => p.host === host);
+  if (!h) return '';
+  return [
+    h.alive ? `${h.alive}` : '',
+    h.gone ? `${h.gone} gone` : '',
+    h.listed_offline ? `${h.listed_offline} listed as offline` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+// The hosts the card's files are on, each with what it is worth and a
+// button that drops it; a host that is off is greyed out, with Turn on.
 function Hosts({ card, s }: { card: WrapperCard; s: State }) {
   const off = offHosts(s);
   return (
@@ -49,6 +63,12 @@ function Hosts({ card, s }: { card: WrapperCard; s: State }) {
       {card.hosts.map((host) => (
         <span key={host} className="inline-flex items-center gap-0.5 rounded-full border bg-background pl-2.5 text-xs">
           <HostName host={host} off={off.has(host)} />
+          {worth(card, host) ? <span className="pl-1 text-muted-foreground">{worth(card, host)}</span> : null}
+          {off.has(host) ? (
+            <Button variant="ghost" size="xs" className="rounded-full" onClick={() => hostsApi.disabled(host, false)}>
+              Turn on
+            </Button>
+          ) : null}
           <ConfirmButton
             label={`Drop ${host}: its links go from these files`}
             confirm="Drop its links?"
@@ -102,17 +122,26 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
   // A card of several wrappers (one per host, or a download page and the
   // pastes it links) counts them, and says what still goes on.
   // A card that found no file has no files to count.
+  // The release in the person's terms: its parts or files, their size and
+  // the hosts that have them; never how many sources it took.
+  const sum = card.summary;
+  const summary = sum
+    ? [
+        sum.parts ? plural(sum.parts, 'part') : plural(sum.files, 'file'),
+        sum.bytes ? bytes(sum.bytes) : '',
+        sum.hosts ? plural(sum.hosts, 'host') : '',
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : '';
   const state =
-    card.ids.length > 1
-      ? [
-          plural(card.ids.length, 'wrapper'),
-          card.files ? plural(card.files, 'file') : '',
-          card.files ? partsSummary(card.tally, card.files) : '',
-          card.status === 'done' ? '' : status(card),
-        ]
-          .filter(Boolean)
-          .join(' · ')
-      : status(card);
+    [
+      summary,
+      card.files ? partsSummary(card.tally, card.files) : '',
+      card.status === 'done' && summary ? '' : status(card),
+    ]
+      .filter(Boolean)
+      .join(' · ') || status(card);
   // Pastes that list nothing, beside wrappers that found their files: a
   // quiet note, not a failure.
   const empty = card.empty ? `${plural(card.empty, 'note')} with no links` : '';

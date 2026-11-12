@@ -359,6 +359,8 @@ enum Check {
     /// Starting the card starts the rows of this archive only: the main
     /// cut of the release, the other standing by (D-9).
     StartsOnly(&'static str),
+    /// The card's summary says this many parts (CARD-02).
+    SummaryParts(u32),
     /// The cards hold this many sources set aside unread (FLOW-02).
     Unread(usize),
     /// Every order comes to the same sets.
@@ -382,6 +384,7 @@ impl Check {
             Check::SeparateCounts => "never \"Unwrapping N links\"".into(),
             Check::StartsOnly(archive) => format!("starting the card starts {archive} only"),
             Check::Unread(n) => format!("{n} source(s) set aside unread"),
+            Check::SummaryParts(n) => format!("the card says {n} parts"),
             Check::SameEveryOrder => "the same in every order".into(),
         }
     }
@@ -659,6 +662,7 @@ fn cases() -> Vec<Release> {
             .holds(SeparateCounts)
             .holds(OneReadPerContainer)
             .holds(Asks(0))
+            .holds(SummaryParts(67))
             .holds(SameEveryOrder),
         acceptance("the acceptance case, two containers behind a puzzle")
             .orders(&[Order::Listed])
@@ -1683,6 +1687,18 @@ fn check(r: &Release, run: &Run, c: &Check) -> Result<(), String> {
                 (true, _) => Err("nothing started".into()),
                 (false, Some(n)) => Err(format!("{} other rows started, as {n}", other.len())),
                 (false, None) => Ok(()),
+            }
+        }
+        Check::SummaryParts(want) => {
+            let said: Vec<u32> = s
+                .wrapper_cards
+                .iter()
+                .filter_map(|c| c.summary.as_ref().map(|s| s.parts))
+                .collect();
+            if said == [*want] {
+                Ok(())
+            } else {
+                Err(format!("the cards say {said:?}"))
             }
         }
         Check::Unread(want) => {

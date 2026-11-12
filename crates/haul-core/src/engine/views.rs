@@ -633,6 +633,12 @@ pub struct WrapperCard {
     /// Its sources set aside unread: their gate did not pass by itself, and
     /// the release is whole without them (plan FLOW-02).
     pub unread: usize,
+    /// The release in the person's terms (plan CARD-02): its main set's
+    /// parts or its files, their bytes, and the switched-on hosts with a
+    /// live link; none before anything is known.
+    pub summary: Option<CardSummary>,
+    /// Each host its files are on, with what it is worth (plan CARD-06).
+    pub host_parts: Vec<HostParts>,
     /// What the card says besides its files, in the person's words: a cut
     /// of the release that is gone, say.
     pub notes: Vec<String>,
@@ -769,11 +775,41 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                     .count(),
                 queue: urgent.queue,
                 unread,
+                summary: None,
+                host_parts: Vec::new(),
                 notes: Vec::new(),
                 tally: card_tally,
             }
         })
         .collect()
+}
+
+/// A release in the person's terms: `Example.Set · 67 parts · 134 GB · 5
+/// hosts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct CardSummary {
+    /// Its main archive's parts; 0 when it is files, not an archive.
+    pub parts: u32,
+    pub files: usize,
+    /// Bytes, over the files whose size is known.
+    pub bytes: u64,
+    /// Switched-on hosts with a live link to one of its files.
+    pub hosts: usize,
+}
+
+/// What one host on a card is worth: how many of its files it has alive,
+/// gone, or as the sources listed them offline, and whether it is off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct HostParts {
+    pub host: String,
+    pub alive: usize,
+    pub gone: usize,
+    /// Links a source marked offline (its claim, not the host's).
+    pub listed_offline: usize,
+    /// Switched off by the person.
+    pub off: bool,
 }
 
 /// Pages Haul's browser passes now, and pages waiting for it.
