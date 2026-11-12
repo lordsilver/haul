@@ -271,6 +271,30 @@ async fn buzzheavier_redirects_rate_limits_and_gone_files() {
     ));
 }
 
+/// A rate limit that carries a check of its own, on any site, is a wait
+/// for the host rather than a box for a person (plan PASS-07).
+#[tokio::test]
+async fn a_rate_limit_dressed_as_a_check_is_a_wait() {
+    let app = Router::new().route(
+        "/limited.bin",
+        get(|| async {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                [("cf-mitigated", "challenge"), ("retry-after", "9")],
+                "<script>window._cf_chl_opt = {cType: 'interactive'};</script>",
+            )
+        }),
+    );
+    let base = serve(app).await;
+    let cfg = config(&base);
+    let (http, tokens) = (http(), Tokens::default());
+    let cx = context(&http, &cfg, &tokens);
+    assert!(matches!(
+        generic::resolve(&cx, &format!("{base}/limited.bin")).await,
+        Err(ResolveError::Wait { seconds: 9, .. })
+    ));
+}
+
 #[tokio::test]
 async fn onefichier_api_key_and_free_mode() {
     let app = Router::new()

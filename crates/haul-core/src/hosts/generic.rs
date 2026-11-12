@@ -41,6 +41,11 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
         _ => (get().await?, false),
     };
     let status = r.status().as_u16();
+    // A rate limit carrying a check is a wait for the host, not a box for
+    // a person (plan PASS-07): waited out first.
+    if status == 429 {
+        rate_limited(&r)?;
+    }
     if challenged(r.headers()) {
         // A check answers HEAD with no page, which names its kind.
         let r = match headed {
@@ -338,6 +343,9 @@ pub(super) async fn page(
 ) -> Result<(Option<String>, Vec<String>, Option<String>), ResolveError> {
     let mut r = cx.http.client.get(url).send().await?;
     let status = r.status().as_u16();
+    if status == 429 {
+        rate_limited(&r)?;
+    }
     if challenged(r.headers()) {
         return Err(guarded_by(url, r).await);
     }
