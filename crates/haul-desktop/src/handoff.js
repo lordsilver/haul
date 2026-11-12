@@ -436,7 +436,9 @@
       // Not while the general way still has something to press or wait for.
       calm = document.readyState === "complete" && !check && !window.__haulPressing && links === seen ? calm + 1 : 0;
       seen = links;
-      if (calm === 5) window.__haulHandoff = { links: [], shown: [], settled: true };
+      // What it shows, for the report's log only (Rust keeps the first 2 KB).
+      const text = (document.body?.innerText ?? "").replace(/\s+/g, " ").trim();
+      if (calm === 5) window.__haulHandoff = { links: [], shown: [], settled: true, text: text.slice(0, 4096), length: text.length };
     }, 1000);
   }
 

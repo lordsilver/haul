@@ -880,7 +880,8 @@ fn said(url: &Url) -> Option<Said> {
         "/gone" => Some(Said::Gone(reason())),
         "/answered" => {
             let http = pair("http").and_then(|h| h.parse().ok()).unwrap_or(0);
-            let answer = hosts::page_answer(&pair("site")?, http, &pair("status").unwrap_or_default());
+            let answer =
+                hosts::page_answer(&pair("site")?, http, &pair("status").unwrap_or_default());
             Some(match answer {
                 hosts::PageAnswer::Gone(reason) => Said::Gone(reason),
                 hosts::PageAnswer::Later { reason, seconds } => Said::Later {

@@ -374,7 +374,8 @@ impl Engine {
         let now = Instant::now();
         if limited_lookup {
             tracing::info!(item = %id, "page later, looked up again after the host's wait: {reason}");
-            st.tried.retain(|(row, passed, _)| !(row == id && passed == page));
+            st.tried
+                .retain(|(row, passed, _)| !(row == id && passed == page));
         }
         let said = seconds.map(|s| Duration::from_secs(s).min(PAGE_LIMIT_AT_MOST));
         if let Some(wait) = said {

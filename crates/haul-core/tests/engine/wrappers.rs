@@ -559,7 +559,11 @@ async fn a_wrappers_page_that_wants_a_person_is_tried_again_by_itself() {
         assert!(engine.debug_retry_now(&id), "try {round}");
         wrapper_settled(&engine, "passing").await;
         assert_eq!(auto_retries(&engine, &id), round);
-        assert_eq!(engine.page_wants_person(&id), round == 3, "told after its last try");
+        assert_eq!(
+            engine.page_wants_person(&id),
+            round == 3,
+            "told after its last try"
+        );
         let s = wrapper_settled(&engine, "captcha").await;
         if round < 3 {
             assert!(s.wrappers[0].retry_in > 0, "try {round} is not the last");
@@ -793,7 +797,11 @@ async fn a_site_whose_clearance_does_not_hold_is_read_in_the_browser() {
             .any(|w| w.url == next && w.status.as_str() == "passing")
     })
     .await;
-    assert_eq!(container_asks("cf-always-held-2.html"), 0, "Haul asked the site nothing");
+    assert_eq!(
+        container_asks("cf-always-held-2.html"),
+        0,
+        "Haul asked the site nothing"
+    );
     assert!(!engine.takes_clearance(next), "the browser reads it itself");
     assert!(s.wrappers.iter().all(|w| !w.error.is_empty()));
 }

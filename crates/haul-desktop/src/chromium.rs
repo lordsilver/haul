@@ -735,6 +735,14 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
                 }
             }
             if p.ends_settled && sent["settled"].as_bool() == Some(true) {
+                // A paste that lists nothing: what it showed, for the
+                // report's log.
+                if hosts::is_paste(p.url)
+                    && let Some(text) = sent["text"].as_str()
+                {
+                    let length = sent["length"].as_u64().map(|n| n as usize);
+                    hosts::keep_shown_text(&hosts::real(p.url), text, length);
+                }
                 return Ok(Outcome::Settled);
             }
             continue;

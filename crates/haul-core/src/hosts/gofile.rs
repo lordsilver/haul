@@ -106,9 +106,15 @@ mod answer_tests {
     fn a_rate_limit_is_a_wait_and_not_found_is_gone() {
         assert!(matches!(
             page_answer("gofile.io", 429, "error-rateLimit"),
-            PageAnswer::Later { seconds: GOFILE_LIMIT_WAIT, .. }
+            PageAnswer::Later {
+                seconds: GOFILE_LIMIT_WAIT,
+                ..
+            }
         ));
-        assert!(matches!(page_answer("gofile.io", 200, "error-rateLimit"), PageAnswer::Later { .. }));
+        assert!(matches!(
+            page_answer("gofile.io", 200, "error-rateLimit"),
+            PageAnswer::Later { .. }
+        ));
         assert_eq!(
             page_answer("gofile.io", 404, "error-notFound"),
             PageAnswer::Gone("gofile.io: the folder was deleted".into())

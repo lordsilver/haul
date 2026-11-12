@@ -510,10 +510,12 @@ impl Engine {
         }
         let it = &st.items[id];
         // Told only of a file the person started.
-        (it.status == Status::Error && !it.unstarted && !noted_quietly(st, it)).then(|| Event::Failed {
-            id: id.to_string(),
-            name: display_name(it),
-            error: it.error.clone(),
+        (it.status == Status::Error && !it.unstarted && !noted_quietly(st, it)).then(|| {
+            Event::Failed {
+                id: id.to_string(),
+                name: display_name(it),
+                error: it.error.clone(),
+            }
         })
     }
 

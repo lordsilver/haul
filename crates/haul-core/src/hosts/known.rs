@@ -392,8 +392,14 @@ mod presses_tests {
 
     #[test]
     fn no_button_is_pressed_on_a_wrapper_or_a_paste() {
-        assert!(!presses_download("https://filecrypt.cc/Container/AAAAAAAA.html", false));
-        assert!(!presses_download("https://paste2.org/paste/example-set", false));
+        assert!(!presses_download(
+            "https://filecrypt.cc/Container/AAAAAAAA.html",
+            false
+        ));
+        assert!(!presses_download(
+            "https://paste2.org/paste/example-set",
+            false
+        ));
         assert!(!presses_download("https://site.example/file/abc123", true));
         assert!(presses_download("https://site.example/file/abc123", false));
     }

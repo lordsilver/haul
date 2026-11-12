@@ -135,10 +135,7 @@ async fn a_page_being_read_is_in_no_list_until_it_shows_what_it_is() {
     assert_eq!(s.items[0].status.as_str(), "checking");
     assert_eq!(s.items[0].list, None, "in no list while it is read");
     assert_eq!(s.counts.all, 0, "not counted among the downloads");
-    assert_eq!(
-        s.counts.reading, 1,
-        "the status bar says it is worked on"
-    );
+    assert_eq!(s.counts.reading, 1, "the status bar says it is worked on");
 
     let s = wait_for(&engine, "the page's files", |s| s.items.len() == 2).await;
     assert_eq!(s.wrappers.len(), 1);
@@ -706,7 +703,10 @@ async fn a_page_is_tried_again_only_while_retries_are_on() {
     let engine = Engine::start(options).await.unwrap();
     engine.set_pages_pass(true);
     let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
-    assert!(engine.page_wants_person(&id), "no try of its own: told at once");
+    assert!(
+        engine.page_wants_person(&id),
+        "no try of its own: told at once"
+    );
     let s = wait_for(&engine, "the row under Needs you", |s| {
         s.items[0].status.as_str() == "captcha"
     })

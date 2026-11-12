@@ -48,12 +48,15 @@ impl Presser {
     /// that is no ad and has presses left. Counts the press.
     pub fn pick<'a>(&mut self, listed: &'a [Candidate], now: Instant) -> Option<&'a Candidate> {
         if self.presses() >= Self::IN_ALL
-            || self.at.is_some_and(|at| now.duration_since(at) < Self::EVERY)
+            || self
+                .at
+                .is_some_and(|at| now.duration_since(at) < Self::EVERY)
         {
             return None;
         }
         let next = listed.iter().find(|c| {
-            !self.ads.contains(&c.key) && self.pressed.get(&c.key).copied().unwrap_or(0) < Self::AT_MOST
+            !self.ads.contains(&c.key)
+                && self.pressed.get(&c.key).copied().unwrap_or(0) < Self::AT_MOST
         })?;
         *self.pressed.entry(next.key.clone()).or_default() += 1;
         self.last = Some((next.key.clone(), now));
@@ -102,8 +105,14 @@ mod tests {
         let mut p = Presser::default();
         let t = Instant::now();
         assert_eq!(p.pick(&page, t).unwrap().key, "0 High-speed");
-        assert_eq!(p.left(t + Duration::from_secs(1)).as_deref(), Some("0 High-speed"));
-        assert_eq!(p.pick(&page, t + Duration::from_secs(1)).unwrap().key, "1 Free");
+        assert_eq!(
+            p.left(t + Duration::from_secs(1)).as_deref(),
+            Some("0 High-speed")
+        );
+        assert_eq!(
+            p.pick(&page, t + Duration::from_secs(1)).unwrap().key,
+            "1 Free"
+        );
         let later = t + Duration::from_secs(20);
         assert_eq!(p.pick(&page, later).unwrap().key, "1 Free");
         assert_eq!(p.pressed["0 High-speed"], 1);
@@ -117,7 +126,10 @@ mod tests {
         let mut p = Presser::default();
         let t = Instant::now();
         assert!(p.pick(&page, t).is_some());
-        assert!(p.pick(&page, t + Duration::from_secs(1)).is_none(), "too soon");
+        assert!(
+            p.pick(&page, t + Duration::from_secs(1)).is_none(),
+            "too soon"
+        );
         assert_eq!(p.left(t + Duration::from_secs(10)), None);
         for n in 1..=4 {
             p.pick(&page, t + Presser::EVERY * n);

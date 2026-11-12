@@ -253,7 +253,12 @@ pub(super) static CONTAINER_ASKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// How many times container page `page` was asked for.
 pub(super) fn container_asks(page: &str) -> usize {
-    CONTAINER_ASKS.lock().unwrap().iter().filter(|p| *p == page).count()
+    CONTAINER_ASKS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|p| *p == page)
+        .count()
 }
 
 impl Server {

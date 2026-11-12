@@ -444,14 +444,19 @@ const PASTE_KEPT: usize = 2048;
 /// the log only (a `paste` signal), never in a notification or the UI: its
 /// text's length and its first 2 KB, so a report shows what it held.
 fn keep_paste_text(url: &str, page: &str) {
-    let text = paste_text(page);
+    keep_shown_text(url, &paste_text(page), None);
+}
+
+/// [`keep_paste_text`] for the text a browser showed of the paste: `text`,
+/// of `length` characters in all when it was cut short.
+pub fn keep_shown_text(url: &str, text: &str, length: Option<usize>) {
     let mut cut = text.len().min(PASTE_KEPT);
     while !text.is_char_boundary(cut) {
         cut -= 1;
     }
     crate::debug::emit(
         "paste",
-        serde_json::json!({ "url": url, "length": text.chars().count(), "text": &text[..cut] }),
+        serde_json::json!({ "url": url, "length": length.unwrap_or_else(|| text.chars().count()), "text": &text[..cut] }),
     );
 }
 

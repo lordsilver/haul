@@ -58,8 +58,8 @@ pub use services::ServicesView;
 pub use settings::{SettingError, SettingsView};
 pub use snapshot::{HostView, InQueue, ItemView, PoolView, QuotaView, Snapshot, WrapperView};
 pub use views::{
-    Alert, ArchiveView, Command, Counts, HostGroup, List, PoolSource, PoolSummary, RowState,
-    Passing, SiteKind, Tally, WrapperCard, WrapperState,
+    Alert, ArchiveView, Command, Counts, HostGroup, List, Passing, PoolSource, PoolSummary,
+    RowState, SiteKind, Tally, WrapperCard, WrapperState,
 };
 
 /// The waits between saves of a changed queue, longer after each that failed.
@@ -576,7 +576,11 @@ mod summarize_tests {
             }
         });
         let burst = gather(&mut rx).await.unwrap();
-        assert!((10..=11).contains(&burst.events.len()), "{}", burst.events.len());
+        assert!(
+            (10..=11).contains(&burst.events.len()),
+            "{}",
+            burst.events.len()
+        );
     }
 
     /// 100 failures at once are one telling that counts 100, and a
@@ -1084,7 +1088,9 @@ impl State {
         // won't get past it for a while.
         if need == Need::Check && self.cleared.contains(url) {
             let site = hosts::site_of(url);
-            tracing::info!("{site}'s check came back after a clearance: its pages go to the browser");
+            tracing::info!(
+                "{site}'s check came back after a clearance: its pages go to the browser"
+            );
             self.held_by_check.entry(site).or_insert_with(Instant::now);
         }
     }
@@ -1992,7 +1998,10 @@ impl Engine {
         let found = if held {
             Ok(Err(ResolveError::NeedsUser(
                 hosts::Need::Check,
-                format!("{} is behind a browser check (Cloudflare's)", hosts::host_of(&url)),
+                format!(
+                    "{} is behind a browser check (Cloudflare's)",
+                    hosts::host_of(&url)
+                ),
             )))
         } else {
             tokio::time::timeout(Duration::from_secs(60), hosts::unwrap(&cx, &url)).await
