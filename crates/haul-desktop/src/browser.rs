@@ -1148,7 +1148,8 @@ mod tests {
         let start = HANDOFF
             .find("const real = ")
             .expect("handoff.js defines real");
-        let end = start + HANDOFF[start..].find(";\n").expect("one statement");
+        // The statement's own `;`, whatever line endings the checkout has.
+        let end = start + HANDOFF[start..].find(';').expect("one statement");
         let cases = [
             (
                 "http://filecrypt.cc.localhost:8799/Container/AAAAAAAA.html",
