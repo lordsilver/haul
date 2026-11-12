@@ -446,7 +446,18 @@ impl Engine {
                 .collect()
         };
         let passing = |it: &Item| self.passing(&st, it, now);
-        let looking_up = |it: &Item| self.look_up_page(&st, it).is_some();
+        // A link a source listed that nobody named yet is no row to show:
+        // it waits on its set, counted on the card, until a host names it
+        // or it is found gone (plan MODEL-09).
+        let looking_up = |it: &Item| {
+            self.look_up_page(&st, it).is_some()
+                || unplaced(it)
+                    && !it.told_nothing
+                    && it
+                        .mirrors
+                        .iter()
+                        .any(|m| hosts::tells_size(m) || st.passes(m) && self.pages_pass())
+        };
         let of = st.pass_queue.len() as u32;
         let queue = |it: &Item| {
             let at = st.pass_queue.iter().position(|(id, _, _)| *id == it.id)?;
@@ -698,6 +709,12 @@ fn all_gone(it: &Item) -> bool {
 /// Whether `it` is a pasted web page not read yet: it may turn out a wrapper
 /// or a file, so it waits in no list, or it would flash through the downloads
 /// on its way to the wrappers.
+/// A wrapper's link not started that nothing has named yet: in no list
+/// while a host or its page may still name it.
+fn unplaced(it: &Item) -> bool {
+    !it.wrapper && it.unstarted && it.name.is_none() && it.source.is_some() && it.done == 0
+}
+
 fn being_read(it: &Item) -> bool {
     it.status == Status::Queued
         && !it.probed

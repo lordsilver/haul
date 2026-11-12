@@ -97,6 +97,7 @@ impl Engine {
         tracing::info!(item = %id, "{page} told nothing of its file");
         if let Some(it) = st.items.get_mut(id) {
             it.looked.insert(page);
+            it.told_nothing = true;
         }
         self.publish(st);
         true
@@ -127,6 +128,7 @@ impl Engine {
         };
         it.looked.insert(page.clone());
         if named.is_empty() {
+            it.told_nothing = true;
             tracing::info!(item = %id, "{page} named no file");
             self.publish(st);
             return Ok(());

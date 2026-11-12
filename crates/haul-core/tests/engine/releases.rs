@@ -561,8 +561,8 @@ fn cases() -> Vec<Release> {
             .source(source("BBBBBBBB", Pixeldrain, 0))
             .holds(OneCard)
             .holds(Sets)
-            .fails_until(NeverUnnamed, "MODEL-09")
-            .fails_until(NoRowVanishes, "MODEL-09")
+            .holds(NeverUnnamed)
+            .holds(NoRowVanishes)
             .fails_until(ExactSizes, "LOOK-02")
             .holds(SameEveryOrder),
         Release::new(
@@ -633,8 +633,8 @@ fn cases() -> Vec<Release> {
             ])
             .holds(OneCard)
             .holds(Sets)
-            .fails_until(NeverUnnamed, "MODEL-09")
-            .fails_until(NoRowVanishes, "MODEL-09")
+            .holds(NeverUnnamed)
+            .holds(NoRowVanishes)
             .fails_until(ExactSizes, "LOOK-02")
             .fails_until(NothingFailed, "LOOK-06")
             .fails_until(

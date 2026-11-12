@@ -237,6 +237,9 @@ pub(crate) struct Item {
     /// nothing: not opened for that again until a restart.
     #[serde(skip)]
     pub looked: BTreeSet<String>,
+    /// One of those pages told nothing of it: it shows as the link it is.
+    #[serde(skip)]
+    pub told_nothing: bool,
     /// Where it stands with the page the desktop app passes for it.
     #[serde(skip)]
     pub page: PageTurn,
