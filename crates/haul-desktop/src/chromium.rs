@@ -17,37 +17,65 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use haul_core::hosts;
+use haul_core::{
+    hosts,
+    pass_ends::{Closed, Process},
+};
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
-/// The browser to pass pages in: `HAUL_CHROMIUM` when set (any platform, for
-/// trying it out), else on Windows the Edge that comes with it, or Chrome.
+/// The browser to pass pages in first ([`browsers`]).
 pub fn find() -> Option<PathBuf> {
+    browsers().into_iter().next().map(|b| b.exe)
+}
+
+/// A browser to pass pages in.
+#[derive(Debug, Clone)]
+pub struct Found {
+    /// `Edge` or `Chrome`, or `HAUL_CHROMIUM` for the one it names.
+    pub name: &'static str,
+    pub exe: PathBuf,
+}
+
+/// The browsers to pass pages in, the first first: `HAUL_CHROMIUM` alone
+/// when set (any platform, for trying it out), else on Windows the Edge that
+/// comes with it, then Chrome, each where it is installed. A pass that keeps
+/// closing by itself in the first is tried in the other
+/// ([`haul_core::pass_ends`]).
+pub fn browsers() -> Vec<Found> {
     if let Some(path) = std::env::var_os("HAUL_CHROMIUM").map(PathBuf::from) {
-        return path.is_file().then_some(path);
+        return path
+            .is_file()
+            .then_some(Found {
+                name: "HAUL_CHROMIUM",
+                exe: path,
+            })
+            .into_iter()
+            .collect();
     }
     if !cfg!(windows) {
-        return None;
+        return Vec::new();
     }
     let roots = ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"];
     let names = [
-        r"Microsoft\Edge\Application\msedge.exe",
-        r"Google\Chrome\Application\chrome.exe",
+        ("Edge", r"Microsoft\Edge\Application\msedge.exe"),
+        ("Chrome", r"Google\Chrome\Application\chrome.exe"),
     ];
     names
         .iter()
-        .flat_map(|name| {
+        .filter_map(|&(name, exe)| {
             roots
                 .iter()
-                .filter_map(move |root| std::env::var_os(root).map(|r| PathBuf::from(r).join(name)))
+                .filter_map(|root| std::env::var_os(root).map(|r| PathBuf::from(r).join(exe)))
+                .find(|p| p.is_file())
+                .map(|exe| Found { name, exe })
         })
-        .find(|p| p.is_file())
+        .collect()
 }
 
 /// Lets the app stop a page being passed, and, in debug mode, see and ask
@@ -149,8 +177,9 @@ pub enum Outcome {
     /// The page passed every check and showed nothing Haul took
     /// ([`Pass::ends_settled`]).
     Settled,
-    /// The browser went away, or the pass was stopped.
-    Closed,
+    /// The pass ended without the page's word: it was stopped, or the
+    /// browser went away or closed the page.
+    Closed(Closed),
 }
 
 pub struct Pass<'a> {
@@ -208,7 +237,7 @@ pub struct Shown {
 pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
     std::fs::create_dir_all(&p.profile).map_err(|e| format!("{}: {e}", p.profile.display()))?;
     #[cfg(windows)]
-    end_stray(&p);
+    end_stray(&p, "before");
     // A port of our own choosing: with `--remote-debugging-port=0` (the
     // browser picks one) Turnstile asked for its box every time, with a
     // port named it passed (docs/decisions.md).
@@ -246,6 +275,7 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
     let mut browser = Browser {
         #[cfg(windows)]
         _job: Job::holding(&child),
+        hide: Arc::new(AtomicU32::new(child.id())),
         child,
     };
     *haul_core::lock::held(&p.handle.info) = json!({
@@ -263,17 +293,26 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
     // the page is driven.
     let hiding = Arc::new(AtomicBool::new(true));
     {
-        let (hiding, pid) = (hiding.clone(), browser.child.id());
+        let (hiding, pid) = (hiding.clone(), browser.hide.clone());
         std::thread::spawn(move || {
             while hiding.load(Ordering::Relaxed) {
-                taskbar::hide(pid);
+                taskbar::hide(pid.load(Ordering::Relaxed));
                 std::thread::sleep(Duration::from_millis(50));
             }
         });
     }
     let result = drive(&mut browser, port, &p);
     hiding.store(false, Ordering::Relaxed);
+    // The process Haul started exited during the pass: the browser that
+    // answered for it may hold the profile outside Haul's job.
+    let handed_over = browser.child.try_wait().ok().flatten().is_some();
     drop(browser);
+    #[cfg(windows)]
+    if handed_over {
+        end_stray(&p, "after");
+    }
+    #[cfg(not(windows))]
+    let _ = handed_over;
     {
         // The outcome without the cookies a file carries: to the log too,
         // debug mode or not.
@@ -296,7 +335,12 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
                 json!({ "wants_person": serde_json::from_str::<Value>(&look.page).unwrap_or(Value::Null) })
             }
             Ok(Outcome::Settled) => json!("settled"),
-            Ok(Outcome::Closed) => json!("closed"),
+            Ok(Outcome::Closed(how)) => {
+                if *how != Closed::Stopped {
+                    tracing::warn!(item = %p.item, "the pass of {} closed: {}", p.url, how.cause());
+                }
+                json!({ "closed": how.kind(), "cause": how.cause() })
+            }
             Err(e) => json!({ "error": e }),
         };
         haul_core::debug::emit(
@@ -310,6 +354,9 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
 /// The browser process, ended when dropped.
 struct Browser {
     child: Child,
+    /// The browser process whose windows are kept off the taskbar: the one
+    /// Haul started, or the one answering for it once it exited.
+    hide: Arc<AtomicU32>,
     /// Ends the browser and every process it started when Haul ends,
     /// however it ends (a crash, the task manager), not only when this drops.
     #[cfg(windows)]
@@ -377,8 +424,12 @@ impl Job {
 ///
 /// Chromium finds the browser holding a profile by a message-only window of
 /// class `Chrome_MessageWindow` titled with the profile's path; so does this.
+///
+/// After a pass (`when` is `after`, else `before`) it ends the browser that
+/// answered for one Haul started that exited, which may be outside Haul's
+/// job: every browser on the pass's profile ends with the pass.
 #[cfg(windows)]
-fn end_stray(p: &Pass<'_>) {
+fn end_stray(p: &Pass<'_>, when: &str) {
     use std::os::windows::ffi::OsStrExt;
 
     use windows_sys::Win32::{
@@ -431,12 +482,12 @@ fn end_stray(p: &Pass<'_>) {
         };
         tracing::warn!(
             item = %p.item,
-            "a browser left over (pid {pid}) held {}; ended: {ended}",
+            "a browser left over (pid {pid}) held {} {when} the pass; ended: {ended}",
             p.profile.display()
         );
         haul_core::debug::emit(
             "pass",
-            json!({ "event": "stray", "id": p.item, "url": p.url, "profile": p.profile.display().to_string(), "pid": pid, "ended": ended }),
+            json!({ "event": "stray", "id": p.item, "url": p.url, "profile": p.profile.display().to_string(), "pid": pid, "ended": ended, "when": when }),
         );
         if !ended {
             return;
@@ -506,11 +557,17 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
     // Download buttons pressed, and when last.
     let mut presses = 0;
     let mut pressed_at = start;
+    // A browser is alive while its DevTools answers, whatever became of the
+    // process Haul started: a starter, or a browser that hands over to
+    // another (one updating itself), exits while the page goes on.
+    let mut exited = false;
     loop {
-        if p.handle.stop.load(Ordering::Relaxed)
-            || browser.child.try_wait().ok().flatten().is_some()
-        {
-            return Ok(Outcome::Closed);
+        if p.handle.stop.load(Ordering::Relaxed) {
+            return Ok(Outcome::Closed(Closed::Stopped));
+        }
+        if !exited && let Some(status) = browser.child.try_wait().ok().flatten() {
+            exited = true;
+            answered_for(&mut cdp, browser, port, p, &status);
         }
         // Waiting, but answering the page's paused navigations meanwhile.
         cdp.pump(Duration::from_millis(500));
@@ -537,11 +594,11 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         }
         // Tabs an ad opened go; without the page's own, the window is closed.
         let Ok(targets) = cdp.call("Target.getTargets", json!({}), None) else {
-            return Ok(Outcome::Closed);
+            return Ok(Outcome::Closed(Closed::NoDevTools(process(browser, port))));
         };
         let open = pages(&targets);
         if !open.contains(&target) {
-            return Ok(Outcome::Closed);
+            return Ok(Outcome::Closed(Closed::PageGone(process(browser, port))));
         }
         for other in open.iter().filter(|t| **t != target) {
             let _ = cdp.call("Target.closeTarget", json!({ "targetId": other }), None);
@@ -696,25 +753,103 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
     }
 }
 
+/// How long DevTools' port is still watched after the process Haul started
+/// exited before it opened: a starter, or a browser handing over to another,
+/// exits while the browser it started opens DevTools (Edge takes about half
+/// a second).
+const EXITED_AT_START: Duration = Duration::from_secs(5);
+
 /// The browser's DevTools WebSocket, from its `/json/version` once it
 /// listens. (`DevToolsActivePort` in the profile is written only when the
 /// browser picks the port itself.)
 fn wait_for_endpoint(browser: &mut Browser, port: u16) -> Result<String, String> {
     let deadline = Instant::now() + Duration::from_secs(20);
+    let mut exited = None;
     while Instant::now() < deadline {
-        if let Some(status) = browser.child.try_wait().ok().flatten() {
-            return Err(format!("the browser exited at start ({status})"));
+        if exited.is_none()
+            && let Some(status) = browser.child.try_wait().ok().flatten()
+        {
+            exited = Some((status, Instant::now()));
         }
-        if let Some(url) = version(port) {
-            return Ok(url);
+        if let Some(url) = version(port)
+            .as_ref()
+            .and_then(|v| v["webSocketDebuggerUrl"].as_str())
+        {
+            return Ok(url.to_string());
+        }
+        if let Some((status, at)) = exited
+            && at.elapsed() >= EXITED_AT_START
+        {
+            return Err(format!(
+                "the browser exited at start ({status}), and nothing opened DevTools on its port"
+            ));
         }
         std::thread::sleep(Duration::from_millis(150));
     }
     Err("the browser did not open DevTools in time".into())
 }
 
-/// `webSocketDebuggerUrl` from `GET /json/version`, in plain HTTP/1.1.
-fn version(port: u16) -> Option<String> {
+/// What answers on DevTools' port: the browser's name and version.
+fn answers(port: u16) -> Option<String> {
+    let v = version(port)?;
+    Some(v["Browser"].as_str().unwrap_or("a DevTools").to_string())
+}
+
+/// What became of the process Haul started, and what answers on DevTools'
+/// port, as a pass ends.
+fn process(browser: &mut Browser, port: u16) -> Process {
+    Process {
+        exited: browser
+            .child
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|s| s.to_string()),
+        answers: answers(port),
+    }
+}
+
+/// The process Haul started exited (`status`) while DevTools answers: says
+/// so, with what answers and its process, whose windows are kept off the
+/// taskbar from now on.
+fn answered_for(
+    cdp: &mut Cdp,
+    browser: &Browser,
+    port: u16,
+    p: &Pass<'_>,
+    status: &std::process::ExitStatus,
+) {
+    let pid = cdp
+        .call("SystemInfo.getProcessInfo", json!({}), None)
+        .ok()
+        .and_then(|info| {
+            info["processInfo"]
+                .as_array()?
+                .iter()
+                .find(|p| p["type"] == "browser")?["id"]
+                .as_u64()
+        })
+        .and_then(|pid| u32::try_from(pid).ok());
+    if let Some(pid) = pid {
+        browser.hide.store(pid, Ordering::Relaxed);
+    }
+    let answers = answers(port);
+    tracing::warn!(
+        item = %p.item,
+        "the browser Haul started (pid {}) exited ({status}); DevTools still answers: {} (pid {})",
+        browser.child.id(),
+        answers.as_deref().unwrap_or("nothing"),
+        pid.map_or("unknown".into(), |pid| pid.to_string()),
+    );
+    haul_core::debug::emit(
+        "pass",
+        json!({ "event": "exited", "id": p.item, "url": p.url, "pid": browser.child.id(), "exit": status.to_string(), "answers": answers, "answering_pid": pid }),
+    );
+}
+
+/// `GET /json/version`, in plain HTTP/1.1: the browser's name
+/// (`Browser`) and its `webSocketDebuggerUrl`.
+fn version(port: u16) -> Option<Value> {
     use std::io::{Read, Write};
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
@@ -750,8 +885,7 @@ fn version(port: u16) -> Option<String> {
             }
         }
     };
-    let json: Value = serde_json::from_str(body.trim()).ok()?;
-    json["webSocketDebuggerUrl"].as_str().map(str::to_string)
+    serde_json::from_str(body.trim()).ok()
 }
 
 /// The ids of the browser's pages (tabs), in its order.
@@ -1335,5 +1469,263 @@ mod download_tests {
         assert_eq!(download_in(&blob), None);
         let other = json!({ "method": "Page.loadEventFired", "params": {} });
         assert_eq!(download_in(&other), None);
+    }
+}
+
+#[cfg(test)]
+mod drive_tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::atomic::AtomicUsize,
+    };
+
+    use super::*;
+
+    /// What the stand-in browser does.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Acts {
+        /// Its page hands back a file.
+        HandsFile,
+        /// Its page hands back a file after two seconds.
+        HandsFileLate,
+        /// It stops answering after a few calls, as a browser that went.
+        Goes,
+        /// Its page is closed.
+        ClosesPage,
+    }
+
+    /// A stand-in for a browser's DevTools on a port of its own: `/json/version`
+    /// and a WebSocket answering what a pass asks. Its calls are counted.
+    fn devtools(acts: Acts) -> (u16, Arc<AtomicUsize>) {
+        let born = Instant::now();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let calls = counted.clone();
+                std::thread::spawn(move || serve(stream, port, acts, born, &calls));
+            }
+        });
+        (port, calls)
+    }
+
+    fn serve(mut stream: TcpStream, port: u16, acts: Acts, born: Instant, calls: &AtomicUsize) {
+        let mut head = [0u8; 2048];
+        let upgrade = loop {
+            let Ok(n) = stream.peek(&mut head) else {
+                return;
+            };
+            let text = String::from_utf8_lossy(&head[..n]).to_ascii_lowercase();
+            if text.contains("\r\n\r\n") {
+                break text.contains("upgrade: websocket");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        if !upgrade {
+            let _ = stream.read(&mut head);
+            let body = json!({
+                "Browser": "Stand-in/1.0",
+                "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/browser/abc123"),
+            })
+            .to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            return;
+        }
+        let Ok(mut ws) = tungstenite::accept(stream) else {
+            return;
+        };
+        loop {
+            let Ok(Message::Text(text)) = ws.read() else {
+                return;
+            };
+            let call: Value = serde_json::from_str(text.as_str()).unwrap();
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            if acts == Acts::Goes && n >= 12 {
+                return;
+            }
+            let method = call["method"].as_str().unwrap_or_default();
+            let result = match method {
+                "Target.getTargets" if acts == Acts::ClosesPage && n >= 12 => {
+                    json!({ "targetInfos": [] })
+                }
+                "Target.getTargets" => {
+                    json!({ "targetInfos": [{ "type": "page", "targetId": "PAGE1" }] })
+                }
+                "Target.attachToTarget" => json!({ "sessionId": "SESSION1" }),
+                "Network.getCookies" => json!({ "cookies": [] }),
+                "SystemInfo.getProcessInfo" => {
+                    json!({ "processInfo": [{ "type": "browser", "id": 4242, "cpuTime": 0 }] })
+                }
+                "Runtime.evaluate"
+                    if (acts == Acts::HandsFile
+                        || acts == Acts::HandsFileLate
+                            && born.elapsed() > Duration::from_secs(2))
+                        && call["params"]["expression"]
+                            .as_str()
+                            .is_some_and(|e| e.contains("__haulHandoff")) =>
+                {
+                    let said = json!({ "files": [{
+                        "url": "https://files.example/abc123/archive.part1.rar",
+                        "name": "archive.part1.rar",
+                    }] });
+                    json!({ "result": { "type": "string", "value": said.to_string() } })
+                }
+                "Runtime.evaluate" => json!({ "result": { "type": "object", "value": null } }),
+                _ => json!({}),
+            };
+            let mut answer = json!({ "id": call["id"], "result": result });
+            if let Some(session) = call.get("sessionId") {
+                answer["sessionId"] = session.clone();
+            }
+            if ws.send(Message::text(answer.to_string())).is_err() {
+                return;
+            }
+        }
+    }
+
+    /// A process that exits at once, as a starter that hands over to a
+    /// browser it launched, or a browser that hands over to another: this
+    /// test binary, which refuses the browser's arguments.
+    fn exits_at_once() -> Child {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--remote-debugging-port=1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        child
+    }
+
+    /// A process that runs a second, then exits, as a browser that hands
+    /// over to another once DevTools is open: this test binary, running
+    /// [`lives_a_second`].
+    fn exits_in_a_second() -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "chromium::drive_tests::lives_a_second",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    #[test]
+    #[ignore = "run by exits_in_a_second"]
+    fn lives_a_second() {
+        std::thread::sleep(Duration::from_secs(1));
+    }
+
+    fn browser(child: Child) -> Browser {
+        Browser {
+            #[cfg(windows)]
+            _job: None,
+            hide: Arc::new(AtomicU32::new(child.id())),
+            child,
+        }
+    }
+
+    fn pass_of<'a>(exe: &'a Path, handle: Handle) -> Pass<'a> {
+        Pass {
+            exe,
+            item: "abc123",
+            url: "https://site.example/abc123",
+            profile: std::env::temp_dir().join("haul-test-profile"),
+            proxy: None,
+            scripts: &[],
+            show_after: Duration::from_secs(20),
+            handle,
+            take_links: None,
+            ends_settled: false,
+            press_download: false,
+            keep_to_site: false,
+            hand_clearance: false,
+        }
+    }
+
+    #[test]
+    fn a_browser_whose_started_process_exited_is_driven_while_devtools_answers() {
+        let (port, _) = devtools(Acts::HandsFile);
+        let exe = std::env::current_exe().unwrap();
+        let mut b = browser(exits_at_once());
+        let outcome = drive(&mut b, port, &pass_of(&exe, Handle::default()));
+        let Ok(Outcome::Files { files, .. }) = outcome else {
+            panic!("expected the page's file, got {outcome:?}");
+        };
+        assert_eq!(
+            files[0].url,
+            "https://files.example/abc123/archive.part1.rar"
+        );
+    }
+
+    #[test]
+    fn a_browser_whose_started_process_exits_mid_pass_is_driven_while_devtools_answers() {
+        let (port, _) = devtools(Acts::HandsFileLate);
+        let exe = std::env::current_exe().unwrap();
+        let mut b = browser(exits_in_a_second());
+        let outcome = drive(&mut b, port, &pass_of(&exe, Handle::default()));
+        let Ok(Outcome::Files { files, .. }) = outcome else {
+            panic!("expected the page's file, got {outcome:?}");
+        };
+        assert_eq!(files[0].name.as_deref(), Some("archive.part1.rar"));
+        assert!(
+            b.child.try_wait().unwrap().is_some(),
+            "the process exited meanwhile"
+        );
+        assert_eq!(
+            b.hide.load(Ordering::Relaxed),
+            4242,
+            "the answering browser is hidden"
+        );
+    }
+
+    #[test]
+    fn devtools_that_stops_answering_ends_the_pass_with_its_cause() {
+        let (port, _) = devtools(Acts::Goes);
+        let exe = std::env::current_exe().unwrap();
+        let mut b = browser(exits_at_once());
+        let outcome = drive(&mut b, port, &pass_of(&exe, Handle::default()));
+        let Ok(Outcome::Closed(Closed::NoDevTools(process))) = outcome else {
+            panic!("expected DevTools gone, got {outcome:?}");
+        };
+        assert!(process.exited.is_some(), "{process:?}");
+        assert_eq!(process.answers.as_deref(), Some("Stand-in/1.0"));
+    }
+
+    #[test]
+    fn a_page_closed_in_the_browser_ends_the_pass_with_its_cause() {
+        let (port, _) = devtools(Acts::ClosesPage);
+        let exe = std::env::current_exe().unwrap();
+        let mut b = browser(exits_in_a_second());
+        let outcome = drive(&mut b, port, &pass_of(&exe, Handle::default()));
+        let Ok(Outcome::Closed(Closed::PageGone(_))) = outcome else {
+            panic!("expected the page gone, got {outcome:?}");
+        };
+    }
+
+    #[test]
+    fn a_pass_told_to_stop_says_so() {
+        let (port, _) = devtools(Acts::HandsFileLate);
+        let exe = std::env::current_exe().unwrap();
+        let handle = Handle::default();
+        handle.stop.store(true, Ordering::Relaxed);
+        let mut b = browser(exits_at_once());
+        let outcome = drive(&mut b, port, &pass_of(&exe, handle));
+        assert!(
+            matches!(outcome, Ok(Outcome::Closed(Closed::Stopped))),
+            "{outcome:?}"
+        );
     }
 }

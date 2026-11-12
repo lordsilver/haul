@@ -917,6 +917,43 @@ async fn a_pass_that_could_not_start_says_so() {
     assert!(s.wrappers[0].retry_in > 0, "tried again later");
 }
 
+/// A page Haul's browser kept closing by itself, in every try it gets, fails
+/// as the browser's failure with its reason: not under Needs you, and tried
+/// again on its timer.
+#[tokio::test]
+async fn a_page_the_browser_kept_closing_is_not_handed_to_a_person() {
+    use haul_core::pass_ends::{Closed, Next, Process, Tries};
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    engine.add_text("https://filecrypt.cc/Container/other-gate.html", "");
+    let s = wrapper_settled(&engine, "passing").await;
+    let id = s.wrappers[0].id.clone();
+    let mut tries = Tries::new(vec!["Edge".into(), "Chrome".into()]);
+    let closed = || {
+        Closed::NoDevTools(Process {
+            exited: Some("exit code: 0".into()),
+            answers: None,
+        })
+    };
+    let reason = loop {
+        match tries.ended(closed()) {
+            Next::Again { .. } => {}
+            Next::Fail(reason) => break reason,
+            other => panic!("{other:?}"),
+        }
+    };
+    engine.page_failed(&id, &reason);
+    let s = wrapper_settled(&engine, "error").await;
+    assert_eq!(s.wrappers[0].error, reason);
+    assert!(s.wrappers[0].retry_in > 0, "tried again on its timer");
+    assert_eq!(
+        engine.waiting_for_person(),
+        (vec![], vec![]),
+        "nobody is asked"
+    );
+}
+
 /// A page passed out of sight that fails for now says why and stays due for
 /// its retries, unlike one that says its file is gone.
 #[tokio::test]

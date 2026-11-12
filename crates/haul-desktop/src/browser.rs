@@ -26,7 +26,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
-    path::PathBuf,
     sync::{Arc, LazyLock, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
@@ -34,7 +33,9 @@ use std::{
 use haul_core::{
     Engine,
     bridge::Bridge,
-    hosts, paths,
+    hosts,
+    pass_ends::{Closed, Next, Tries},
+    paths,
     stay::{self, Go, Keep, SendBack, Stay},
 };
 use haul_web::Desktop;
@@ -135,8 +136,9 @@ impl Browser {
         if self.is_passing(id) {
             return Ok(());
         }
-        if let Some(exe) = chromium::find() {
-            return self.pass_in(exe, id, url);
+        let browsers = chromium::browsers();
+        if !browsers.is_empty() {
+            return self.pass_in(browsers, id, url);
         }
         self.open(id, url, None, true)?;
         let app = self.app.clone();
@@ -165,8 +167,10 @@ impl Browser {
         Ok(())
     }
 
-    /// [`Browser::pass`] in a full browser driven over DevTools.
-    fn pass_in(&self, exe: PathBuf, id: &str, url: &str) -> Result<(), String> {
+    /// [`Browser::pass`] in a full browser driven over DevTools: the first
+    /// of `browsers`, and the other when it keeps closing the page by
+    /// itself ([`haul_core::pass_ends`]).
+    fn pass_in(&self, browsers: Vec<chromium::Found>, id: &str, url: &str) -> Result<(), String> {
         let host = hosts::host_of(url);
         let proxy = self.bridge_for(&host)?;
         let handle = chromium::Handle::default();
@@ -175,9 +179,9 @@ impl Browser {
         let (app, engine, all) = (self.app.clone(), self.engine.clone(), self.passes.clone());
         let (id, url) = (id.to_string(), url.to_string());
         // One profile per site, kept: a check passed on one of its pages
-        // (Cloudflare's clearance cookie) holds for the next.
+        // (Cloudflare's clearance cookie) holds for the next. The other
+        // browser keeps one of its own.
         let site = hosts::site_of(&url);
-        let profile = paths::pass_profiles(engine.data_dir()).join(&site);
         let shot = paths::wants_person_shot(engine.data_dir(), &site);
         std::thread::spawn(move || {
             // A page that lists links hands them over as they show; Haul
@@ -190,37 +194,67 @@ impl Browser {
                     engine.page_listed(&id, &s.links, &s.text, s.title.as_deref()) > 0
                 })
             };
-            let pass = chromium::Pass {
-                exe: &exe,
-                item: &id,
-                url: &url,
-                profile,
-                proxy,
-                scripts: if lists {
-                    &[LISTS, OVERLAYS, HANDOFF]
-                } else {
-                    &[OVERLAYS, HANDOFF]
-                },
-                show_after: SHOW_AFTER + hosts::page_takes(&url),
-                handle,
-                take_links: if lists { Some(&take) } else { None },
-                // A page that lists links has shown all it will once it
-                // settles past its checks.
-                ends_settled: lists,
-                // A file's page on a host Haul has no recipe for: its
-                // download button is pressed, as a person would.
-                press_download: !lists && !hosts::page_passes(&url),
-                // A host's own page may lead to its file elsewhere; any
-                // other page shows what it has where it is.
-                keep_to_site: !hosts::page_passes(&url),
-                // A page Haul reads itself, once the browser is past the
-                // check in front of its site.
-                hand_clearance: engine.takes_clearance(&url),
+            let mut tries = Tries::new(browsers.iter().map(|b| b.name.to_string()).collect());
+            // Passed again at once while the browser closes the page by
+            // itself, the row's pass running meanwhile.
+            let outcome = loop {
+                let browser = &browsers[tries.browser()];
+                let other = (tries.browser() > 0).then(|| browser.name.to_ascii_lowercase());
+                let pass = chromium::Pass {
+                    exe: &browser.exe,
+                    item: &id,
+                    url: &url,
+                    profile: paths::pass_profile(engine.data_dir(), other.as_deref(), &site),
+                    proxy,
+                    scripts: if lists {
+                        &[LISTS, OVERLAYS, HANDOFF]
+                    } else {
+                        &[OVERLAYS, HANDOFF]
+                    },
+                    show_after: SHOW_AFTER + hosts::page_takes(&url),
+                    handle: handle.clone(),
+                    take_links: if lists { Some(&take) } else { None },
+                    // A page that lists links has shown all it will once it
+                    // settles past its checks.
+                    ends_settled: lists,
+                    // A file's page on a host Haul has no recipe for: its
+                    // download button is pressed, as a person would.
+                    press_download: !lists && !hosts::page_passes(&url),
+                    // A host's own page may lead to its file elsewhere; any
+                    // other page shows what it has where it is.
+                    keep_to_site: !hosts::page_passes(&url),
+                    // A page Haul reads itself, once the browser is past the
+                    // check in front of its site.
+                    hand_clearance: engine.takes_clearance(&url),
+                };
+                let how = match chromium::pass(pass) {
+                    Ok(chromium::Outcome::Closed(how)) => how,
+                    Err(e) => Closed::NotStarted(e),
+                    Ok(said) => break Ended::Page(said),
+                };
+                // Stopped while it ended some other way: stopped all the same.
+                let how = match handle.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    true => Closed::Stopped,
+                    false => how,
+                };
+                match tries.ended(how) {
+                    Next::Again { browser } => {
+                        let name = browsers[browser].name;
+                        let number = tries.number();
+                        tracing::warn!(item = %id, "passing {url} again, in {name} (try {number})");
+                        haul_core::debug::emit(
+                            "pass",
+                            json!({ "event": "again", "id": id, "url": url, "browser": name, "try": number }),
+                        );
+                    }
+                    Next::Stop => break Ended::Stopped,
+                    Next::NotStarted(e) => break Ended::NotStarted(e),
+                    Next::Fail(reason) => break Ended::Browser(reason),
+                }
             };
-            let outcome = chromium::pass(pass);
             passes(&all).remove(&id);
             match outcome {
-                Ok(chromium::Outcome::Files { files, agent, page }) => {
+                Ended::Page(chromium::Outcome::Files { files, agent, page }) => {
                     let said = PageSaid::Files {
                         files,
                         shown: page,
@@ -229,11 +263,11 @@ impl Browser {
                     };
                     tell_engine(&app, &engine, &id, &url, said);
                 }
-                Ok(chromium::Outcome::Gone(reason)) => {
+                Ended::Page(chromium::Outcome::Gone(reason)) => {
                     tell_engine(&app, &engine, &id, &url, PageSaid::Gone(reason));
                 }
-                Ok(chromium::Outcome::Failed(reason)) => engine.page_failed(&id, &reason),
-                Ok(chromium::Outcome::Later { reason, seconds }) => {
+                Ended::Page(chromium::Outcome::Failed(reason)) => engine.page_failed(&id, &reason),
+                Ended::Page(chromium::Outcome::Later { reason, seconds }) => {
                     tell_engine(
                         &app,
                         &engine,
@@ -242,7 +276,7 @@ impl Browser {
                         PageSaid::Later { reason, seconds },
                     );
                 }
-                Ok(chromium::Outcome::Cleared { cookies, agent }) => {
+                Ended::Page(chromium::Outcome::Cleared { cookies, agent }) => {
                     tracing::info!(item = %id, "{host} let the browser past its check: Haul reads {url} itself");
                     // Unwrapping again starts tasks, which need the async
                     // runtime this thread is outside of.
@@ -250,15 +284,17 @@ impl Browser {
                         engine.page_cleared(&id, &cookies, agent.as_deref())
                     });
                 }
-                Ok(chromium::Outcome::Listed) => tracing::info!("took the links {url} shows"),
+                Ended::Page(chromium::Outcome::Listed) => {
+                    tracing::info!("took the links {url} shows");
+                }
                 // A paste, or a copied page on trial, has nothing more to
                 // give; any other page may want a click on it.
-                Ok(chromium::Outcome::Settled)
+                Ended::Page(chromium::Outcome::Settled)
                     if hosts::is_paste(&url) || engine.is_tentative(&id) =>
                 {
                     engine.page_gone(&id, &hosts::lists_nothing(&url));
                 }
-                Ok(chromium::Outcome::Settled) => {
+                Ended::Page(chromium::Outcome::Settled) => {
                     tracing::info!(item = %id, "{url} passed its check but shows no links Haul takes");
                     if engine.page_needs_click(&id) && first_ask_in_a_while(&host) {
                         crate::notify_waiting(
@@ -268,7 +304,7 @@ impl Browser {
                         );
                     }
                 }
-                Ok(chromium::Outcome::WantsPerson(look)) => {
+                Ended::Page(chromium::Outcome::WantsPerson(look)) => {
                     // The gate it shows, when Haul knows it by its marks.
                     let gate = hosts::gates::detect(&look.page);
                     let named = gate.map_or("its check", |g| g.name());
@@ -291,14 +327,23 @@ impl Browser {
                         crate::notify_waiting(&app, &format!("{host} wants you"), &body);
                     }
                 }
+                // Told apart by `tries`, which never lets one through.
+                Ended::Page(chromium::Outcome::Closed(_)) => {}
                 // Stopped because the row went or stopped waiting: nobody
                 // is asked.
-                Ok(chromium::Outcome::Closed)
-                    if abandoned.load(std::sync::atomic::Ordering::Relaxed) => {}
-                Ok(chromium::Outcome::Closed) => {
+                Ended::Stopped if abandoned.load(std::sync::atomic::Ordering::Relaxed) => {}
+                // Stopped because a person opened the page in Haul's window:
+                // theirs now.
+                Ended::Stopped => {
                     engine.page_wants_person(&id);
                 }
-                Err(e) => {
+                // The browser kept closing the page by itself: its failure,
+                // not the page's, and nobody is asked.
+                Ended::Browser(reason) => {
+                    tracing::warn!(item = %id, "passing {url}: {reason}");
+                    engine.page_failed(&id, &reason);
+                }
+                Ended::NotStarted(e) => {
                     tracing::warn!(item = %id, "passing {url}: {e}");
                     engine.page_not_passed(&id, &e);
                 }
@@ -491,6 +536,18 @@ fn refused(id: &str, url: &str, why: Go) {
         "page",
         json!({ "event": "refused", "id": id, "url": url, "why": why }),
     );
+}
+
+/// How a page's pass ended, its tries told.
+enum Ended {
+    /// With the page's word.
+    Page(chromium::Outcome),
+    /// Haul stopped it.
+    Stopped,
+    /// The browser never showed the page on the first try.
+    NotStarted(String),
+    /// The browser kept closing the page by itself, for this reason.
+    Browser(String),
 }
 
 impl Desktop for Browser {

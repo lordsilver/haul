@@ -17,6 +17,7 @@ mod limiter;
 pub mod logging;
 mod names;
 pub mod parts;
+pub mod pass_ends;
 pub mod paths;
 pub mod router;
 pub mod stay;
