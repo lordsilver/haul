@@ -93,6 +93,41 @@ pub(crate) enum PageTurn {
     WithPersonAgain,
 }
 
+/// What looking one link up came to, short of an answer, and when it is
+/// asked again (seconds since the Unix epoch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Fate {
+    /// Its page told nothing: asked again after 15 minutes, doubling, a day
+    /// at most.
+    ToldNothing { tries: u32, next: u64 },
+    /// Its host asked this address to wait.
+    Limited { until: u64 },
+}
+
+impl Fate {
+    /// Whether the link may be asked again at `now`.
+    pub fn due(self, now: u64) -> bool {
+        match self {
+            Fate::ToldNothing { next, .. } => now >= next,
+            Fate::Limited { until } => now >= until,
+        }
+    }
+
+    /// The fate of a link that told nothing again, at `now`.
+    pub fn told_nothing(before: Option<Fate>, now: u64) -> Fate {
+        let tries = match before {
+            Some(Fate::ToldNothing { tries, .. }) => tries + 1,
+            _ => 1,
+        };
+        let wait = (15 * 60u64 << (tries - 1).min(10)).min(24 * 3600);
+        Fate::ToldNothing {
+            tries,
+            next: now + wait,
+        }
+    }
+}
+
 /// A host is limiting this row's download ([`crate::throttle`]) and it stays
 /// on it for now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,9 +272,11 @@ pub(crate) struct Item {
     /// nothing: not opened for that again until a restart.
     #[serde(skip)]
     pub looked: BTreeSet<String>,
-    /// One of those pages told nothing of it: it shows as the link it is.
-    #[serde(skip)]
-    pub told_nothing: bool,
+    /// What looking a link up came to when it gave no answer yet, and when
+    /// to ask again: saved, so a restart neither forgets it nor asks again
+    /// at once (plan LOOK-04).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fates: BTreeMap<String, Fate>,
     /// Where it stands with the page the desktop app passes for it.
     #[serde(skip)]
     pub page: PageTurn,

@@ -48,6 +48,8 @@ struct Waiting {
     /// Its pass's turn, rather than shown to the person after it.
     turn: bool,
     clearance: bool,
+    /// Opened only to look its file up.
+    lookup: bool,
 }
 
 impl Engine {
@@ -89,10 +91,16 @@ impl Engine {
             || waiting
                 .iter()
                 .any(|w| w.turn && st.tried.contains(&key(w)) && (b.has_page)(&w.id));
+        // A page opened only to look a file up waits for its host's turn
+        // (plan LOOK-01).
+        let due = |w: &Waiting| !w.lookup || st.budgets.ready(&crate::hosts::host_of(&w.page), now);
         let next = (!busy)
             .then(|| {
                 waiting.iter().find(|w| {
-                    w.turn && !st.tried.contains(&key(w)) && !with_person.contains(&w.id.as_str())
+                    w.turn
+                        && !st.tried.contains(&key(w))
+                        && !with_person.contains(&w.id.as_str())
+                        && due(w)
                 })
             })
             .flatten();
@@ -100,6 +108,12 @@ impl Engine {
             st.tried.insert(key(w));
             (w.id.clone(), w.page.clone())
         });
+        // A lookup's pass takes its host's turn.
+        if let Some(w) = next.filter(|w| w.lookup) {
+            st.budgets
+                .of(&crate::hosts::host_of(&w.page), now)
+                .take(now);
+        }
         let queued: Vec<&Waiting> = waiting
             .iter()
             .filter(|w| w.turn && !st.tried.contains(&key(w)))
@@ -159,17 +173,39 @@ impl Engine {
                     page: page.url.clone(),
                     turn: self.passing(st, it, now),
                     clearance: takes_clearance(st, page),
+                    lookup: false,
                 })
             });
-        let looked_up = st.items.values().filter_map(|it| {
-            let page = self.look_up_page(st, it).filter(|m| passes_now(m))?;
-            Some(Waiting {
-                id: it.id.clone(),
-                page: page.to_string(),
-                turn: true,
-                clearance: takes_clearance(st, page),
+        // Lookups by need (plan LOOK-05): first those of releases with a
+        // part no live link serves, then the rest.
+        let mut plans: HashMap<String, bool> = HashMap::new();
+        let mut needed = |it: &crate::item::Item| {
+            let root = super::friction::release_of(&st.items, &it.id);
+            *plans.entry(root.clone()).or_insert_with(|| {
+                let plan = super::release_plan(st, &self.cfg(), &root);
+                let main = plan.main.map_or(plan.sets.first(), |m| plan.sets.get(m));
+                main.is_none_or(|set| set.ids.len() < set.parts as usize)
             })
-        });
+        };
+        let mut looked_up: Vec<(bool, Waiting)> = st
+            .items
+            .values()
+            .filter_map(|it| {
+                let page = self.look_up_page(st, it).filter(|m| passes_now(m))?;
+                Some((
+                    needed(it),
+                    Waiting {
+                        id: it.id.clone(),
+                        page: page.to_string(),
+                        turn: true,
+                        clearance: takes_clearance(st, page),
+                        lookup: true,
+                    },
+                ))
+            })
+            .collect();
+        looked_up.sort_by_key(|(needed, _)| !*needed);
+        let looked_up = looked_up.into_iter().map(|(_, w)| w);
         waiting.chain(looked_up).collect()
     }
 }

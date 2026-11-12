@@ -34,6 +34,7 @@ use crate::{
     parts, paths, store,
 };
 
+mod budget;
 mod diagnostics;
 mod friction;
 mod identity;
@@ -1020,6 +1021,8 @@ struct State {
     /// go straight to the browser, which reads them itself, instead of
     /// being read by Haul first only to meet the check again.
     held_by_check: HashMap<String, Instant>,
+    /// How fast each host is asked about files before any download.
+    budgets: budget::Budgets,
     /// Pages the desktop app passed during their rows' current waits.
     tried: passes::Tried,
     /// The rows waiting in the pass queue, as the last plan saw them, for
@@ -1059,6 +1062,7 @@ impl State {
             guarded: HashSet::new(),
             cleared: HashSet::new(),
             held_by_check: HashMap::new(),
+            budgets: budget::Budgets::default(),
             tried: passes::Tried::new(),
             pass_queue: passes::Queue::default(),
             friction: friction::Frictions::new(),
@@ -1417,10 +1421,16 @@ impl Engine {
                 on_disk.len()
             );
         }
+        // Rows to look up: those queued that never were, and a wrapper's
+        // files whose size is still unknown, so a restart in the middle of
+        // the lookups goes on with them.
         let unprobed: Vec<String> = items
-            .values()
-            .filter(|i| !i.probed && i.status == Status::Queued)
-            .map(|i| i.id.clone())
+            .values_mut()
+            .filter_map(|i| {
+                let due = !i.probed && i.status == Status::Queued
+                    || i.status == Status::Paused && i.unstarted && wants_size(i);
+                due.then(|| i.id.clone())
+            })
             .collect();
 
         let paused = store::load_paused(&data_dir);
@@ -1825,6 +1835,27 @@ impl Engine {
         if self.lock().items.get(&id).is_some_and(|it| it.wrapper) {
             return self.unwrap_now(id).await;
         }
+        // Its host's turn first, at the host's pace (plan LOOK-01), without
+        // holding a slot other hosts' lookups could use meanwhile.
+        let wait = {
+            let mut st = self.lock();
+            // Only a lookup that asks the host something: an API that tells
+            // sizes, or a page on a site Haul has no code for. A known host
+            // with neither (gofile without its token) is asked nothing here.
+            let host = st
+                .items
+                .get(&id)
+                .and_then(|it| self.probe_url(it))
+                .filter(|m| hosts::tells_size(m) || hosts::known(&m.host).is_none())
+                .map(|m| m.host.to_string());
+            host.map_or(Duration::ZERO, |h| {
+                let now = Instant::now();
+                st.budgets.of(&h, now).take(now)
+            })
+        };
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
         let Ok(permit) = self.0.probes.acquire().await else {
             return;
         };
@@ -1833,12 +1864,7 @@ impl Engine {
             let Some(it) = st.items.get(&id) else { return };
             // A host the user turned off is not asked either; with only such
             // hosts, nothing is.
-            let cfg = self.cfg();
-            let url = it
-                .mirrors
-                .iter()
-                .find(|m| !cfg.is_disabled(&m.host))
-                .cloned();
+            let url = self.probe_url(it);
             let http = self.http_for(&hosts::host_of(url.as_deref().unwrap_or_default()), &st);
             let http = match url.as_deref() {
                 Some(u) => http.for_page(u),
@@ -1854,6 +1880,11 @@ impl Engine {
                 .unwrap_or(hosts::Look::Unknown),
             None => hosts::Look::Unknown,
         };
+        if let Some(url) = &url
+            && matches!(looked, hosts::Look::Found(_) | hosts::Look::Gone(_))
+        {
+            self.lock().budgets.of(&url.host, Instant::now()).answered();
+        }
         // The host deleted the file: that link is dead now, as it would be
         // found on its turn, and the row goes on to its other hosts.
         if let (hosts::Look::Gone(message), Some(url)) = (&looked, &url) {
@@ -1895,6 +1926,23 @@ impl Engine {
             return;
         }
         self.take_found(&id, found).await;
+    }
+
+    /// The link of row `it` a lookup asks: for a row named already, which is
+    /// looked up for its size, one on a host that tells it, the user's
+    /// preferred first, whichever source brought the link (plan LOOK-02);
+    /// else its first on a host that is on.
+    fn probe_url(&self, it: &Item) -> Option<Mirror> {
+        let cfg = self.cfg();
+        let sizer = it
+            .mirrors
+            .iter()
+            .filter(|m| !cfg.is_disabled(&m.host) && hosts::tells_size(m))
+            .min_by_key(|m| cfg.preference(&m.host).unwrap_or(usize::MAX));
+        sizer
+            .filter(|_| it.named || it.name.is_some())
+            .or_else(|| it.mirrors.iter().find(|m| !cfg.is_disabled(&m.host)))
+            .cloned()
     }
 
     /// Takes what a lookup learned of row `id`'s file, if anything: its
@@ -2290,6 +2338,9 @@ impl Engine {
                 if let Some(it) = st.items.get_mut(&row) {
                     it.mirrors.extend(urls.into_iter().map(Into::into));
                     it.merge_wrappers(Some(&id.to_string()), &[]);
+                    if wants_size(it) {
+                        probe.push(row.clone());
+                    }
                 }
                 continue;
             }
@@ -2329,12 +2380,9 @@ impl Engine {
                 it.status = Status::Paused;
                 it.unstarted = true;
                 it.size = e.size.unwrap_or(0);
-                // Its size from its host, when the wrapper gave none; the
-                // name the wrapper gave stays.
-                if it.probed && it.size == 0 && hosts::tells_size(&it.mirrors[0]) {
-                    it.probed = false;
-                    it.named = true;
-                }
+                // Its size from a host that tells it, when the wrapper gave
+                // none; the name the wrapper gave stays.
+                wants_size(&mut it);
                 it
             };
             it.source = Some(id.to_string());
@@ -2352,12 +2400,22 @@ impl Engine {
                     }
                     Some(new_id)
                 }
-                // Folded into a row for the same file, which holds its links now.
-                None => st
-                    .items
-                    .iter()
-                    .find(|(_, i)| i.mirrors.iter().any(|m| m.url == urls[0]))
-                    .map(|(k, _)| k.clone()),
+                // Folded into a row for the same file, which holds its links
+                // now, and is looked up for its size if they can tell it.
+                None => {
+                    let holder = st
+                        .items
+                        .iter()
+                        .find(|(_, i)| i.mirrors.iter().any(|m| m.url == urls[0]))
+                        .map(|(k, _)| k.clone());
+                    if let Some(h) = &holder
+                        && st.items.get_mut(h).is_some_and(wants_size)
+                        && !probe.contains(h)
+                    {
+                        probe.push(h.clone());
+                    }
+                    holder
+                }
             };
             if let Some(holder) = holder {
                 for u in urls {
@@ -2784,6 +2842,7 @@ impl Engine {
         for (_, lane) in st.lanes.0.values_mut().flatten() {
             lane.cooldown = None;
         }
+        st.budgets = budget::Budgets::default();
         self.publish(st);
     }
 
@@ -3446,6 +3505,26 @@ fn sibling_parts(
         }
     }
     (!by_number.is_empty()).then_some(by_number)
+}
+
+/// Whether row `it`, a file not started, named but with no size, has a link
+/// on a host that tells
+/// sizes: it is then looked up for its size (its name stays), and marked so.
+fn wants_size(it: &mut Item) -> bool {
+    // Only a file nobody started: one the person queued learns its size
+    // when it downloads, and stays as they left it.
+    let wants = !it.wrapper
+        && it.status == Status::Paused
+        && it.size == 0
+        && it.done == 0
+        && it.name.is_some()
+        && !it.running()
+        && it.mirrors.iter().any(|m| hosts::tells_size(m));
+    if wants {
+        it.probed = false;
+        it.named = true;
+    }
+    wants
 }
 
 /// The rows of release `root` (a row and everything found from it) as
