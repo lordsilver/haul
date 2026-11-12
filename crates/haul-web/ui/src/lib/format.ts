@@ -40,3 +40,8 @@ export function roughly(seconds: number): string {
   const h = Math.floor(min / 60);
   return `about ${h} h${min % 60 ? ` ${min % 60} min` : ''}`;
 }
+
+// The time of day `seconds` from now, as the clock shows it: 14:20.
+export function clockIn(seconds: number): string {
+  return new Date(Date.now() + seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}

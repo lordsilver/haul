@@ -240,6 +240,9 @@ pub(crate) struct Item {
     /// Where it stands with the page the desktop app passes for it.
     #[serde(skip)]
     pub page: PageTurn,
+    /// The person was told its page wants them: not again until they act.
+    #[serde(skip)]
+    pub told_person: bool,
     /// Listed by a wrapper and not started by the person yet: nothing about
     /// it is told as a failure or as wanting them, and losing a mirror
     /// leaves it waiting ([`Item::start`] clears it).

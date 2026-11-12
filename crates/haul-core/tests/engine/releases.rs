@@ -652,7 +652,7 @@ fn cases() -> Vec<Release> {
             .gate("BBBBBBBB")
             .gate("FFFFFFFF")
             .holds(Sets)
-            .fails_until(Asks(0), "FLOW-02"),
+            .holds(Asks(0)),
     ]
 }
 
@@ -1718,7 +1718,14 @@ async fn a_report_shows_the_paste_the_listings_the_pass_queue_and_the_asks() {
     engine.set_pages_pass(true);
     engine.add_text(&release.url(), "");
     let mut desktop = Desktop::default();
-    let settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+    let mut settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+    // The gated container's own tries, before anyone is asked (FLOW-01).
+    for _ in 0..3 {
+        for w in engine.snapshot().wrappers {
+            engine.debug_retry_now(&w.id);
+        }
+        settled = settled.and(drive(&engine, &stand, &mut desktop, |_| false).await);
+    }
     let s = engine.snapshot();
     let (_, zip) = engine.report_zip(serde_json::Value::Null).unwrap();
     let report = engine.diagnostics(serde_json::Value::Null);
@@ -1746,8 +1753,9 @@ async fn a_report_shows_the_paste_the_listings_the_pass_queue_and_the_asks() {
         log.contains(r#"\"name\":\"Example.Set.part1.rar\""#),
         "{log}"
     );
-    assert_eq!(lines("pass queue queued"), 1, "{log}");
-    assert_eq!(lines("pass queue started"), 1, "{log}");
+    // Its first pass and its three tries of its own.
+    assert_eq!(lines("pass queue queued"), 4, "{log}");
+    assert_eq!(lines("pass queue started"), 4, "{log}");
     assert_eq!(lines("asks a person: filecrypt.cc (gate)"), 1, "{log}");
     let friction = &report["friction"];
     assert_eq!(friction.as_array().map(Vec::len), Some(1), "{friction}");

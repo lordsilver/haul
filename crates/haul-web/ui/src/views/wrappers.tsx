@@ -9,7 +9,7 @@ import type { State } from '@/lib/bindings/State';
 import type { WrapperCard } from '@/lib/bindings/WrapperCard';
 import { partsSummary, passingCaption } from '@/lib/captions';
 import { wrappers } from '@/lib/client';
-import { duration, plural } from '@/lib/format';
+import { clockIn, duration, plural } from '@/lib/format';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { NeedsYou, PasteLink } from '@/views/downloads/needs-you';
@@ -123,7 +123,7 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
   const reason = card.reason;
   // When a failed one, or the page of one waiting for a person, is tried
   // again on its own, after its reason.
-  const again = card.again ? `trying again in ${duration(card.again)}` : '';
+  const again = card.again ? `Haul tries again by itself at ${clockIn(card.again)}` : '';
   // The wrapper the card shows: the one to open when it needs a person.
   const first = card.open_id;
   const hint = s.desktop

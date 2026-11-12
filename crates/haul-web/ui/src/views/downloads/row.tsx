@@ -10,7 +10,7 @@ import type { Command } from '@/lib/bindings/Command';
 import type { ItemView } from '@/lib/bindings/ItemView';
 import { caption, percent } from '@/lib/captions';
 import { item } from '@/lib/client';
-import { bytes, duration, plural } from '@/lib/format';
+import { bytes, clockIn, duration, plural } from '@/lib/format';
 import { pickMany, picking } from '@/lib/selection';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
@@ -189,7 +189,7 @@ function Subtitle({ it, off }: { it: ItemView; off: Set<string> }) {
   const reason = it.reason;
   const tone = it.status === 'error' ? 'text-destructive' : it.status === 'captcha' ? 'text-warn-strong' : '';
   // When its page is passed again on its own, while it waits for the person.
-  const again = it.again ? `trying again in ${duration(it.again)}` : '';
+  const again = it.again ? `Haul tries again by itself at ${clockIn(it.again)}` : '';
   return (
     <div
       className="truncate text-xs text-muted-foreground"

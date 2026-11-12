@@ -551,7 +551,7 @@ async fn a_wrappers_page_that_wants_a_person_is_tried_again_by_itself() {
     engine.add_text("https://filecrypt.cc/Container/cf-always.html", "");
     let s = wrapper_settled(&engine, "passing").await;
     let id = s.wrappers[0].id.clone();
-    assert!(engine.page_wants_person(&id));
+    assert!(!engine.page_wants_person(&id), "its own tries first");
     let s = wrapper_settled(&engine, "captcha").await;
     assert!(s.wrapper_cards[0].retry_in > 0, "the card says when");
     assert_eq!(s.wrapper_cards[0].need_you, 1);
@@ -559,7 +559,7 @@ async fn a_wrappers_page_that_wants_a_person_is_tried_again_by_itself() {
         assert!(engine.debug_retry_now(&id), "try {round}");
         wrapper_settled(&engine, "passing").await;
         assert_eq!(auto_retries(&engine, &id), round);
-        assert!(!engine.page_wants_person(&id), "nobody is told");
+        assert_eq!(engine.page_wants_person(&id), round == 3, "told after its last try");
         let s = wrapper_settled(&engine, "captcha").await;
         if round < 3 {
             assert!(s.wrappers[0].retry_in > 0, "try {round} is not the last");
@@ -764,9 +764,9 @@ async fn a_clearance_lets_haul_read_the_sites_waiting_containers() {
 }
 
 /// A wrapper whose page passed out of sight still wants a person shows so
-/// at once, even while downloads are paused: it has no other link to go on
-/// with, so the notification asking for the person is never left without a
-/// card to act on.
+/// at once on its card, even while downloads are paused: it has no other
+/// link to go on with, so the notification that comes once its own tries
+/// are spent is never left without a card to act on.
 #[tokio::test]
 async fn a_wrapper_that_wants_a_person_says_so_while_paused() {
     let t = Setup::new().await;
@@ -775,7 +775,7 @@ async fn a_wrapper_that_wants_a_person_says_so_while_paused() {
     engine.set_paused(true);
     engine.add_text("https://filecrypt.cc/Container/cf-always.html", "");
     let s = wrapper_settled(&engine, "passing").await;
-    assert!(engine.page_wants_person(&s.wrappers[0].id));
+    assert!(!engine.page_wants_person(&s.wrappers[0].id));
     let s = wrapper_settled(&engine, "captcha").await;
     assert_eq!(s.wrapper_cards[0].need_you, 1);
 }

@@ -227,10 +227,16 @@ impl Engine {
         }
         let mut st = self.lock();
         let mut tell = true;
-        if let Some(it) = st.items.get_mut(id) {
-            tell = !it.page_retrying();
+        if let Some(it) = st.items.get(id) {
+            // Nobody hears of it while its page has tries of its own left;
+            // once they are spent, the person is told, once.
+            let left = self.page_retry_at(&st, it, Instant::now()).is_some();
+            tell = !left && !it.told_person;
             if tell {
                 self.ask_in(&mut st, id);
+                if let Some(it) = st.items.get_mut(id) {
+                    it.told_person = true;
+                }
             }
             let Some(it) = st.items.get_mut(id) else {
                 return tell;
@@ -299,10 +305,14 @@ impl Engine {
         if self.looked_up_nothing(id) {
             return false;
         }
+        // Another look shows the same: no try of its own, the person is
+        // told at once.
+        if let Some(it) = self.lock().items.get_mut(id) {
+            it.auto_retries = AUTO_RETRIES;
+        }
         let tell = self.page_wants_person(id);
         let mut st = self.lock();
         if let Some(it) = st.items.get_mut(id) {
-            it.auto_retries = AUTO_RETRIES;
             it.retry_at = None;
         }
         self.touch(&mut st);

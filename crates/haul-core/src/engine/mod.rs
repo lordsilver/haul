@@ -2536,6 +2536,7 @@ impl Engine {
                 it.queue_if_idle();
                 it.manual_urls.clear();
                 it.page = PageTurn::InTurn;
+                it.told_person = false;
                 // The person's own try: the page's first pass again.
                 it.auto_retries = 0;
                 it.retry_at = None;
