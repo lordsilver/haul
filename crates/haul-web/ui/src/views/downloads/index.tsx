@@ -249,7 +249,7 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
           everything is paused, resuming; pausing never does. */}
       {waiting.length ? (
         <Button
-          variant={s.paused ? 'ghost' : 'outline'}
+          variant={s.paused ? 'outline' : 'default'}
           onClick={() =>
             bulk(
               waiting.map((i) => i.id),
@@ -262,14 +262,18 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
         </Button>
       ) : null}
       <Button
-        variant={s.paused ? 'outline' : 'ghost'}
+        variant={s.paused ? 'default' : 'ghost'}
         disabled={!s.paused && !s.counts.active}
         onClick={() => queue(s.paused ? 'resume' : 'pause').catch(report)}
       >
         {s.paused ? <Play /> : <Pause />}
         {s.paused ? 'Resume all' : 'Pause all'}
       </Button>
-      <Button variant="ghost" disabled={!failed} onClick={() => queue('retry_failed').catch(report)}>
+      <Button
+        variant={failed ? 'outline' : 'ghost'}
+        disabled={!failed}
+        onClick={() => queue('retry_failed').catch(report)}
+      >
         <RotateCw />
         Retry failed
       </Button>
