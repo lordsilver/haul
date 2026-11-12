@@ -3507,10 +3507,14 @@ fn sibling_parts(
     (!by_number.is_empty()).then_some(by_number)
 }
 
-/// Whether row `it`, named but with no size, has a link on a host that tells
+/// Whether row `it`, a file not started, named but with no size, has a link
+/// on a host that tells
 /// sizes: it is then looked up for its size (its name stays), and marked so.
 fn wants_size(it: &mut Item) -> bool {
+    // Only a file nobody started: one the person queued learns its size
+    // when it downloads, and stays as they left it.
     let wants = !it.wrapper
+        && it.status == Status::Paused
         && it.size == 0
         && it.done == 0
         && it.name.is_some()
