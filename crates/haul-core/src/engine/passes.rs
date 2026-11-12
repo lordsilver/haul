@@ -176,16 +176,36 @@ impl Engine {
                     lookup: false,
                 })
             });
-        let looked_up = st.items.values().filter_map(|it| {
-            let page = self.look_up_page(st, it).filter(|m| passes_now(m))?;
-            Some(Waiting {
-                id: it.id.clone(),
-                page: page.to_string(),
-                turn: true,
-                clearance: takes_clearance(st, page),
-                lookup: true,
+        // Lookups by need (plan LOOK-05): first those of releases with a
+        // part no live link serves, then the rest.
+        let mut plans: HashMap<String, bool> = HashMap::new();
+        let mut needed = |it: &crate::item::Item| {
+            let root = super::friction::release_of(&st.items, &it.id);
+            *plans.entry(root.clone()).or_insert_with(|| {
+                let plan = super::release_plan(st, &self.cfg(), &root);
+                let main = plan.main.map_or(plan.sets.first(), |m| plan.sets.get(m));
+                main.is_none_or(|set| set.ids.len() < set.parts as usize)
             })
-        });
+        };
+        let mut looked_up: Vec<(bool, Waiting)> = st
+            .items
+            .values()
+            .filter_map(|it| {
+                let page = self.look_up_page(st, it).filter(|m| passes_now(m))?;
+                Some((
+                    needed(it),
+                    Waiting {
+                        id: it.id.clone(),
+                        page: page.to_string(),
+                        turn: true,
+                        clearance: takes_clearance(st, page),
+                        lookup: true,
+                    },
+                ))
+            })
+            .collect();
+        looked_up.sort_by_key(|(needed, _)| !*needed);
+        let looked_up = looked_up.into_iter().map(|(_, w)| w);
         waiting.chain(looked_up).collect()
     }
 }
