@@ -46,6 +46,7 @@ pub use stand_in::{reach, real, set_stand_in, stand_in};
 
 pub(crate) use generic::gate_message;
 pub use generic::{is_paste, is_paste_host, pasted_links, short_title};
+pub use gofile::{PageAnswer, page_answer};
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},

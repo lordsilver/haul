@@ -2702,6 +2702,18 @@ impl Engine {
         true
     }
 
+    /// Ends every wait a host asked of an address now, for tests of what
+    /// comes after it.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_end_waits(&self) {
+        let mut st = self.lock();
+        for (_, lane) in st.lanes.0.values_mut().flatten() {
+            lane.cooldown = None;
+        }
+        self.publish(st);
+    }
+
     /// Stops starting downloads and pauses the running ones; they resume
     /// where they stopped.
     pub fn set_paused(&self, paused: bool) {

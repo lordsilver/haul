@@ -878,6 +878,22 @@ fn said(url: &Url) -> Option<Said> {
             })
         }
         "/gone" => Some(Said::Gone(reason())),
+        "/answered" => {
+            let http = pair("http").and_then(|h| h.parse().ok()).unwrap_or(0);
+            let answer = hosts::page_answer(&pair("site")?, http, &pair("status").unwrap_or_default());
+            Some(match answer {
+                hosts::PageAnswer::Gone(reason) => Said::Gone(reason),
+                hosts::PageAnswer::Later { reason, seconds } => Said::Later {
+                    reason,
+                    seconds: Some(seconds),
+                },
+                // Failed for now: the page is tried again later.
+                hosts::PageAnswer::Failed(reason) => Said::Later {
+                    reason,
+                    seconds: None,
+                },
+            })
+        }
         "/later" => Some(Said::Later {
             reason: reason(),
             seconds: pair("seconds").and_then(|s| s.parse().ok()),

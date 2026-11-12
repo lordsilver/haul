@@ -51,6 +51,14 @@
     send({ gone: reason }, "https://haul.invalid/gone?" + new URLSearchParams({ reason }));
   };
 
+  // The page's host answered its own request with no files: Rust reads
+  // what the answer means (gone, a rate limit, another error).
+  const answered = (http, status) => {
+    if (handed) return;
+    handed = true;
+    send({ answered: { site, http, status } }, "https://haul.invalid/answered?" + new URLSearchParams({ site, http, status }));
+  };
+
   const recipes = [
     {
       // Once its Turnstile check passes, the page fetches the file's link
@@ -93,13 +101,12 @@
               .clone()
               .json()
               .then((answer) => {
-                if (answer?.status === "error-notFound") return gone("gofile: the folder was deleted");
-                if (answer?.status !== "ok") return;
+                if (answer?.status !== "ok") return answered(response.status, String(answer?.status ?? ""));
                 const data = answer.data ?? {};
                 const nodes = data.type === "file" ? [data] : Object.values(data.children ?? {});
                 hand(nodes.filter((n) => n.type === "file" && n.link).map((n) => ({ url: n.link, name: n.name, size: n.size })));
               })
-              .catch(() => {});
+              .catch(() => answered(response.status, ""));
           }
           return response;
         };

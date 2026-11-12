@@ -632,7 +632,7 @@ fn cases() -> Vec<Release> {
                 Order::AddedAgain,
             ])
             .holds(OneCard)
-            .fails_until(Sets, "MODEL-09")
+            .holds(Sets)
             .fails_until(NeverUnnamed, "MODEL-09")
             .fails_until(NoRowVanishes, "MODEL-09")
             .fails_until(ExactSizes, "LOOK-02")
@@ -651,7 +651,7 @@ fn cases() -> Vec<Release> {
             .orders(&[Order::Listed])
             .gate("BBBBBBBB")
             .gate("FFFFFFFF")
-            .fails_until(Sets, "MODEL-09")
+            .holds(Sets)
             .fails_until(Asks(0), "FLOW-02"),
     ]
 }
@@ -924,10 +924,9 @@ impl Desktop {
         if host == "gofile.io" {
             self.lookups += 1;
             let key = page.rsplit('/').next().unwrap_or_default();
-            let (_, said) = stand.gofile(key);
-            // As handoff.js's gofile recipe reads the API: files, gone, or
-            // anything else dropped, which leaves the pass to end wanting a
-            // person. LOOK-03 hands the status to Rust instead.
+            let (http, said) = stand.gofile(key);
+            // As handoff.js's gofile recipe reads the API: its files, or
+            // the answer handed to Rust to read (LOOK-03).
             match said["status"].as_str() {
                 Some("ok") => {
                     let files = said["data"]["children"]
@@ -943,8 +942,13 @@ impl Desktop {
                         .collect();
                     let _ = engine.set_files(id, files);
                 }
-                Some("error-notFound") => engine.page_gone(id, "gofile: the folder was deleted"),
-                _ => self.wants_person(engine, id, &host),
+                status => match hosts::page_answer(&host, http, status.unwrap_or_default()) {
+                    hosts::PageAnswer::Gone(reason) => engine.page_gone(id, &reason),
+                    hosts::PageAnswer::Later { reason, seconds } => {
+                        engine.page_later(id, page, &reason, Some(seconds));
+                    }
+                    hosts::PageAnswer::Failed(reason) => engine.page_failed(id, &reason),
+                },
             }
             return;
         }
@@ -973,16 +977,20 @@ impl Desktop {
         self.told.push((kind, rows));
     }
 
-    /// The engine's events, gathered as the desktop app gathers them (two
-    /// seconds from a burst's first), told with the window out of focus.
+    /// The engine's events, gathered as the desktop app gathers them
+    /// ([`haul_core::gather`]: until two seconds pass without one, ten at
+    /// most), told with the window out of focus.
     fn tell(&mut self, engine: &Engine, events: &[(Instant, Event)]) {
         let mut at = 0;
         while at < events.len() {
-            let until = events[at].0 + Duration::from_secs(2);
-            let end = events[at..]
-                .iter()
-                .position(|(t, _)| *t >= until)
-                .map_or(events.len(), |p| at + p);
+            let longest = events[at].0 + Duration::from_secs(10);
+            let mut end = at + 1;
+            while end < events.len()
+                && events[end].0 < longest
+                && events[end].0 < events[end - 1].0 + Duration::from_secs(2)
+            {
+                end += 1;
+            }
             let burst: Vec<Event> = events[at..end].iter().map(|(_, e)| e.clone()).collect();
             for t in engine.tellings(&burst) {
                 self.notify(engine, t.kind, t.rows);
@@ -1291,7 +1299,16 @@ async fn run(release: &Arc<Release>, order: Order) -> Run {
             }
             _ => {}
         }
-        let settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+        let mut settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+        // A host's wait (gofile's rate limit) over, what it held back is
+        // asked again.
+        for _ in 0..3 {
+            if settled.is_err() {
+                break;
+            }
+            engine.debug_end_waits();
+            settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+        }
         phase.end(&engine, &mut desktop, &mut acc).await;
         let end = engine.snapshot();
         engine.shutdown().await;

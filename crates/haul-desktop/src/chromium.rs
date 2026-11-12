@@ -689,6 +689,18 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
                 json!({ "event": "page", "id": p.item, "url": p.url, "said": sent }),
             );
         }
+        if let Some(site) = sent["answered"]["site"].as_str() {
+            let http = sent["answered"]["http"].as_u64().unwrap_or(0) as u16;
+            let status = sent["answered"]["status"].as_str().unwrap_or_default();
+            return Ok(match hosts::page_answer(site, http, status) {
+                hosts::PageAnswer::Gone(reason) => Outcome::Gone(reason),
+                hosts::PageAnswer::Later { reason, seconds } => Outcome::Later {
+                    reason,
+                    seconds: Some(seconds),
+                },
+                hosts::PageAnswer::Failed(reason) => Outcome::Failed(reason),
+            });
+        }
         if let Some(reason) = sent["gone"].as_str() {
             return Ok(Outcome::Gone(reason.to_string()));
         }
