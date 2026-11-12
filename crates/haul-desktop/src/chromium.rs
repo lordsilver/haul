@@ -237,6 +237,7 @@ pub struct Shown {
 /// next pages.
 pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
     std::fs::create_dir_all(&p.profile).map_err(|e| format!("{}: {e}", p.profile.display()))?;
+    mark_closed_cleanly(&p.profile);
     #[cfg(windows)]
     end_stray(&p, "before");
     // A port of our own choosing: with `--remote-debugging-port=0` (the
@@ -259,6 +260,9 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
         "--disable-features=CalculateNativeWinOcclusion".into(),
         "--disable-backgrounding-occluded-windows".into(),
         "--window-size=1100,800".into(),
+        // A pass browser Haul had to end (an update, a crash) leaves no
+        // "Restore pages" bubble behind for the next one.
+        "--hide-crash-restore-bubble".into(),
     ];
     if let Some(addr) = p.proxy {
         args.push(format!("--proxy-server=socks5://{addr}"));
@@ -303,6 +307,9 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
         });
     }
     let result = drive(&mut browser, port, &p);
+    // Closed as a person closes it, so the profile is left as closed
+    // cleanly; killed only if that does not end it.
+    close_gently(&mut browser, port);
     hiding.store(false, Ordering::Relaxed);
     // The process Haul started exited during the pass: the browser that
     // answered for it may hold the profile outside Haul's job.
@@ -827,6 +834,55 @@ const EXITED_AT_START: Duration = Duration::from_secs(5);
 /// The browser's DevTools WebSocket, from its `/json/version` once it
 /// listens. (`DevToolsActivePort` in the profile is written only when the
 /// browser picks the port itself.)
+/// Asks the browser on DevTools' `port` to close, and waits a little for the
+/// process Haul started to exit; what is left is killed as before.
+fn close_gently(browser: &mut Browser, port: u16) {
+    if browser.child.try_wait().ok().flatten().is_some() {
+        return;
+    }
+    let Some(endpoint) = version(port)
+        .as_ref()
+        .and_then(|v| v["webSocketDebuggerUrl"].as_str())
+        .map(str::to_string)
+    else {
+        return;
+    };
+    if let Ok(mut cdp) = Cdp::connect(&endpoint) {
+        let _ = cdp.call("Browser.close", json!({}), None);
+    }
+    let until = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < until {
+        if browser.child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Marks the profile at `profile` as closed cleanly, whatever ended its last
+/// browser (Haul, an update, a crash): Edge then shows no "Restore pages"
+/// bubble. A profile with no preferences yet is left alone.
+pub(crate) fn mark_closed_cleanly(profile: &std::path::Path) {
+    let file = profile.join("Default").join("Preferences");
+    let Ok(text) = std::fs::read_to_string(&file) else {
+        return;
+    };
+    let Ok(mut prefs) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    if prefs["profile"]["exit_type"] == "Normal" && prefs["profile"]["exited_cleanly"] == true {
+        return;
+    }
+    if !prefs["profile"].is_object() {
+        prefs["profile"] = json!({});
+    }
+    prefs["profile"]["exit_type"] = json!("Normal");
+    prefs["profile"]["exited_cleanly"] = json!(true);
+    if let Ok(text) = serde_json::to_string(&prefs) {
+        let _ = std::fs::write(&file, text);
+    }
+}
+
 fn wait_for_endpoint(browser: &mut Browser, port: u16) -> Result<String, String> {
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut exited = None;
@@ -1536,6 +1592,33 @@ fn look(cdp: &mut Cdp, s: Option<&str>) -> Look {
 #[cfg(test)]
 mod download_tests {
     use super::*;
+
+    /// A profile whose last browser was ended reads as closed cleanly
+    /// afterwards, and its other preferences stay.
+    #[test]
+    fn a_killed_profile_is_marked_closed_cleanly() {
+        let dir = std::env::temp_dir().join(format!("haul-prefs-{}", std::process::id()));
+        let prefs = dir.join("Default");
+        std::fs::create_dir_all(&prefs).unwrap();
+        std::fs::write(
+            prefs.join("Preferences"),
+            r#"{"profile":{"exit_type":"Crashed","exited_cleanly":false,"name":"Example"},"other":1}"#,
+        )
+        .unwrap();
+        super::mark_closed_cleanly(&dir);
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(prefs.join("Preferences")).unwrap())
+                .unwrap();
+        assert_eq!(v["profile"]["exit_type"], "Normal");
+        assert_eq!(v["profile"]["exited_cleanly"], true);
+        assert_eq!(v["profile"]["name"], "Example");
+        assert_eq!(v["other"], 1);
+        // No profile yet: nothing is made.
+        let empty = dir.join("empty");
+        super::mark_closed_cleanly(&empty);
+        assert!(!empty.join("Default").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_file_the_browser_reports_is_read_from_its_event() {
