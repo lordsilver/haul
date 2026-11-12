@@ -436,6 +436,13 @@ pub fn init(data_dir: &Path, console: bool, debug: bool) {
             "Haul {} starts",
             env!("CARGO_PKG_VERSION")
         );
+        // Turned on with debug mode, above, before there was a log to say it.
+        if let Some(port) = crate::hosts::stand_in() {
+            tracing::warn!(
+                port,
+                "stand-in mode: every site is reached at <site>.localhost:{port}"
+            );
+        }
     }
 }
 

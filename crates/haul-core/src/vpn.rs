@@ -76,7 +76,10 @@ struct NordCity {
 }
 
 /// Every NordVPN server that takes SOCKS5, least loaded first.
-pub async fn nordvpn_servers(http: &reqwest::Client, api: &str) -> Result<Vec<Server>, String> {
+pub async fn nordvpn_servers(
+    http: &crate::hosts::Client,
+    api: &str,
+) -> Result<Vec<Server>, String> {
     let url =
         format!("{api}/v1/servers?limit=1000&filters[servers_technologies][identifier]=socks");
     let list: Vec<NordServer> = http

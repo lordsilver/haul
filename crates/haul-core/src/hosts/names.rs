@@ -41,16 +41,15 @@ pub fn known_sites() -> Vec<String> {
         .collect()
 }
 
-/// A link's host name, lowercase and without `www.`, as it is written.
+/// A link's host name, lowercase and without `www.`, as it is written (a
+/// stand-in's without its `.localhost`, [`super::stand_in`]).
 pub(super) fn domain_of(url: &str) -> String {
     let host = url::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
         .unwrap_or_default();
-    match host.strip_prefix("www.") {
-        Some(rest) => rest.to_string(),
-        None => host,
-    }
+    let host = super::stand_in::real_name(&host);
+    host.strip_prefix("www.").unwrap_or(host).to_string()
 }
 
 /// The site a link's host belongs to, as far as who runs it goes: the host

@@ -1500,11 +1500,13 @@ impl Engine {
                         .push(it.id.clone());
                 }
             }
-            for link in links {
+            for mut link in links {
                 if !hosts::is_http(&link.url) {
                     added.invalid += 1;
                     continue;
                 }
+                // A stand-in's address is kept as the real one it stands for.
+                link.url = hosts::real(&link.url).into_owned();
                 if !known.insert(link.url.clone()) {
                     added.duplicates += 1;
                     continue;

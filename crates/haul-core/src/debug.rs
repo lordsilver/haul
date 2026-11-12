@@ -82,11 +82,16 @@ pub fn init(data_dir: &Path) -> &'static Bus {
 }
 
 /// Turns debug mode on for the whole run, whatever the settings say: the
-/// bus, and a fresh token in `debug-token` in `data_dir`.
+/// bus, and a fresh token in `debug-token` in `data_dir`. With
+/// `HAUL_STAND_IN=<port>`, stand-in mode too ([`crate::hosts::reach`]),
+/// which only this start of debug mode turns on.
 pub fn enable(data_dir: &Path) -> &'static Bus {
     let bus = init(data_dir);
     bus.forced.store(true, Ordering::Relaxed);
     bus.set_on(true);
+    if let Some(port) = crate::hosts::stand_in_asked() {
+        crate::hosts::set_stand_in(Some(port));
+    }
     bus
 }
 

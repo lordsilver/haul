@@ -56,7 +56,7 @@ fn without_trailing(mut link: &str) -> &str {
 
 /// Links from a container file, recognised by its name.
 pub async fn read(
-    http: &reqwest::Client,
+    http: &crate::hosts::Client,
     dlc_service: &str,
     filename: &str,
     bytes: &[u8],
@@ -144,7 +144,7 @@ static FILE_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)<filename>(.*?)</filename>").unwrap());
 
 pub async fn parse_dlc(
-    http: &reqwest::Client,
+    http: &crate::hosts::Client,
     service: &str,
     raw: &[u8],
 ) -> Result<Vec<Link>, String> {
@@ -327,7 +327,7 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let links = parse_dlc(
-            &reqwest::Client::new(),
+            &crate::hosts::Client::default(),
             &format!("http://{addr}/service.php"),
             &dlc,
         )
@@ -355,9 +355,13 @@ mod tests {
             ]
         );
         assert!(
-            parse_dlc(&reqwest::Client::new(), "http://127.0.0.1:9/", b"short")
-                .await
-                .is_err()
+            parse_dlc(
+                &crate::hosts::Client::default(),
+                "http://127.0.0.1:9/",
+                b"short"
+            )
+            .await
+            .is_err()
         );
     }
 }

@@ -13,7 +13,7 @@ use reqwest::header::{ACCEPT_ENCODING, RANGE};
 use super::{
     Cx, Entry, FILE_EXTENSIONS, Look, Need, Probed, ResolveError, content_length, content_range,
     content_type, disposition_name, gates, gone_or_broken, guess_name, header_checksum, host_of,
-    known, rate_limited, site_of, wraps,
+    known, rate_limited, real, site_of, wraps,
 };
 
 pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, ResolveError> {
@@ -59,7 +59,8 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
             Some((_, total)) => total,
             None => content_length(r.headers()),
         };
-        let final_url = r.url().to_string();
+        // Its real form in stand-in mode, as a list names the same file.
+        let final_url = real(r.url().as_str()).into_owned();
         let name = disposition_name(r.headers())
             .or_else(|| guess_name(&final_url))
             .or_else(|| guess_name(url));
@@ -131,6 +132,13 @@ pub(super) fn challenged(headers: &reqwest::header::HeaderMap) -> bool {
 /// What a page behind a browser check needs: a browser, which the desktop
 /// app opens out of sight. The check's own page `r` says what kind of check
 /// it is ([`challenge_kind`]), which the row names.
+/// Where `r` answered from, in its real form in stand-in mode
+/// ([`real`]): the base a page's relative links are read against, so they
+/// name the same addresses as its absolute ones.
+fn answered_at(r: &reqwest::Response) -> url::Url {
+    url::Url::parse(&real(r.url().as_str())).unwrap_or_else(|_| r.url().clone())
+}
+
 pub(super) async fn guarded_by(url: &str, mut r: reqwest::Response) -> ResolveError {
     let page = read(&mut r, PEEK).await;
     let kind = challenge_kind(&String::from_utf8_lossy(&page))
@@ -292,7 +300,7 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
     Look::Page {
         title: page_title(&page),
         named: named_in_title(&page),
-        links: links_in(&page, r.url(), url),
+        links: links_in(&page, &answered_at(&r), url),
         password: password_in(&page),
         gate: gates::detect(&page),
     }
@@ -333,7 +341,7 @@ pub(super) async fn page(
     if !content_type(r.headers()).contains("html") {
         return Err(ResolveError::failed("not a web page"));
     }
-    let base = r.url().clone();
+    let base = answered_at(&r);
     let page = read(&mut r, PAGE).await;
     let page = String::from_utf8_lossy(&page);
     let mut urls = links_in(&page, &base, url);

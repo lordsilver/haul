@@ -951,7 +951,7 @@ pub(super) async fn start_server() -> (Server, u16) {
                     "abc.html" | "open.html" | "cf-once.html" | "host-a.html" | "host-b.html"
                     | "unnamed.html" | "for-account.html" | "ids-a.html" | "ids-b.html" | "same-a.html" | "same-b.html"
                     | "other-a.html" | "other-b.html" | "mix-ids.html" | "mix-unnamed.html"
-                    | "mix-named.html" => FC_GATE.into_response(),
+                    | "mix-named.html" | "real-links.html" => FC_GATE.into_response(),
                     // Another gate than the checkbox, past the check in front
                     // of the site.
                     "other-gate.html" => "<h2>Security Check</h2><div class=\"other\"></div>".into_response(),
@@ -1048,6 +1048,17 @@ pub(super) async fn start_server() -> (Server, u16) {
                         &[
                             format!("http://{at}/files/{id}.part1.rar"),
                             format!("http://{at}/files/{id}.part2.rar"),
+                        ],
+                    )
+                } else if page == "real-links.html" {
+                    // Its links in their real form, as a container on the
+                    // real site lists them: in stand-in mode they still come
+                    // here.
+                    fc_solved_with(
+                        "Open Example",
+                        &[
+                            "https://site.example/files/one.bin".to_string(),
+                            "https://site.example/files/two.bin".to_string(),
                         ],
                     )
                 } else if page == "open.html"

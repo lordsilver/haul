@@ -33,6 +33,7 @@ mod http;
 mod known;
 mod names;
 mod sites;
+mod stand_in;
 
 pub use checksum::*;
 pub(crate) use headers::*;
@@ -40,6 +41,8 @@ pub use http::*;
 pub use known::*;
 pub use names::*;
 use sites::Site;
+pub(crate) use stand_in::asked as stand_in_asked;
+pub use stand_in::{reach, real, set_stand_in, stand_in};
 
 pub(crate) use generic::gate_message;
 pub use generic::{is_paste, is_paste_host, pasted_links, short_title};

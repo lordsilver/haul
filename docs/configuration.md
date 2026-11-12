@@ -66,7 +66,7 @@ What each download setting does is in [How downloads behave](downloading.md).
 
 ## Environment variables
 
-`HAUL_PROXY` replaces `proxy`; `HAUL_` and an account key in capitals (`HAUL_1FICHIER_KEY`, `HAUL_PIXELDRAIN_KEY`, `HAUL_ROUTER_PASSWORD`, `HAUL_NORDVPN_USER` and so on, one for every key under `[accounts]`) fills that key when the file leaves it unset. Settings shows those as set by the environment and does not change them. `HAUL_DATA_DIR` moves the data folder and `HAUL_PORT` the local port (default 8765). `HAUL_DEBUG=1` starts Haul in [debug mode](debugging.md).
+`HAUL_PROXY` replaces `proxy`; `HAUL_` and an account key in capitals (`HAUL_1FICHIER_KEY`, `HAUL_PIXELDRAIN_KEY`, `HAUL_ROUTER_PASSWORD`, `HAUL_NORDVPN_USER` and so on, one for every key under `[accounts]`) fills that key when the file leaves it unset. Settings shows those as set by the environment and does not change them. `HAUL_DATA_DIR` moves the data folder and `HAUL_PORT` the local port (default 8765). `HAUL_DEBUG=1` starts Haul in [debug mode](debugging.md), and with it `HAUL_STAND_IN=<port>` turns on [stand-in mode](debugging.md#real-sites-stood-in-for), for tests.
 
 ## The data folder
 

@@ -11,6 +11,13 @@
 (() => {
   // The page itself, never its frames (see overlays.js).
   if (window !== window.top) return;
+  // An address as Haul names it: in stand-in mode (browser.rs sets
+  // __haulStandIn), `http://<site>.localhost:<port>/…` stands for
+  // `https://<site>/…`, as hosts::reach in haul-core has it.
+  // (One statement: browser.rs's tests run it.)
+  const real = (address) => (window.__haulStandIn ? address.replace(/^http:\/\/([^/?#]+)\.localhost(:\d+)?(?=[/?#]|$)/i, "https://$1") : address);
+  // The page's site, as the recipes name it.
+  const site = new URL(real(location.href)).hostname;
   let handed = false;
   const send = (message, address) => {
     window.__haulHandoff = message;
@@ -81,7 +88,7 @@
         window.fetch = async function (...args) {
           const response = await fetched.apply(this, args);
           const url = String(args[0]?.url ?? args[0] ?? "");
-          if (/^https:\/\/api\.gofile\.io\/contents\/[^/?]+\?/.test(url)) {
+          if (/^https:\/\/api\.gofile\.io\/contents\/[^/?]+\?/.test(real(url))) {
             response
               .clone()
               .json()
@@ -334,7 +341,7 @@
   // countdown) is pressed, at most four times over the pages it leads to; a
   // link that names a file is handed over as it is. Nothing here knows a
   // site: words, links and what can be pressed decide.
-  if (window.__haulLists && window.__haulDevTools && !recipes.some((r) => r.site.test(location.hostname))) {
+  if (window.__haulLists && window.__haulDevTools && !recipes.some((r) => r.site.test(site))) {
     const SAYS_DOWNLOAD =
       /\b(download|t[ée]l[ée]charger|herunterladen|descargar|scaricare|scarica|baixar|скачать|get (the )?file|free download|slow download|start download|generate (the )?link|continue to (the )?download)\b|下载|ダウンロード/i;
     const NOT_FREE = /\b(premium|fast(er)? download|high speed|buy|upgrade|vip|torrent|install|extension|register|sign ?up|log ?in|subscribe)\b/i;
@@ -424,5 +431,5 @@
     }, 1000);
   }
 
-  recipes.find((r) => r.site.test(location.hostname))?.watch();
+  recipes.find((r) => r.site.test(site))?.watch();
 })();
