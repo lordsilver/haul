@@ -237,6 +237,9 @@ pub(crate) struct Item {
     /// nothing: not opened for that again until a restart.
     #[serde(skip)]
     pub looked: BTreeSet<String>,
+    /// One of those pages told nothing of it: it shows as the link it is.
+    #[serde(skip)]
+    pub told_nothing: bool,
     /// Where it stands with the page the desktop app passes for it.
     #[serde(skip)]
     pub page: PageTurn,
@@ -358,6 +361,10 @@ pub(crate) struct Item {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub found: Option<Found>,
+    /// What a wrapper listed, row by row, as it was read: kept, so its
+    /// files are known again without reading it again (plan MODEL-01).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub listing: Vec<crate::hosts::Listed>,
     /// The hosts a wrapper's links are on, in its order: what tells apart
     /// wrappers of one set of files, one per host.
     #[serde(skip_serializing_if = "Vec::is_empty")]

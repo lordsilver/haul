@@ -446,7 +446,22 @@ impl Engine {
                 .collect()
         };
         let passing = |it: &Item| self.passing(&st, it, now);
-        let looking_up = |it: &Item| self.look_up_page(&st, it).is_some();
+        // A link a source listed that nobody named yet is no row to show:
+        // it waits on its set, counted on the card, until a host names it
+        // or it is found gone (plan MODEL-09).
+        // A file nobody started every link of which is gone is no failed
+        // download: a missing part of its archive, or a note on the card
+        // when its whole cut is gone (plan LOOK-06).
+        let dead = |it: &Item| !it.wrapper && it.unstarted && it.done == 0 && all_gone(it);
+        let looking_up = |it: &Item| {
+            self.look_up_page(&st, it).is_some()
+                || unplaced(it)
+                    && !it.told_nothing
+                    && it
+                        .mirrors
+                        .iter()
+                        .any(|m| hosts::tells_size(m) || st.passes(m) && self.pages_pass())
+        };
         let of = st.pass_queue.len() as u32;
         let queue = |it: &Item| {
             let at = st.pass_queue.iter().position(|(id, _, _)| *id == it.id)?;
@@ -538,7 +553,7 @@ impl Engine {
                 archive: None,
                 source_name: None,
                 download_from: it.prefer.clone(),
-                tentative: it.tentative || being_read(it) || looking_up(it),
+                tentative: it.tentative || being_read(it) || looking_up(it) || dead(it),
                 looking_up: looking_up(it),
                 queue: queue(it),
             })
@@ -647,6 +662,37 @@ impl Engine {
                 .then_with(|| a.name.cmp(&b.name))
         });
         let in_sets = unpack::archives(&st.items);
+        // Each card's notes: a cut of its release every link of which is
+        // gone (plan CARD-05), by the card's first wrapper.
+        let release_of: HashMap<String, String> = wrappers
+            .iter()
+            .map(|w| (w.id.clone(), super::friction::release_of(&st.items, &w.id)))
+            .collect();
+        let roots: HashSet<&String> = release_of.values().collect();
+        let notes: HashMap<String, Vec<String>> = roots
+            .into_iter()
+            .map(|root| {
+                let root = root.clone();
+                let plan = super::release_plan(&st, &cfg, &root);
+                let notes = plan
+                    .dead_splits()
+                    .map(|split| {
+                        // A host by its name alone, as a person says it.
+                        let hosts: Vec<&str> = split
+                            .hosts
+                            .iter()
+                            .map(|h| h.rsplit_once('.').map_or(h.as_str(), |(n, _)| n))
+                            .collect();
+                        format!(
+                            "another copy, {} parts on {}, is gone",
+                            split.parts,
+                            hosts.join(" and ")
+                        )
+                    })
+                    .collect();
+                (root, notes)
+            })
+            .collect();
         let (paused, max_total) = (st.paused, st.max_total);
         // What follows only reads the views built above.
         drop(st);
@@ -654,7 +700,11 @@ impl Engine {
         views::hosts(&mut hosts);
         views::items(&mut items, &hosts, &wrappers, cfg.recycle_on_remove);
         let archives = views::archives(&mut items, &hosts, in_sets);
-        let wrapper_cards = views::wrapper_cards(&wrappers, &items);
+        let mut wrapper_cards = views::wrapper_cards(&wrappers, &items);
+        for card in &mut wrapper_cards {
+            let root = card.ids.first().and_then(|id| release_of.get(id));
+            card.notes = root.and_then(|r| notes.get(r)).cloned().unwrap_or_default();
+        }
         let counts = views::counts(&items, &wrappers, &wrapper_cards, paused);
         Snapshot {
             speed: items.iter().map(|i| i.speed).sum(),
@@ -698,6 +748,12 @@ fn all_gone(it: &Item) -> bool {
 /// Whether `it` is a pasted web page not read yet: it may turn out a wrapper
 /// or a file, so it waits in no list, or it would flash through the downloads
 /// on its way to the wrappers.
+/// A wrapper's link not started that nothing has named yet: in no list
+/// while a host or its page may still name it.
+fn unplaced(it: &Item) -> bool {
+    !it.wrapper && it.unstarted && it.name.is_none() && it.source.is_some() && it.done == 0
+}
+
 fn being_read(it: &Item) -> bool {
     it.status == Status::Queued
         && !it.probed

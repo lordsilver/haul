@@ -74,6 +74,41 @@ pub fn site_of(url: &str) -> String {
 
 pub(super) static FILE_NAME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.\w{2,5}$").unwrap());
 
+/// The labels a source shows beside its links (`labels`, by place), kept
+/// only where they are hints worth taking (plan §4.2 rule 4): one that reads
+/// as a file's name, not a web page's (`Error 1020.html`), and, in a listing
+/// whose labels are parts of one archive, a part of it. So an interstitial's
+/// title (`Just a moment...`) or an error page's is dropped without a list
+/// of bad words.
+pub fn hint_labels(labels: Vec<Option<String>>) -> Vec<Option<String>> {
+    use crate::parts::PartName;
+    let file = |l: &str| {
+        FILE_NAME.is_match(l) && super::page_extension_of(l).is_none() && !l.contains("://")
+    };
+    let labels: Vec<Option<String>> = labels
+        .into_iter()
+        .map(|l| l.map(|l| l.trim().to_string()).filter(|l| file(l)))
+        .collect();
+    // The archive most labels are parts of, when at least two are.
+    let mut counts: std::collections::HashMap<(crate::parts::Form, String), usize> =
+        std::collections::HashMap::new();
+    for part in labels.iter().flatten().filter_map(|l| PartName::parse(l)) {
+        *counts.entry(part.key()).or_default() += 1;
+    }
+    let archive = counts
+        .into_iter()
+        .filter(|(_, n)| *n >= 2)
+        .max_by_key(|(_, n)| *n)
+        .map(|(k, _)| k);
+    labels
+        .into_iter()
+        .map(|l| match &archive {
+            Some(key) => l.filter(|l| PartName::parse(l).is_some_and(|p| p.key() == *key)),
+            None => l,
+        })
+        .collect()
+}
+
 /// Extensions of archives, their parts, media and the like: what a page's
 /// title, or a link after `#`, names a file by.
 pub(crate) const FILE_EXTENSIONS: &str = r"rar|zip|7z|iso|exe|msi|bin|mkv|mp4|avi|mov|mp3|flac|pdf|epub|cbz|cbr|tar|gz|xz|bz2|apk|dmg|img|part\d+\.rar|r\d\d|z\d\d";

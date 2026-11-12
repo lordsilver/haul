@@ -356,6 +356,9 @@ enum Check {
     OneReadPerContainer,
     /// The status bar never adds pages and links up as "Unwrapping N".
     SeparateCounts,
+    /// Starting the card starts the rows of this archive only: the main
+    /// cut of the release, the other standing by (D-9).
+    StartsOnly(&'static str),
     /// Every order comes to the same sets.
     SameEveryOrder,
 }
@@ -375,6 +378,7 @@ impl Check {
             Check::Asks(n) => format!("{n} ask(s)"),
             Check::OneReadPerContainer => "one request per container".into(),
             Check::SeparateCounts => "never \"Unwrapping N links\"".into(),
+            Check::StartsOnly(archive) => format!("starting the card starts {archive} only"),
             Check::SameEveryOrder => "the same in every order".into(),
         }
     }
@@ -561,8 +565,8 @@ fn cases() -> Vec<Release> {
             .source(source("BBBBBBBB", Pixeldrain, 0))
             .holds(OneCard)
             .holds(Sets)
-            .fails_until(NeverUnnamed, "MODEL-09")
-            .fails_until(NoRowVanishes, "MODEL-09")
+            .holds(NeverUnnamed)
+            .holds(NoRowVanishes)
             .fails_until(ExactSizes, "LOOK-02")
             .holds(SameEveryOrder),
         Release::new(
@@ -590,12 +594,19 @@ fn cases() -> Vec<Release> {
             )
             .holds(OneCard)
             .holds(Sets)
-            .fails_until(NothingFailed, "LOOK-06")
-            .fails_until(
-                Note("another copy, 2 parts on 1fichier, is gone"),
-                "CARD-05",
-            )
+            .holds(NothingFailed)
+            .holds(Note("another copy, 2 parts on 1fichier, is gone"))
             .holds(NoFailureTold)
+            .holds(SameEveryOrder),
+        Release::new("two live splits", "Example.Set", "live-splits")
+            .set("Example.Set", 4, two_gib)
+            .set("0123abcd", 2, four_gib)
+            .source(source("AAAAAAAA", Pixeldrain, 0))
+            .source(source("BBBBBBBB", Rapidgator, 0))
+            .source(source("CCCCCCCC", Ddownload, 1))
+            .holds(OneCard)
+            .holds(Sets)
+            .holds(StartsOnly("Example.Set.rar"))
             .holds(SameEveryOrder),
         Release::new(
             "a part missing from some containers",
@@ -633,14 +644,11 @@ fn cases() -> Vec<Release> {
             ])
             .holds(OneCard)
             .holds(Sets)
-            .fails_until(NeverUnnamed, "MODEL-09")
-            .fails_until(NoRowVanishes, "MODEL-09")
+            .holds(NeverUnnamed)
+            .holds(NoRowVanishes)
             .fails_until(ExactSizes, "LOOK-02")
-            .fails_until(NothingFailed, "LOOK-06")
-            .fails_until(
-                Note("another copy, 34 parts on 1fichier, is gone"),
-                "CARD-05",
-            )
+            .holds(NothingFailed)
+            .holds(Note("another copy, 34 parts on 1fichier, is gone"))
             .holds(NoFailureTold)
             .fails_until(Notifications(1), "QUIET-04")
             .holds(SeparateCounts)
@@ -1058,6 +1066,8 @@ struct Run {
     adds: usize,
     unexpected: Vec<String>,
     error: Option<String>,
+    /// The rows starting every card started, by name.
+    started: Vec<String>,
 }
 
 impl Run {
@@ -1311,8 +1321,21 @@ async fn run(release: &Arc<Release>, order: Order) -> Run {
         }
         phase.end(&engine, &mut desktop, &mut acc).await;
         let end = engine.snapshot();
+        let cards: Vec<String> = end
+            .wrapper_cards
+            .iter()
+            .flat_map(|c| c.ids.clone())
+            .collect();
+        engine.wrappers_action(&cards, WrapperAction::Start);
+        let started: Vec<String> = engine
+            .snapshot()
+            .items
+            .iter()
+            .filter(|i| !i.not_started && i.list.is_some())
+            .map(|i| i.name.clone())
+            .collect();
         engine.shutdown().await;
-        settled.map(|()| end)
+        settled.map(|()| (end, started))
     }
     .await;
     hosts::set_stand_in(None);
@@ -1327,9 +1350,9 @@ async fn run(release: &Arc<Release>, order: Order) -> Run {
         })
         .collect();
     let seen = std::mem::take(&mut *seen.lock().unwrap());
-    let (end, error) = match result {
-        Ok(end) => (Some(end), None),
-        Err(e) => (None, Some(e)),
+    let (end, started, error) = match result {
+        Ok((end, started)) => (Some(end), started, None),
+        Err(e) => (None, Vec::new(), Some(e)),
     };
     Run {
         order,
@@ -1343,6 +1366,7 @@ async fn run(release: &Arc<Release>, order: Order) -> Run {
         adds,
         unexpected: desktop.unexpected,
         error,
+        started,
     }
 }
 
@@ -1389,10 +1413,12 @@ fn expected(r: &Release) -> Vec<Expected> {
         .collect()
 }
 
-/// The notes the release's card shows. Cards have none yet: CARD-02 gives
-/// them typed notes, which this reads then.
-fn notes(_: &Snapshot) -> Vec<String> {
-    Vec::new()
+/// The notes the release's cards show.
+fn notes(s: &Snapshot) -> Vec<String> {
+    s.wrapper_cards
+        .iter()
+        .flat_map(|c| c.notes.clone())
+        .collect()
 }
 
 /// Each archive's parts with their hosts, then the rows of no archive,
@@ -1610,6 +1636,19 @@ fn check(r: &Release, run: &Run, c: &Check) -> Result<(), String> {
             (false, 0) => Err("never said it checks links".into()),
             (false, _) => Ok(()),
         },
+        Check::StartsOnly(archive) => {
+            let base = archive.trim_end_matches(".rar");
+            let other: Vec<&String> = run
+                .started
+                .iter()
+                .filter(|n| !n.starts_with(&format!("{base}.part")))
+                .collect();
+            match (run.started.is_empty(), other.first()) {
+                (true, _) => Err("nothing started".into()),
+                (false, Some(n)) => Err(format!("{} other rows started, as {n}", other.len())),
+                (false, None) => Ok(()),
+            }
+        }
         Check::SameEveryOrder => Ok(()),
     }
 }

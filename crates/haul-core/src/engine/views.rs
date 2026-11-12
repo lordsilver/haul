@@ -436,6 +436,11 @@ pub(super) fn archives(
         let Some(first) = parts.first() else {
             continue;
         };
+        // A cut every part of which is gone, never started: a note on its
+        // card, not an archive.
+        if parts.iter().all(|p| p.gone && p.tentative && p.done == 0) {
+            continue;
+        }
         let status = URGENCY
             .into_iter()
             .find(|s| parts.iter().any(|p| p.status == *s))
@@ -625,6 +630,9 @@ pub struct WrapperCard {
     pub need_you: usize,
     /// Its place among the pages waiting for Haul's browser, while it waits.
     pub queue: Option<InQueue>,
+    /// What the card says besides its files, in the person's words: a cut
+    /// of the release that is gone, say.
+    pub notes: Vec<String>,
     pub tally: Tally,
 }
 
@@ -751,6 +759,7 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                     .filter(|x| x.status == WrapperState::Captcha)
                     .count(),
                 queue: urgent.queue,
+                notes: Vec::new(),
                 tally: card_tally,
             }
         })

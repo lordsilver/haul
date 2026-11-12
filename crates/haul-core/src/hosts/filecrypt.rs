@@ -412,23 +412,38 @@ pub(super) fn shown(html: &str) -> Option<Unwrapped> {
     }
     // The table above lists each link's file in the same order: names for
     // hosts whose links carry none, so their files merge with the same ones
-    // elsewhere before anything downloads.
-    let names = row_names(html);
-    let names = if names.len() == urls.len() {
-        names
-    } else {
-        vec![None; urls.len()]
+    // elsewhere before anything downloads. Rows and links pair by place;
+    // with fewer rows than links, only while every row named as a part is
+    // that part at its place, so a row left out shifts no name.
+    let rows = table_rows(html);
+    let paired = rows.len() == urls.len() || {
+        rows.iter().enumerate().all(|(at, row)| {
+            row.label
+                .as_deref()
+                .and_then(crate::parts::PartName::parse)
+                .is_none_or(|p| p.number as usize == at + 1)
+        })
     };
-    let sizes = row_sizes(html);
-    let sizes: HashMap<String, u64> = if sizes.len() == urls.len() {
-        urls.iter()
-            .cloned()
-            .zip(sizes)
-            .filter_map(|(url, size)| Some((url, size?)))
-            .collect()
-    } else {
-        HashMap::new()
-    };
+    let row = |at: usize| rows.get(at).filter(|_| paired);
+    let labels: Vec<Option<String>> = (0..urls.len())
+        .map(|at| row(at).and_then(|r| r.label.clone()))
+        .collect();
+    let names = super::names::hint_labels(labels);
+    let listing: Vec<super::Listed> = urls
+        .iter()
+        .enumerate()
+        .map(|(at, url)| super::Listed {
+            urls: vec![url.clone()],
+            at: at as u32 + 1,
+            label: row(at).and_then(|r| r.label.clone()),
+            listed_size: row(at).and_then(|r| r.size),
+            listed_alive: row(at).and_then(|r| r.alive),
+        })
+        .collect();
+    let sizes: HashMap<String, u64> = listing
+        .iter()
+        .filter_map(|l| Some((l.urls[0].clone(), l.listed_size?)))
+        .collect();
     let mut seen = HashSet::new();
     let links = urls
         .into_iter()
@@ -442,6 +457,7 @@ pub(super) fn shown(html: &str) -> Option<Unwrapped> {
     Some(Unwrapped {
         title: heading(html),
         files,
+        listing,
         ..Unwrapped::default()
     })
 }
@@ -451,28 +467,41 @@ fn heading(html: &str) -> Option<String> {
     HEADING.captures(html).and_then(|h| page_text(&h[1]))
 }
 
-/// The file name of each row of a solved page's link table, in order; `None`
-/// for a row that shows none: `n/a`, or what filecrypt.cc showed when it could
-/// not read the file's host (the title of Cloudflare's check, "Just a
-/// moment..."), which is no file's name. Rows with the same name are taken
-/// for one file on several hosts, so neither must count as a name.
-fn row_names(html: &str) -> Vec<Option<String>> {
-    ROW_NAME
-        .captures_iter(html)
-        .map(|c| page_text(&c[1]).filter(|name| super::names::FILE_NAME.is_match(name)))
-        .collect()
+/// One row of a solved page's link table, as shown.
+struct Row {
+    /// Its text where the file's name goes (`n/a`, an interstitial's title,
+    /// or the name), decoded.
+    label: Option<String>,
+    size: Option<u64>,
+    /// Its status mark: `online` or `offline`.
+    alive: Option<bool>,
 }
 
-/// The size each row of a solved page's link table shows, in order; `None`
-/// for a row that shows none (`n/a`).
-fn row_sizes(html: &str) -> Vec<Option<u64>> {
+/// The rows of a solved page's link table, in order.
+fn table_rows(html: &str) -> Vec<Row> {
     ROW_NAME
-        .find_iter(html)
-        .map(|row| {
-            let rest = &html[row.end()..];
-            let cells = rest.split("</tr>").next().unwrap_or_default();
-            let cell = SIZE_CELL.captures(cells)?;
-            shown_size(&cell[1], &cell[2])
+        .captures_iter(html)
+        .map(|c| {
+            let whole = c.get(0).expect("the match");
+            let cells = html[whole.end()..]
+                .split("</tr>")
+                .next()
+                .unwrap_or_default();
+            let status = whole.as_str();
+            let alive = if status.contains("offline") {
+                Some(false)
+            } else if status.contains("online") {
+                Some(true)
+            } else {
+                None
+            };
+            Row {
+                label: page_text(&c[1]).filter(|l| !l.eq_ignore_ascii_case("n/a")),
+                size: SIZE_CELL
+                    .captures(cells)
+                    .and_then(|cell| shown_size(&cell[1], &cell[2])),
+                alive,
+            }
         })
         .collect()
 }
@@ -752,6 +781,53 @@ pub(super) fn decode_report(form: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row_names(html: &str) -> Vec<Option<String>> {
+        super::super::names::hint_labels(table_rows(html).into_iter().map(|r| r.label).collect())
+    }
+
+    fn row_sizes(html: &str) -> Vec<Option<u64>> {
+        table_rows(html).into_iter().map(|r| r.size).collect()
+    }
+
+    /// Labels are hints (plan MODEL-05): a page's name ending in an
+    /// extension is no file's, a listing of single files keeps each, and
+    /// the source's own online or offline mark is kept with the row.
+    #[test]
+    fn a_rows_label_is_a_hint_and_its_mark_is_kept() {
+        let row = |name: &str, mark: &str| {
+            format!(
+                r#"<tr class="kwj3"><td class="status"><i class="{mark} small"></i></td><td title="{name}">{name}<span><a href="http://host.example" class="external_link">host.example</a></span></td><td>1.00 GB</td><td><a href="/Link/abc.html" class="button download"></a></td></tr>"#
+            )
+        };
+        let html = format!(
+            "<table>{}{}{}</table>",
+            row("Error 1020.html", "online"),
+            row("video.mkv", "offline"),
+            row("notes.pdf", "online")
+        );
+        assert_eq!(
+            row_names(&html),
+            [None, Some("video.mkv".into()), Some("notes.pdf".into())]
+        );
+        let marks: Vec<_> = table_rows(&html).into_iter().map(|r| r.alive).collect();
+        assert_eq!(marks, [Some(true), Some(false), Some(true)]);
+        // Among an archive's parts, a label that is no part of it goes.
+        let html = format!(
+            "<table>{}{}{}</table>",
+            row("Example.Set.part1.rar", "online"),
+            row("readme.txt", "online"),
+            row("Example.Set.part3.rar", "online")
+        );
+        assert_eq!(
+            row_names(&html),
+            [
+                Some("Example.Set.part1.rar".into()),
+                None,
+                Some("Example.Set.part3.rar".into())
+            ]
+        );
+    }
 
     #[test]
     fn a_solved_page_names_its_rows() {

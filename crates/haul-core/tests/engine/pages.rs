@@ -137,9 +137,12 @@ async fn a_page_being_read_is_in_no_list_until_it_shows_what_it_is() {
     assert_eq!(s.counts.all, 0, "not counted among the downloads");
     assert_eq!(s.counts.reading, 1, "the status bar says it is worked on");
 
-    let s = wait_for(&engine, "the page's files", |s| s.items.len() == 2).await;
+    // Its files show once their host names them, never as bare links.
+    let s = wait_for(&engine, "the page's files", |s| {
+        s.items.len() == 2 && s.counts.all == 2
+    })
+    .await;
     assert_eq!(s.wrappers.len(), 1);
-    assert_eq!(s.counts.all, 2);
 
     engine.add_text(&format!("{}/files/report.bin", t.ip), "");
     let s = engine.snapshot();
