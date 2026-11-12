@@ -228,6 +228,12 @@ impl Engine {
         let mut tell = true;
         if let Some(it) = st.items.get_mut(id) {
             tell = !it.page_retrying();
+            if tell {
+                self.ask_in(&mut st, id);
+            }
+            let Some(it) = st.items.get_mut(id) else {
+                return tell;
+            };
             it.page = if it.page_retrying() {
                 PageTurn::WithPersonAgain
             } else {
@@ -652,6 +658,7 @@ impl Engine {
                 .collect();
             if let [(id, name)] = waiting.as_slice() {
                 self.set_direct(id, link, BTreeMap::new(), None)?;
+                super::friction::clicked(&mut self.lock(), id);
                 return Ok(Pasted {
                     used_for: Some(id.clone()),
                     name: Some(name.clone()),

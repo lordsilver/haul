@@ -1255,3 +1255,43 @@ async fn an_unknown_page_is_passed_only_when_the_person_added_it() {
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert!(!engine.page_passes(&copied), "never opened on its own");
 }
+
+/// The friction count (plan §4.7): a page only a person passes is an ask,
+/// with its site, its gate and whether the release needed it; the
+/// notification about it and a retry by hand count for the same release.
+#[tokio::test]
+async fn a_person_asked_counts_in_the_friction_count() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let mut events = engine.subscribe();
+    engine.add_text(&format!("{}/gate/recaptcha", t.ip), "");
+    let s = wait_for(&engine, "under Needs you", |s| {
+        s.items
+            .first()
+            .is_some_and(|i| i.status.as_str() == "captcha")
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    let friction = engine.friction();
+    assert_eq!(friction.len(), 1, "{friction:?}");
+    let [ask] = friction[0].asks.as_slice() else {
+        panic!("one ask: {friction:?}");
+    };
+    assert_eq!(
+        (ask.row.as_str(), ask.site.as_str()),
+        (id.as_str(), "127.0.0.1")
+    );
+    assert_eq!(ask.gate, Some("reCAPTCHA"), "{ask:?}");
+    assert!(ask.needed, "its only link");
+    // What the desktop app tells of it, and shows.
+    let event = events.recv().await.unwrap();
+    let told = engine.tellings(&[event]);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0].rows, std::slice::from_ref(&id));
+    assert_eq!(engine.notified(&told[0].rows), std::slice::from_ref(&id));
+    engine.item_action(&id, ItemAction::RetryManual);
+    let friction = engine.friction();
+    assert_eq!((friction[0].notifications, friction[0].clicks), (1, 1));
+    let report = engine.diagnostics(serde_json::Value::Null);
+    assert_eq!(report["friction"][0]["asks"][0]["gate"], "reCAPTCHA");
+}

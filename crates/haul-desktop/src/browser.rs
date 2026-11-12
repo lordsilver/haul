@@ -153,6 +153,7 @@ impl Browser {
                     bring_forward(&window);
                     crate::notify_waiting(
                         &app,
+                        std::slice::from_ref(&id),
                         &format!("{host} wants you"),
                         "Its check did not pass by itself: tick the box on its page and the download starts.",
                     );
@@ -273,6 +274,7 @@ impl Browser {
                     if engine.page_needs_click(&id) && first_ask_in_a_while(&host) {
                         crate::notify_waiting(
                             &app,
+                            std::slice::from_ref(&id),
                             &format!("{host} wants you"),
                             "Its page shows no links Haul can use by itself: open it in Haul and go on to them.",
                         );
@@ -298,7 +300,12 @@ impl Browser {
                             ),
                             None => "Its check did not pass by itself: open it in Haul, tick the box, and the download goes on.".into(),
                         };
-                        crate::notify_waiting(&app, &format!("{host} wants you"), &body);
+                        crate::notify_waiting(
+                            &app,
+                            std::slice::from_ref(&id),
+                            &format!("{host} wants you"),
+                            &body,
+                        );
                     }
                 }
                 ended => match tell_of(ended, abandoned.load(std::sync::atomic::Ordering::Relaxed))
@@ -1141,7 +1148,8 @@ mod tests {
         let start = HANDOFF
             .find("const real = ")
             .expect("handoff.js defines real");
-        let end = start + HANDOFF[start..].find(";\n").expect("one statement");
+        // The statement's own `;`, whatever line endings the checkout has.
+        let end = start + HANDOFF[start..].find(';').expect("one statement");
         let cases = [
             (
                 "http://filecrypt.cc.localhost:8799/Container/AAAAAAAA.html",

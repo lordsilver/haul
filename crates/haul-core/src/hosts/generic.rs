@@ -353,6 +353,7 @@ pub(super) async fn page(
             }
         }
         if urls.is_empty() {
+            keep_paste_text(url, &page);
             return Err(ResolveError::gone(super::lists_nothing(url)));
         }
     }
@@ -428,6 +429,32 @@ pub(super) const PASTES: &[&str] = &[
 static SCRIPT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<script\b.*?</script\s*>|<style\b.*?</style\s*>").unwrap());
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<[^>]*>").unwrap());
+
+/// The most of a paste's text the log keeps.
+const PASTE_KEPT: usize = 2048;
+
+/// What a paste that lists no links (at `url`, its markup `page`) holds, in
+/// the log only (a `paste` signal), never in a notification or the UI: its
+/// text's length and its first 2 KB, so a report shows what it held.
+fn keep_paste_text(url: &str, page: &str) {
+    let text = paste_text(page);
+    let mut cut = text.len().min(PASTE_KEPT);
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    crate::debug::emit(
+        "paste",
+        serde_json::json!({ "url": url, "length": text.chars().count(), "text": &text[..cut] }),
+    );
+}
+
+/// The text a paste's window shows (`page`, its markup): without its
+/// scripts, styles and tags, references decoded, each run of blanks one.
+fn paste_text(page: &str) -> String {
+    let text = SCRIPT.replace_all(page, " ");
+    let text = super::decode_entities(&TAG.replace_all(&text, " "));
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
 /// The addresses the paste at `url` writes out in its text (`page`, its
 /// markup), on any host, in order: what its window shows, without the

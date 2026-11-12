@@ -49,6 +49,12 @@ windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 # What the integration tests reach into the engine with; never in a build.
 test-hooks = []
 
+# The release suite runs in stand-in mode, one setting for the whole
+# process: a test binary of its own, beside the engine's.
+[[test]]
+name = "releases"
+path = "tests/engine/releases.rs"
+
 [dev-dependencies]
 # The crate itself with its test hooks, for its own integration tests.
 haul-core = { path = ".", features = ["test-hooks"] }

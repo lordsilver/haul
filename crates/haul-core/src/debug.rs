@@ -9,6 +9,13 @@
 //! - `log`: every event the app logs, at every level, with its fields;
 //! - `status`: a download or wrapper changing status (`from`, `to`, its
 //!   `error`);
+//! - `listing`: what a source (a page, a paste, a container) listed, row by
+//!   row, as Haul read it;
+//! - `paste`: a paste that listed no links, with its text's length and its
+//!   first 2 KB, so a report shows what it held;
+//! - `pass_queue`: a row joining the queue for the browser's passes (its
+//!   place), its pass starting, or the row leaving the queue unpassed;
+//! - `ask`: a person asked for a release's page (the friction count);
 //! - and whatever else the app emits with [`emit`] (the desktop app's page
 //!   passes, the notifications it shows).
 //!
@@ -218,6 +225,19 @@ fn log_signal(kind: &str, s: &Value) {
         }
         ("page", event) => {
             tracing::info!(target: SIGNAL_TARGET, item, signal = %whole, "page window {event}: {}", text("url"));
+        }
+        ("pass_queue", event) => {
+            tracing::info!(target: SIGNAL_TARGET, item, signal = %whole, "pass queue {event}: {}", text("url"));
+        }
+        ("listing", _) => {
+            let rows = s["rows"].as_array().map_or(0, Vec::len);
+            tracing::info!(target: SIGNAL_TARGET, item, signal = %whole, "listing: {} lists {rows} rows", text("url"));
+        }
+        ("paste", _) => {
+            tracing::info!(target: SIGNAL_TARGET, item, signal = %whole, "paste lists no links: {} ({} characters)", text("url"), s["length"]);
+        }
+        ("ask", _) => {
+            tracing::info!(target: SIGNAL_TARGET, item, signal = %whole, "asks a person: {} ({}), needed {}", text("site"), text("need"), s["needed"]);
         }
         ("notification", _) => {
             tracing::info!(target: SIGNAL_TARGET, signal = %whole, "notification: {}: {}", text("title"), text("body"));
