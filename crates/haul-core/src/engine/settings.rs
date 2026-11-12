@@ -832,6 +832,12 @@ impl Engine {
             let it = st.items.get_mut(id).expect("listed above");
             if let Some(until) = held {
                 it.retry_at = Some(until);
+            } else if usable && matches!(it.trouble, crate::item::Trouble::Browser(_)) {
+                // Haul's browser failed, not the page: passed again in turn,
+                // using none of the page's tries.
+                it.retry_at = None;
+                it.page = PageTurn::InTurn;
+                tracing::info!(item = %id, "passing its page again after the browser failed");
             } else if usable {
                 it.retry_at = None;
                 it.auto_retries += 1;

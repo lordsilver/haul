@@ -1054,6 +1054,8 @@ struct State {
     releases: HashMap<String, (Instant, bool)>,
     /// How fast each host is asked about files before any download.
     budgets: budget::Budgets,
+    /// The person was told this run that Haul's browser failed.
+    browser_told: bool,
     /// Pages the desktop app passed during their rows' current waits.
     tried: passes::Tried,
     /// The rows waiting in the pass queue, as the last plan saw them, for
@@ -1095,6 +1097,7 @@ impl State {
             held_by_check: HashMap::new(),
             releases: HashMap::new(),
             budgets: budget::Budgets::default(),
+            browser_told: false,
             tried: passes::Tried::new(),
             pass_queue: passes::Queue::default(),
             friction: friction::Frictions::new(),

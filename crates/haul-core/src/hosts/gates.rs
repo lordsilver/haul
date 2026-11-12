@@ -73,7 +73,8 @@ const MARKS: &[(Gate, &[&str])] = &[
     ),
     (Gate::FriendlyCaptcha, &["frc-captcha", "friendlycaptcha"]),
     (Gate::Geetest, &["geetest", "gt4.js", "initgeetest"]),
-    (Gate::Cutcaptcha, &["cutcaptcha"]),
+    // Its newer form names only its key (`data-sitekey="cc_…"`).
+    (Gate::Cutcaptcha, &["cutcaptcha", "data-sitekey=\"cc_"]),
 ];
 
 /// The gate `page` shows, when it shows one Haul knows. A page's own code
@@ -229,6 +230,11 @@ mod tests {
             Some(Gate::Recaptcha)
         );
         assert_eq!(detect("<!-- grecaptcha"), Some(Gate::Recaptcha));
+        // CutCaptcha's newer form, named by its key alone (plan PASS-05).
+        assert_eq!(
+            detect_alone(r#"<div class="captcha" data-sitekey="cc_abc123"></div>"#),
+            Some(Gate::Cutcaptcha)
+        );
         // Haul's own read names a gate only when the page marks one alone.
         assert_eq!(
             detect_alone("<div class=\"g-recaptcha\"></div><div class=\"cutcaptcha\"></div>"),

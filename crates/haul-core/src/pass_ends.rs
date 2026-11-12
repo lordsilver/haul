@@ -81,6 +81,69 @@ impl Closed {
     }
 }
 
+crate::names::named! {
+    /// Why Haul's browser could not show a page: its own failure, not the
+    /// page's (plan BROWSER-03). Serialized as `not_found`, `profile_held`,
+    /// `exited_at_start`, `no_devtools`, `crashed` and `other`.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub enum BrowserFailure {
+        /// No Edge or Chrome to pass pages in.
+        NotFound = "not_found",
+        /// Another browser holds the pass profile.
+        ProfileHeld = "profile_held",
+        /// The browser exited as it started.
+        ExitedAtStart = "exited_at_start",
+        /// Its DevTools port never opened.
+        NoDevTools = "no_devtools",
+        /// It went away while it had the page.
+        Crashed = "crashed",
+        #[default]
+        Other = "other",
+    }
+}
+
+impl BrowserFailure {
+    /// The kind of failure the desktop app's words `why` describe.
+    pub fn of(why: &str) -> Self {
+        let why = why.to_ascii_lowercase();
+        if why.contains("no edge")
+            || why.contains("no browser")
+            || why.contains("not found") && why.contains("browser")
+        {
+            Self::NotFound
+        } else if why.contains("holds") && why.contains("profile") || why.contains("profile held") {
+            Self::ProfileHeld
+        } else if why.contains("exited at start") {
+            Self::ExitedAtStart
+        } else if why.contains("devtools")
+            && (why.contains("never")
+                || why.contains("did not open")
+                || why.contains("took too long"))
+        {
+            Self::NoDevTools
+        } else if why.contains("closed")
+            || why.contains("stopped answering")
+            || why.contains("went away")
+        {
+            Self::Crashed
+        } else {
+            Self::Other
+        }
+    }
+
+    /// What the row says of it.
+    pub fn says(self) -> &'static str {
+        match self {
+            Self::NotFound => "no Edge or Chrome was found to open its page",
+            Self::ProfileHeld => "another browser holds Haul's browser profile",
+            Self::ExitedAtStart => "Haul's browser exited as it started",
+            Self::NoDevTools => "Haul's browser did not open its DevTools port",
+            Self::Crashed => "Haul's browser went away with the page",
+            Self::Other => "Haul's browser did not open the page",
+        }
+    }
+}
+
 /// What the desktop app does after a pass ended ([`Tries::ended`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Next {
@@ -175,6 +238,28 @@ impl Tries {
             "Haul's browser closed the page by itself, {}; the last time {cause}",
             tried.join(" and ")
         )
+    }
+}
+
+#[cfg(test)]
+mod failure_tests {
+    use super::BrowserFailure;
+
+    #[test]
+    fn a_browsers_failure_is_named_by_its_kind() {
+        assert_eq!(
+            BrowserFailure::of("the browser exited at start (exit code: 0)"),
+            BrowserFailure::ExitedAtStart
+        );
+        assert_eq!(
+            BrowserFailure::of("a browser (pid 1234) holds the profile, and Haul cannot end it"),
+            BrowserFailure::ProfileHeld
+        );
+        assert_eq!(
+            BrowserFailure::of("no Edge or Chrome found"),
+            BrowserFailure::NotFound
+        );
+        assert_eq!(BrowserFailure::of("something else"), BrowserFailure::Other);
     }
 }
 

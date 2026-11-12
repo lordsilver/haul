@@ -303,16 +303,28 @@ impl Engine {
     /// show the page at all (`why`): the row says so, not what stopped Haul
     /// reading the page before, since the page itself was never seen.
     pub fn page_not_passed(&self, id: &str, why: &str) -> bool {
-        let tell = self.page_wants_person(id);
-        let mut st = self.lock();
-        if let Some(it) = st.items.get_mut(id) {
-            let trouble = it.trouble;
-            it.set_error(
-                format!("Haul's browser did not open the page ({why}); open it here"),
-                trouble,
-            );
+        if self.looked_up_nothing(id) || self.drop_tentative(id, "was not passed") {
+            return false;
         }
+        let kind = crate::pass_ends::BrowserFailure::of(why);
+        let mut st = self.lock();
+        let Some(it) = st.items.get_mut(id) else {
+            return false;
+        };
+        // Haul's own failure: its own state, none of the page's tries used,
+        // tried again by itself (plan BROWSER-03).
+        tracing::info!(item = %id, "the browser did not show its page: {why}");
+        it.set_error(format!("{} ({why})", kind.says()), Trouble::Browser(kind));
+        it.page = PageTurn::WithPerson;
+        it.retry_at = Some(Instant::now() + BROWSER_RETRY);
+        let tell = !std::mem::replace(&mut st.browser_told, true);
         self.publish(st);
+        if tell {
+            self.emit([super::Event::Notice {
+                title: "Haul's browser did not start".into(),
+                body: format!("{}. Haul tries again by itself.", capitalize(kind.says())),
+            }]);
+        }
         tell
     }
 
@@ -890,6 +902,18 @@ impl Engine {
             .or_else(|| it.mirrors.first())
             .map(|m| m.url.clone())
     }
+}
+
+/// How long a page Haul's browser could not show waits before it is
+/// passed again ([`Engine::page_not_passed`]).
+const BROWSER_RETRY: Duration = Duration::from_secs(120);
+
+/// `s` with its first letter upper-case.
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 /// How long a source set aside unread waits before it is tried again,

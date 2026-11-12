@@ -154,6 +154,9 @@ pub enum Trouble {
     Needs(Need),
     /// A paste that lists no links: on a card with others that do, a note.
     ListsNothing,
+    /// Haul's browser could not show its page: tried again by itself once
+    /// the browser may work, using none of the page's own tries.
+    Browser(crate::pass_ends::BrowserFailure),
 }
 
 impl Trouble {
