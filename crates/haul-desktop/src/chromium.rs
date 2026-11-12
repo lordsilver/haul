@@ -854,7 +854,11 @@ fn set_up(endpoint: &str, p: &Pass<'_>) -> Result<(Cdp, String, String), String>
         )?;
     }
     if p.keep_to_site {
-        cdp.keep_to_site(p.item, &target, s)?;
+        // A wrapper's or a paste's page belongs to its own site from the
+        // start; another page may first move to its real site, which then
+        // becomes its home.
+        let home = (hosts::wraps(p.url) || hosts::is_paste(p.url)).then(|| hosts::site_of(p.url));
+        cdp.keep_to_site(p.item, &target, home, s)?;
     }
     if let Err(e) = cdp.take_downloads() {
         tracing::warn!("the browser will not report downloads: {e}");
@@ -1244,13 +1248,16 @@ impl Cdp {
         &mut self,
         item: &str,
         frame: &str,
+        home: Option<String>,
         session: Option<&str>,
     ) -> Result<(), String> {
+        // Home is the page's own site from the start: an ad that moves the
+        // page before its first load ends would otherwise become it.
         self.keep = Some(Keep {
             item: item.to_string(),
             frame: frame.to_string(),
-            last: None,
-            site: None,
+            last: home.clone(),
+            site: home,
         });
         self.call(
             "Fetch.enable",
