@@ -496,6 +496,28 @@ async fn a_failed_wrapper_runs_again_after_a_restart() {
     assert_eq!(s.counts.reading, 0, "nothing left to read");
 }
 
+/// What a container listed is kept as read, each row with its place, the
+/// text and size beside it and its mark: after a restart, and after one of
+/// its files is removed, whose links it still knows (plan MODEL-01).
+#[tokio::test]
+async fn a_containers_listing_survives_a_restart_and_its_files() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://filecrypt.cc/Container/open.html", "");
+    let s = wrapper_settled(&engine, "done").await;
+    let id = s.wrappers[0].id.clone();
+    let listing = engine.debug_listing(&id);
+    assert!(!listing.is_empty());
+    assert_eq!(listing[0].at, 1);
+    assert!(listing.iter().all(|l| !l.urls.is_empty()));
+    assert!(engine.item_action(&s.items[0].id, ItemAction::Remove));
+    engine.shutdown().await;
+    drop(engine);
+
+    let engine = start_when_free(|| t.options()).await;
+    assert_eq!(engine.debug_listing(&id), listing);
+}
+
 /// A wrapper's retry is unwrapped at once, as when it was added, whatever
 /// the queue is doing: its files only wait for the user, so it takes no
 /// download's turn and waits for none.

@@ -107,9 +107,52 @@ pub struct Entry {
     pub decrypt: Option<mega::Key>,
 }
 
+/// What one source listed for one file, kept as it was read (plan §4.2):
+/// its links, its place in the list, the text beside it, the size shown and
+/// the source's own online or offline mark. Page text is a hint, never a
+/// fact.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listed {
+    /// One, or one per host for a source that lists several hosts' links.
+    pub urls: Vec<String>,
+    /// Its place in the list, from 1.
+    pub at: u32,
+    /// The text beside it, as shown, whether or not it reads as a name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The size shown, rounded as the source rounds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed_size: Option<u64>,
+    /// The source's own mark of whether the file is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed_alive: Option<bool>,
+}
+
+/// A listing for `files` as a source without a table of its own gives
+/// them: each file's links, its name as the label, in order.
+pub fn listing_of(files: &[Entry]) -> Vec<Listed> {
+    files
+        .iter()
+        .filter(|e| !lists(&e.url))
+        .zip(1..)
+        .map(|(e, at)| Listed {
+            urls: std::iter::once(e.url.clone())
+                .chain(e.mirrors.iter().cloned())
+                .collect(),
+            at,
+            label: e.name.clone(),
+            listed_size: e.listed_size,
+            listed_alive: None,
+        })
+        .collect()
+}
+
 /// What a wrapper's page holds once its gate is passed.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Unwrapped {
+    /// Each file's row as the source showed it, when it shows a table of
+    /// its own (filecrypt's); else made from `files` ([`listing_of`]).
+    pub listing: Vec<Listed>,
     /// The page's own name for what it holds, when it gives one.
     pub title: Option<String>,
     /// One entry per file, each with its links on every host.
@@ -338,6 +381,11 @@ const PAGE_EXTENSIONS: [&str; 9] = [
     "html", "htm", "shtml", "xhtml", "php", "asp", "aspx", "jsp", "cgi",
 ];
 
+/// [`page_extension`] for [`names::hint_labels`].
+fn page_extension_of(name: &str) -> Option<&str> {
+    page_extension(name)
+}
+
 /// `name` without its extension when that extension is a web page's.
 fn page_extension(name: &str) -> Option<&str> {
     let (stem, ext) = name.rsplit_once('.')?;
@@ -479,6 +527,7 @@ pub fn shown(url: &str, html: &str) -> Option<Unwrapped> {
 /// when its turn comes.
 pub fn listed(title: Option<String>, links: Vec<String>) -> Unwrapped {
     Unwrapped {
+        listing: Vec::new(),
         password: None,
         title,
         files: links

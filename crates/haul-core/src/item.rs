@@ -361,6 +361,10 @@ pub(crate) struct Item {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub found: Option<Found>,
+    /// What a wrapper listed, row by row, as it was read: kept, so its
+    /// files are known again without reading it again (plan MODEL-01).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub listing: Vec<crate::hosts::Listed>,
     /// The hosts a wrapper's links are on, in its order: what tells apart
     /// wrappers of one set of files, one per host.
     #[serde(skip_serializing_if = "Vec::is_empty")]

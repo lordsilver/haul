@@ -2260,6 +2260,11 @@ impl Engine {
         let mut after = id.to_string();
         let cfg = self.cfg();
         let by_part = rename_sibling_parts(&mut st, id, &found);
+        let listing = if found.listing.is_empty() {
+            hosts::listing_of(&found.files)
+        } else {
+            found.listing.clone()
+        };
         for e in found.files {
             let package = if package.is_empty() {
                 e.package.clone().unwrap_or_default()
@@ -2363,6 +2368,9 @@ impl Engine {
         // it does a host's files.
         st.host(&hosts::host_of(url)).ok += 1;
         mark_unwrapped(&mut st, id, url, seen, found_hosts, found.title);
+        if let Some(row) = st.items.get_mut(id) {
+            row.listing = listing;
+        }
         self.touch(&mut st);
         probe
     }
@@ -2753,6 +2761,17 @@ impl Engine {
         it.retry_at = Some(Instant::now());
         self.publish(st);
         true
+    }
+
+    /// What wrapper `id` listed, as kept, for tests.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_listing(&self, id: &str) -> Vec<hosts::Listed> {
+        self.lock()
+            .items
+            .get(id)
+            .map(|it| it.listing.clone())
+            .unwrap_or_default()
     }
 
     /// Ends every wait a host asked of an address now, for tests of what
