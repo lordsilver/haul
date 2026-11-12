@@ -44,7 +44,7 @@ export async function addText(text: string, pkg = '', password = ''): Promise<bo
   try {
     const r = await adding.text(text, pkg, password);
     toast(addedMessage(r), r.added + r.merged + r.wrappers ? 'success' : 'info');
-    return r.added + r.merged + r.duplicates + r.wrappers > 0;
+    return r.added + r.merged + r.duplicates + r.wrappers + r.reread > 0;
   } catch (error) {
     report(error);
     return false;

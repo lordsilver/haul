@@ -148,7 +148,7 @@ async fn adds_imports_and_controls_items() {
         .unwrap();
     assert_eq!(
         r,
-        json!({"added": 1, "merged": 1, "duplicates": 0, "invalid": 0, "wrappers": 0, "pages": 0})
+        json!({"added": 1, "merged": 1, "duplicates": 0, "invalid": 0, "wrappers": 0, "pages": 0, "reread": 0})
     );
 
     let links_file = || {
@@ -502,7 +502,7 @@ async fn importing_counts_wrapper_links() {
         .unwrap();
     assert_eq!(
         r,
-        json!({"added": 0, "merged": 0, "duplicates": 0, "invalid": 0, "wrappers": 2, "pages": 0})
+        json!({"added": 0, "merged": 0, "duplicates": 0, "invalid": 0, "wrappers": 2, "pages": 0, "reread": 0})
     );
 }
 

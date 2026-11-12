@@ -254,6 +254,10 @@ pub enum WrapperAction {
     Remove,
     /// Unwrap it again, after it failed.
     Retry,
+    /// Read its release again: its page and every source, merging what they
+    /// list now (plan CARD-03). Files the person removed come back, not
+    /// started; files with bytes on disk are left as they are.
+    Reread,
 }
 
 impl FromStr for WrapperAction {
@@ -264,6 +268,7 @@ impl FromStr for WrapperAction {
             "start" => Self::Start,
             "remove" => Self::Remove,
             "retry" => Self::Retry,
+            "reread" => Self::Reread,
             _ => return Err(()),
         })
     }
@@ -681,6 +686,8 @@ pub struct Added {
     pub wrappers: usize,
     /// Copied web pages being looked at for links; those that list none go.
     pub pages: usize,
+    /// Links whose card is on the list already: read again (plan CARD-04).
+    pub reread: usize,
 }
 
 impl std::ops::AddAssign for Added {
@@ -688,6 +695,7 @@ impl std::ops::AddAssign for Added {
         self.added += other.added;
         self.merged += other.merged;
         self.duplicates += other.duplicates;
+        self.reread += other.reread;
         self.invalid += other.invalid;
         self.wrappers += other.wrappers;
         self.pages += other.pages;
@@ -1727,12 +1735,30 @@ impl Engine {
         let mut probe = Vec::new();
         {
             let mut st = self.lock();
+            // A link whose card is still there: the card is read again, as
+            // the person means, rather than the link being a duplicate.
+            let card_of = |st: &State, url: &str, fresh: &HashSet<String>| {
+                st.items
+                    .values()
+                    .find(|it| {
+                        it.wrapper
+                            && !fresh.contains(&it.id)
+                            && !it.tentative
+                            && (it.mirrors.iter().any(|m| m.url == url)
+                                || hosts::lists(url)
+                                    && hosts::wrapper_key(&it.mirrors[0])
+                                        == hosts::wrapper_key(url))
+                    })
+                    .map(|it| it.id.clone())
+            };
             let mut known: HashSet<String> = st
                 .items
                 .values()
                 .flat_map(|i| i.mirrors.iter().map(|m| m.url.clone()))
                 .collect();
             let mut wrappers = wrapper_keys(&st);
+            // Rows this adding made: another link of one is a duplicate.
+            let mut fresh: HashSet<String> = HashSet::new();
             // The rows a named link may join, by their name's key, in the
             // queue's order: looked up, not searched for, for each link.
             let mut by_name: HashMap<String, Vec<String>> = HashMap::new();
@@ -1755,23 +1781,32 @@ impl Engine {
                 }
                 // A stand-in's address is kept as the real one it stands for.
                 link.url = hosts::real(&link.url).into_owned();
-                if !known.insert(link.url.clone()) {
-                    added.duplicates += 1;
+                let again = !known.insert(link.url.clone())
+                    || hosts::lists(&link.url) && !wrappers.insert(hosts::wrapper_key(&link.url));
+                if again {
+                    match card_of(&st, &link.url, &fresh).filter(|_| !tentative) {
+                        Some(card) => {
+                            for w in Self::reread_in(&mut st, &card) {
+                                if !probe.contains(&w) {
+                                    probe.push(w);
+                                }
+                            }
+                            added.reread += 1;
+                        }
+                        None => added.duplicates += 1,
+                    }
                     continue;
                 }
                 if hosts::lists(&link.url) {
                     // One wrapper whichever of its links came: every link of a
                     // fileguard.cc vault shows the same page.
-                    if !wrappers.insert(hosts::wrapper_key(&link.url)) {
-                        added.duplicates += 1;
-                        continue;
-                    }
                     let mut it = Item::new(vec![link.url], None, link.package);
                     it.wrapper = true;
                     it.extract_password = password.map(str::to_string);
                     // Unwrapped right away, as a name is looked up.
                     probe.push(it.id.clone());
                     tracing::debug!(item = %it.id, url = %it.mirrors[0], "added as a wrapper");
+                    fresh.insert(it.id.clone());
                     st.items.insert(it.id.clone(), it);
                     added.wrappers += 1;
                     continue;
@@ -2965,8 +3000,18 @@ impl Engine {
         let mut discard = Vec::new();
         let cfg = self.cfg();
         let mut st = self.lock();
+        let mut reread = Vec::new();
         for id in ids {
             let done = match action {
+                WrapperAction::Reread if st.items.get(id).is_some_and(|w| w.wrapper) => {
+                    for w in Self::reread_in(&mut st, id) {
+                        if !reread.contains(&w) {
+                            reread.push(w);
+                        }
+                    }
+                    Some(())
+                }
+                WrapperAction::Reread => None,
                 WrapperAction::Start => Self::start_wrapper_in(&mut st, &cfg, id).map(|n| {
                     batch.started += n;
                 }),
@@ -2987,7 +3032,39 @@ impl Engine {
         }
         self.publish(st);
         self.discard_parts(discard);
+        for id in reread {
+            self.spawn_probe(id);
+        }
         batch
+    }
+
+    /// Sets every wrapper of wrapper `id`'s release to be read again, as
+    /// when it was added; returns them, to read.
+    fn reread_in(st: &mut State, id: &str) -> Vec<String> {
+        let root = friction::release_of(&st.items, id);
+        let ids: Vec<String> = st
+            .items
+            .values()
+            .filter(|it| it.wrapper && friction::release_of(&st.items, &it.id) == root)
+            .map(|it| it.id.clone())
+            .collect();
+        for w in &ids {
+            if let Some(it) = st.items.get_mut(w)
+                && !it.running()
+            {
+                tracing::info!(item = %w, "read again by the person");
+                it.status = Status::Queued;
+                it.probed = false;
+                it.unread = false;
+                it.told_person = false;
+                it.page = PageTurn::InTurn;
+                it.manual_urls.clear();
+                it.reset_retries();
+                it.failed.clear();
+                it.not_before = None;
+            }
+        }
+        ids
     }
 
     /// Takes a wrapper off the list with the files it added that never

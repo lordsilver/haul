@@ -689,8 +689,13 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
     }
     groups
         .into_iter()
-        .map(|(key, ws)| {
+        .map(|(_, ws)| {
             let w = ws[0];
+            // The card's key is its first root's id, whatever state its
+            // wrappers are in: a card keeps its identity from adding to done
+            // (plan CARD-01), and cards of one title joined later take the
+            // first one's.
+            let key = format!("w\u{0}{}", root(&by_id, w).id);
             let mut at: Vec<usize> = ws
                 .iter()
                 .flat_map(|x| files_of.get(x.id.as_str()).into_iter().flatten().copied())

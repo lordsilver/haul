@@ -46,7 +46,8 @@ export const item = {
 };
 
 export const wrappers = {
-  act: (ids: string[], action: 'start' | 'remove' | 'retry') => api<Batch>(`/api/wrappers/${action}`, { ids }),
+  act: (ids: string[], action: 'start' | 'remove' | 'retry' | 'reread') =>
+    api<Batch>(`/api/wrappers/${action}`, { ids }),
   dropHost: (ids: string[], host: string) => api<{ dropped: number }>('/api/wrappers/drop-host', { ids, host }),
 };
 

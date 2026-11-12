@@ -203,6 +203,13 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
               Retry
             </Button>
           ) : null}
+          {/* Its page and sources read anew: removed files come back, not started. */}
+          {card.status === 'done' ? (
+            <Button variant="ghost" onClick={() => wrappers.act(card.ids, 'reread')}>
+              <RotateCw />
+              Read again
+            </Button>
+          ) : null}
           {/* Its files that never started go with it, so that asks twice. */}
           <ConfirmButton
             label="Remove"
