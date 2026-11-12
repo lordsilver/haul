@@ -515,7 +515,7 @@ fn cases() -> Vec<Release> {
             .holds(Sets)
             .holds(NeverUnnamed)
             .holds(NoRowVanishes)
-            .fails_until(ExactSizes, "LOOK-02")
+            .holds(ExactSizes)
             .holds(NothingFailed)
             .holds(SameEveryOrder),
         Release::new("ID names", "Example.Set", "id-names")
@@ -528,7 +528,7 @@ fn cases() -> Vec<Release> {
             .holds(Sets)
             .holds(NeverUnnamed)
             .holds(NoRowVanishes)
-            .fails_until(ExactSizes, "LOOK-02")
+            .holds(ExactSizes)
             .holds(NothingFailed)
             .holds(SameEveryOrder),
         Release::new("rounded sizes", "Example.Set", "rounded-sizes")
@@ -540,7 +540,7 @@ fn cases() -> Vec<Release> {
             .holds(OneCard)
             .holds(Sets)
             .holds(NeverUnnamed)
-            .fails_until(ExactSizes, "LOOK-02")
+            .holds(ExactSizes)
             .holds(SameEveryOrder),
         Release::new(
             "a generic title shared by unrelated sets",
@@ -567,7 +567,7 @@ fn cases() -> Vec<Release> {
             .holds(Sets)
             .holds(NeverUnnamed)
             .holds(NoRowVanishes)
-            .fails_until(ExactSizes, "LOOK-02")
+            .holds(ExactSizes)
             .holds(SameEveryOrder),
         Release::new(
             "an interstitial's title as a name",
@@ -580,7 +580,7 @@ fn cases() -> Vec<Release> {
         .holds(OneCard)
         .holds(Sets)
         .holds(NeverUnnamed)
-        .fails_until(ExactSizes, "LOOK-02")
+        .holds(ExactSizes)
         .holds(SameEveryOrder),
         Release::new("two splits, one dead", "Example.Set", "two-splits")
             .set("Example.Set", 4, two_gib)
@@ -646,7 +646,7 @@ fn cases() -> Vec<Release> {
             .holds(Sets)
             .holds(NeverUnnamed)
             .holds(NoRowVanishes)
-            .fails_until(ExactSizes, "LOOK-02")
+            .holds(ExactSizes)
             .holds(NothingFailed)
             .holds(Note("another copy, 34 parts on 1fichier, is gone"))
             .holds(NoFailureTold)

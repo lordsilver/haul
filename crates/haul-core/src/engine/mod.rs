@@ -1417,10 +1417,16 @@ impl Engine {
                 on_disk.len()
             );
         }
+        // Rows to look up: those queued that never were, and a wrapper's
+        // files whose size is still unknown, so a restart in the middle of
+        // the lookups goes on with them.
         let unprobed: Vec<String> = items
-            .values()
-            .filter(|i| !i.probed && i.status == Status::Queued)
-            .map(|i| i.id.clone())
+            .values_mut()
+            .filter_map(|i| {
+                let due = !i.probed && i.status == Status::Queued
+                    || i.status == Status::Paused && i.unstarted && wants_size(i);
+                due.then(|| i.id.clone())
+            })
             .collect();
 
         let paused = store::load_paused(&data_dir);
@@ -1834,10 +1840,17 @@ impl Engine {
             // A host the user turned off is not asked either; with only such
             // hosts, nothing is.
             let cfg = self.cfg();
-            let url = it
+            // A row named already is looked up for its size: on a host that
+            // tells it, the user's preferred first, whichever source brought
+            // the link (plan LOOK-02).
+            let sizer = it
                 .mirrors
                 .iter()
-                .find(|m| !cfg.is_disabled(&m.host))
+                .filter(|m| !cfg.is_disabled(&m.host) && hosts::tells_size(m))
+                .min_by_key(|m| cfg.preference(&m.host).unwrap_or(usize::MAX));
+            let url = sizer
+                .filter(|_| it.named || it.name.is_some())
+                .or_else(|| it.mirrors.iter().find(|m| !cfg.is_disabled(&m.host)))
                 .cloned();
             let http = self.http_for(&hosts::host_of(url.as_deref().unwrap_or_default()), &st);
             let http = match url.as_deref() {
@@ -2290,6 +2303,9 @@ impl Engine {
                 if let Some(it) = st.items.get_mut(&row) {
                     it.mirrors.extend(urls.into_iter().map(Into::into));
                     it.merge_wrappers(Some(&id.to_string()), &[]);
+                    if wants_size(it) {
+                        probe.push(row.clone());
+                    }
                 }
                 continue;
             }
@@ -2329,12 +2345,9 @@ impl Engine {
                 it.status = Status::Paused;
                 it.unstarted = true;
                 it.size = e.size.unwrap_or(0);
-                // Its size from its host, when the wrapper gave none; the
-                // name the wrapper gave stays.
-                if it.probed && it.size == 0 && hosts::tells_size(&it.mirrors[0]) {
-                    it.probed = false;
-                    it.named = true;
-                }
+                // Its size from a host that tells it, when the wrapper gave
+                // none; the name the wrapper gave stays.
+                wants_size(&mut it);
                 it
             };
             it.source = Some(id.to_string());
@@ -2352,12 +2365,22 @@ impl Engine {
                     }
                     Some(new_id)
                 }
-                // Folded into a row for the same file, which holds its links now.
-                None => st
-                    .items
-                    .iter()
-                    .find(|(_, i)| i.mirrors.iter().any(|m| m.url == urls[0]))
-                    .map(|(k, _)| k.clone()),
+                // Folded into a row for the same file, which holds its links
+                // now, and is looked up for its size if they can tell it.
+                None => {
+                    let holder = st
+                        .items
+                        .iter()
+                        .find(|(_, i)| i.mirrors.iter().any(|m| m.url == urls[0]))
+                        .map(|(k, _)| k.clone());
+                    if let Some(h) = &holder
+                        && st.items.get_mut(h).is_some_and(wants_size)
+                        && !probe.contains(h)
+                    {
+                        probe.push(h.clone());
+                    }
+                    holder
+                }
             };
             if let Some(holder) = holder {
                 for u in urls {
@@ -3446,6 +3469,22 @@ fn sibling_parts(
         }
     }
     (!by_number.is_empty()).then_some(by_number)
+}
+
+/// Whether row `it`, named but with no size, has a link on a host that tells
+/// sizes: it is then looked up for its size (its name stays), and marked so.
+fn wants_size(it: &mut Item) -> bool {
+    let wants = !it.wrapper
+        && it.size == 0
+        && it.done == 0
+        && it.name.is_some()
+        && !it.running()
+        && it.mirrors.iter().any(|m| hosts::tells_size(m));
+    if wants {
+        it.probed = false;
+        it.named = true;
+    }
+    wants
 }
 
 /// The rows of release `root` (a row and everything found from it) as
