@@ -19,7 +19,6 @@ use std::{
     net::Ipv4Addr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use haul_core::{Engine, Event, Options, Theme, Told, paths};
@@ -324,34 +323,17 @@ fn spawn_theme_sync(app: AppHandle, engine: &Engine) {
     });
 }
 
-/// Desktop notifications for finished, failed and stuck downloads, gathered
-/// over two seconds and skipped while the window has focus.
+/// Desktop notifications for finished, failed and stuck downloads, one per
+/// burst ([`haul_core::gather`]). While the window has focus the web view's
+/// toast tells it instead, from the same burst.
 fn spawn_notifications(app: AppHandle, engine: &Engine) {
     let mut events = engine.subscribe();
     let engine = engine.clone();
     tauri::async_runtime::spawn(async move {
-        loop {
-            let first = match events.recv().await {
-                Ok(e) => e,
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => return,
-            };
-            let mut batch = vec![first];
-            let window = tokio::time::sleep(Duration::from_secs(2));
-            tokio::pin!(window);
-            loop {
-                tokio::select! {
-                    _ = &mut window => break,
-                    next = events.recv() => match next {
-                        Ok(e) => batch.push(e),
-                        Err(RecvError::Lagged(_)) => {}
-                        Err(RecvError::Closed) => break,
-                    },
-                }
-            }
+        while let Some(burst) = haul_core::gather(&mut events).await {
             // A page Haul passes by itself asks for nobody, unless its window
             // comes forward (which tells the user then).
-            let tellings = engine.tellings(&batch);
+            let tellings = engine.tell_burst(&burst);
             let focused = app
                 .get_webview_window(MAIN)
                 .is_some_and(|w| w.is_focused().unwrap_or(false));

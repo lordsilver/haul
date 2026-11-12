@@ -62,3 +62,70 @@ fn walk(node: &Value, token: &str, out: &mut Vec<Entry>) {
         }
     }
 }
+
+/// What a host's page was answered when it asked its own API for its file,
+/// as the hand-off script reports it ([`page_answer`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PageAnswer {
+    /// The file or folder is no more.
+    Gone(String),
+    /// The host asked this address to wait: a cooldown for the host, and the
+    /// row asked again after it.
+    Later { reason: String, seconds: u64 },
+    /// Any other error: failed for now, tried again later.
+    Failed(String),
+}
+
+/// How long gofile's "Too many requests" holds the host back, at first.
+const GOFILE_LIMIT_WAIT: u64 = 120;
+
+/// What a page on `site` was answered by its host's API (`http`, the
+/// answer's own `status`), when that is not its files.
+pub fn page_answer(site: &str, http: u16, status: &str) -> PageAnswer {
+    let site = site.trim_start_matches("www.");
+    let limited = http == 429 || status.to_ascii_lowercase().contains("ratelimit");
+    if limited {
+        return PageAnswer::Later {
+            reason: format!("{site}: too many requests from this address"),
+            seconds: GOFILE_LIMIT_WAIT,
+        };
+    }
+    match status {
+        "error-notFound" => PageAnswer::Gone(format!("{site}: the folder was deleted")),
+        _ if http == 404 => PageAnswer::Gone(format!("{site}: the folder was deleted")),
+        "" => PageAnswer::Failed(format!("{site}: answered {http}")),
+        other => PageAnswer::Failed(format!("{site}: {other} ({http})")),
+    }
+}
+
+#[cfg(test)]
+mod answer_tests {
+    use super::*;
+
+    #[test]
+    fn a_rate_limit_is_a_wait_and_not_found_is_gone() {
+        assert!(matches!(
+            page_answer("gofile.io", 429, "error-rateLimit"),
+            PageAnswer::Later {
+                seconds: GOFILE_LIMIT_WAIT,
+                ..
+            }
+        ));
+        assert!(matches!(
+            page_answer("gofile.io", 200, "error-rateLimit"),
+            PageAnswer::Later { .. }
+        ));
+        assert_eq!(
+            page_answer("gofile.io", 404, "error-notFound"),
+            PageAnswer::Gone("gofile.io: the folder was deleted".into())
+        );
+        assert_eq!(
+            page_answer("gofile.io", 500, ""),
+            PageAnswer::Failed("gofile.io: answered 500".into())
+        );
+        assert_eq!(
+            page_answer("gofile.io", 403, "error-notPublic"),
+            PageAnswer::Failed("gofile.io: error-notPublic (403)".into())
+        );
+    }
+}

@@ -233,7 +233,7 @@ function Pool({ s }: { s: State }) {
 export function StatusBar({ state: s }: { state: State | null }) {
   const theme = useTheme();
   if (!s) return <footer className="h-9 border-t bg-sidebar" />;
-  const { downloading, waiting, left, slowed, unwrapping, need_you, ready } = s.counts;
+  const { downloading, waiting, left, slowed, reading, passing, checking, need_you, ready } = s.counts;
   const clipboard = s.desktop && s.watch_clipboard;
   const pooled = s.pool.proxies + s.pool.vpn > 0;
   const index = THEMES.findIndex((t) => t.value === theme);
@@ -265,10 +265,24 @@ export function StatusBar({ state: s }: { state: State | null }) {
       ) : null}
       {/* Work on links before files show, and who waits for the user:
           steady entries rather than a toast for each. */}
-      {unwrapping ? (
+      {reading ? (
         <span className={item}>
           <LoaderCircle aria-hidden className="size-3.5 animate-spin" />
-          Unwrapping {plural(unwrapping, 'link')}
+          Reading {plural(reading, 'page')}
+        </span>
+      ) : null}
+      {passing.now + passing.queued ? (
+        <span className={item}>
+          <LoaderCircle aria-hidden className="size-3.5 animate-spin" />
+          {passing.queued
+            ? `${plural(passing.queued, 'page')} waiting for Haul's browser`
+            : `Haul's browser is reading ${plural(passing.now, 'page')}`}
+        </span>
+      ) : null}
+      {checking ? (
+        <span className={item}>
+          <LoaderCircle aria-hidden className="size-3.5 animate-spin" />
+          Checking {plural(checking, 'link')}
         </span>
       ) : null}
       {ready ? (

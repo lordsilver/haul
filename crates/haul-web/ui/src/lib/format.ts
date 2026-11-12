@@ -24,7 +24,10 @@ export function plural(n: number, one: string, many = `${one}s`): string {
 }
 
 export function ordinal(n: number): string {
-  return n === 1 ? '1st' : n === 2 ? '2nd' : n === 3 ? '3rd' : `${n}th`;
+  const teen = Math.floor(n / 10) % 10 === 1;
+  const last = n % 10;
+  const suffix = teen ? 'th' : last === 1 ? 'st' : last === 2 ? 'nd' : last === 3 ? 'rd' : 'th';
+  return `${n}${suffix}`;
 }
 
 export const isWebLink = (url: string) => /^https?:\/\//i.test(url);
@@ -36,4 +39,9 @@ export function roughly(seconds: number): string {
   if (min < 60) return `about ${min} min`;
   const h = Math.floor(min / 60);
   return `about ${h} h${min % 60 ? ` ${min % 60} min` : ''}`;
+}
+
+// The time of day `seconds` from now, as the clock shows it: 14:20.
+export function clockIn(seconds: number): string {
+  return new Date(Date.now() + seconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }

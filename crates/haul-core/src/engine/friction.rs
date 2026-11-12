@@ -17,7 +17,7 @@ use indexmap::IndexMap;
 use serde::Serialize;
 use serde_json::json;
 
-use super::{Engine, Event, State, Telling, display_name, summarize};
+use super::{Engine, Event, State, Telling, display_name};
 use crate::{
     hosts::{self, Need, gates},
     item::{Item, Trouble},
@@ -75,7 +75,17 @@ impl Engine {
     /// passes by itself asks nobody yet (its window comes forward, or the
     /// browser asks, if it must), so a row waiting on one is left out.
     pub fn tellings(&self, events: &[Event]) -> Vec<Telling> {
-        let kept: Vec<Event> = events
+        self.tell_burst(&super::Burst {
+            events: events.to_vec(),
+            missed: 0,
+        })
+    }
+
+    /// [`Engine::tellings`] for a gathered burst ([`super::gather`]), with
+    /// the events it lost counted.
+    pub fn tell_burst(&self, burst: &super::Burst) -> Vec<Telling> {
+        let kept: Vec<Event> = burst
+            .events
             .iter()
             .filter(|e| {
                 !matches!(e, Event::NeedsUser { id, .. }
@@ -83,7 +93,10 @@ impl Engine {
             })
             .cloned()
             .collect();
-        summarize(&kept)
+        super::summarize_burst(&super::Burst {
+            events: kept,
+            missed: burst.missed,
+        })
     }
 
     /// A notification about rows `rows` was shown: one more for each of

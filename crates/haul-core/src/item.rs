@@ -240,6 +240,14 @@ pub(crate) struct Item {
     /// Where it stands with the page the desktop app passes for it.
     #[serde(skip)]
     pub page: PageTurn,
+    /// The person was told its page wants them: not again until they act.
+    #[serde(skip)]
+    pub told_person: bool,
+    /// Listed by a wrapper and not started by the person yet: nothing about
+    /// it is told as a failure or as wanting them, and losing a mirror
+    /// leaves it waiting ([`Item::start`] clears it).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub unstarted: bool,
     /// `pre` came from the user (a pasted or captured link).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub manual: bool,
@@ -482,9 +490,16 @@ impl Item {
     /// Back in the queue for its next turn, unless an attempt is running
     /// (which settles where it stands when it ends).
     pub(crate) fn queue_if_idle(&mut self) {
+        self.unstarted = false;
         if !self.running() {
             self.status = Status::Queued;
         }
+    }
+
+    /// The person starts it: queued, and told of from now on.
+    pub(crate) fn start(&mut self) {
+        self.unstarted = false;
+        self.status = Status::Queued;
     }
 
     /// Forgets what only its attempt that just ended had: its transfer, the

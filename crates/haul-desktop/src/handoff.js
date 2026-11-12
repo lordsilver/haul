@@ -51,6 +51,14 @@
     send({ gone: reason }, "https://haul.invalid/gone?" + new URLSearchParams({ reason }));
   };
 
+  // The page's host answered its own request with no files: Rust reads
+  // what the answer means (gone, a rate limit, another error).
+  const answered = (http, status) => {
+    if (handed) return;
+    handed = true;
+    send({ answered: { site, http, status } }, "https://haul.invalid/answered?" + new URLSearchParams({ site, http, status }));
+  };
+
   const recipes = [
     {
       // Once its Turnstile check passes, the page fetches the file's link
@@ -93,13 +101,12 @@
               .clone()
               .json()
               .then((answer) => {
-                if (answer?.status === "error-notFound") return gone("gofile: the folder was deleted");
-                if (answer?.status !== "ok") return;
+                if (answer?.status !== "ok") return answered(response.status, String(answer?.status ?? ""));
                 const data = answer.data ?? {};
                 const nodes = data.type === "file" ? [data] : Object.values(data.children ?? {});
                 hand(nodes.filter((n) => n.type === "file" && n.link).map((n) => ({ url: n.link, name: n.name, size: n.size })));
               })
-              .catch(() => {});
+              .catch(() => answered(response.status, ""));
           }
           return response;
         };
@@ -287,9 +294,11 @@
     const look = () => {
       // Addresses written out in the page's text apart: on a paste they are
       // its list, whatever host they are on; a button is as likely an ad.
+      // Those written without `https://` go to Rust too, which keeps them
+      // only on sites it knows.
       const text = new Set();
-      for (const m of (document.body?.innerText ?? "").matchAll(/https?:\/\/[^\s"'<>()[\]{}]+/g)) text.add(m[0]);
-      const links = new Set(text);
+      for (const m of (document.body?.innerText ?? "").matchAll(/(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}\/[^\s"'<>()[\]{}]+/gi)) text.add(m[0]);
+      const links = new Set([...text].filter((t) => /^https?:/i.test(t)));
       for (const a of document.querySelectorAll("a[href]")) if (/^https?:/.test(a.href)) links.add(a.href);
       const key = [...links].join("\n");
       if (key === offered) return;
@@ -427,7 +436,9 @@
       // Not while the general way still has something to press or wait for.
       calm = document.readyState === "complete" && !check && !window.__haulPressing && links === seen ? calm + 1 : 0;
       seen = links;
-      if (calm === 5) window.__haulHandoff = { links: [], shown: [], settled: true };
+      // What it shows, for the report's log only (Rust keeps the first 2 KB).
+      const text = (document.body?.innerText ?? "").replace(/\s+/g, " ").trim();
+      if (calm === 5) window.__haulHandoff = { links: [], shown: [], settled: true, text: text.slice(0, 4096), length: text.length };
     }, 1000);
   }
 

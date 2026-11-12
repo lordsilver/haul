@@ -217,8 +217,9 @@ impl Browser {
                     // settles past its checks.
                     ends_settled: lists,
                     // A file's page on a host Haul has no recipe for: its
-                    // download button is pressed, as a person would.
-                    press_download: !lists && !hosts::page_passes(&url),
+                    // download button is pressed, as a person would. Never
+                    // on a wrapper's or a paste's page.
+                    press_download: hosts::presses_download(&url, lists),
                     // A host's own page may lead to its file elsewhere; any
                     // other page shows what it has where it is.
                     keep_to_site: !hosts::page_passes(&url),
@@ -877,6 +878,23 @@ fn said(url: &Url) -> Option<Said> {
             })
         }
         "/gone" => Some(Said::Gone(reason())),
+        "/answered" => {
+            let http = pair("http").and_then(|h| h.parse().ok()).unwrap_or(0);
+            let answer =
+                hosts::page_answer(&pair("site")?, http, &pair("status").unwrap_or_default());
+            Some(match answer {
+                hosts::PageAnswer::Gone(reason) => Said::Gone(reason),
+                hosts::PageAnswer::Later { reason, seconds } => Said::Later {
+                    reason,
+                    seconds: Some(seconds),
+                },
+                // Failed for now: the page is tried again later.
+                hosts::PageAnswer::Failed(reason) => Said::Later {
+                    reason,
+                    seconds: None,
+                },
+            })
+        }
         "/later" => Some(Said::Later {
             reason: reason(),
             seconds: pair("seconds").and_then(|s| s.parse().ok()),

@@ -765,8 +765,9 @@ impl Engine {
     /// timer and limit as a failed download: never when no such try is left,
     /// or no page could pass without a person.
     pub(super) fn page_retry_at(&self, st: &State, it: &Item, now: Instant) -> Option<Instant> {
-        self.next_try(it, now)
-            .filter(|_| self.pages_pass() && !self.pages_to_pass(st, it).is_empty())
+        let on = self.cfg().retry_failed_minutes > 0;
+        let wait = PAGE_TRIES.get(it.auto_retries as usize).filter(|_| on)?;
+        (self.pages_pass() && !self.pages_to_pass(st, it).is_empty()).then(|| now + *wait)
     }
 
     /// Queues the failed items whose automatic retry is due, and passes the
@@ -843,6 +844,15 @@ impl Engine {
         !due.is_empty()
     }
 }
+
+/// The waits before a page that wanted a person is passed again on its own,
+/// each longer than the one before: a gate that opens on a later try asks
+/// nobody ([`Engine::page_wants_person`]).
+const PAGE_TRIES: [Duration; AUTO_RETRIES as usize] = [
+    Duration::from_secs(5 * 60),
+    Duration::from_secs(20 * 60),
+    Duration::from_secs(60 * 60),
+];
 
 /// A folder downloads can go to: absolute, created if needed, and writable.
 fn usable_folder(path: &Path) -> Result<(), String> {

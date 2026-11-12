@@ -31,7 +31,7 @@ resume_attempts = 5             # retries per mirror after network trouble
 min_speed_kbps = 0              # give up a mirror slower than this (KiB/s) ...
 min_speed_seconds = 60          # ... over this long; 0 = off
 leave_slow_hosts = true         # leave a host that holds a big download far below what it or your line can do
-retry_failed_minutes = 15       # retry failed downloads, and pages that wanted you (up to 3 times), 0 = never
+retry_failed_minutes = 15       # retry failed downloads (up to 3 times), 0 = never; pages that wanted you are passed again after 5, 20 and 60 minutes while it is not 0
 proxy = "socks5://user:pass@host:1080" # every host goes through it unless allowed direct
 use_proxy = true                # false keeps proxies and VPN servers but connects directly
 proxies_on = true               # false leaves the proxies of proxy and proxies out

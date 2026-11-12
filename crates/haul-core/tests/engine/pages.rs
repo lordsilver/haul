@@ -135,10 +135,7 @@ async fn a_page_being_read_is_in_no_list_until_it_shows_what_it_is() {
     assert_eq!(s.items[0].status.as_str(), "checking");
     assert_eq!(s.items[0].list, None, "in no list while it is read");
     assert_eq!(s.counts.all, 0, "not counted among the downloads");
-    assert_eq!(
-        s.counts.unwrapping, 1,
-        "the status bar says it is worked on"
-    );
+    assert_eq!(s.counts.reading, 1, "the status bar says it is worked on");
 
     let s = wait_for(&engine, "the page's files", |s| s.items.len() == 2).await;
     assert_eq!(s.wrappers.len(), 1);
@@ -271,7 +268,8 @@ async fn a_copied_guarded_page_goes_if_it_wants_a_person() {
     .await;
     let id = s.items[0].id.clone();
     assert!(s.items[0].tentative && engine.is_tentative(&id));
-    assert_eq!((s.counts.all, s.counts.unwrapping), (0, 1));
+    let passing = s.counts.passing;
+    assert_eq!((s.counts.all, passing.now + passing.queued), (0, 1));
     assert!(!engine.page_wants_person(&id), "the page went");
     let s = engine.snapshot();
     assert!(s.items.is_empty() && s.counts.need_you == 0);
@@ -303,7 +301,7 @@ async fn a_copied_page_named_like_a_file_is_still_judged() {
     let mut names: Vec<&str> = s.items.iter().map(|i| i.name.as_str()).collect();
     names.sort();
     assert_eq!(names, ["postone.bin", "posttwo.bin"]);
-    assert_eq!(s.counts.unwrapping, 0);
+    assert_eq!(s.counts.reading, 0);
     while let Ok(e) = events.try_recv() {
         assert!(!matches!(e, Event::NeedsUser { .. }), "{e:?}");
     }
@@ -331,7 +329,7 @@ async fn a_copied_page_that_hands_back_a_file_is_a_download() {
     let it = &s.items[0];
     assert!(!it.tentative);
     assert_eq!(it.list.map(|l| l.as_str()), Some("done"));
-    assert_eq!((s.counts.all, s.counts.unwrapping), (1, 0));
+    assert_eq!((s.counts.all, s.counts.reading), (1, 0));
 }
 
 /// Where the desktop app passes pages, a host whose page passes and that
@@ -350,8 +348,9 @@ async fn a_page_the_desktop_passes_stands_in_for_an_account_once_switched_on() {
     })
     .await;
     let id = s.items[0].id.clone();
-    // Its window came forward: now it needs the person.
-    assert!(engine.page_wants_person(&id), "the download stays");
+    // Its window came forward: now it needs the person, after its own
+    // tries.
+    assert!(!engine.page_wants_person(&id), "the download stays");
     wait_for(&engine, "the page to want a person", |s| {
         s.items.iter().any(|i| i.status.as_str() == "captcha")
     })
@@ -625,9 +624,9 @@ async fn a_host_limit_leaves_a_page_for_a_person_under_needs_you() {
     );
 }
 
-/// A page that wanted a person is passed again by itself, on the failed
-/// downloads' timer and limit, telling nobody; once the tries are used up it
-/// stays for the person. In between it waits for them as before.
+/// A page that wanted a person is passed again by itself, after 5, 20 and
+/// 60 minutes, telling nobody; once the tries are used up the person is
+/// told, once, and it stays for them. In between it waits as before.
 #[tokio::test]
 async fn a_page_that_wants_a_person_is_tried_again_by_itself() {
     let t = Setup::new().await;
@@ -637,7 +636,10 @@ async fn a_page_that_wants_a_person_is_tried_again_by_itself() {
     let mut events = engine.subscribe();
     let id = ddownload_waiting_its_pass(&engine, page).await;
 
-    assert!(engine.page_wants_person(&id), "the person is told once");
+    assert!(
+        !engine.page_wants_person(&id),
+        "nobody is told while it has tries of its own"
+    );
     let s = wait_for(&engine, "the row under Needs you", |s| {
         s.items[0].status.as_str() == "captcha"
     })
@@ -645,7 +647,7 @@ async fn a_page_that_wants_a_person_is_tried_again_by_itself() {
     assert_eq!(s.items[0].list.map(|l| l.as_str()), Some("attention"));
     assert_eq!(s.items[0].open_urls, [page], "Open here has its page");
     assert!(
-        (890..=900).contains(&s.items[0].retry_in),
+        (290..=300).contains(&s.items[0].retry_in),
         "{}",
         s.items[0].retry_in
     );
@@ -659,14 +661,23 @@ async fn a_page_that_wants_a_person_is_tried_again_by_itself() {
         .await;
         assert_eq!(s.items[0].retry_in, 0, "a try under way");
         assert_eq!(auto_retries(&engine, &id), round);
-        assert!(!engine.page_wants_person(&id), "nobody is told");
+        assert_eq!(
+            engine.page_wants_person(&id),
+            round == 3,
+            "told once its last try wanted a person too"
+        );
         let s = wait_for(&engine, "the row back under Needs you", |s| {
             s.items[0].status.as_str() == "captcha"
         })
         .await;
         assert_eq!(s.items[0].open_urls, [page]);
         if round < 3 {
-            assert!(s.items[0].retry_in > 0, "try {round} is not the last");
+            let wait = [1200, 3600][round as usize - 1];
+            assert!(
+                (wait - 10..=wait).contains(&s.items[0].retry_in),
+                "try {round} is not the last, and the wait grows: {}",
+                s.items[0].retry_in
+            );
         }
     }
     let s = engine.snapshot();
@@ -692,7 +703,10 @@ async fn a_page_is_tried_again_only_while_retries_are_on() {
     let engine = Engine::start(options).await.unwrap();
     engine.set_pages_pass(true);
     let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
-    assert!(engine.page_wants_person(&id));
+    assert!(
+        engine.page_wants_person(&id),
+        "no try of its own: told at once"
+    );
     let s = wait_for(&engine, "the row under Needs you", |s| {
         s.items[0].status.as_str() == "captcha"
     })
@@ -702,7 +716,7 @@ async fn a_page_is_tried_again_only_while_retries_are_on() {
     engine.update_settings(on.as_object().unwrap()).unwrap();
     let s = engine.snapshot();
     assert!(
-        (50..=60).contains(&s.items[0].retry_in),
+        (290..=300).contains(&s.items[0].retry_in),
         "{}",
         s.items[0].retry_in
     );
@@ -717,7 +731,7 @@ async fn a_persons_action_ends_a_pages_retries() {
     engine.set_pages_pass(true);
     let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
     let under_needs_you = |s: &Snapshot| s.items[0].status.as_str() == "captcha";
-    assert!(engine.page_wants_person(&id));
+    assert!(!engine.page_wants_person(&id));
     wait_for(&engine, "the row under Needs you", under_needs_you).await;
     assert!(engine.debug_retry_now(&id));
     wait_for(&engine, "its pass", |s| {
@@ -728,8 +742,8 @@ async fn a_persons_action_ends_a_pages_retries() {
     wait_for(&engine, "the row back", under_needs_you).await;
     assert_eq!(auto_retries(&engine, &id), 1);
 
-    // Tried again by hand: the page's first pass again, and the person is
-    // told again if it wants them.
+    // Tried again by hand: the page's first pass again, with its tries of
+    // its own before the person is told again.
     assert!(engine.item_action(&id, ItemAction::RetryManual));
     let s = wait_for(&engine, "its pass", |s| {
         s.items[0].status.as_str() == "passing"
@@ -737,7 +751,7 @@ async fn a_persons_action_ends_a_pages_retries() {
     .await;
     assert_eq!(s.items[0].retry_in, 0);
     assert_eq!(auto_retries(&engine, &id), 0);
-    assert!(engine.page_wants_person(&id), "told again");
+    assert!(!engine.page_wants_person(&id), "its own tries first");
 
     // A link handed back.
     wait_for(&engine, "the row back", under_needs_you).await;
@@ -750,7 +764,7 @@ async fn a_persons_action_ends_a_pages_retries() {
 
     // Removed.
     let other = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/def456").await;
-    assert!(engine.page_wants_person(&other));
+    assert!(!engine.page_wants_person(&other));
     wait_for(&engine, "the other row under Needs you", |s| {
         s.counts.need_you == 1
     })
@@ -767,7 +781,7 @@ async fn a_page_a_person_has_open_is_not_tried_again() {
     let engine = Engine::start(through_stand_in(&t)).await.unwrap();
     engine.set_pages_pass(true);
     let id = ddownload_waiting_its_pass(&engine, "http://ddownload.com/dd/abc123").await;
-    assert!(engine.page_wants_person(&id));
+    assert!(!engine.page_wants_person(&id));
     wait_for(&engine, "the row under Needs you", |s| {
         s.items[0].status.as_str() == "captcha"
     })
@@ -785,7 +799,7 @@ async fn a_page_a_person_has_open_is_not_tried_again() {
         "captcha",
         "back with the person"
     );
-    assert!(s.items[0].retry_in > 800, "{}", s.items[0].retry_in);
+    assert!(s.items[0].retry_in > 280, "{}", s.items[0].retry_in);
     assert_eq!(auto_retries(&engine, &id), 0, "that try did not count");
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert_eq!(engine.snapshot().items[0].status, "captcha");
@@ -820,7 +834,7 @@ async fn a_page_that_cannot_pass_by_itself_is_not_tried_again() {
     })
     .await;
     let id = s.items[0].id.clone();
-    assert!(engine.page_wants_person(&id));
+    assert!(!engine.page_wants_person(&id));
     wait_for(&engine, "the row under Needs you", |s| {
         s.items[0].status.as_str() == "captcha" && s.items[0].retry_in > 0
     })
@@ -886,7 +900,7 @@ async fn the_row_names_the_gate_the_browser_found() {
     let s = wrapper_settled(&engine, "passing").await;
     let id = s.wrappers[0].id.clone();
     engine.page_shows_gate(&id, page, Gate::Cutcaptcha);
-    assert!(engine.page_wants_person(&id));
+    assert!(!engine.page_wants_person(&id), "tried again first");
     let s = wrapper_settled(&engine, "captcha").await;
     let said = &s.wrappers[0].error;
     assert!(
@@ -907,7 +921,7 @@ async fn a_pass_that_could_not_start_says_so() {
     engine.add_text(page, "");
     let s = wrapper_settled(&engine, "passing").await;
     let id = s.wrappers[0].id.clone();
-    assert!(engine.page_not_passed(&id, "the browser exited at start (exit code: 0)"));
+    assert!(!engine.page_not_passed(&id, "the browser exited at start (exit code: 0)"));
     let s = wrapper_settled(&engine, "captcha").await;
     let said = &s.wrappers[0].error;
     assert!(

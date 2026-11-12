@@ -19,6 +19,7 @@ export function item(over: Partial<ItemView> = {}): ItemView {
     download_from: null,
     tentative: false,
     looking_up: false,
+    queue: null,
     wait: 0,
     retry_in: 0,
     open_urls: [],

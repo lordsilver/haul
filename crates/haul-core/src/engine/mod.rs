@@ -56,10 +56,10 @@ pub use reconnect::ReconnectView;
 pub use services::ServicesView;
 
 pub use settings::{SettingError, SettingsView};
-pub use snapshot::{HostView, ItemView, PoolView, QuotaView, Snapshot, WrapperView};
+pub use snapshot::{HostView, InQueue, ItemView, PoolView, QuotaView, Snapshot, WrapperView};
 pub use views::{
-    Alert, ArchiveView, Command, Counts, HostGroup, List, PoolSource, PoolSummary, RowState,
-    SiteKind, Tally, WrapperCard, WrapperState,
+    Alert, ArchiveView, Command, Counts, HostGroup, List, Passing, PoolSource, PoolSummary,
+    RowState, SiteKind, Tally, WrapperCard, WrapperState,
 };
 
 /// The waits between saves of a changed queue, longer after each that failed.
@@ -114,6 +114,10 @@ fn prune_pages(st: &mut State) {
     st.guarded = guarded;
     st.cleared = cleared;
 }
+
+/// How long a site whose check came back after a clearance has its pages
+/// read by the browser alone ([`State::held_by_check`]).
+const SITE_CHECK_HOLDS: Duration = Duration::from_secs(30 * 60);
 
 /// Automatic retries of a failed download, when `retry_failed_minutes` is on.
 const AUTO_RETRIES: u32 = 3;
@@ -352,6 +356,86 @@ pub struct Telling {
     pub rows: Vec<String>,
 }
 
+/// How many events wait for a slow listener before the oldest are lost
+/// (and counted, [`Burst::missed`]).
+const EVENT_BACKLOG: usize = 1024;
+
+/// Events that came together, as one telling gathers them ([`gather`]).
+#[derive(Debug, Default)]
+pub struct Burst {
+    pub events: Vec<Event>,
+    /// Events lost to a listener that fell behind: told as "and n more".
+    pub missed: u64,
+}
+
+/// A burst ends after this long without an event…
+const BURST_QUIET: Duration = Duration::from_secs(2);
+/// …or this long after its first, whichever comes first.
+const BURST_LONGEST: Duration = Duration::from_secs(10);
+
+/// Waits for the next burst of events on `rx`: from its first event until
+/// two seconds pass without one, ten at most, so one burst is told once.
+/// Events lost because the listener fell behind are counted, never dropped
+/// silently. `None` once the engine is gone.
+pub async fn gather(rx: &mut broadcast::Receiver<Event>) -> Option<Burst> {
+    gather_within(rx, BURST_QUIET, BURST_LONGEST).await
+}
+
+async fn gather_within(
+    rx: &mut broadcast::Receiver<Event>,
+    quiet: Duration,
+    longest: Duration,
+) -> Option<Burst> {
+    use broadcast::error::RecvError;
+    let mut burst = Burst::default();
+    match rx.recv().await {
+        Ok(e) => burst.events.push(e),
+        Err(RecvError::Lagged(n)) => {
+            tracing::warn!("the notifications fell {n} event(s) behind");
+            burst.missed += n;
+        }
+        Err(RecvError::Closed) => return None,
+    }
+    let end = tokio::time::Instant::now() + longest;
+    loop {
+        let wait = tokio::time::sleep_until(end.min(tokio::time::Instant::now() + quiet));
+        tokio::select! {
+            () = wait => break,
+            next = rx.recv() => match next {
+                Ok(e) => burst.events.push(e),
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!("the notifications fell {n} event(s) behind");
+                    burst.missed += n;
+                }
+                Err(RecvError::Closed) => break,
+            },
+        }
+    }
+    Some(burst)
+}
+
+/// A burst as the few things worth saying ([`summarize`]), with the events
+/// lost on the way counted in its last line.
+pub fn summarize_burst(burst: &Burst) -> Vec<Telling> {
+    let mut out = summarize(&burst.events);
+    if burst.missed > 0 {
+        let more = format!("and {} more", burst.missed);
+        match out.last_mut() {
+            Some(t) => {
+                t.body.push_str(if t.body.is_empty() { "" } else { ", " });
+                t.body.push_str(&more);
+            }
+            None => out.push(Telling {
+                title: "Haul has news".into(),
+                body: format!("{} things happened at once: see the lists", burst.missed),
+                kind: Told::Notice,
+                rows: Vec::new(),
+            }),
+        }
+    }
+    out
+}
+
 /// A burst of events as the few things worth saying: downloads finished
 /// together are one, as are failures, and downloads waiting for a person.
 pub fn summarize(events: &[Event]) -> Vec<Telling> {
@@ -452,6 +536,75 @@ pub fn summarize(events: &[Event]) -> Vec<Telling> {
 #[cfg(test)]
 mod summarize_tests {
     use super::*;
+
+    fn failed(n: usize) -> Event {
+        Event::Failed {
+            id: format!("row{n}"),
+            name: format!("file{n}.bin"),
+            error: "site.example: gone".into(),
+        }
+    }
+
+    /// A burst ends two seconds after its last event, not two after its
+    /// first: events a second apart are one burst.
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_lasts_until_it_goes_quiet() {
+        let (tx, mut rx) = broadcast::channel(EVENT_BACKLOG);
+        let sender = tokio::spawn(async move {
+            for n in 0..5 {
+                tx.send(failed(n)).unwrap();
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            tx.send(failed(9)).unwrap();
+        });
+        let burst = gather(&mut rx).await.unwrap();
+        assert_eq!(burst.events.len(), 5);
+        let next = gather(&mut rx).await.unwrap();
+        assert_eq!(next.events.len(), 1);
+        sender.await.unwrap();
+    }
+
+    /// One that never goes quiet is told after ten seconds.
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_is_told_after_ten_seconds_at_most() {
+        let (tx, mut rx) = broadcast::channel(EVENT_BACKLOG);
+        tokio::spawn(async move {
+            for n in 0..30 {
+                let _ = tx.send(failed(n));
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+        let burst = gather(&mut rx).await.unwrap();
+        assert!(
+            (10..=11).contains(&burst.events.len()),
+            "{}",
+            burst.events.len()
+        );
+    }
+
+    /// 100 failures at once are one telling that counts 100, and a
+    /// listener that fell behind says how many it lost (a 64-event channel
+    /// loses 36 of them).
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_is_told_once_and_nothing_is_dropped_silently() {
+        let (tx, mut rx) = broadcast::channel(EVENT_BACKLOG);
+        for n in 0..100 {
+            tx.send(failed(n)).unwrap();
+        }
+        let told = summarize_burst(&gather(&mut rx).await.unwrap());
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].title, "100 downloads failed");
+
+        let (tx, mut rx) = broadcast::channel(64);
+        for n in 0..100 {
+            tx.send(failed(n)).unwrap();
+        }
+        let burst = gather(&mut rx).await.unwrap();
+        assert_eq!((burst.events.len(), burst.missed), (64, 36));
+        let told = summarize_burst(&burst);
+        assert!(told[0].body.ends_with("and 36 more"), "{}", told[0].body);
+    }
 
     #[test]
     fn a_burst_is_told_in_a_few_lines() {
@@ -861,6 +1014,11 @@ struct State {
     /// it is passed the usual way, so a clearance that does not hold is not
     /// handed over and over.
     cleared: HashSet<String>,
+    /// Sites whose check came back after a browser's clearance was handed
+    /// to Haul, and since when: for [`SITE_CHECK_HOLDS`] their other pages
+    /// go straight to the browser, which reads them itself, instead of
+    /// being read by Haul first only to meet the check again.
+    held_by_check: HashMap<String, Instant>,
     /// Pages the desktop app passed during their rows' current waits.
     tried: passes::Tried,
     /// The rows waiting in the pass queue, as the last plan saw them, for
@@ -899,6 +1057,7 @@ impl State {
             part_moves: Vec::new(),
             guarded: HashSet::new(),
             cleared: HashSet::new(),
+            held_by_check: HashMap::new(),
             tried: passes::Tried::new(),
             pass_queue: passes::Queue::default(),
             friction: friction::Frictions::new(),
@@ -925,6 +1084,23 @@ impl State {
         if need == Need::Gate {
             self.cleared.insert(url.to_string());
         }
+        // The check again after a clearance: Haul's own reads of this site
+        // won't get past it for a while.
+        if need == Need::Check && self.cleared.contains(url) {
+            let site = hosts::site_of(url);
+            tracing::info!(
+                "{site}'s check came back after a clearance: its pages go to the browser"
+            );
+            self.held_by_check.entry(site).or_insert_with(Instant::now);
+        }
+    }
+
+    /// Whether site of page `url` was found behind a check a clearance does
+    /// not get Haul past, within [`SITE_CHECK_HOLDS`].
+    fn held_by_check(&mut self, url: &str, now: Instant) -> bool {
+        self.held_by_check
+            .retain(|_, since| now.duration_since(*since) < SITE_CHECK_HOLDS);
+        self.held_by_check.contains_key(&hosts::site_of(url))
     }
 
     /// A host's stats; a known host's are found without allocating.
@@ -1263,7 +1439,7 @@ impl Engine {
             tokens: Tokens::default(),
             wake: Notify::new(),
             version: watch::Sender::new(0),
-            events: broadcast::Sender::new(64),
+            events: broadcast::Sender::new(EVENT_BACKLOG),
             probes: Semaphore::new(4),
             verifier: Semaphore::new(1),
             extractor: Semaphore::new(1),
@@ -1808,7 +1984,28 @@ impl Engine {
         };
         let cfg = self.cfg();
         let cx = self.cx(&http, &cfg, &key_service);
-        let found = tokio::time::timeout(Duration::from_secs(60), hosts::unwrap(&cx, &url)).await;
+        // A site whose check a clearance doesn't get Haul past: the browser
+        // reads the page itself, with no request of Haul's first and no
+        // clearance handed back (one request per page).
+        let held = {
+            let mut st = self.lock();
+            let held = st.held_by_check(&url, Instant::now());
+            if held {
+                st.cleared.insert(url.url.clone());
+            }
+            held
+        };
+        let found = if held {
+            Ok(Err(ResolveError::NeedsUser(
+                hosts::Need::Check,
+                format!(
+                    "{} is behind a browser check (Cloudflare's)",
+                    hosts::host_of(&url)
+                ),
+            )))
+        } else {
+            tokio::time::timeout(Duration::from_secs(60), hosts::unwrap(&cx, &url)).await
+        };
         match found {
             Ok(Ok(found)) => self.take_unwrapped(&id, &url, found),
             // A gate for a person (filecrypt.cc's) says so at once, even
@@ -1825,7 +2022,8 @@ impl Engine {
                     it.manual_urls.insert(url.url.clone());
                     it.set_error(message, Trouble::Needs(need));
                     it.status = Status::Captcha;
-                    event = Some(Event::NeedsUser {
+                    // A file nobody started wants nobody yet.
+                    event = (!it.unstarted).then(|| Event::NeedsUser {
                         id: id.clone(),
                         name: display_name(it),
                     });
@@ -2123,6 +2321,7 @@ impl Engine {
                 it.listed_size = e.listed_size;
                 // Nothing a wrapper lists starts on its own: the user picks.
                 it.status = Status::Paused;
+                it.unstarted = true;
                 it.size = e.size.unwrap_or(0);
                 // Its size from its host, when the wrapper gave none; the
                 // name the wrapper gave stays.
@@ -2389,6 +2588,7 @@ impl Engine {
                 it.queue_if_idle();
                 it.manual_urls.clear();
                 it.page = PageTurn::InTurn;
+                it.told_person = false;
                 // The person's own try: the page's first pass again.
                 it.auto_retries = 0;
                 it.retry_at = None;
@@ -2555,6 +2755,18 @@ impl Engine {
         true
     }
 
+    /// Ends every wait a host asked of an address now, for tests of what
+    /// comes after it.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn debug_end_waits(&self) {
+        let mut st = self.lock();
+        for (_, lane) in st.lanes.0.values_mut().flatten() {
+            lane.cooldown = None;
+        }
+        self.publish(st);
+    }
+
     /// Stops starting downloads and pauses the running ones; they resume
     /// where they stopped.
     pub fn set_paused(&self, paused: bool) {
@@ -2628,7 +2840,7 @@ impl Engine {
         let mut started = 0;
         for it in st.items.values_mut() {
             if it.listed_by(id) && it.status == Status::Paused && !it.wrapper {
-                it.status = Status::Queued;
+                it.start();
                 started += 1;
             }
         }

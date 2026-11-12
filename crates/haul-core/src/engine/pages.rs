@@ -139,6 +139,7 @@ impl Engine {
                 let it = &st.items[id];
                 let mut row = Item::new(it.mirrors.clone(), None, it.package.clone());
                 row.status = Status::Paused;
+                row.unstarted = it.unstarted;
                 row.probed = true;
                 row.source.clone_from(&it.source);
                 row.also_from.clone_from(&it.also_from);
@@ -226,10 +227,16 @@ impl Engine {
         }
         let mut st = self.lock();
         let mut tell = true;
-        if let Some(it) = st.items.get_mut(id) {
-            tell = !it.page_retrying();
+        if let Some(it) = st.items.get(id) {
+            // Nobody hears of it while its page has tries of its own left;
+            // once they are spent, the person is told, once.
+            let left = self.page_retry_at(&st, it, Instant::now()).is_some();
+            tell = !left && !it.told_person;
             if tell {
                 self.ask_in(&mut st, id);
+                if let Some(it) = st.items.get_mut(id) {
+                    it.told_person = true;
+                }
             }
             let Some(it) = st.items.get_mut(id) else {
                 return tell;
@@ -298,10 +305,14 @@ impl Engine {
         if self.looked_up_nothing(id) {
             return false;
         }
+        // Another look shows the same: no try of its own, the person is
+        // told at once.
+        if let Some(it) = self.lock().items.get_mut(id) {
+            it.auto_retries = AUTO_RETRIES;
+        }
         let tell = self.page_wants_person(id);
         let mut st = self.lock();
         if let Some(it) = st.items.get_mut(id) {
-            it.auto_retries = AUTO_RETRIES;
             it.retry_at = None;
         }
         self.touch(&mut st);
@@ -351,9 +362,21 @@ impl Engine {
     /// `page` said how long, which is its host's limit on this address rather
     /// than this file's ([`Engine::hold_passes`]).
     pub fn page_later(&self, id: &str, page: &str, reason: &str, seconds: Option<u64>) {
-        let looked_up = self.looked_up_nothing(id);
+        // A host's limit on the address is a wait, for a lookup too: its
+        // page is passed again once the host's cooldown is over, not left
+        // as one that told nothing.
+        let limited_lookup = seconds.is_some() && {
+            let st = self.lock();
+            self.looking_up(&st, id).is_some()
+        };
+        let looked_up = limited_lookup || self.looked_up_nothing(id);
         let mut st = self.lock();
         let now = Instant::now();
+        if limited_lookup {
+            tracing::info!(item = %id, "page later, looked up again after the host's wait: {reason}");
+            st.tried
+                .retain(|(row, passed, _)| !(row == id && passed == page));
+        }
         let said = seconds.map(|s| Duration::from_secs(s).min(PAGE_LIMIT_AT_MOST));
         if let Some(wait) = said {
             let host = hosts::host_of(page);
@@ -704,6 +727,7 @@ impl Engine {
             let name = hosts::name_for(url, name_hint);
             let mut file = Item::new(vec![url.to_string()], name.clone(), package);
             file.status = Status::Paused;
+            file.unstarted = true;
             file.source = Some(id.to_string());
             file.probed = true;
             if !headers.is_empty() {

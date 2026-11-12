@@ -595,7 +595,7 @@ fn cases() -> Vec<Release> {
                 Note("another copy, 2 parts on 1fichier, is gone"),
                 "CARD-05",
             )
-            .fails_until(NoFailureTold, "QUIET-01")
+            .holds(NoFailureTold)
             .holds(SameEveryOrder),
         Release::new(
             "a part missing from some containers",
@@ -632,7 +632,7 @@ fn cases() -> Vec<Release> {
                 Order::AddedAgain,
             ])
             .holds(OneCard)
-            .fails_until(Sets, "MODEL-09")
+            .holds(Sets)
             .fails_until(NeverUnnamed, "MODEL-09")
             .fails_until(NoRowVanishes, "MODEL-09")
             .fails_until(ExactSizes, "LOOK-02")
@@ -641,9 +641,9 @@ fn cases() -> Vec<Release> {
                 Note("another copy, 34 parts on 1fichier, is gone"),
                 "CARD-05",
             )
-            .fails_until(NoFailureTold, "QUIET-01")
+            .holds(NoFailureTold)
             .fails_until(Notifications(1), "QUIET-04")
-            .fails_until(SeparateCounts, "QUIET-03")
+            .holds(SeparateCounts)
             .holds(OneReadPerContainer)
             .holds(Asks(0))
             .holds(SameEveryOrder),
@@ -651,8 +651,8 @@ fn cases() -> Vec<Release> {
             .orders(&[Order::Listed])
             .gate("BBBBBBBB")
             .gate("FFFFFFFF")
-            .fails_until(Sets, "MODEL-09")
-            .fails_until(Asks(0), "FLOW-02"),
+            .holds(Sets)
+            .holds(Asks(0)),
     ]
 }
 
@@ -924,10 +924,9 @@ impl Desktop {
         if host == "gofile.io" {
             self.lookups += 1;
             let key = page.rsplit('/').next().unwrap_or_default();
-            let (_, said) = stand.gofile(key);
-            // As handoff.js's gofile recipe reads the API: files, gone, or
-            // anything else dropped, which leaves the pass to end wanting a
-            // person. LOOK-03 hands the status to Rust instead.
+            let (http, said) = stand.gofile(key);
+            // As handoff.js's gofile recipe reads the API: its files, or
+            // the answer handed to Rust to read (LOOK-03).
             match said["status"].as_str() {
                 Some("ok") => {
                     let files = said["data"]["children"]
@@ -943,8 +942,13 @@ impl Desktop {
                         .collect();
                     let _ = engine.set_files(id, files);
                 }
-                Some("error-notFound") => engine.page_gone(id, "gofile: the folder was deleted"),
-                _ => self.wants_person(engine, id, &host),
+                status => match hosts::page_answer(&host, http, status.unwrap_or_default()) {
+                    hosts::PageAnswer::Gone(reason) => engine.page_gone(id, &reason),
+                    hosts::PageAnswer::Later { reason, seconds } => {
+                        engine.page_later(id, page, &reason, Some(seconds));
+                    }
+                    hosts::PageAnswer::Failed(reason) => engine.page_failed(id, &reason),
+                },
             }
             return;
         }
@@ -973,16 +977,20 @@ impl Desktop {
         self.told.push((kind, rows));
     }
 
-    /// The engine's events, gathered as the desktop app gathers them (two
-    /// seconds from a burst's first), told with the window out of focus.
+    /// The engine's events, gathered as the desktop app gathers them
+    /// ([`haul_core::gather`]: until two seconds pass without one, ten at
+    /// most), told with the window out of focus.
     fn tell(&mut self, engine: &Engine, events: &[(Instant, Event)]) {
         let mut at = 0;
         while at < events.len() {
-            let until = events[at].0 + Duration::from_secs(2);
-            let end = events[at..]
-                .iter()
-                .position(|(t, _)| *t >= until)
-                .map_or(events.len(), |p| at + p);
+            let longest = events[at].0 + Duration::from_secs(10);
+            let mut end = at + 1;
+            while end < events.len()
+                && events[end].0 < longest
+                && events[end].0 < events[end - 1].0 + Duration::from_secs(2)
+            {
+                end += 1;
+            }
             let burst: Vec<Event> = events[at..end].iter().map(|(_, e)| e.clone()).collect();
             for t in engine.tellings(&burst) {
                 self.notify(engine, t.kind, t.rows);
@@ -999,7 +1007,10 @@ impl Desktop {
 #[derive(Default)]
 struct Seen {
     unnamed: Option<String>,
-    unwrapping: usize,
+    /// The status bar lumped different work into one count somewhere.
+    lumped: bool,
+    /// The most links it said it was checking at once.
+    checking: usize,
     listed: HashMap<String, String>,
     /// The most cards at once, and every card's key and name.
     most_cards: usize,
@@ -1016,7 +1027,9 @@ impl Seen {
                 self.unnamed = Some(i.name.clone());
             }
         }
-        self.unwrapping = self.unwrapping.max(s.counts.unwrapping);
+        let counts = serde_json::to_value(&s.counts).unwrap();
+        self.lumped |= counts.get("unwrapping").is_some();
+        self.checking = self.checking.max(s.counts.checking);
         self.most_cards = self.most_cards.max(s.wrapper_cards.len());
         for c in &s.wrapper_cards {
             self.cards.insert((c.key.clone(), c.name.clone()));
@@ -1286,7 +1299,16 @@ async fn run(release: &Arc<Release>, order: Order) -> Run {
             }
             _ => {}
         }
-        let settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+        let mut settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+        // A host's wait (gofile's rate limit) over, what it held back is
+        // asked again.
+        for _ in 0..3 {
+            if settled.is_err() {
+                break;
+            }
+            engine.debug_end_waits();
+            settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+        }
         phase.end(&engine, &mut desktop, &mut acc).await;
         let end = engine.snapshot();
         engine.shutdown().await;
@@ -1583,9 +1605,10 @@ fn check(r: &Release, run: &Run, c: &Check) -> Result<(), String> {
                 Err(more.join(", "))
             }
         }
-        Check::SeparateCounts => match run.seen.unwrapping {
-            0 => Ok(()),
-            n => Err(format!("\"Unwrapping {n}\"")),
+        Check::SeparateCounts => match (run.seen.lumped, run.seen.checking) {
+            (true, _) => Err("\"Unwrapping N links\"".into()),
+            (false, 0) => Err("never said it checks links".into()),
+            (false, _) => Ok(()),
         },
         Check::SameEveryOrder => Ok(()),
     }
@@ -1695,7 +1718,14 @@ async fn a_report_shows_the_paste_the_listings_the_pass_queue_and_the_asks() {
     engine.set_pages_pass(true);
     engine.add_text(&release.url(), "");
     let mut desktop = Desktop::default();
-    let settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+    let mut settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+    // The gated container's own tries, before anyone is asked (FLOW-01).
+    for _ in 0..3 {
+        for w in engine.snapshot().wrappers {
+            engine.debug_retry_now(&w.id);
+        }
+        settled = settled.and(drive(&engine, &stand, &mut desktop, |_| false).await);
+    }
     let s = engine.snapshot();
     let (_, zip) = engine.report_zip(serde_json::Value::Null).unwrap();
     let report = engine.diagnostics(serde_json::Value::Null);
@@ -1723,8 +1753,9 @@ async fn a_report_shows_the_paste_the_listings_the_pass_queue_and_the_asks() {
         log.contains(r#"\"name\":\"Example.Set.part1.rar\""#),
         "{log}"
     );
-    assert_eq!(lines("pass queue queued"), 1, "{log}");
-    assert_eq!(lines("pass queue started"), 1, "{log}");
+    // Its first pass and its three tries of its own.
+    assert_eq!(lines("pass queue queued"), 4, "{log}");
+    assert_eq!(lines("pass queue started"), 4, "{log}");
     assert_eq!(lines("asks a person: filecrypt.cc (gate)"), 1, "{log}");
     let friction = &report["friction"];
     assert_eq!(friction.as_array().map(Vec::len), Some(1), "{friction}");

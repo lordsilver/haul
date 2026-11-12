@@ -86,6 +86,28 @@ pub fn detect(page: &str) -> Option<Gate> {
     first_marked(&markup(&page)).or_else(|| first_marked(&page))
 }
 
+/// [`detect`] for a page Haul read itself, not in a browser: the gate only
+/// when one gate alone is marked (in its markup, else anywhere in it). A
+/// page that marks several is "a gate" until a browser says which it shows,
+/// so a row never names the wrong one ([`marks_in`] keeps them all for the
+/// log).
+pub fn detect_alone(page: &str) -> Option<Gate> {
+    let page = page.to_ascii_lowercase();
+    let alone = |p: &str| -> Option<Option<Gate>> {
+        let marked: Vec<Gate> = MARKS
+            .iter()
+            .filter(|(_, marks)| marks.iter().any(|m| p.contains(m)))
+            .map(|(gate, _)| *gate)
+            .collect();
+        match marked.as_slice() {
+            [] => None,
+            [one] => Some(Some(*one)),
+            _ => Some(None),
+        }
+    };
+    alone(&markup(&page)).or_else(|| alone(&page)).flatten()
+}
+
 /// Each gate whose marks `page` holds, with the marks found, in order: what
 /// a log shows when a page names more than one.
 pub fn marks_in(page: &str) -> Vec<(Gate, Vec<&'static str>)> {
@@ -207,6 +229,15 @@ mod tests {
             Some(Gate::Recaptcha)
         );
         assert_eq!(detect("<!-- grecaptcha"), Some(Gate::Recaptcha));
+        // Haul's own read names a gate only when the page marks one alone.
+        assert_eq!(
+            detect_alone("<div class=\"g-recaptcha\"></div><div class=\"cutcaptcha\"></div>"),
+            None
+        );
+        assert_eq!(
+            detect_alone("<div class=\"cutcaptcha\"></div><script>grecaptcha</script>"),
+            Some(Gate::Cutcaptcha)
+        );
     }
 
     #[test]

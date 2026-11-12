@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use super::{HostView, ItemView, WrapperView, unpack::ArchiveSet};
+use super::{HostView, InQueue, ItemView, WrapperView, unpack::ArchiveSet};
 use crate::{
     config::Config,
     hosts,
@@ -623,6 +623,8 @@ pub struct WrapperCard {
     pub open_id: String,
     /// Its wrappers waiting for a person.
     pub need_you: usize,
+    /// Its place among the pages waiting for Haul's browser, while it waits.
+    pub queue: Option<InQueue>,
     pub tally: Tally,
 }
 
@@ -748,10 +750,19 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                     .iter()
                     .filter(|x| x.status == WrapperState::Captcha)
                     .count(),
+                queue: urgent.queue,
                 tally: card_tally,
             }
         })
         .collect()
+}
+
+/// Pages Haul's browser passes now, and pages waiting for it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct Passing {
+    pub now: usize,
+    pub queued: usize,
 }
 
 /// The counts the navigation pane and the status bar show.
@@ -779,9 +790,12 @@ pub struct Counts {
     /// person (`attention`), by the cards' states.
     pub wrappers: usize,
     pub wrappers_alert: Option<Alert>,
-    /// Wrappers being opened and pages being passed out of sight: work on
-    /// links before their files show.
-    pub unwrapping: usize,
+    /// Pages, pastes and containers Haul reads itself now.
+    pub reading: usize,
+    /// Pages Haul's browser passes out of sight, and those waiting for it.
+    pub passing: Passing,
+    /// Files whose host or page is asked what they are.
+    pub checking: usize,
     /// Downloads and wrappers waiting for a person.
     pub need_you: usize,
     /// Wrappers' files not started yet: they wait for the user to start
@@ -817,23 +831,47 @@ pub(super) fn counts(
             .map(|i| i.size.saturating_sub(i.done))
             .sum(),
         wrappers: cards.len(),
-        unwrapping: wrappers
+        reading: wrappers
             .iter()
-            .filter(|w| matches!(w.status, WrapperState::Unwrapping | WrapperState::Passing))
+            .filter(|w| w.status == WrapperState::Unwrapping)
             .count()
+            // A copied page being read, while it is looked at.
             + items
                 .iter()
                 .filter(|i| {
-                    i.status == RowState::Passing
-                        || i.looking_up
-                        // A page on trial or being read, while it is looked at.
-                        || (i.tentative
-                            && matches!(
-                                i.status,
-                                RowState::Queued | RowState::Resolving | RowState::Checking
-                            ))
+                    i.tentative
+                        && !i.looking_up
+                        && matches!(
+                            i.status,
+                            RowState::Queued | RowState::Resolving | RowState::Checking
+                        )
                 })
                 .count(),
+        passing: {
+            let queues = wrappers
+                .iter()
+                .filter(|w| w.status == WrapperState::Passing)
+                .map(|w| w.queue)
+                .chain(
+                    items
+                        .iter()
+                        .filter(|i| i.status == RowState::Passing && !i.looking_up)
+                        .map(|i| i.queue),
+                );
+            let (queued, now): (Vec<_>, Vec<_>) = queues.partition(Option::is_some);
+            Passing {
+                now: now.len(),
+                queued: queued.len(),
+            }
+        },
+        checking: items
+            .iter()
+            .filter(|i| {
+                // A file nobody named yet whose page is opened to learn it
+                // counts here, waiting for the browser or not.
+                !i.tentative && i.status == RowState::Checking || i.looking_up
+            })
+            .count(),
         need_you: in_list(List::Attention)
             + wrappers
                 .iter()
@@ -1113,6 +1151,7 @@ mod tests {
             download_from: None,
             tentative: false,
             looking_up: false,
+            queue: None,
         }
     }
 
@@ -1162,6 +1201,7 @@ mod tests {
             source: None,
             lists_nothing: false,
             gone: false,
+            queue: None,
         }
     }
 
@@ -1420,7 +1460,12 @@ mod tests {
         let mut items = vec![item("page", "passing"), item("q", "queued")];
         super::items(&mut items, &[host("a.example")], &wrappers, false);
         let c = counts(&items, &wrappers, &wrapper_cards(&wrappers, &items), false);
-        assert_eq!(c.unwrapping, 3, "two wrappers and a download's page");
+        assert_eq!(c.reading, 1, "the wrapper being opened");
+        assert_eq!(
+            c.passing,
+            Passing { now: 2, queued: 0 },
+            "a wrapper and a download's page, out of sight"
+        );
         assert_eq!(c.need_you, 1, "the wrapper that asks");
 
         // Copied pages on trial count only while they are looked at.
@@ -1431,7 +1476,8 @@ mod tests {
         });
         super::items(&mut items, &[host("a.example")], &[], false);
         let c = counts(&items, &[], &[], false);
-        assert_eq!(c.unwrapping, 2, "the queued page and the one passing");
+        assert_eq!(c.reading, 1, "the queued page");
+        assert_eq!(c.passing.now, 1, "the one passing");
         assert_eq!((c.all, c.need_you), (0, 0));
     }
 
