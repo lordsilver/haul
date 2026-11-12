@@ -1212,6 +1212,7 @@ async fn drive(
     let changes = engine.watch();
     let mut version = *changes.borrow();
     let mut quiet = Instant::now();
+    let mut waited = 0;
     loop {
         if stop(desktop) {
             return Ok(());
@@ -1226,12 +1227,25 @@ async fn drive(
             version = now;
             quiet = Instant::now();
         }
-        let reading = engine
-            .snapshot()
-            .wrappers
-            .iter()
-            .any(|w| w.status.as_str() == "unwrapping");
+        let s = engine.snapshot();
+        let reading = s.wrappers.iter().any(|w| w.status.as_str() == "unwrapping");
         if !reading && quiet.elapsed() > Duration::from_millis(600) {
+            // Lookups waiting for their host's turn or wait: the suite is
+            // about what comes of them, not the pace, so their time is up.
+            if let Some((id, page)) = engine.plan_passes(&idle).start {
+                desktop.pass(engine, stand, &id, &page);
+                quiet = Instant::now();
+                continue;
+            }
+            if s.counts.checking > 0 {
+                engine.debug_end_waits();
+                quiet = Instant::now();
+                if waited >= 20 {
+                    return Ok(());
+                }
+                waited += 1;
+                continue;
+            }
             return Ok(());
         }
         if Instant::now() > deadline {
