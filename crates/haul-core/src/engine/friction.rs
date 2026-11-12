@@ -20,7 +20,7 @@ use serde_json::json;
 use super::{Engine, Event, State, Telling, display_name};
 use crate::{
     hosts::{self, Need, gates},
-    item::{Item, Trouble},
+    item::{Item, Status, Trouble},
     logging::unix_now,
     parts::PartName,
 };
@@ -65,7 +65,91 @@ pub struct Friction {
 /// The friction of each release, by its row's id.
 pub(super) type Frictions = BTreeMap<String, Friction>;
 
+/// How long a release's reading may take before it is told as read anyway.
+const READ_AT_MOST: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Engine {
+    /// The releases whose page and sources have been read and whose first
+    /// lookups are done (or a minute has passed), each told once: what is
+    /// ready, on how many hosts, and the notes of its card.
+    pub(super) fn releases_read(&self, st: &mut State, now: Instant) -> Vec<Event> {
+        let roots: BTreeSet<String> = st
+            .items
+            .values()
+            .filter(|it| it.wrapper && !it.tentative)
+            .map(|it| release_of(&st.items, &it.id))
+            .collect();
+        st.releases.retain(|root, _| roots.contains(root));
+        let cfg = self.cfg();
+        let mut events = Vec::new();
+        for root in roots {
+            let (since, told) = *st.releases.entry(root.clone()).or_insert((now, false));
+            if told {
+                continue;
+            }
+            let ours: Vec<&Item> = st
+                .items
+                .values()
+                .filter(|it| release_of(&st.items, &it.id) == root)
+                .collect();
+            let reading = ours.iter().any(|it| {
+                it.wrapper
+                    && (matches!(it.status, Status::Queued | Status::Resolving)
+                        || it.status == Status::Captcha && self.passing(st, it, now))
+            });
+            let looking = ours.iter().any(|it| {
+                !it.wrapper
+                    && (!it.probed && it.name.is_none() || self.look_up_page(st, it).is_some())
+            });
+            let files = ours.iter().filter(|it| !it.wrapper).count();
+            if files == 0 || (reading || looking) && now.duration_since(since) < READ_AT_MOST {
+                continue;
+            }
+            let plan = super::release_plan(st, &cfg, &root);
+            let main = plan.main.map_or(plan.sets.first(), |m| plan.sets.get(m));
+            let (count, hosts) = match main {
+                Some(set) => (
+                    format!("{} parts", set.parts),
+                    set.hosts.iter().filter(|h| !cfg.is_disabled(h)).count(),
+                ),
+                None => {
+                    let hosts: BTreeSet<&str> = ours
+                        .iter()
+                        .filter(|it| !it.wrapper)
+                        .flat_map(|it| it.mirrors.iter().map(|m| &*m.host))
+                        .filter(|h| !cfg.is_disabled(h))
+                        .collect();
+                    (format!("{files} files"), hosts.len())
+                }
+            };
+            let mut body = format!(
+                "{count} ready on {hosts} host{}.",
+                if hosts == 1 { "" } else { "s" }
+            );
+            for split in plan.dead_splits() {
+                body.push_str(&format!(" Another copy ({} parts) is gone.", split.parts));
+            }
+            let root_row = &st.items[&root];
+            let name = root_row
+                .title
+                .clone()
+                .unwrap_or_else(|| display_name(root_row));
+            crate::debug::emit(
+                "release_read",
+                json!({ "release": root, "name": name, "body": body }),
+            );
+            events.push(Event::ReleaseRead {
+                id: root.clone(),
+                name,
+                body,
+            });
+            if let Some(r) = st.releases.get_mut(&root) {
+                r.1 = true;
+            }
+        }
+        events
+    }
+
     /// The friction count of every release this run dealt with.
     pub fn friction(&self) -> Vec<Friction> {
         self.lock().friction.values().cloned().collect()

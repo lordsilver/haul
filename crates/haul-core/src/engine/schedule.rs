@@ -129,6 +129,12 @@ impl Engine {
                 }
             }
         }
+        // Releases read since: told once each, paused or not.
+        let read = {
+            let mut st = self.lock();
+            self.releases_read(&mut st, Instant::now())
+        };
+        self.emit(read);
         {
             let mut st = self.lock();
             if st.paused || st.moving || st.reconnecting || st.draining.is_some() {

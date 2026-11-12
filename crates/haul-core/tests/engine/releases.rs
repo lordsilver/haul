@@ -435,6 +435,8 @@ impl Release {
         self
     }
     /// Fails today; `task` makes it pass.
+    // Every row holds today; kept for the next one that fails first.
+    #[allow(dead_code)]
     fn fails_until(mut self, check: Check, task: &'static str) -> Self {
         self.wants.push(Want {
             check,
@@ -650,7 +652,7 @@ fn cases() -> Vec<Release> {
             .holds(NothingFailed)
             .holds(Note("another copy, 34 parts on 1fichier, is gone"))
             .holds(NoFailureTold)
-            .fails_until(Notifications(1), "QUIET-04")
+            .holds(Notifications(1))
             .holds(SeparateCounts)
             .holds(OneReadPerContainer)
             .holds(Asks(0))
@@ -1184,7 +1186,12 @@ impl Phase {
         }
         let events = std::mem::take(&mut *self.events.lock().unwrap());
         desktop.tell(engine, &events);
-        run.friction.extend(engine.friction());
+        // Each release once, as the engine counts it last: a phase after
+        // another sees the earlier releases again.
+        for f in engine.friction() {
+            run.friction.retain(|had| had.release != f.release);
+            run.friction.push(f);
+        }
         run.lagged += u64::from(self.lagged.load(Ordering::SeqCst));
     }
 }
@@ -1617,8 +1624,10 @@ fn check(r: &Release, run: &Run, c: &Check) -> Result<(), String> {
             }
         }
         Check::Notifications(want) => {
+            // Per adding of the page: one added again is a release again.
+            let want = *want * run.adds as u32;
             let n: u32 = run.friction.iter().map(|f| f.notifications).sum();
-            if n == *want {
+            if n == want {
                 Ok(())
             } else {
                 Err(format!("{n} notifications"))

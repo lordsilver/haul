@@ -334,6 +334,13 @@ pub enum Event {
         title: String,
         body: String,
     },
+    /// A release (its card's page and sources) has been read, its first
+    /// lookups done: told once (plan QUIET-04).
+    ReleaseRead {
+        id: String,
+        name: String,
+        body: String,
+    },
 }
 
 /// What kind of thing [`summarize`] tells.
@@ -344,6 +351,7 @@ pub enum Told {
     Failed,
     NeedsYou,
     Notice,
+    Release,
 }
 
 /// One thing to tell the person, worded for a notification or a toast.
@@ -445,6 +453,7 @@ pub fn summarize(events: &[Event]) -> Vec<Telling> {
     let mut waiting = Vec::new();
     let mut failed = Vec::new();
     let mut notices = Vec::new();
+    let mut releases = Vec::new();
     let (mut finished_rows, mut waiting_rows, mut failed_rows) =
         (Vec::new(), Vec::new(), Vec::new());
     for e in events {
@@ -463,6 +472,9 @@ pub fn summarize(events: &[Event]) -> Vec<Telling> {
             }
             Event::ThemeChanged(_) => {}
             Event::Notice { title, body } => notices.push((title.clone(), body.clone())),
+            Event::ReleaseRead { id, name, body } => {
+                releases.push((id.clone(), name.clone(), body.clone()));
+            }
         }
     }
     let list = |names: &[&str]| {
@@ -478,7 +490,7 @@ pub fn summarize(events: &[Event]) -> Vec<Telling> {
             Told::Finished => finished_rows.clone(),
             Told::NeedsYou => waiting_rows.clone(),
             Told::Failed => failed_rows.clone(),
-            Told::Notice => Vec::new(),
+            Told::Notice | Told::Release => Vec::new(),
         };
         Telling {
             title,
@@ -513,6 +525,14 @@ pub fn summarize(events: &[Event]) -> Vec<Telling> {
     }
     for (title, body) in notices {
         out.push(tell(title, body, Told::Notice));
+    }
+    for (id, name, body) in releases {
+        out.push(Telling {
+            title: name,
+            body,
+            kind: Told::Release,
+            rows: vec![id],
+        });
     }
     match failed.len() {
         0 => {}
@@ -1021,6 +1041,9 @@ struct State {
     /// go straight to the browser, which reads them itself, instead of
     /// being read by Haul first only to meet the check again.
     held_by_check: HashMap<String, Instant>,
+    /// Releases (by their root row) since when they were first seen, and
+    /// whether the person was told they were read ([`Engine::releases_read`]).
+    releases: HashMap<String, (Instant, bool)>,
     /// How fast each host is asked about files before any download.
     budgets: budget::Budgets,
     /// Pages the desktop app passed during their rows' current waits.
@@ -1062,6 +1085,7 @@ impl State {
             guarded: HashSet::new(),
             cleared: HashSet::new(),
             held_by_check: HashMap::new(),
+            releases: HashMap::new(),
             budgets: budget::Budgets::default(),
             tried: passes::Tried::new(),
             pass_queue: passes::Queue::default(),

@@ -120,7 +120,7 @@ impl Fate {
             Some(Fate::ToldNothing { tries, .. }) => tries + 1,
             _ => 1,
         };
-        let wait = (15 * 60u64 << (tries - 1).min(10)).min(24 * 3600);
+        let wait = ((15 * 60u64) << (tries - 1).min(10)).min(24 * 3600);
         Fate::ToldNothing {
             tries,
             next: now + wait,
