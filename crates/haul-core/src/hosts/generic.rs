@@ -180,10 +180,7 @@ pub(super) fn gated(url: &str, gate: Option<gates::Gate>) -> ResolveError {
 /// What the row says of a gate Haul cannot answer on `url`'s page.
 pub(crate) fn gate_message(url: &str, gate: Option<gates::Gate>) -> String {
     let named = gate.map(|g| format!(" ({})", g.name())).unwrap_or_default();
-    format!(
-        "{} shows a gate Haul cannot answer{named}; open the page",
-        host_of(url)
-    )
+    format!("{} shows a gate Haul cannot answer{named}", host_of(url))
 }
 
 const PEEK: usize = 64 * 1024;

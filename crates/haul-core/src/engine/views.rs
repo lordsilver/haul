@@ -710,8 +710,12 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
             at.dedup();
             let of_card: Vec<&ItemView> = at.into_iter().map(|i| &items[i]).collect();
             // A link still being looked up is not a file of the card yet.
-            let (checking, files): (Vec<&ItemView>, Vec<&ItemView>) =
-                of_card.into_iter().partition(|it| it.looking_up);
+            let (checking, files): (Vec<&ItemView>, Vec<&ItemView>) = of_card
+                .into_iter()
+                // A file of a cut that is gone is the card's note, not
+                // one of its files.
+                .filter(|it| !(it.tentative && it.gone && !it.looking_up))
+                .partition(|it| it.looking_up);
             // A paste that lists no links (a description) is a
             // note on a card that has anything else going on or found,
             // not the card's failure.
@@ -751,7 +755,10 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 } else {
                     String::new()
                 },
-                again: if matches!(urgent.status, WrapperState::Error | WrapperState::Captcha) {
+                again: if matches!(
+                    urgent.status,
+                    WrapperState::Error | WrapperState::Captcha | WrapperState::Waiting
+                ) {
                     urgent.retry_in
                 } else {
                     0
@@ -924,7 +931,7 @@ pub(super) fn counts(
             .filter(|i| {
                 // A file nobody named yet whose page is opened to learn it
                 // counts here, waiting for the browser or not.
-                !i.tentative && i.status == RowState::Checking || i.looking_up
+                !i.tentative && i.status == RowState::Checking || i.looking_now
             })
             .count(),
         need_you: in_list(List::Attention)
@@ -1206,6 +1213,7 @@ mod tests {
             download_from: None,
             tentative: false,
             looking_up: false,
+            looking_now: false,
             queue: None,
         }
     }

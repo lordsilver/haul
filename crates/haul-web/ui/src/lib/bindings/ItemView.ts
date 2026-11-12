@@ -28,6 +28,11 @@ tentative: boolean,
  */
 looking_up: boolean, 
 /**
+ * Of those, one whose page or host is being asked now, or is due to be:
+ * what the status bar counts as being checked.
+ */
+looking_now: boolean, 
+/**
  * Its place among the pages waiting for Haul's browser, while it waits.
  */
 queue: InQueue | null, 

@@ -1175,7 +1175,7 @@ async fn filecrypt_answers_its_checkbox() {
     for (page, says) in [
         ("refuse.html", "turned Haul's answer"),
         ("locked.html", "password"),
-        ("plain.html", "gate Haul cannot answer; open"),
+        ("plain.html", "shows a gate Haul cannot answer"),
         (
             "puzzle.html",
             "gate Haul cannot answer (a CutCaptcha puzzle)",
