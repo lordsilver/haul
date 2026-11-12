@@ -36,6 +36,17 @@ pub fn pass_profiles(data_dir: &Path) -> PathBuf {
     webview(data_dir).join("chromium")
 }
 
+/// The profile `site`'s pages are passed in: the first browser's among
+/// [`pass_profiles`], and the second's (Chrome, the only browser tried after
+/// another, Edge) in `chrome` there, since Edge's profile is not Chrome's to
+/// open.
+pub fn pass_profile(data_dir: &Path, site: &str, second: bool) -> PathBuf {
+    match second {
+        false => pass_profiles(data_dir).join(site),
+        true => pass_profiles(data_dir).join("chrome").join(site),
+    }
+}
+
 /// The picture of `site`'s last page that wanted a person, among the
 /// profiles ([`pass_profiles`]).
 pub fn wants_person_shot(data_dir: &Path, site: &str) -> PathBuf {

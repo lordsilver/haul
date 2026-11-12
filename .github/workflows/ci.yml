@@ -26,6 +26,12 @@ env:
 jobs:
   check:
     name: ${{ matrix.os }}
+    # In a stack of pull requests only the top one runs the checks: it holds
+    # every layer below it, so one run covers the whole stack.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.stack == null ||
+      github.event.pull_request.stack.position == github.event.pull_request.stack.size
     strategy:
       fail-fast: false
       matrix:
@@ -42,7 +48,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh extension install github/gh-actions-lock --pin v0.4.0
+          gh extension install github/gh-actions-lock --pin v0.4.1
           gh actions-lock --verify
       # Known vulnerabilities, yanked crates, and crates from anywhere but
       # crates.io (deny.toml).
