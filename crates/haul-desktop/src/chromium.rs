@@ -257,7 +257,9 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
         // its page (`visibilityState` "hidden"): it stops drawing, mouse
         // input never reaches it, and checks see a page no person looks
         // at. These keep it a visible page.
-        "--disable-features=CalculateNativeWinOcclusion".into(),
+        // Prerendering lets an ad's page be swapped in without a navigation
+        // the keep-to-site guard could refuse.
+        "--disable-features=CalculateNativeWinOcclusion,Prerender2,NoStatePrefetch".into(),
         "--disable-backgrounding-occluded-windows".into(),
         "--window-size=1100,800".into(),
         // A pass browser Haul had to end (an update, a crash) leaves no
@@ -597,6 +599,15 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
             return Ok(Outcome::Closed(Closed::NoDevTools(process(browser, port))));
         };
         let open = pages(&targets);
+        // Where the browser says the page is: what it shows, however it got
+        // there (a navigation, or a page swapped in without one).
+        let at = targets["targetInfos"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|t| t["targetId"] == target.as_str())
+            .and_then(|t| t["url"].as_str())
+            .map(str::to_string);
         if !open.contains(&target) {
             return Ok(Outcome::Closed(Closed::PageGone(process(browser, port))));
         }
@@ -672,7 +683,7 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
             .keep
             .as_ref()
             .map(|k| k.site.clone().unwrap_or_else(|| hosts::site_of(p.url)))
-            && let Some(href) = current_address(&mut cdp, s)
+            && let Some(href) = at.clone().or_else(|| current_address(&mut cdp, s))
             && href.starts_with("http")
             && hosts::site_of(&href) != home
             && !hosts::names_a_file(&href)
