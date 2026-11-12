@@ -245,9 +245,11 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
   return (
     <>
       {/* Starts what waits for the user; the pause switch below does not. */}
+      {/* The next thing to do stands out: starting what waits, or, while
+          everything is paused, resuming; pausing never does. */}
       {waiting.length ? (
         <Button
-          variant="ghost"
+          variant={s.paused ? 'ghost' : 'outline'}
           onClick={() =>
             bulk(
               waiting.map((i) => i.id),
@@ -259,7 +261,11 @@ function ListCommands({ s, view }: { s: State; view: ListKey }) {
           {fresh ? 'Start' : 'Resume'} {waiting.length}
         </Button>
       ) : null}
-      <Button variant="outline" onClick={() => queue(s.paused ? 'resume' : 'pause').catch(report)}>
+      <Button
+        variant={s.paused ? 'outline' : 'ghost'}
+        disabled={!s.paused && !s.counts.active}
+        onClick={() => queue(s.paused ? 'resume' : 'pause').catch(report)}
+      >
         {s.paused ? <Play /> : <Pause />}
         {s.paused ? 'Resume all' : 'Pause all'}
       </Button>
