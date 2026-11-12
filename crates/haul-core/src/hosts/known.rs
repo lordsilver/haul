@@ -377,6 +377,28 @@ pub fn page_passes(url: &str) -> bool {
     known(&host_of(url)).is_some_and(|k| k.page_passes)
 }
 
+/// Whether a pass of `url`'s page presses its download button, as a person
+/// would: only on a file's own page on a host Haul has no recipe for
+/// (`lists`: the page is read for its links instead). Never on a wrapper's
+/// or a paste's page, whose only such button was an ad (approved by the
+/// user, plan D-8).
+pub fn presses_download(url: &str, lists: bool) -> bool {
+    !lists && !page_passes(url) && !super::wraps(url) && !super::is_paste(url)
+}
+
+#[cfg(test)]
+mod presses_tests {
+    use super::presses_download;
+
+    #[test]
+    fn no_button_is_pressed_on_a_wrapper_or_a_paste() {
+        assert!(!presses_download("https://filecrypt.cc/Container/AAAAAAAA.html", false));
+        assert!(!presses_download("https://paste2.org/paste/example-set", false));
+        assert!(!presses_download("https://site.example/file/abc123", true));
+        assert!(presses_download("https://site.example/file/abc123", false));
+    }
+}
+
 /// Whether a file on `url`'s host takes a person, as far as can be told before
 /// asking the host: a captcha for every file without its account, or a page
 /// only the desktop app passes by itself (`pages`: it is there to).

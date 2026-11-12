@@ -384,19 +384,13 @@ async fn gather_within(
 ) -> Option<Burst> {
     use broadcast::error::RecvError;
     let mut burst = Burst::default();
-    loop {
-        match rx.recv().await {
-            Ok(e) => {
-                burst.events.push(e);
-                break;
-            }
-            Err(RecvError::Lagged(n)) => {
-                tracing::warn!("the notifications fell {n} event(s) behind");
-                burst.missed += n;
-                break;
-            }
-            Err(RecvError::Closed) => return None,
+    match rx.recv().await {
+        Ok(e) => burst.events.push(e),
+        Err(RecvError::Lagged(n)) => {
+            tracing::warn!("the notifications fell {n} event(s) behind");
+            burst.missed += n;
         }
+        Err(RecvError::Closed) => return None,
     }
     let end = tokio::time::Instant::now() + longest;
     loop {

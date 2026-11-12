@@ -19,7 +19,6 @@ use std::{
     net::Ipv4Addr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 use haul_core::{Engine, Event, Options, Theme, Told, paths};

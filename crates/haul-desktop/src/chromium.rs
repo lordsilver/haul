@@ -25,6 +25,7 @@ use std::{
 use haul_core::{
     hosts,
     pass_ends::{Closed, Process},
+    presser::{Candidate, Presser},
 };
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
@@ -544,9 +545,9 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
     // The addresses the page last offered: a new page with as many (a
     // paste's list after its gate) is offered too.
     let mut offered: Vec<String> = Vec::new();
-    // Download buttons pressed, and when last.
-    let mut presses = 0;
-    let mut pressed_at = start;
+    // Download buttons pressed, and those found to be ads'.
+    let mut presser = Presser::default();
+    let mut refused = cdp.refused;
     // A browser is alive while its DevTools answers, whatever became of the
     // process Haul started: a starter, or a browser that hands over to
     // another (one updating itself), exits while the page goes on.
@@ -590,9 +591,22 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         if !open.contains(&target) {
             return Ok(Outcome::Closed(Closed::PageGone(process(browser, port))));
         }
+        let mut popped = false;
         for other in open.iter().filter(|t| **t != target) {
+            popped = true;
             let _ = cdp.call("Target.closeTarget", json!({ "targetId": other }), None);
         }
+        // A press that sent the page off its site, or opened a tab, was an
+        // ad's: that button is not pressed again.
+        if (popped || cdp.refused != refused)
+            && let Some(ad) = presser.left(Instant::now())
+        {
+            haul_core::debug::emit(
+                "pass",
+                json!({ "event": "ad_button", "id": p.item, "url": p.url, "button": ad }),
+            );
+        }
+        refused = cdp.refused;
         // Debug mode's questions about the page, between looks.
         let asks: Vec<Ask> = std::mem::take(&mut *haul_core::lock::held(&p.handle.asks));
         for ask in asks {
@@ -643,12 +657,8 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
             return Ok(Outcome::WantsPerson(look(&mut cdp, s)));
         }
         if p.press_download
-            && presses < PRESSES_AT_MOST
-            && pressed_at.elapsed() >= PRESS_EVERY
-            && let Some(text) = press_download(&mut cdp, s)
+            && let Some(text) = press_download(&mut cdp, s, &mut presser)
         {
-            presses += 1;
-            pressed_at = Instant::now();
             haul_core::debug::emit(
                 "pass",
                 json!({ "event": "press", "id": p.item, "url": p.url, "button": text }),
@@ -1028,6 +1038,8 @@ struct Cdp {
     /// The file the page's site answered with instead of a page, which the
     /// browser was told not to save ([`Cdp::take_downloads`]).
     download: Option<Download>,
+    /// Navigations of the page refused so far ([`Cdp::keep_to_site`]).
+    refused: u32,
 }
 
 /// A file the browser would have saved: its final address, past redirects.
@@ -1076,6 +1088,7 @@ impl Cdp {
             next: 0,
             keep: None,
             download: None,
+            refused: 0,
         })
     }
 
@@ -1154,6 +1167,7 @@ impl Cdp {
                     });
                 }
                 let (method, params) = if refuse {
+                    self.refused += 1;
                     haul_core::debug::emit(
                         "pass",
                         json!({ "event": "refused", "id": keep.item, "url": url }),
@@ -1357,21 +1371,13 @@ const LOOK: &str = r#"JSON.stringify({
   links: [...document.querySelectorAll('a[href]')].map((a) => a.href).filter((h) => /^https?:/.test(h)).slice(0, 50),
 })"#;
 
-/// How often a file's page gets its download button pressed, at most: the
-/// page's next step (a short countdown, a link being made) comes first.
-const PRESS_EVERY: Duration = Duration::from_secs(3);
-
-/// The most presses in one pass: past that the page wants more than a
-/// button (a captcha a person solves).
-const PRESSES_AT_MOST: u32 = 12;
-
-/// Finds the button a person would press to download the file on a host's
-/// page Haul has no recipe for, and gives its middle and its words: shown,
-/// enabled, saying "download" (but not a paid tier's, an app's or a
-/// countdown's), in the page itself rather than a layer an ad floats over
-/// it, and leading nowhere off the site (an ad's link does). Each button is
-/// pressed three times at most.
-const FIND_DOWNLOAD: &str = r#"(() => {
+/// Lists the buttons a person might press to download the file on a host's
+/// page Haul has no recipe for, in the page's order: shown, enabled, saying
+/// "download" (but not a paid tier's, an app's or a countdown's), in the page
+/// itself rather than a layer an ad floats over it, and leading nowhere off
+/// the site (an ad's link does). Each is keyed by its place among the
+/// page's buttons and its words; Rust picks one ([`Presser`]).
+const LIST_DOWNLOADS: &str = r#"(() => {
   if (document.readyState === 'loading') return null;
   const site = (host) => host.split('.').slice(-2).join('.');
   const here = site(location.hostname);
@@ -1389,38 +1395,67 @@ const FIND_DOWNLOAD: &str = r#"(() => {
     try { return site(new URL(href, location.href).hostname) !== here; } catch { return true; }
   };
   const words = (el) => (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
-  const found = [...document.querySelectorAll('a, button, input[type=submit], input[type=button]')].find((el) => {
+  const all = [...document.querySelectorAll('a, button, input[type=submit], input[type=button]')];
+  return all.flatMap((el, at) => {
     const text = words(el);
-    if (!says.test(text) || not.test(text) || text.length > 60) return false;
-    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
-    if (!el.offsetParent || floats(el) || offSite(el)) return false;
-    if (Number(el.dataset.haulPressed || 0) >= 3) return false;
+    if (!says.test(text) || not.test(text) || text.length > 60) return [];
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return [];
+    if (!el.offsetParent || floats(el) || offSite(el)) return [];
     const box = el.getBoundingClientRect();
-    return box.width > 0 && box.height > 0;
+    if (box.width <= 0 || box.height <= 0) return [];
+    return [{ key: `${at} ${text.slice(0, 40)}`, text: text.slice(0, 40) }];
   });
-  if (!found) return null;
-  found.dataset.haulPressed = String(Number(found.dataset.haulPressed || 0) + 1);
-  found.scrollIntoView({ block: 'center' });
-  const box = found.getBoundingClientRect();
-  return { text: words(found).slice(0, 40), x: box.x + box.width / 2, y: box.y + box.height / 2 };
 })()"#;
 
-/// Presses the download button on the page ([`FIND_DOWNLOAD`]), as a person
-/// would; the button's words, when there was one.
-fn press_download(cdp: &mut Cdp, s: Option<&str>) -> Option<String> {
-    let found = cdp
+/// Brings the button keyed `KEY` ([`LIST_DOWNLOADS`]) into view and gives
+/// its middle; `null` when the page changed under it.
+const BUTTON_AT: &str = r#"((key) => {
+  const at = parseInt(key, 10);
+  const el = document.querySelectorAll('a, button, input[type=submit], input[type=button]')[at];
+  const text = el && (el.innerText || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 40);
+  if (!el || `${at} ${text}` !== key) return null;
+  el.scrollIntoView({ block: 'center' });
+  const box = el.getBoundingClientRect();
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+})(KEY)"#;
+
+/// Presses the download button [`Presser`] picks among those the page
+/// lists ([`LIST_DOWNLOADS`]), as a person would; the button's words, when
+/// one was pressed.
+fn press_download(cdp: &mut Cdp, s: Option<&str>, presser: &mut Presser) -> Option<String> {
+    let listed = cdp
         .call(
             "Runtime.evaluate",
-            json!({ "expression": FIND_DOWNLOAD, "returnByValue": true }),
+            json!({ "expression": LIST_DOWNLOADS, "returnByValue": true }),
             s,
         )
         .ok()?["result"]["value"]
         .clone();
-    let (Some(x), Some(y)) = (found["x"].as_f64(), found["y"].as_f64()) else {
+    let listed: Vec<Candidate> = listed
+        .as_array()?
+        .iter()
+        .filter_map(|c| {
+            Some(Candidate {
+                key: c["key"].as_str()?.to_string(),
+                text: c["text"].as_str().unwrap_or_default().to_string(),
+            })
+        })
+        .collect();
+    let next = presser.pick(&listed, Instant::now())?;
+    let find = BUTTON_AT.replace("KEY", &serde_json::to_string(&next.key).ok()?);
+    let at = cdp
+        .call(
+            "Runtime.evaluate",
+            json!({ "expression": find, "returnByValue": true }),
+            s,
+        )
+        .ok()?["result"]["value"]
+        .clone();
+    let (Some(x), Some(y)) = (at["x"].as_f64(), at["y"].as_f64()) else {
         return None;
     };
     click_at(cdp, s, x, y).ok()?;
-    Some(found["text"].as_str().unwrap_or_default().to_string())
+    Some(next.text.clone())
 }
 
 /// Clicks at `x`, `y` with the mouse events a person's click makes.
