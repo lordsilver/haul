@@ -197,7 +197,9 @@ function Card({ card, s }: { card: WrapperCard; s: State }) {
             />
           ) : null}
           {waiting ? (
-            <Button variant="outline" onClick={() => startAll([card])}>
+            // The card's next step: starting its files, unless a person is
+            // needed first, whose button is then the primary one.
+            <Button variant={needs ? 'outline' : 'default'} onClick={() => startAll([card])}>
               <Play />
               Start all
             </Button>
@@ -269,13 +271,13 @@ export function Wrappers({ s }: { s: State }) {
         actions={
           <>
             {files ? (
-              <Button variant="ghost" onClick={() => startAll(waiting)}>
+              <Button onClick={() => startAll(waiting)}>
                 <Play />
                 Start {files}
               </Button>
             ) : null}
             <Button
-              variant="ghost"
+              variant={failed.length ? 'outline' : 'ghost'}
               disabled={!failed.length}
               onClick={() =>
                 wrappersBulk(

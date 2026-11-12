@@ -8,6 +8,8 @@ The web UI lives in `crates/haul-web/ui` (React, TypeScript, Tailwind and shadcn
 
 To change it, with Node 26 and pnpm (`mise install` sets them up): `pnpm install`, then `pnpm dev` for a live page that talks to a Haul already running on port 8765, and `pnpm check && pnpm test && pnpm build` before committing the sources together with `dist`. CI fails when `dist` does not match the sources.
 
+Buttons say their rank by their look, the same everywhere: **primary** (filled, the default variant) for the one thing to do next in a place, at most one per toolbar, card or dialog; **secondary** (`outline`) for a useful alternative that applies now; **tertiary** (`ghost`) for utilities and for what does not apply right now, shown disabled. The rank follows the state: **Start** is primary while files wait, **Resume all** while everything is paused, **Pause all** never is.
+
 `pnpm test` runs the page's own tests ([Vitest](https://vitest.dev)), each `*.test.ts` beside the module it tests. They cover what the page decides for itself: picking rows, the list's entries and search, the captions, the messages it words and reading `#/add/` links. What a row is and what it may do comes from the engine, and its tests are in Rust.
 
 `cargo test` regenerates the page's types from the Rust ones (`ui/src/lib/bindings`).
