@@ -559,6 +559,14 @@ fn run_tries(
             Next::Stop => return Ended::Stopped,
             Next::NotStarted(e) => return Ended::NotStarted(e),
             Next::Fail(reason) => return Ended::Browser(reason),
+            Next::Unreachable(why) => {
+                let host = hosts::host_of(url);
+                tracing::warn!(item = %id, "{host} did not answer the browser: it waits");
+                return Ended::Page(chromium::Outcome::Later {
+                    reason: format!("{host}: {why}"),
+                    seconds: Some(haul_core::pass_ends::UNREACHABLE_WAIT_SECS),
+                });
+            }
         }
     }
 }
