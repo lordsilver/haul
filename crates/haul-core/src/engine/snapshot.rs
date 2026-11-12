@@ -456,7 +456,6 @@ impl Engine {
         let looking_up = |it: &Item| {
             self.look_up_page(&st, it).is_some()
                 || unplaced(it)
-                    && !it.told_nothing
                     && it
                         .mirrors
                         .iter()

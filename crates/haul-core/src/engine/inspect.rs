@@ -56,6 +56,7 @@ impl Engine {
                     })),
                     // Pages opened only to learn what it is, that told nothing.
                     "looked": it.looked,
+                    "fates": it.fates,
                     "looking_up": self.look_up_page(&st, it),
                     "named": it.named,
                     "page_retrying": it.page_retrying(),

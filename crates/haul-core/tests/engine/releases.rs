@@ -1237,14 +1237,14 @@ async fn drive(
                 quiet = Instant::now();
                 continue;
             }
-            if s.counts.checking > 0 {
+            if s.counts.checking > 0 && waited < 20 {
                 engine.debug_end_waits();
-                quiet = Instant::now();
-                if waited >= 20 {
-                    return Ok(());
-                }
                 waited += 1;
-                continue;
+                if let Some((id, page)) = engine.plan_passes(&idle).start {
+                    desktop.pass(engine, stand, &id, &page);
+                    quiet = Instant::now();
+                    continue;
+                }
             }
             return Ok(());
         }

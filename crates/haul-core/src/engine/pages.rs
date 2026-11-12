@@ -11,7 +11,7 @@ use std::{
 use super::{AUTO_RETRIES, Engine, State};
 use crate::{
     hosts::{self, Entry},
-    item::{Item, Mirror, PageTurn, Status, Trouble},
+    item::{Fate, Item, Mirror, PageTurn, Status, Trouble},
 };
 
 /// How long a file waits before its host's page is passed again, after the
@@ -76,6 +76,10 @@ impl Engine {
                 st.passes(m)
                     && !it.failed.contains(m.as_str())
                     && !it.looked.contains(m.as_str())
+                    && it
+                        .fates
+                        .get(m.as_str())
+                        .is_none_or(|f| f.due(crate::logging::unix_now()))
                     && !cfg.is_disabled(&m.host)
             })
             .map(|m| m.as_str())
@@ -96,8 +100,8 @@ impl Engine {
         };
         tracing::info!(item = %id, "{page} told nothing of its file");
         if let Some(it) = st.items.get_mut(id) {
-            it.looked.insert(page);
-            it.told_nothing = true;
+            let fate = Fate::told_nothing(it.fates.get(&page).copied(), crate::logging::unix_now());
+            it.fates.insert(page, fate);
         }
         self.publish(st);
         true
@@ -128,7 +132,8 @@ impl Engine {
         };
         it.looked.insert(page.clone());
         if named.is_empty() {
-            it.told_nothing = true;
+            let fate = Fate::told_nothing(it.fates.get(&page).copied(), crate::logging::unix_now());
+            it.fates.insert(page.clone(), fate);
             tracing::info!(item = %id, "{page} named no file");
             self.publish(st);
             return Ok(());
@@ -377,6 +382,10 @@ impl Engine {
         if limited_lookup {
             tracing::info!(item = %id, "page later, looked up again after the host's wait: {reason}");
             st.budgets.of(&hosts::host_of(page), now).limited(now);
+            let until = crate::logging::unix_now() + seconds.unwrap_or(0);
+            if let Some(it) = st.items.get_mut(id) {
+                it.fates.insert(page.to_string(), Fate::Limited { until });
+            }
             st.tried
                 .retain(|(row, passed, _)| !(row == id && passed == page));
         }

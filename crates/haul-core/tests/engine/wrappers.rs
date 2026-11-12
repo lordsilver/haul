@@ -463,14 +463,24 @@ async fn a_wrappers_unnamed_file_is_looked_up_through_its_page() {
     );
     let shy = s.items.iter().find(|i| i.id == row("shy")).unwrap();
     assert_eq!(shy.status.as_str(), "paused");
-    // Its page told nothing: it shows as the link it is, to start or remove.
-    assert!(!shy.looking_up && !shy.tentative, "{shy:?}");
-    assert_eq!(s.wrapper_cards[0].checking, 0);
+    // Its page told nothing: no row to show, it waits on its card to be
+    // asked again later (D-4), and is not asked again now.
+    assert!(shy.tentative && shy.list.is_none(), "{shy:?}");
+    assert_eq!(s.wrapper_cards[0].checking, 1);
     assert!(shy.error.is_empty(), "{}", shy.error);
+    assert_eq!(engine.plan_passes(&idle).start, None, "asked again later");
     assert!(s.items.iter().all(|i| i.status.as_str() == "paused"));
     assert_eq!(engine.waiting_for_person(), (vec![], vec![]));
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(engine.plan_passes(&idle).start, None, "not looked up again");
+
+    // Nor after a restart: when to ask again is saved (plan LOOK-04).
+    engine.shutdown().await;
+    drop(engine);
+    let engine = start_when_free(|| t.options()).await;
+    engine.set_pages_pass(true);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(engine.plan_passes(&idle).start, None, "not asked again yet");
 }
 
 /// A wrapper that failed runs again when its retry comes due, here finding
