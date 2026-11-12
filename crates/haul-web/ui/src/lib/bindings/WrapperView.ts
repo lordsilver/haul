@@ -56,4 +56,9 @@ gone: boolean,
 /**
  * Its place among the pages waiting for Haul's browser, while it waits.
  */
-queue: InQueue | null, };
+queue: InQueue | null, 
+/**
+ * Set aside unread: its gate did not pass by itself, and its release is
+ * whole without it.
+ */
+unread: boolean, };

@@ -528,6 +528,17 @@ async fn a_containers_listing_survives_a_restart_and_its_files() {
     let id = s.wrappers[0].id.clone();
     let listing = engine.debug_listing(&id);
     assert!(!listing.is_empty());
+    // The card says what it holds, and what each host is worth (CARD-02,
+    // CARD-06).
+    let card = &s.wrapper_cards[0];
+    assert_eq!(card.summary.as_ref().map(|s| s.files), Some(2));
+    assert!(
+        card.host_parts
+            .iter()
+            .all(|h| h.alive > 0 && h.gone == 0 && !h.off),
+        "{:?}",
+        card.host_parts
+    );
     assert_eq!(listing[0].at, 1);
     assert!(listing.iter().all(|l| !l.urls.is_empty()));
     assert!(engine.item_action(&s.items[0].id, ItemAction::Remove));
@@ -536,6 +547,48 @@ async fn a_containers_listing_survives_a_restart_and_its_files() {
 
     let engine = start_when_free(|| t.options()).await;
     assert_eq!(engine.debug_listing(&id), listing);
+}
+
+/// Read again, a card's removed files come back, not started, with the same
+/// links, and nothing it holds is added twice (plan CARD-03). Adding its
+/// link again does the same, and says so (CARD-04).
+#[tokio::test]
+async fn a_card_read_again_brings_back_its_removed_files() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://filecrypt.cc/Container/open.html", "");
+    let s = wrapper_settled(&engine, "done").await;
+    let card = s.wrappers[0].id.clone();
+    let before: Vec<Vec<String>> = {
+        let mut links: Vec<Vec<String>> =
+            s.items.iter().map(|i| engine.debug_links(&i.id)).collect();
+        links.sort();
+        links
+    };
+    assert_eq!(before.len(), 2);
+    assert!(engine.item_action(&s.items[0].id, ItemAction::Remove));
+    wait_for(&engine, "one file left", |s| s.items.len() == 1).await;
+
+    let batch = engine.wrappers_action(
+        std::slice::from_ref(&card),
+        haul_core::WrapperAction::Reread,
+    );
+    assert_eq!(batch.done, 1);
+    let s = wait_for(&engine, "the removed file back", |s| {
+        s.items.len() == 2 && s.wrappers[0].status.as_str() == "done"
+    })
+    .await;
+    let mut after: Vec<Vec<String>> = s.items.iter().map(|i| engine.debug_links(&i.id)).collect();
+    after.sort();
+    assert_eq!(after, before, "the same links, once each");
+    assert!(s.items.iter().all(|i| i.not_started));
+
+    // Adding its link again reads it again, rather than a duplicate.
+    assert!(engine.item_action(&s.items[0].id, ItemAction::Remove));
+    wait_for(&engine, "one file left", |s| s.items.len() == 1).await;
+    let added = engine.add_text("https://filecrypt.cc/Container/open.html", "");
+    assert_eq!((added.reread, added.duplicates), (1, 0));
+    wait_for(&engine, "the removed file back", |s| s.items.len() == 2).await;
 }
 
 /// A wrapper's retry is unwrapped at once, as when it was added, whatever
@@ -636,7 +689,8 @@ async fn a_wrapper_says_at_once_when_it_cannot_unwrap() {
     assert!(matches!(e, Event::Failed { .. }), "{e:?}");
 }
 
-/// Every link of a vault shows the same page: added once, solved once.
+/// Every link of a vault shows the same page: added once, solved once. One
+/// of its links added again later reads it again (plan CARD-04).
 #[tokio::test]
 async fn a_wrapper_counts_once_whichever_of_its_links_comes() {
     let t = Setup::new().await;
@@ -650,13 +704,13 @@ async fn a_wrapper_counts_once_whichever_of_its_links_comes() {
     assert_eq!(
         engine
             .add_text("https://fileguard.cc/vault/abc/transfer", "")
-            .duplicates,
+            .reread,
         1,
-        "one already unwrapped counts too"
+        "its card is read again"
     );
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(t.server.requests("/vault/abc solved").len(), 1);
-    assert_eq!(engine.snapshot().items.len(), 1);
+    assert_eq!(t.server.requests("/vault/abc solved").len(), 2);
+    assert_eq!(engine.snapshot().items.len(), 1, "its file once");
 }
 
 /// A file a wrapper lists that the queue already wants keeps its row and

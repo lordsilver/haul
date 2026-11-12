@@ -359,6 +359,10 @@ enum Check {
     /// Starting the card starts the rows of this archive only: the main
     /// cut of the release, the other standing by (D-9).
     StartsOnly(&'static str),
+    /// The card's summary says this many parts (CARD-02).
+    SummaryParts(u32),
+    /// The cards hold this many sources set aside unread (FLOW-02).
+    Unread(usize),
     /// Every order comes to the same sets.
     SameEveryOrder,
 }
@@ -379,6 +383,8 @@ impl Check {
             Check::OneReadPerContainer => "one request per container".into(),
             Check::SeparateCounts => "never \"Unwrapping N links\"".into(),
             Check::StartsOnly(archive) => format!("starting the card starts {archive} only"),
+            Check::Unread(n) => format!("{n} source(s) set aside unread"),
+            Check::SummaryParts(n) => format!("the card says {n} parts"),
             Check::SameEveryOrder => "the same in every order".into(),
         }
     }
@@ -435,6 +441,8 @@ impl Release {
         self
     }
     /// Fails today; `task` makes it pass.
+    // Every row holds today; kept for the next one that fails first.
+    #[allow(dead_code)]
     fn fails_until(mut self, check: Check, task: &'static str) -> Self {
         self.wants.push(Want {
             check,
@@ -650,17 +658,19 @@ fn cases() -> Vec<Release> {
             .holds(NothingFailed)
             .holds(Note("another copy, 34 parts on 1fichier, is gone"))
             .holds(NoFailureTold)
-            .fails_until(Notifications(1), "QUIET-04")
+            .holds(Notifications(1))
             .holds(SeparateCounts)
             .holds(OneReadPerContainer)
             .holds(Asks(0))
+            .holds(SummaryParts(67))
             .holds(SameEveryOrder),
         acceptance("the acceptance case, two containers behind a puzzle")
             .orders(&[Order::Listed])
             .gate("BBBBBBBB")
             .gate("FFFFFFFF")
             .holds(Sets)
-            .holds(Asks(0)),
+            .holds(Asks(0))
+            .holds(Unread(2)),
     ]
 }
 
@@ -1184,7 +1194,12 @@ impl Phase {
         }
         let events = std::mem::take(&mut *self.events.lock().unwrap());
         desktop.tell(engine, &events);
-        run.friction.extend(engine.friction());
+        // Each release once, as the engine counts it last: a phase after
+        // another sees the earlier releases again.
+        for f in engine.friction() {
+            run.friction.retain(|had| had.release != f.release);
+            run.friction.push(f);
+        }
         run.lagged += u64::from(self.lagged.load(Ordering::SeqCst));
     }
 }
@@ -1332,6 +1347,15 @@ async fn run(release: &Arc<Release>, order: Order) -> Run {
             }
             engine.debug_end_waits();
             settled = drive(&engine, &stand, &mut desktop, |_| false).await;
+        }
+        // A gated source's own tries, spent (FLOW-01), before the end.
+        if release.sources.iter().any(|s| s.gated) {
+            for _ in 0..3 {
+                for w in engine.snapshot().wrappers {
+                    engine.debug_retry_now(&w.id);
+                }
+                settled = settled.and(drive(&engine, &stand, &mut desktop, |_| false).await);
+            }
         }
         phase.end(&engine, &mut desktop, &mut acc).await;
         let end = engine.snapshot();
@@ -1617,8 +1641,10 @@ fn check(r: &Release, run: &Run, c: &Check) -> Result<(), String> {
             }
         }
         Check::Notifications(want) => {
+            // Per adding of the page: one added again is a release again.
+            let want = *want * run.adds as u32;
             let n: u32 = run.friction.iter().map(|f| f.notifications).sum();
-            if n == *want {
+            if n == want {
                 Ok(())
             } else {
                 Err(format!("{n} notifications"))
@@ -1661,6 +1687,26 @@ fn check(r: &Release, run: &Run, c: &Check) -> Result<(), String> {
                 (true, _) => Err("nothing started".into()),
                 (false, Some(n)) => Err(format!("{} other rows started, as {n}", other.len())),
                 (false, None) => Ok(()),
+            }
+        }
+        Check::SummaryParts(want) => {
+            let said: Vec<u32> = s
+                .wrapper_cards
+                .iter()
+                .filter_map(|c| c.summary.as_ref().map(|s| s.parts))
+                .collect();
+            if said == [*want] {
+                Ok(())
+            } else {
+                Err(format!("the cards say {said:?}"))
+            }
+        }
+        Check::Unread(want) => {
+            let n: usize = s.wrapper_cards.iter().map(|c| c.unread).sum();
+            if n == *want {
+                Ok(())
+            } else {
+                Err(format!("{n} unread"))
             }
         }
         Check::SameEveryOrder => Ok(()),
@@ -1758,7 +1804,7 @@ async fn a_report_shows_the_paste_the_listings_the_pass_queue_and_the_asks() {
         Release::new("report", "Example.Set", "example-set")
             .set("Example.Set", 2, two_gib)
             .paste("Example.Set: a made-up release in 2 parts. Unpack part 1 with any archiver.")
-            .source(source("AAAAAAAA", Host::Pixeldrain, 0))
+            .source(source("AAAAAAAA", Host::Pixeldrain, 0).odd(Odd::Missing(1)))
             .source(source("BBBBBBBB", Host::Rapidgator, 0))
             .gate("BBBBBBBB"),
     );
@@ -1803,13 +1849,14 @@ async fn a_report_shows_the_paste_the_listings_the_pass_queue_and_the_asks() {
     // The page and its two containers; the gated one listed nothing.
     assert_eq!(lines("listing: "), 2, "{log}");
     assert!(
-        log.contains(r#"\"name\":\"Example.Set.part1.rar\""#),
+        log.contains(r#"\"name\":\"Example.Set.part2.rar\""#),
         "{log}"
     );
     // Its first pass and its three tries of its own.
-    assert_eq!(lines("pass queue queued"), 4, "{log}");
     assert_eq!(lines("pass queue started"), 4, "{log}");
+    // The release lacks a part only it may have: it asks (plan FLOW-02).
     assert_eq!(lines("asks a person: filecrypt.cc (gate)"), 1, "{log}");
+    assert_eq!(lines("set aside unread"), 0, "{log}");
     let friction = &report["friction"];
     assert_eq!(friction.as_array().map(Vec::len), Some(1), "{friction}");
     let ask = &friction[0]["asks"][0];
@@ -1824,9 +1871,10 @@ async fn a_report_shows_the_paste_the_listings_the_pass_queue_and_the_asks() {
             Some("filecrypt.cc"),
             Some("gate"),
             Some("a CutCaptcha puzzle"),
-            Some(false)
+            Some(true)
         ),
-        "the release is whole without it: {friction}"
+        "the release lacks part 1: {friction}"
     );
+    // The ask (the release is told as read once its sources settle).
     assert_eq!(friction[0]["notifications"], 1, "{friction}");
 }

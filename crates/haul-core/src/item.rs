@@ -120,7 +120,7 @@ impl Fate {
             Some(Fate::ToldNothing { tries, .. }) => tries + 1,
             _ => 1,
         };
-        let wait = (15 * 60u64 << (tries - 1).min(10)).min(24 * 3600);
+        let wait = ((15 * 60u64) << (tries - 1).min(10)).min(24 * 3600);
         Fate::ToldNothing {
             tries,
             next: now + wait,
@@ -283,6 +283,11 @@ pub(crate) struct Item {
     /// The person was told its page wants them: not again until they act.
     #[serde(skip)]
     pub told_person: bool,
+    /// A source whose gate its own tries did not pass, set aside unread:
+    /// its release is whole without it, so nobody is asked (plan FLOW-02).
+    /// Tried again quietly once a day, or read on request.
+    #[serde(skip)]
+    pub unread: bool,
     /// Listed by a wrapper and not started by the person yet: nothing about
     /// it is told as a failure or as wanting them, and losing a mirror
     /// leaves it waiting ([`Item::start`] clears it).

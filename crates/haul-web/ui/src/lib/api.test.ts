@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { addedMessage } from '@/lib/api';
 
-const none = { added: 0, merged: 0, duplicates: 0, invalid: 0, wrappers: 0, pages: 0 };
+const none = { added: 0, merged: 0, duplicates: 0, invalid: 0, wrappers: 0, pages: 0, reread: 0 };
 
 describe('addedMessage', () => {
   test('says how many rows were added', () => {

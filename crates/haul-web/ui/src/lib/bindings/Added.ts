@@ -27,4 +27,8 @@ wrappers: number,
 /**
  * Copied web pages being looked at for links; those that list none go.
  */
-pages: number, };
+pages: number, 
+/**
+ * Links whose card is on the list already: read again (plan CARD-04).
+ */
+reread: number, };

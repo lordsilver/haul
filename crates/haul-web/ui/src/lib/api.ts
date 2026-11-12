@@ -66,6 +66,7 @@ export function addedMessage(r: Added): string {
   const parts = r.wrappers && !r.added ? [] : [`${r.added} added`];
   if (r.wrappers) parts.push(`${plural(r.wrappers, 'wrapper')} to unwrap`);
   if (r.merged) parts.push(`${r.merged} merged as mirrors`);
+  if (r.reread) parts.push(`${r.reread === 1 ? 'its card is' : `${r.reread} cards are`} read again`);
   if (r.duplicates) parts.push(`${r.duplicates} already in the list`);
   if (r.invalid) parts.push(`${r.invalid} not http(s)`);
   return parts.join(' · ');

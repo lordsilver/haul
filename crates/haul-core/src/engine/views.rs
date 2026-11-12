@@ -630,6 +630,15 @@ pub struct WrapperCard {
     pub need_you: usize,
     /// Its place among the pages waiting for Haul's browser, while it waits.
     pub queue: Option<InQueue>,
+    /// Its sources set aside unread: their gate did not pass by itself, and
+    /// the release is whole without them (plan FLOW-02).
+    pub unread: usize,
+    /// The release in the person's terms (plan CARD-02): its main set's
+    /// parts or its files, their bytes, and the switched-on hosts with a
+    /// live link; none before anything is known.
+    pub summary: Option<CardSummary>,
+    /// Each host its files are on, with what it is worth (plan CARD-06).
+    pub host_parts: Vec<HostParts>,
     /// What the card says besides its files, in the person's words: a cut
     /// of the release that is gone, say.
     pub notes: Vec<String>,
@@ -686,8 +695,13 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
     }
     groups
         .into_iter()
-        .map(|(key, ws)| {
+        .map(|(_, ws)| {
             let w = ws[0];
+            // The card's key is its first root's id, whatever state its
+            // wrappers are in: a card keeps its identity from adding to done
+            // (plan CARD-01), and cards of one title joined later take the
+            // first one's.
+            let key = format!("w\u{0}{}", root(&by_id, w).id);
             let mut at: Vec<usize> = ws
                 .iter()
                 .flat_map(|x| files_of.get(x.id.as_str()).into_iter().flatten().copied())
@@ -704,14 +718,15 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
             let lists_nothing =
                 |x: &WrapperView| x.status == WrapperState::Error && x.lists_nothing;
             let quiet = ws.iter().any(|x| !lists_nothing(x));
-            let set_aside = |x: &WrapperView| quiet && lists_nothing(x);
+            let set_aside = |x: &WrapperView| quiet && lists_nothing(x) || x.unread;
             // The card shows what needs attention first among them.
             let urgent = WRAPPER_URGENCY
                 .iter()
                 .find_map(|s| ws.iter().find(|x| x.status == *s && !set_aside(x)))
                 .copied()
                 .unwrap_or(w);
-            let empty = ws.iter().filter(|x| set_aside(x)).count();
+            let empty = ws.iter().filter(|x| set_aside(x) && !x.unread).count();
+            let unread = ws.iter().filter(|x| x.unread).count();
             let card_tally = tally(files.iter().copied());
             let mut hosts: Vec<String> = Vec::new();
             for h in ws.iter().flat_map(|x| &x.hosts) {
@@ -756,14 +771,45 @@ pub(super) fn wrapper_cards(wrappers: &[WrapperView], items: &[ItemView]) -> Vec
                 open_id: urgent.id.clone(),
                 need_you: ws
                     .iter()
-                    .filter(|x| x.status == WrapperState::Captcha)
+                    .filter(|x| x.status == WrapperState::Captcha && !x.unread)
                     .count(),
                 queue: urgent.queue,
+                unread,
+                summary: None,
+                host_parts: Vec::new(),
                 notes: Vec::new(),
                 tally: card_tally,
             }
         })
         .collect()
+}
+
+/// A release in the person's terms: `Example.Set · 67 parts · 134 GB · 5
+/// hosts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct CardSummary {
+    /// Its main archive's parts; 0 when it is files, not an archive.
+    pub parts: u32,
+    pub files: usize,
+    /// Bytes, over the files whose size is known.
+    pub bytes: u64,
+    /// Switched-on hosts with a live link to one of its files.
+    pub hosts: usize,
+}
+
+/// What one host on a card is worth: how many of its files it has alive,
+/// gone, or as the sources listed them offline, and whether it is off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct HostParts {
+    pub host: String,
+    pub alive: usize,
+    pub gone: usize,
+    /// Links a source marked offline (its claim, not the host's).
+    pub listed_offline: usize,
+    /// Switched off by the person.
+    pub off: bool,
 }
 
 /// Pages Haul's browser passes now, and pages waiting for it.
@@ -884,7 +930,7 @@ pub(super) fn counts(
         need_you: in_list(List::Attention)
             + wrappers
                 .iter()
-                .filter(|w| w.status == WrapperState::Captcha)
+                .filter(|w| w.status == WrapperState::Captcha && !w.unread)
                 .count(),
         ready: items
             .iter()
@@ -1209,6 +1255,7 @@ mod tests {
             hosts: vec![format!("{id}.example")],
             source: None,
             lists_nothing: false,
+            unread: false,
             gone: false,
             queue: None,
         }
