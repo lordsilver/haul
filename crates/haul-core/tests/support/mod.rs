@@ -247,6 +247,15 @@ impl Drop for BusyOut {
     }
 }
 
+/// Every container page the stand-in filecrypt.cc was asked for, by any
+/// test: a page's name is its own test's.
+pub(super) static CONTAINER_ASKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// How many times container page `page` was asked for.
+pub(super) fn container_asks(page: &str) -> usize {
+    CONTAINER_ASKS.lock().unwrap().iter().filter(|p| *p == page).count()
+}
+
 impl Server {
     /// Where the first logged line starting with `line` stands in the log.
     pub(super) fn at(&self, line: &str) -> Option<usize> {
@@ -923,6 +932,7 @@ pub(super) async fn start_server() -> (Server, u16) {
             // asked, as until a browser passed it; "cf-always" every time.
             get(|UrlPath(page): UrlPath<String>| async move {
                 static CF_ONCE: AtomicUsize = AtomicUsize::new(0);
+                CONTAINER_ASKS.lock().unwrap().push(page.clone());
                 // "missing-…" answers Not Found the first time it is asked,
                 // then is a container like "open".
                 static MISSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -936,8 +946,7 @@ pub(super) async fn start_server() -> (Server, u16) {
                 }
                 let challenged = match page.as_str() {
                     "cf-once.html" => CF_ONCE.fetch_add(1, Ordering::SeqCst) == 0,
-                    "cf-always.html" => true,
-                    _ => false,
+                    p => p.starts_with("cf-always"),
                 };
                 if challenged {
                     return (

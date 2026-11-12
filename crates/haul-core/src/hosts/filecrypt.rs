@@ -524,7 +524,7 @@ pub(super) async fn unwrap(cx: &Cx<'_>, url: &str) -> Result<Unwrapped, ResolveE
     // is often let through it, and hands back the page it shows.
     let Some(widget) = WIDGET.find(&html) else {
         tracing::debug!(marks = ?super::gates::marks_in(&html), "filecrypt.cc shows another gate");
-        return Err(super::generic::gated(&page, super::gates::detect(&html)));
+        return Err(super::generic::gated(&page, super::gates::detect_alone(&html)));
     };
     let data: Vec<(String, String)> = DATA
         .captures_iter(widget.as_str())

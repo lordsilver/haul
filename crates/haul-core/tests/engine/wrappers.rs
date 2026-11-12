@@ -763,6 +763,41 @@ async fn a_clearance_lets_haul_read_the_sites_waiting_containers() {
     assert!(engine.takes_clearance(always), "tried again by hand");
 }
 
+/// A site whose check came back after a clearance has its other pages read
+/// by the browser alone for a while: Haul asks the site nothing first, and
+/// hands no clearance back, so each container is asked for once.
+#[tokio::test]
+async fn a_site_whose_clearance_does_not_hold_is_read_in_the_browser() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    let first = "https://filecrypt.cc/Container/cf-always-held.html";
+    engine.add_text(first, "");
+    let s = wrapper_settled(&engine, "passing").await;
+    engine.page_cleared(
+        &s.wrappers[0].id,
+        &["cf_clearance=ok; Path=/".to_string()],
+        Some("Browser/1.0"),
+    );
+    wait_for(&engine, "the check again after the clearance", |_| {
+        container_asks("cf-always-held.html") >= 2
+    })
+    .await;
+    wrapper_settled(&engine, "passing").await;
+
+    let next = "https://filecrypt.cc/Container/cf-always-held-2.html";
+    engine.add_text(next, "");
+    let s = wait_for(&engine, "the next container waiting for the browser", |s| {
+        s.wrappers
+            .iter()
+            .any(|w| w.url == next && w.status.as_str() == "passing")
+    })
+    .await;
+    assert_eq!(container_asks("cf-always-held-2.html"), 0, "Haul asked the site nothing");
+    assert!(!engine.takes_clearance(next), "the browser reads it itself");
+    assert!(s.wrappers.iter().all(|w| !w.error.is_empty()));
+}
+
 /// A wrapper whose page passed out of sight still wants a person shows so
 /// at once on its card, even while downloads are paused: it has no other
 /// link to go on with, so the notification that comes once its own tries

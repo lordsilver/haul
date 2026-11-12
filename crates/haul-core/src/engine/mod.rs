@@ -115,6 +115,10 @@ fn prune_pages(st: &mut State) {
     st.cleared = cleared;
 }
 
+/// How long a site whose check came back after a clearance has its pages
+/// read by the browser alone ([`State::held_by_check`]).
+const SITE_CHECK_HOLDS: Duration = Duration::from_secs(30 * 60);
+
 /// Automatic retries of a failed download, when `retry_failed_minutes` is on.
 const AUTO_RETRIES: u32 = 3;
 
@@ -1006,6 +1010,11 @@ struct State {
     /// it is passed the usual way, so a clearance that does not hold is not
     /// handed over and over.
     cleared: HashSet<String>,
+    /// Sites whose check came back after a browser's clearance was handed
+    /// to Haul, and since when: for [`SITE_CHECK_HOLDS`] their other pages
+    /// go straight to the browser, which reads them itself, instead of
+    /// being read by Haul first only to meet the check again.
+    held_by_check: HashMap<String, Instant>,
     /// Pages the desktop app passed during their rows' current waits.
     tried: passes::Tried,
     /// The rows waiting in the pass queue, as the last plan saw them, for
@@ -1044,6 +1053,7 @@ impl State {
             part_moves: Vec::new(),
             guarded: HashSet::new(),
             cleared: HashSet::new(),
+            held_by_check: HashMap::new(),
             tried: passes::Tried::new(),
             pass_queue: passes::Queue::default(),
             friction: friction::Frictions::new(),
@@ -1070,6 +1080,21 @@ impl State {
         if need == Need::Gate {
             self.cleared.insert(url.to_string());
         }
+        // The check again after a clearance: Haul's own reads of this site
+        // won't get past it for a while.
+        if need == Need::Check && self.cleared.contains(url) {
+            let site = hosts::site_of(url);
+            tracing::info!("{site}'s check came back after a clearance: its pages go to the browser");
+            self.held_by_check.entry(site).or_insert_with(Instant::now);
+        }
+    }
+
+    /// Whether site of page `url` was found behind a check a clearance does
+    /// not get Haul past, within [`SITE_CHECK_HOLDS`].
+    fn held_by_check(&mut self, url: &str, now: Instant) -> bool {
+        self.held_by_check
+            .retain(|_, since| now.duration_since(*since) < SITE_CHECK_HOLDS);
+        self.held_by_check.contains_key(&hosts::site_of(url))
     }
 
     /// A host's stats; a known host's are found without allocating.
@@ -1953,7 +1978,25 @@ impl Engine {
         };
         let cfg = self.cfg();
         let cx = self.cx(&http, &cfg, &key_service);
-        let found = tokio::time::timeout(Duration::from_secs(60), hosts::unwrap(&cx, &url)).await;
+        // A site whose check a clearance doesn't get Haul past: the browser
+        // reads the page itself, with no request of Haul's first and no
+        // clearance handed back (one request per page).
+        let held = {
+            let mut st = self.lock();
+            let held = st.held_by_check(&url, Instant::now());
+            if held {
+                st.cleared.insert(url.url.clone());
+            }
+            held
+        };
+        let found = if held {
+            Ok(Err(ResolveError::NeedsUser(
+                hosts::Need::Check,
+                format!("{} is behind a browser check (Cloudflare's)", hosts::host_of(&url)),
+            )))
+        } else {
+            tokio::time::timeout(Duration::from_secs(60), hosts::unwrap(&cx, &url)).await
+        };
         match found {
             Ok(Ok(found)) => self.take_unwrapped(&id, &url, found),
             // A gate for a person (filecrypt.cc's) says so at once, even
