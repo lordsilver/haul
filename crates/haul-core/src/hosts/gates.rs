@@ -3,7 +3,8 @@
 //! on many sites, so knowing one by its own marks works on every site that
 //! uses it, and the row can say what stands in the way instead of "a page".
 //! Recognising a gate answers nothing by itself: one Haul has no answer for
-//! goes to a person, as before.
+//! goes to a person, as before; one the desktop app's browser gets past, by
+//! itself or with Haul answering it there, goes to that browser.
 
 /// A gate, by the product behind it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,16 +22,21 @@ pub enum Gate {
     FriendlyCaptcha,
     /// GeeTest's puzzle.
     Geetest,
-    /// CutCaptcha's puzzle.
+    /// CutCaptcha's checkbox and, for a visit its service doubts, jigsaw,
+    /// which the desktop app answers in its browser.
     Cutcaptcha,
 }
 
 impl Gate {
-    /// Whether a real browser gets past it with nobody's help: Turnstile
-    /// usually lets one through, and a proof of work is the browser's to
-    /// compute. A picture or a puzzle needs a person.
+    /// Whether the desktop app's browser gets past it with nobody's help:
+    /// Turnstile usually lets one through, a proof of work is the browser's
+    /// to compute, and CutCaptcha's checkbox and jigsaw are answered there
+    /// by Haul. Another picture or puzzle needs a person.
     pub fn passes_in_browser(self) -> bool {
-        matches!(self, Self::Turnstile | Self::Altcha | Self::FriendlyCaptcha)
+        matches!(
+            self,
+            Self::Turnstile | Self::Altcha | Self::FriendlyCaptcha | Self::Cutcaptcha
+        )
     }
 
     /// Its name, as the row says it.
@@ -244,6 +250,23 @@ mod tests {
             detect_alone("<div class=\"cutcaptcha\"></div><script>grecaptcha</script>"),
             Some(Gate::Cutcaptcha)
         );
+    }
+
+    /// The gates the desktop app's browser gets past with nobody asked go
+    /// there; a picture or a puzzle Haul has no answer for goes to a person.
+    #[test]
+    fn the_gates_a_browser_gets_past() {
+        for gate in [
+            Gate::Turnstile,
+            Gate::Altcha,
+            Gate::FriendlyCaptcha,
+            Gate::Cutcaptcha,
+        ] {
+            assert!(gate.passes_in_browser(), "{}", gate.name());
+        }
+        for gate in [Gate::Recaptcha, Gate::Hcaptcha, Gate::Geetest] {
+            assert!(!gate.passes_in_browser(), "{}", gate.name());
+        }
     }
 
     #[test]

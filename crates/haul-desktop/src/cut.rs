@@ -8,11 +8,14 @@
 //! the document as DevTools gives it, and pressed and dragged with the
 //! mouse events a person's hand makes.
 //!
-//! In turn, each a few seconds apart: wait a moment for the widget to pass
-//! by itself; tick its checkbox, with whatever frame an advert laid over
-//! it out of the way; when the jigsaw opens, read its picture and pieces
-//! from the widget, and drag each piece to the hole it came from when the
-//! solver is sure, or ask the widget for another picture when it is not.
+//! The service tells the widget, a second after the page loads, whether
+//! this visit passes with no click ([`Heard`]). In turn: leave a widget
+//! that passes by itself alone; tick the checkbox of one that does not, at
+//! once, with whatever frame an advert laid over it out of the way (the
+//! widget's proof of work, some seconds long, starts with the tick); when
+//! the jigsaw opens, read its picture and pieces from the widget, and drag
+//! each piece to the hole it came from when the solver is sure, or ask the
+//! widget for another picture when it is not.
 
 use std::{
     collections::HashSet,
@@ -29,8 +32,15 @@ use super::Cdp;
 pub struct Widget {
     /// When the widget was first seen waiting for its answer.
     seen: Option<Instant>,
+    /// When a widget that had not started was brought into view, once.
+    shown: Option<Instant>,
+    /// It had still not started when last looked at.
+    unstarted: bool,
     /// The last thing done to it, and when.
     acted: Option<Instant>,
+    /// It is left alone until then: its answer to the last thing done
+    /// comes first.
+    rests: Option<Instant>,
     ticks: u32,
     reloads: u32,
     verifies: u32,
@@ -39,25 +49,116 @@ pub struct Widget {
     stalls: u32,
 }
 
-/// The widget passes by itself within this, when it is going to.
+/// The widget passes by itself within this, when it is going to and its
+/// service's word on that was not heard.
 const BY_ITSELF: Duration = Duration::from_secs(6);
-/// Between two things done to the widget: its answer to the last comes
-/// first.
+/// A widget whose service said it wants its checkbox ticked is ticked this
+/// long after it shows, as soon as a person finds the box.
+const TOLD_TO_TICK: Duration = Duration::from_millis(1500);
+/// A widget whose service said it passes by itself has this long to: its
+/// proof of work takes a few seconds, now and then many.
+const TOLD_IT_PASSES: Duration = Duration::from_secs(25);
+/// After a tick the jigsaw is looked for this often: it opens once the
+/// widget's proof of work is done.
+const AFTER_TICK: Duration = Duration::from_secs(1);
+/// After anything else done to the widget: its answer comes first.
 const EVERY: Duration = Duration::from_millis(2500);
 /// The checkbox is ticked again after this long without a jigsaw or an
 /// answer, once.
 const TICK_AGAIN: Duration = Duration::from_secs(15);
 const TICKS: u32 = 2;
+/// A widget brought into view to start has by now, or will not.
+const STARTS_WITHIN: Duration = Duration::from_secs(5);
 /// Other pictures asked for, and answers given, at most.
 const RELOADS: u32 = 5;
 const VERIFIES: u32 = 3;
 const STALLS: u32 = 3;
 
-/// Whether the page has the widget, still without its answer.
+/// The page's widget: 0 when it has none, or one with its answer; 1 for one
+/// that has not started (its place on the page still empty: some start only
+/// once seen); 2 for one that waits for its answer.
 const WAITS: &str = r"(() => {
-  const answer = document.querySelector('.cutcaptcha [name=cutcaptcha-response]');
-  return Boolean(answer) && !answer.value;
+  const widget = document.querySelector('.cutcaptcha');
+  if (!widget) return 0;
+  const answer = widget.querySelector('[name=cutcaptcha-response]');
+  if (!answer) return 1;
+  return answer.value ? 0 : 2;
 })()";
+const NOT_STARTED: i64 = 1;
+const WAITING: i64 = 2;
+
+/// Brings the widget into view: one further down the page is not drawn
+/// where a pointer reaches it, and some start only once seen.
+const INTO_VIEW: &str = r"(() => {
+  const widget = document.querySelector('.cutcaptcha');
+  if (!widget) return;
+  const box = widget.getBoundingClientRect();
+  if (box.top < 0 || box.bottom > innerHeight) widget.scrollIntoView({ block: 'center', behavior: 'instant' });
+})()";
+
+/// What the widget's service told it of this visit, heard on the network
+/// as the browser got it: the answer to the widget's `/v1/challenge`,
+/// `{"data": {"auto": …}}`. The page cannot tell it is listened to.
+#[derive(Debug, Default)]
+pub struct Heard {
+    /// The request whose answer says it.
+    request: Option<String>,
+    /// The question DevTools was asked for that answer's body.
+    asked: Option<u64>,
+    /// Whether the widget passes with no click, once heard.
+    pub by_itself: Option<bool>,
+}
+
+impl Heard {
+    /// Whether `url` is where the widget asks its service about the visit.
+    fn asks_service(url: &str) -> bool {
+        let path = url.split(['?', '#']).next().unwrap_or(url);
+        path.contains("cutcaptcha") && path.ends_with("/v1/challenge")
+    }
+
+    /// A network event of the page: the request whose answer's body is to
+    /// be asked for, when the service's answer has all come.
+    pub fn finished(&mut self, event: &Value) -> Option<String> {
+        let p = &event["params"];
+        match event["method"].as_str()? {
+            "Network.responseReceived"
+                if p["type"].as_str() != Some("Preflight")
+                    && p["response"]["url"]
+                        .as_str()
+                        .is_some_and(Self::asks_service) =>
+            {
+                // A new visit's answer: the last one's no longer holds.
+                self.by_itself = None;
+                self.request = p["requestId"].as_str().map(str::to_string);
+                None
+            }
+            "Network.loadingFinished"
+                if self.request.is_some() && p["requestId"].as_str() == self.request.as_deref() =>
+            {
+                self.request.take()
+            }
+            _ => None,
+        }
+    }
+
+    /// DevTools was asked for the answer's body, as its question `id`.
+    pub fn asked(&mut self, id: u64) {
+        self.asked = Some(id);
+    }
+
+    /// An answer of DevTools': the service's word, when it is the body
+    /// asked for.
+    pub fn answer(&mut self, answer: &Value) {
+        if self.asked.is_none() || answer["id"].as_u64() != self.asked {
+            return;
+        }
+        self.asked = None;
+        self.by_itself = answer["result"]["body"]
+            .as_str()
+            .and_then(|body| serde_json::from_str::<Value>(body).ok())
+            .and_then(|said| said["data"]["auto"].as_bool());
+    }
+}
 
 /// Lets clicks through the topmost thing at `X`, `Y` when it is not the
 /// widget's: an advert's frame or layer, laid over the widget to take the
@@ -230,17 +331,19 @@ impl Widget {
         }
     }
 
-    /// Whether the widget is on the page without its answer, as last seen:
-    /// the pass leaves the page alone meanwhile.
+    /// Whether the widget is on the page without its answer, as last seen,
+    /// or was just brought into view to start: the pass leaves the page
+    /// alone meanwhile.
     pub fn waits(&self) -> bool {
         self.seen.is_some()
+            || self.unstarted && self.shown.is_some_and(|at| at.elapsed() < STARTS_WITHIN)
     }
 
     /// One turn with the page's widget, when it has one that still waits:
     /// what was done, for the signals.
     pub fn step(&mut self, cdp: &mut Cdp, s: Option<&str>) -> Option<Value> {
         let now = Instant::now();
-        if self.stalls >= STALLS || self.acted.is_some_and(|at| now.duration_since(at) < EVERY) {
+        if self.stalls >= STALLS || self.rests.is_some_and(|until| now < until) {
             return None;
         }
         let waits = cdp
@@ -250,13 +353,34 @@ impl Widget {
                 s,
             )
             .ok()?["result"]["value"]
-            .as_bool()?;
-        if !waits {
+            .as_i64()?;
+        self.unstarted = waits == NOT_STARTED;
+        let first = match waits {
+            NOT_STARTED => {
+                let first = self.shown.is_none();
+                self.shown.get_or_insert(now);
+                first
+            }
+            WAITING => self.seen.is_none(),
+            _ => false,
+        };
+        if first {
+            let _ = cdp.call("Runtime.evaluate", json!({ "expression": INTO_VIEW }), s);
+        }
+        if waits != WAITING {
             self.seen = None;
             return None;
         }
         let since = *self.seen.get_or_insert(now);
-        if now.duration_since(since) < BY_ITSELF {
+        // Before its first tick the widget is left to pass by itself, for
+        // as long as its service's word on that says.
+        let said = cdp.heard.by_itself;
+        let patience = match said {
+            Some(false) => TOLD_TO_TICK,
+            Some(true) => TOLD_IT_PASSES,
+            None => BY_ITSELF,
+        };
+        if self.ticks == 0 && now.duration_since(since) < patience {
             return None;
         }
         let document = cdp
@@ -268,20 +392,32 @@ impl Widget {
             Some(jigsaw) => self.answer(cdp, s, &mut dice, jigsaw, &seen.nodes),
             None => self.tick(cdp, s, &mut dice, &seen),
         };
-        match did {
-            Ok(None) => None,
-            Ok(Some(done)) => {
-                self.acted = Some(Instant::now());
-                Some(done)
+        let (rest, done) = match did {
+            // Nothing to do yet (the jigsaw has not opened, its pictures
+            // are still coming): looked at again shortly.
+            Ok(None) => {
+                self.rests = Some(Instant::now() + AFTER_TICK);
+                return None;
+            }
+            Ok(Some(mut done)) => {
+                let ticked = done["step"] == "checkbox";
+                if ticked {
+                    done["passes_by_itself"] = json!(said);
+                    done["after_ms"] = json!(now.duration_since(since).as_millis() as u64);
+                }
+                (if ticked { AFTER_TICK } else { EVERY }, done)
             }
             // The page did not take the pointer (frozen, or something in
             // the way that would not move): later, and not for ever.
             Err(why) => {
                 self.stalls += 1;
-                self.acted = Some(Instant::now());
-                Some(json!({ "step": "stalled", "why": why }))
+                (EVERY, json!({ "step": "stalled", "why": why }))
             }
-        }
+        };
+        let at = Instant::now();
+        self.acted = Some(at);
+        self.rests = Some(at + rest);
+        Some(done)
     }
 
     /// The checkbox ticked, when its turn has come.
@@ -406,10 +542,19 @@ fn clear_way(
     (x, y): (f64, f64),
     widget: &HashSet<i64>,
 ) -> Result<(), String> {
+    // DevTools is asked what lies at a place in the document, and the
+    // widget's parts are measured in the window: on a page scrolled down
+    // the two differ by how far.
+    let metrics = cdp.call("Page.getLayoutMetrics", json!({}), s)?;
+    let scrolled = |axis: &str| metrics["cssVisualViewport"][axis].as_f64().unwrap_or(0.0);
+    let (in_x, in_y) = (
+        (x + scrolled("pageX")).round() as i64,
+        (y + scrolled("pageY")).round() as i64,
+    );
     for _ in 0..8 {
         let at = cdp.call(
             "DOM.getNodeForLocation",
-            json!({ "x": x.round() as i64, "y": y.round() as i64, "includeUserAgentShadowDOM": true }),
+            json!({ "x": in_x, "y": in_y, "includeUserAgentShadowDOM": true }),
             s,
         )?;
         if at["backendNodeId"]
@@ -618,5 +763,55 @@ mod tests {
         // Before the jigsaw opens, only the checkbox.
         let document = json!({ "root": node(1, "#document", &[], vec![]) });
         assert_eq!(super::seen(&document), Seen::default());
+    }
+
+    /// The service's word on a visit is read from the answer to the
+    /// widget's question, and from nothing else the page loads.
+    #[test]
+    fn the_services_word_is_heard_on_the_network() {
+        let got = |id: &str, kind: &str, url: &str| json!({ "method": "Network.responseReceived", "params": { "requestId": id, "type": kind, "response": { "url": url } } });
+        let done = |id: &str| json!({ "method": "Network.loadingFinished", "params": { "requestId": id } });
+        let body = |id: u64, body: &str| json!({ "id": id, "result": { "body": body, "base64Encoded": false } });
+        let ask = "https://api.cutcaptcha.net/v1/challenge";
+        let mut heard = Heard::default();
+        // Another answer of the service's, the browser's question before
+        // the widget's, and another site's page are not it.
+        assert_eq!(
+            heard.finished(&got("1", "Fetch", "https://api.cutcaptcha.net/v1/session")),
+            None
+        );
+        assert_eq!(heard.finished(&done("1")), None);
+        assert_eq!(heard.finished(&got("2", "Preflight", ask)), None);
+        assert_eq!(heard.finished(&done("2")), None);
+        assert_eq!(
+            heard.finished(&got("3", "Fetch", "https://site.example/v1/challenge")),
+            None
+        );
+        assert_eq!(heard.finished(&done("3")), None);
+        // The widget's question: its body is asked for once it has come.
+        assert_eq!(heard.finished(&got("4", "Fetch", ask)), None);
+        assert_eq!(heard.finished(&done("4")), Some("4".to_string()));
+        heard.asked(70);
+        // Another question's answer says nothing.
+        heard.answer(&body(69, r#"{"data":{"auto":true}}"#));
+        assert_eq!(heard.by_itself, None);
+        heard.answer(&body(
+            70,
+            r#"{"data":{"auto":false,"pow":{"d":19}},"success":true}"#,
+        ));
+        assert_eq!(heard.by_itself, Some(false));
+        // The next visit's answer takes its place, and an answer that says
+        // nothing of it leaves the widget to the clock.
+        assert_eq!(heard.finished(&got("5", "Fetch", ask)), None);
+        assert_eq!(heard.by_itself, None);
+        assert_eq!(heard.finished(&done("5")), Some("5".to_string()));
+        heard.asked(71);
+        heard.answer(&body(71, r#"{"data":{"auto":true}}"#));
+        assert_eq!(heard.by_itself, Some(true));
+        assert_eq!(heard.finished(&got("6", "Fetch", ask)), None);
+        assert_eq!(heard.finished(&done("6")), Some("6".to_string()));
+        heard.asked(72);
+        heard.answer(&body(72, r#"{"success":false}"#));
+        assert_eq!(heard.by_itself, None);
     }
 }
