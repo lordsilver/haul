@@ -494,7 +494,8 @@ const tick = setInterval(() => {{
 
 /// A page behind a stand-in for the CutCaptcha widget, built as the real
 /// one is (closed shadow roots, its parts under its class names) around a
-/// made-up puzzle: a checkbox that takes only a hand's click, under an
+/// made-up puzzle, far down its page and started only once it is seen: a
+/// checkbox that takes only a hand's click, under an
 /// advert's frame that covers the whole page and a layer whose click
 /// starts an advert's download; then a jigsaw whose pieces
 /// drag with the mouse and whose Verify gives the answer field its token
@@ -515,16 +516,26 @@ fn jigsaw_page() -> String {
         })
         .collect();
     r##"<title>Gate</title><h1>Security check</h1>
-<form><div class="cutcaptcha"><input type="hidden" name="cutcaptcha-response" value=""><div id="host"></div></div></form>
+<form style="margin-top:1600px"><div class="cutcaptcha" style="min-height:60px"></div></form>
 <iframe src="http://ads.localhost:{P}/pop" style="position:fixed;z-index:2147483646;left:0;top:0;width:100vw;height:100vh;border:0;opacity:0.02"></iframe>
 <div onclick="location.href='http://ads.localhost:{P}/setup.exe'" style="position:fixed;z-index:2147483647;left:0;top:0;width:100vw;height:260px"></div>
 <div id="after" style="display:none"><button style="font-size:20px;padding:10px 30px" onclick="location.href='https://pixeldrain.com/u/jigsaw001'">Get Link</button></div>
 <script>
 const puzzle = {picture: "PICTURE", pieces: [PIECES]};
-fetch('/cutcaptcha/v1/challenge', {method: 'POST', body: '{}'}).then((said) => said.json());
-const root = document.getElementById('host').attachShadow({mode: 'closed'});
+// Far down the page, the widget starts once it is seen.
+let root;
+new IntersectionObserver((seen, watch) => {
+  if (!seen.some((s) => s.isIntersecting)) return;
+  watch.disconnect();
+  document.querySelector('.cutcaptcha').innerHTML = '<input type="hidden" name="cutcaptcha-response" value=""><div id="host"></div>';
+  fetch('/cutcaptcha/v1/challenge', {method: 'POST', body: '{}'}).then((said) => said.json());
+  root = document.getElementById('host').attachShadow({mode: 'closed'});
+  start();
+}).observe(document.querySelector('.cutcaptcha'));
+function start() {
 root.innerHTML = '<div class="cc"><div class="cc__box" role="checkbox" tabindex="0" style="width:300px;height:60px;border:1px solid #888;display:flex;align-items:center;padding-left:14px;font:16px sans-serif">No script here</div></div>';
 root.querySelector('.cc__box').addEventListener('click', (e) => { if (e.isTrusted) open(); }, {once: true});
+}
 function open() {
   const modal = document.createElement('div');
   document.body.append(modal);
@@ -771,6 +782,26 @@ fn walk_one(
         (false, false) => "FAILED",
     };
     let fine = verdict == "ok" || verdict == "gap";
+    // What the pass did, for a scenario that went wrong: its signals.
+    let signals: String = if fine {
+        String::new()
+    } else {
+        haul_core::debug::bus()
+            .map(|bus| bus.recent())
+            .unwrap_or_default()
+            .iter()
+            .filter(|s| s["kind"] == "pass" && s["id"] == item.as_str())
+            .map(|s| {
+                let at = s["t"].as_str().unwrap_or_default();
+                let mut s = s.clone();
+                for told in ["t", "kind", "id", "url"] {
+                    s.as_object_mut().map(|s| s.remove(told));
+                }
+                let said: String = s.to_string().chars().take(300).collect();
+                format!("\n              {} {said}", at.get(11..23).unwrap_or(at))
+            })
+            .collect()
+    };
     let line = format!(
         "{verdict:>10}  {took:>5.1} s  {:>2} s its pages  {over:>5.1} s the walk  (limit {:>2} s and the browser)  {}{}",
         scenario.floor,
@@ -780,7 +811,7 @@ fn walk_one(
             String::new()
         } else {
             format!(
-                "\n            {}",
+                "\n            {}{signals}",
                 told.chars().take(400).collect::<String>()
             )
         }
@@ -804,6 +835,8 @@ fn every_scenario_is_walked_to_where_it_leads() {
     let port = serve();
     let profiles = std::env::temp_dir().join(format!("haul-walk-suite-{}", std::process::id()));
     let only = std::env::var("HAUL_WALK_ONLY").ok();
+    // The passes' signals are kept, to tell what a failed scenario did.
+    haul_core::debug::enable(&profiles);
     // What this machine's browser takes to start, show a page and close:
     // the scenario with nothing to walk, alone. A walk's own time is told
     // without it, so the scorecard compares across machines.

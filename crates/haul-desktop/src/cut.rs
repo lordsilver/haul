@@ -32,6 +32,10 @@ use super::Cdp;
 pub struct Widget {
     /// When the widget was first seen waiting for its answer.
     seen: Option<Instant>,
+    /// When a widget that had not started was brought into view, once.
+    shown: Option<Instant>,
+    /// It had still not started when last looked at.
+    unstarted: bool,
     /// The last thing done to it, and when.
     acted: Option<Instant>,
     /// It is left alone until then: its answer to the last thing done
@@ -63,16 +67,25 @@ const EVERY: Duration = Duration::from_millis(2500);
 /// answer, once.
 const TICK_AGAIN: Duration = Duration::from_secs(15);
 const TICKS: u32 = 2;
+/// A widget brought into view to start has by now, or will not.
+const STARTS_WITHIN: Duration = Duration::from_secs(5);
 /// Other pictures asked for, and answers given, at most.
 const RELOADS: u32 = 5;
 const VERIFIES: u32 = 3;
 const STALLS: u32 = 3;
 
-/// Whether the page has the widget, still without its answer.
+/// The page's widget: 0 when it has none, or one with its answer; 1 for one
+/// that has not started (its place on the page still empty: some start only
+/// once seen); 2 for one that waits for its answer.
 const WAITS: &str = r"(() => {
-  const answer = document.querySelector('.cutcaptcha [name=cutcaptcha-response]');
-  return Boolean(answer) && !answer.value;
+  const widget = document.querySelector('.cutcaptcha');
+  if (!widget) return 0;
+  const answer = widget.querySelector('[name=cutcaptcha-response]');
+  if (!answer) return 1;
+  return answer.value ? 0 : 2;
 })()";
+const NOT_STARTED: i64 = 1;
+const WAITING: i64 = 2;
 
 /// Brings the widget into view: one further down the page is not drawn
 /// where a pointer reaches it, and some start only once seen.
@@ -318,10 +331,12 @@ impl Widget {
         }
     }
 
-    /// Whether the widget is on the page without its answer, as last seen:
-    /// the pass leaves the page alone meanwhile.
+    /// Whether the widget is on the page without its answer, as last seen,
+    /// or was just brought into view to start: the pass leaves the page
+    /// alone meanwhile.
     pub fn waits(&self) -> bool {
         self.seen.is_some()
+            || self.unstarted && self.shown.is_some_and(|at| at.elapsed() < STARTS_WITHIN)
     }
 
     /// One turn with the page's widget, when it has one that still waits:
@@ -338,13 +353,23 @@ impl Widget {
                 s,
             )
             .ok()?["result"]["value"]
-            .as_bool()?;
-        if !waits {
+            .as_i64()?;
+        self.unstarted = waits == NOT_STARTED;
+        let first = match waits {
+            NOT_STARTED => {
+                let first = self.shown.is_none();
+                self.shown.get_or_insert(now);
+                first
+            }
+            WAITING => self.seen.is_none(),
+            _ => false,
+        };
+        if first {
+            let _ = cdp.call("Runtime.evaluate", json!({ "expression": INTO_VIEW }), s);
+        }
+        if waits != WAITING {
             self.seen = None;
             return None;
-        }
-        if self.seen.is_none() {
-            let _ = cdp.call("Runtime.evaluate", json!({ "expression": INTO_VIEW }), s);
         }
         let since = *self.seen.get_or_insert(now);
         // Before its first tick the widget is left to pass by itself, for
@@ -517,10 +542,19 @@ fn clear_way(
     (x, y): (f64, f64),
     widget: &HashSet<i64>,
 ) -> Result<(), String> {
+    // DevTools is asked what lies at a place in the document, and the
+    // widget's parts are measured in the window: on a page scrolled down
+    // the two differ by how far.
+    let metrics = cdp.call("Page.getLayoutMetrics", json!({}), s)?;
+    let scrolled = |axis: &str| metrics["cssVisualViewport"][axis].as_f64().unwrap_or(0.0);
+    let (in_x, in_y) = (
+        (x + scrolled("pageX")).round() as i64,
+        (y + scrolled("pageY")).round() as i64,
+    );
     for _ in 0..8 {
         let at = cdp.call(
             "DOM.getNodeForLocation",
-            json!({ "x": x.round() as i64, "y": y.round() as i64, "includeUserAgentShadowDOM": true }),
+            json!({ "x": in_x, "y": in_y, "includeUserAgentShadowDOM": true }),
             s,
         )?;
         if at["backendNodeId"]
