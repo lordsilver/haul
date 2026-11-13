@@ -1676,7 +1676,7 @@ fn click_at(cdp: &mut Cdp, s: Option<&str>, x: f64, y: f64) -> Result<(), String
 /// another site. `null` while the page loads.
 const WALK_STEPS: &str = r#"(() => {
   if (document.readyState === 'loading') return null;
-  const GO = /\b(continue|get\s*link|go\s*to\s*link|go\s*to\s*url|next|skip(\s*ad)?|verify|proceed|click\s*here|unlock|open\s*link|i'?m?\s*(am\s*)?not\s*a\s*robot|human|generate|show\s*link|visit\s*link|get\s*url|go|download|link)\b/i;
+  const GO = /\b(continue|get\s*link|go\s*to\s*link|go\s*to\s*url|next|skip(\s*ad)?|verify|proceed|click\s*here|unlock|open\s*link|i'?m?\s*(am\s*)?not\s*a\s*robot|human|generate|show\s*link|visit\s*link|get\s*url|go|download|link|weiter|fortfahren|continuer|suivant|continuar|siguiente|continua|avanti|prosegui|t[ée]l[ée]charger|herunterladen|descargar|scarica(re)?|baixar)\b|далее|продолжить|скачать|继续|下一步|下载|ダウンロード/i;
   const AD = /\b(premium|usenet|vpn|install|sponsor|advert|sign\s*up|register|log\s*in|login|subscribe|notification|allow|app|extension|faster|high.?speed|payment|payout|proof|torrent)\b/i;
   const site = (host) => host.split('.').slice(-2).join('.');
   const shown = (el) => {
@@ -1964,6 +1964,10 @@ mod download_tests {
         assert_eq!(download_in(&other), None);
     }
 }
+
+#[cfg(test)]
+#[path = "walk_suite.rs"]
+mod walk_suite;
 
 #[cfg(test)]
 mod drive_tests {

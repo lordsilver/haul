@@ -804,7 +804,7 @@ const STAND_IN: &str = "window.__haulStandIn = true;";
 /// The scripts a page passed out of sight runs before its own: the flags
 /// for `handoff.js` (stand-in mode, a page that lists links, a walk), then
 /// the two scripts.
-fn page_scripts(lists: bool, walk: bool) -> Vec<&'static str> {
+pub(crate) fn page_scripts(lists: bool, walk: bool) -> Vec<&'static str> {
     let flags = [
         (hosts::stand_in().is_some(), STAND_IN),
         (lists, LISTS),
