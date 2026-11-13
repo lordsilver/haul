@@ -76,7 +76,7 @@ impl Walker {
     pub const AFTER_PRESS: Duration = Duration::from_secs(15);
     /// A captcha that answers itself has by now, or will not: its page is
     /// loaded again, [`Walker::RELOADS`] times at most.
-    pub const CAPTCHA_FOR: Duration = Duration::from_secs(40);
+    pub const CAPTCHA_FOR: Duration = Duration::from_secs(20);
     pub const RELOADS: u32 = 2;
     /// A walk with nothing pressed, no new page and no captcha at work for
     /// this long is over.
@@ -247,15 +247,18 @@ mod tests {
         let t = Instant::now();
         let mut w = Walker::new(t);
         let page = steps(&["0 Continue"]);
-        assert_eq!(w.next(PAGE, &page, true, t), Next::Wait);
+        let wait = Walker::CAPTCHA_FOR.as_secs();
         let at = |s| t + Duration::from_secs(s);
-        assert_eq!(w.next(PAGE, &page, true, at(39)), Next::Wait);
-        assert_eq!(w.next(PAGE, &page, true, at(40)), Next::Reload);
-        assert_eq!(w.next(PAGE, &page, true, at(41)), Next::Wait);
-        assert_eq!(w.next(PAGE, &page, true, at(81)), Next::Reload);
-        assert_eq!(w.next(PAGE, &page, true, at(82)), Next::Wait);
-        assert_eq!(w.next(PAGE, &page, true, at(122)), Next::Wait);
-        assert_eq!(w.next(PAGE, &page, true, at(170)), Next::Over);
+        assert_eq!(w.next(PAGE, &page, true, t), Next::Wait);
+        assert_eq!(w.next(PAGE, &page, true, at(wait - 1)), Next::Wait);
+        assert_eq!(w.next(PAGE, &page, true, at(wait)), Next::Reload);
+        assert_eq!(w.next(PAGE, &page, true, at(wait + 1)), Next::Wait);
+        assert_eq!(w.next(PAGE, &page, true, at(2 * wait + 1)), Next::Reload);
+        assert_eq!(w.next(PAGE, &page, true, at(2 * wait + 2)), Next::Wait);
+        // Loaded again twice: the walk idles from the last time it waited.
+        assert_eq!(w.next(PAGE, &page, true, at(3 * wait + 2)), Next::Wait);
+        let over = 2 * wait + 2 + Walker::IDLE.as_secs();
+        assert_eq!(w.next(PAGE, &page, true, at(over)), Next::Over);
         // Answered in time, the step is pressed.
         let mut w = Walker::new(t);
         assert_eq!(w.next(PAGE, &page, true, t), Next::Wait);

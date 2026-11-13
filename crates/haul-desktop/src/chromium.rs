@@ -172,9 +172,10 @@ pub enum Outcome {
         agent: Option<String>,
     },
     /// The walked page went, by its own steps, to a page on a site Haul
-    /// has code for (a wrapper, a host, a paste), at this address: Haul
-    /// goes on from there itself ([`Pass::walk`]).
-    LedTo(String),
+    /// has code for (a wrapper, a host, a paste), or offers steps that link
+    /// to such pages (a mirror index's hosts): Haul goes on from these
+    /// addresses itself ([`Pass::walk`]).
+    LedTo(Vec<String>),
     /// The page showed links Haul took ([`Pass::take_links`]).
     Listed,
     /// The page still wants someone after its time (its check asks for a
@@ -586,7 +587,7 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
         // Waiting, but answering the page's paused navigations meanwhile.
         cdp.pump(Duration::from_millis(500));
         if let Some(to) = cdp.led_to.take() {
-            return Ok(Outcome::LedTo(to));
+            return Ok(Outcome::LedTo(vec![to]));
         }
         if let Some(download) = cdp.download.take() {
             let agent = cdp
@@ -1783,6 +1784,19 @@ fn walk(cdp: &mut Cdp, s: Option<&str>, p: &Pass<'_>) -> Option<Outcome> {
         })
         .collect();
     let waits = seen["waits"].as_bool().unwrap_or(false);
+    // Steps that link to pages on sites Haul has code for are where the
+    // walk was going: all of them, since a mirror index offers one per
+    // host and any of them may be gone. A page read for its links hands
+    // over every link it shows instead ([`Pass::take_links`]).
+    let mut known: Vec<String> = Vec::new();
+    for to in steps.iter().filter_map(|s| s.leads.as_ref()) {
+        if hosts::walk_ends_at(to) && !known.contains(to) {
+            known.push(to.clone());
+        }
+    }
+    if !known.is_empty() && p.take_links.is_none() {
+        return Some(Outcome::LedTo(known));
+    }
     let next = cdp
         .walk
         .as_mut()?

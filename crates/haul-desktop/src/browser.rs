@@ -273,7 +273,7 @@ impl Browser {
                     let took =
                         tauri::async_runtime::block_on(async { engine.page_led_to(&id, &to) });
                     if !took {
-                        tracing::info!(item = %id, "{url} led back to itself, at {to}");
+                        tracing::info!(item = %id, "{url} led back to itself");
                         engine.page_failed(&id, &format!("{host}'s page led back to itself"));
                     }
                 }
