@@ -788,7 +788,7 @@ fn all_gone(it: &Item) -> bool {
 /// on its way to the wrappers.
 /// What release `root`'s card says of it: its summary, each host's worth,
 /// and whether only switched-off hosts have live links to its files.
-fn card_of_release(
+pub(super) fn card_of_release(
     st: &super::State,
     cfg: &crate::Config,
     root: &str,

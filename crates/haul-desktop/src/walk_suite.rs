@@ -215,6 +215,15 @@ const SCENARIOS: &[Scenario] = &[
         within: 70,
         gap: true,
     },
+    Scenario {
+        name: "a check page that starts over when its fields are looked up",
+        start: "check.localhost/moment",
+        lists: true,
+        expect: Expect::LedTo(&["https://pixeldrain.com/u/moment001"]),
+        floor: 3,
+        within: 20,
+        gap: false,
+    },
 ];
 
 /// An ad's empty layer over `#go` that takes every click for a pop-up and
@@ -463,6 +472,36 @@ const tick = setInterval(() => {{
 <button style="width:120px;height:60px" onclick="location.href='https://pixeldrain.com/u/icononly1'">
 <svg width="40" height="24" viewBox="0 0 40 24"><path d="M2 12h30M24 4l10 8-10 8" fill="none" stroke="currentColor" stroke-width="3"/></svg></button>"#,
         ),
+
+        // As Cloudflare's own check page: it answers 403, and starts over
+        // whenever a script in its world looks up a captcha's field or
+        // frame (the made-up part: how the real one tells is not known,
+        // only that it does). Left alone, it passes in 3 s.
+        ("check.localhost", "GET", "/moment") => {
+            let mut r = html(
+                r#"<title>Just a moment...</title><p>Checking your browser.</p>
+<input type="hidden" name="cf-turnstile-response" value="">
+<script>
+window._cf_chl_opt = { cType: 'managed' };
+const looked = (selector) => {
+  if (/-response|recaptcha|hcaptcha|turnstile/i.test(String(selector))) location.reload();
+};
+for (const of of [Document.prototype, Element.prototype]) {
+  for (const name of ['querySelector', 'querySelectorAll']) {
+    const own = of[name];
+    of[name] = function (selector) { looked(selector); return own.call(this, selector); };
+  }
+}
+setTimeout(() => { location.href = '/moment-past'; }, 3000);
+</script>"#,
+            );
+            r.status = 403;
+            r
+        }
+        ("check.localhost", "GET", "/moment-past") => html(&format!(
+            "<title>Example</title>{}",
+            to("https://pixeldrain.com/u/moment001")
+        )),
 
         ("gate.localhost", "GET", "/jigsaw") => html(&jigsaw_page()),
         // The stand-in widget's service: this visit does not pass by itself.

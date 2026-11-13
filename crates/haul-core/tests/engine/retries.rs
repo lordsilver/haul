@@ -320,7 +320,7 @@ async fn a_gone_download_is_not_retried_after_a_restart() {
 async fn a_failed_download_without_a_name_retries_after_a_restart() {
     let t = Setup::new().await;
     let engine = t.engine().await;
-    engine.add_text(&format!("{}/missing/", t.ip), "");
+    engine.add_text(&format!("{}/down/", t.ip), "");
     let s = wait_for(&engine, "the failure", |s| {
         s.items.iter().any(|i| i.status.as_str() == "error")
     })

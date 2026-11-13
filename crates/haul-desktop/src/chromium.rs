@@ -884,6 +884,7 @@ fn set_up(endpoint: &str, p: &Pass<'_>) -> Result<(Cdp, String, String), String>
         .ok_or("no DevTools session")?
         .to_string();
     let s = Some(session.as_str());
+    cdp.frame = Some(target.clone());
     // Scripts for new documents run only with the page domain on (unlike
     // the runtime domain, it tells no automation apart).
     cdp.call("Page.enable", json!({}), s)?;
@@ -1234,6 +1235,10 @@ struct Cdp {
     /// Where the walked page went on a site Haul has code for, refused so
     /// Haul goes on from there itself ([`Outcome::LedTo`]).
     led_to: Option<String>,
+    /// The page's main frame (its target's id), and Haul's own world in its
+    /// document once made ([`Cdp::evaluate_apart`]).
+    frame: Option<String>,
+    world: Option<i64>,
     /// What a CutCaptcha widget's service said of the page's visit.
     heard: cut::Heard,
 }
@@ -1297,6 +1302,8 @@ impl Cdp {
             refused: 0,
             walk: None,
             led_to: None,
+            frame: None,
+            world: None,
             heard: cut::Heard::default(),
         })
     }
@@ -1546,6 +1553,49 @@ impl Cdp {
                 Err(e) => return Err(format!("DevTools: {e}")),
             }
         }
+    }
+
+    /// Evaluates `expression` on the page in a world of Haul's own, which
+    /// sees the page's document but not its scripts' globals or what they
+    /// made of the DOM's functions, and gives its value. Cloudflare's check
+    /// page ("Just a moment...") watches what is looked up in its own world:
+    /// a captcha's field or frame looked up there by any other script, and
+    /// it hands out its clearance, loads the page again and checks again,
+    /// for ever. The world goes with its document, and is made again for
+    /// the next.
+    fn evaluate_apart(&mut self, expression: &str, s: Option<&str>) -> Result<Value, String> {
+        let mut failed = String::new();
+        for _ in 0..2 {
+            let context = match self.world {
+                Some(context) => context,
+                None => {
+                    let frame = self.frame.clone().ok_or("no page to evaluate in")?;
+                    let made = self.call(
+                        "Page.createIsolatedWorld",
+                        json!({ "frameId": frame, "worldName": "haul" }),
+                        s,
+                    )?;
+                    let context = made["executionContextId"]
+                        .as_i64()
+                        .ok_or("the browser made no world")?;
+                    self.world = Some(context);
+                    context
+                }
+            };
+            match self.call(
+                "Runtime.evaluate",
+                json!({ "expression": expression, "returnByValue": true, "contextId": context }),
+                s,
+            ) {
+                Ok(answer) => return Ok(answer["result"]["value"].clone()),
+                // Its document is gone (a new page): a world in the next.
+                Err(e) => {
+                    self.world = None;
+                    failed = e;
+                }
+            }
+        }
+        Err(failed)
     }
 }
 
@@ -1864,14 +1914,7 @@ const WALK_STEP_AT: &str = r#"((key) => {
 /// the walk is over, the pass's outcome: the page wants a person while its
 /// captcha never answered itself, and has shown all it will otherwise.
 fn walk(cdp: &mut Cdp, s: Option<&str>, p: &Pass<'_>) -> Option<Outcome> {
-    let seen = cdp
-        .call(
-            "Runtime.evaluate",
-            json!({ "expression": WALK_STEPS, "returnByValue": true }),
-            s,
-        )
-        .ok()?["result"]["value"]
-        .clone();
+    let seen = cdp.evaluate_apart(WALK_STEPS, s).ok()?;
     let address = seen["url"].as_str()?.to_string();
     let steps: Vec<Step> = seen["steps"]
         .as_array()?
@@ -1940,14 +1983,7 @@ fn walk(cdp: &mut Cdp, s: Option<&str>, p: &Pass<'_>) -> Option<Outcome> {
         Next::Press(step) => {
             let step = step.clone();
             let find = WALK_STEP_AT.replace("KEY", &serde_json::to_string(&step.key).ok()?);
-            let at = cdp
-                .call(
-                    "Runtime.evaluate",
-                    json!({ "expression": find, "returnByValue": true }),
-                    s,
-                )
-                .ok()?["result"]["value"]
-                .clone();
+            let at = cdp.evaluate_apart(&find, s).ok()?;
             let answer = &at["answer"];
             if let (Some(x), Some(y)) = (answer["x"].as_f64(), answer["y"].as_f64()) {
                 // The dialog took the press: answered, and the step is
@@ -1999,13 +2035,9 @@ fn click(cdp: &mut Cdp, s: Option<&str>, selector: &str) -> Result<Value, String
 
 fn look(cdp: &mut Cdp, s: Option<&str>) -> Look {
     let page = cdp
-        .call(
-            "Runtime.evaluate",
-            json!({ "expression": LOOK, "returnByValue": true }),
-            s,
-        )
+        .evaluate_apart(LOOK, s)
         .ok()
-        .and_then(|a| a["result"]["value"].as_str().map(str::to_string))
+        .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_else(|| "(the page did not answer)".into());
     let shot = cdp
         .call("Page.captureScreenshot", json!({ "format": "png" }), s)

@@ -350,6 +350,8 @@ enum Check {
     NoFailureTold,
     /// This many notifications about the release.
     Notifications(u32),
+    /// A notification about the release says this.
+    Told(&'static str),
     /// This many times a person was asked (the friction count).
     Asks(usize),
     /// filecrypt gets one request per container and added page.
@@ -379,6 +381,7 @@ impl Check {
             Check::Note(text) => format!("a note \"{text}\""),
             Check::NoFailureTold => "no notification that a download failed".into(),
             Check::Notifications(n) => format!("{n} notification(s)"),
+            Check::Told(text) => format!("a notification \"{text}\""),
             Check::Asks(n) => format!("{n} ask(s)"),
             Check::OneReadPerContainer => "one request per container".into(),
             Check::SeparateCounts => "never \"Unwrapping N links\"".into(),
@@ -642,6 +645,14 @@ fn cases() -> Vec<Release> {
         .holds(Sets)
         .holds(ExactSizes)
         .holds(SameEveryOrder),
+        Release::new("every host's copy gone", "Example.Set", "all-gone")
+            .set("Example.Set", 4, two_gib)
+            .source(source("AAAAAAAA", Pixeldrain, 0).gone(Gone::All))
+            .source(source("BBBBBBBB", Megaup, 0).gone(Gone::All))
+            .holds(Told("every link on the hosts switched on is gone"))
+            .holds(Notifications(1))
+            .holds(Asks(0))
+            .holds(SameEveryOrder),
         acceptance("the acceptance case")
             .orders(&[
                 Order::Listed,
@@ -928,8 +939,8 @@ struct Desktop {
     asked: HashSet<String>,
     /// Lookups answered.
     lookups: usize,
-    /// What it told, by kind, and the rows it was about.
-    told: Vec<(Told, Vec<String>)>,
+    /// What it told, by kind, the rows it was about, and its words.
+    told: Vec<(Told, Vec<String>, String)>,
     /// Passes for pages the case did not expect.
     unexpected: Vec<String>,
 }
@@ -986,13 +997,13 @@ impl Desktop {
 
     fn wants_person(&mut self, engine: &Engine, id: &str, host: &str) {
         if engine.page_wants_person(id) && self.asked.insert(host.to_string()) {
-            self.notify(engine, Told::NeedsYou, vec![id.to_string()]);
+            self.notify(engine, Told::NeedsYou, vec![id.to_string()], String::new());
         }
     }
 
-    fn notify(&mut self, engine: &Engine, kind: Told, rows: Vec<String>) {
+    fn notify(&mut self, engine: &Engine, kind: Told, rows: Vec<String>, body: String) {
         engine.notified(&rows);
-        self.told.push((kind, rows));
+        self.told.push((kind, rows, body));
     }
 
     /// The engine's events, gathered as the desktop app gathers them
@@ -1011,7 +1022,7 @@ impl Desktop {
             }
             let burst: Vec<Event> = events[at..end].iter().map(|(_, e)| e.clone()).collect();
             for t in engine.tellings(&burst) {
-                self.notify(engine, t.kind, t.rows);
+                self.notify(engine, t.kind, t.rows, t.body);
             }
             at = end;
         }
@@ -1069,7 +1080,7 @@ struct Run {
     end: Option<Snapshot>,
     seen: Seen,
     friction: Vec<Friction>,
-    told: Vec<(Told, Vec<String>)>,
+    told: Vec<(Told, Vec<String>, String)>,
     lagged: u64,
     /// Requests for each container, and how many times the page was added.
     reads: Vec<(String, usize)>,
@@ -1090,7 +1101,11 @@ impl Run {
             .sum();
         let notified: u32 = self.friction.iter().map(|f| f.notifications).sum();
         let clicks: u32 = self.friction.iter().map(|f| f.clicks).sum();
-        let failures = self.told.iter().filter(|(k, _)| *k == Told::Failed).count();
+        let failures = self
+            .told
+            .iter()
+            .filter(|(k, ..)| *k == Told::Failed)
+            .count();
         let sites: BTreeSet<String> = self
             .friction
             .iter()
@@ -1634,7 +1649,7 @@ fn check(r: &Release, run: &Run, c: &Check) -> Result<(), String> {
             false => Err(format!("notes {:?}", notes(s))),
         },
         Check::NoFailureTold => {
-            let failed: usize = run.told.iter().filter(|(k, _)| *k == Told::Failed).count();
+            let failed: usize = run.told.iter().filter(|(k, ..)| *k == Told::Failed).count();
             match failed {
                 0 => Ok(()),
                 n => Err(format!("{n} notifications of a failure")),
@@ -1648,6 +1663,18 @@ fn check(r: &Release, run: &Run, c: &Check) -> Result<(), String> {
                 Ok(())
             } else {
                 Err(format!("{n} notifications"))
+            }
+        }
+        Check::Told(text) => {
+            let said: Vec<&str> = run
+                .told
+                .iter()
+                .filter(|(k, ..)| *k == Told::Release)
+                .map(|(.., body)| body.as_str())
+                .collect();
+            match said.iter().any(|b| b.contains(text)) {
+                true => Ok(()),
+                false => Err(format!("told {said:?}")),
             }
         }
         Check::Asks(want) => {

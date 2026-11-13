@@ -98,35 +98,32 @@ impl Engine {
                     && (matches!(it.status, Status::Queued | Status::Resolving)
                         || it.status == Status::Captcha && self.passing(st, it, now))
             });
-            let looking = ours.iter().any(|it| {
-                !it.wrapper
-                    && (!it.probed && it.name.is_none() || self.look_up_page(st, it).is_some())
-            });
+            // Every row's first lookup, a named one's too: it may find the
+            // file gone, which the notification counts.
+            let looking = ours
+                .iter()
+                .any(|it| !it.wrapper && (!it.probed || self.look_up_page(st, it).is_some()));
             let files = ours.iter().filter(|it| !it.wrapper).count();
             if files == 0 || (reading || looking) && now.duration_since(since) < READ_AT_MOST {
                 continue;
             }
             let plan = super::release_plan(st, &cfg, &root);
             let main = plan.main.map_or(plan.sets.first(), |m| plan.sets.get(m));
-            let (count, hosts) = match main {
-                Some(set) => (
-                    format!("{} parts", set.parts),
-                    set.hosts.iter().filter(|h| !cfg.is_disabled(h)).count(),
-                ),
-                None => {
-                    let hosts: BTreeSet<&str> = ours
-                        .iter()
-                        .filter(|it| !it.wrapper)
-                        .flat_map(|it| it.mirrors.iter().map(|m| &*m.host))
-                        .filter(|h| !cfg.is_disabled(h))
-                        .collect();
-                    (format!("{files} files"), hosts.len())
-                }
+            let count = match main {
+                Some(set) => format!("{} parts", set.parts),
+                None => format!("{files} files"),
             };
-            let mut body = format!(
-                "{count} ready on {hosts} host{}.",
-                if hosts == 1 { "" } else { "s" }
-            );
+            // As its card counts them: hosts switched on with a link not
+            // found gone.
+            let (summary, _, only_off) = super::snapshot::card_of_release(st, &cfg, &root, &plan);
+            let mut body = match summary.map_or(0, |s| s.hosts) {
+                0 if only_off => format!("{count}: only switched-off hosts have them."),
+                0 => format!("{count}: every link on the hosts switched on is gone."),
+                hosts => format!(
+                    "{count} ready on {hosts} host{}.",
+                    if hosts == 1 { "" } else { "s" }
+                ),
+            };
             for split in plan.dead_splits() {
                 body.push_str(&format!(" Another copy ({} parts) is gone.", split.parts));
             }

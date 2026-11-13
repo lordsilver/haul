@@ -297,6 +297,8 @@ Between two presses on one page a walk waits three seconds, since the press is s
 
 A walk that ends with nothing left to press tells where it ended (`nowhere`) and is tried again by itself before anyone is asked: in the second run of the same seven links one walk ended on the shortener's own error page after its last hop, with the same timing as walks that succeeded beside it. Why is not known; it was the link walked most often that night.
 
+A walk reads the page in a world of Haul's own (DevTools' `Page.createIsolatedWorld`), which sees the page's document but none of its scripts. Cloudflare's own check page ("Just a moment...") hands out its clearance, loads the page again and checks it again, without end, when a script in its world looks up a captcha's answer field or frame: on 2026-11-13 a download page behind it went round 16 times in under five minutes in Haul's browser, and a plain Edge with the same flags passed in 4 seconds. Looking up `[name=cf-turnstile-response]` twice a second was enough by itself, as was the general press's look for reCAPTCHA frames every 1.5 seconds; plain selectors, the page's text and its styles were not. The same lookups from a world of Haul's own passed in 4 seconds. The general press, which runs in the page's own world as an added script, looks for no captcha while the check's page is up. How the check tells is not known, so the walk suite's scenario only stands in for it: a check page that reloads when its field is looked up in its world.
+
 A part named `name.partNN.dat` or `.bin` is a volume of `name.rar`: a host that takes no `.rar` had a release's ten parts under `.dat`, which Haul showed as ten single files beside the same parts on other hosts.
 
 ## CutCaptcha is answered on this computer

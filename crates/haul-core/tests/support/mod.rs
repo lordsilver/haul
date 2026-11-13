@@ -581,6 +581,8 @@ pub(super) async fn start_server() -> (Server, u16) {
                 )
             }),
         )
+        // A server in trouble: a failure, not a file found gone.
+        .route("/down/", get(|| async { StatusCode::INTERNAL_SERVER_ERROR }))
         .route(
             "/busy/{name}",
             // Sends at most two files at once and refuses more, saying why.
