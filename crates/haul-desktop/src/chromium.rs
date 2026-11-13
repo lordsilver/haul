@@ -887,6 +887,10 @@ fn set_up(endpoint: &str, p: &Pass<'_>) -> Result<(Cdp, String, String), String>
     // Scripts for new documents run only with the page domain on (unlike
     // the runtime domain, it tells no automation apart).
     cdp.call("Page.enable", json!({}), s)?;
+    // What the page loads is listened to, for a captcha's service's word
+    // on the visit ([`cut::Heard`]); a browser that will not tell passes
+    // its page all the same.
+    let _ = cdp.call("Network.enable", json!({}), s);
     cdp.call(
         "Page.addScriptToEvaluateOnNewDocument",
         json!({ "source": "window.__haulDevTools = true;" }),
@@ -1230,6 +1234,8 @@ struct Cdp {
     /// Where the walked page went on a site Haul has code for, refused so
     /// Haul goes on from there itself ([`Outcome::LedTo`]).
     led_to: Option<String>,
+    /// What a CutCaptcha widget's service said of the page's visit.
+    heard: cut::Heard,
 }
 
 /// A file the browser would have saved: its final address, past redirects.
@@ -1291,6 +1297,7 @@ impl Cdp {
             refused: 0,
             walk: None,
             led_to: None,
+            heard: cut::Heard::default(),
         })
     }
 
@@ -1353,6 +1360,19 @@ impl Cdp {
                 message["sessionId"] = json!(session);
             }
             let _ = self.ws.send(Message::text(message.to_string()));
+            return;
+        }
+        // A CutCaptcha widget's service answered it: what it said is asked
+        // for, and read when DevTools answers ([`Cdp::answered`]).
+        if let Some(request) = self.heard.finished(event) {
+            self.next += 1;
+            let mut message = json!({ "id": self.next, "method": "Network.getResponseBody", "params": { "requestId": request } });
+            if let Some(session) = event["sessionId"].as_str() {
+                message["sessionId"] = json!(session);
+            }
+            if self.ws.send(Message::text(message.to_string())).is_ok() {
+                self.heard.asked(self.next);
+            }
             return;
         }
         if let Some(download) = download_in(event) {
@@ -1457,10 +1477,12 @@ impl Cdp {
         while Instant::now() < until {
             match self.ws.read() {
                 Ok(Message::Text(text)) => {
-                    if let Ok(event) = serde_json::from_str::<Value>(text.as_str())
-                        && event.get("method").is_some()
-                    {
-                        self.on_event(&event);
+                    if let Ok(event) = serde_json::from_str::<Value>(text.as_str()) {
+                        if event.get("method").is_some() {
+                            self.on_event(&event);
+                        } else {
+                            self.heard.answer(&event);
+                        }
                     }
                 }
                 Ok(_) => {}
@@ -1506,6 +1528,8 @@ impl Cdp {
                         continue;
                     }
                     if answer["id"].as_u64() != Some(id) {
+                        // The answer to a question an event asked.
+                        self.heard.answer(&answer);
                         continue;
                     }
                     if let Some(error) = answer.get("error") {

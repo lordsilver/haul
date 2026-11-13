@@ -201,8 +201,9 @@ const SCENARIOS: &[Scenario] = &[
         start: "gate.localhost/jigsaw",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/jigsaw001"]),
-        floor: 9,
-        within: 50,
+        // A tick and three drags at a hand's pace.
+        floor: 6,
+        within: 30,
         gap: false,
     },
     Scenario {
@@ -464,6 +465,12 @@ const tick = setInterval(() => {{
         ),
 
         ("gate.localhost", "GET", "/jigsaw") => html(&jigsaw_page()),
+        // The stand-in widget's service: this visit does not pass by itself.
+        ("gate.localhost", "POST", "/cutcaptcha/v1/challenge") => Response {
+            status: 200,
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body: br#"{"data":{"auto":false},"success":true}"#.to_vec(),
+        },
 
         ("ads.localhost", "GET", "/setup.exe") => Response {
             status: 200,
@@ -514,6 +521,7 @@ fn jigsaw_page() -> String {
 <div id="after" style="display:none"><button style="font-size:20px;padding:10px 30px" onclick="location.href='https://pixeldrain.com/u/jigsaw001'">Get Link</button></div>
 <script>
 const puzzle = {picture: "PICTURE", pieces: [PIECES]};
+fetch('/cutcaptcha/v1/challenge', {method: 'POST', body: '{}'}).then((said) => said.json());
 const root = document.getElementById('host').attachShadow({mode: 'closed'});
 root.innerHTML = '<div class="cc"><div class="cc__box" role="checkbox" tabindex="0" style="width:300px;height:60px;border:1px solid #888;display:flex;align-items:center;padding-left:14px;font:16px sans-serif">No script here</div></div>';
 root.querySelector('.cc__box').addEventListener('click', (e) => { if (e.isTrusted) open(); }, {once: true});

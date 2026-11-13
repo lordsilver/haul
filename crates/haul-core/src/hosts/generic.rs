@@ -97,16 +97,16 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
 }
 
 /// Why a page on a site Haul has no code for wants a browser: the gate it
-/// shows, or no gate Haul knows (a timer, a button). One a browser gets past
-/// by itself, or none, is passed out of sight by the desktop app, which looks
-/// for the page's download there ([`Need::Page`]); one that needs a person
-/// goes to them.
+/// shows, or no gate Haul knows (a timer, a button). One the desktop app's
+/// browser gets past with nobody asked, or none, is passed out of sight by
+/// the desktop app, which looks for the page's download there
+/// ([`Need::Page`]); one that needs a person goes to them.
 fn gated_page(url: &str, gate: Option<gates::Gate>) -> ResolveError {
     match gate {
         Some(gate) if gate.passes_in_browser() => ResolveError::NeedsUser(
             Need::Page,
             format!(
-                "{} shows {}, which a browser passes by itself",
+                "{} shows {}, which Haul's browser gets past with nobody asked",
                 host_of(url),
                 gate.name()
             ),
