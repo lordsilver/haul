@@ -199,7 +199,10 @@ impl Browser {
             // The engine knows the page by its link; the browser goes to
             // its stand-in in stand-in mode.
             let reached = hosts::reach(&url);
-            let scripts = page_scripts(lists);
+            // A page on a site Haul has no code for is walked to where it
+            // leads, which presses what the other ways would.
+            let walk = hosts::walks(&url);
+            let scripts = page_scripts(lists, walk);
             // Passed again at once while the browser closes the page by
             // itself, the row's pass running meanwhile.
             let outcome = run_tries(&names, &handle.stop, &id, &url, |browser| {
@@ -214,18 +217,19 @@ impl Browser {
                     handle: handle.clone(),
                     take_links: if lists { Some(&take) } else { None },
                     // A page that lists links has shown all it will once it
-                    // settles past its checks.
-                    ends_settled: lists,
+                    // settles past its checks; a walk tells by itself.
+                    ends_settled: lists && !walk,
                     // A file's page on a host Haul has no recipe for: its
                     // download button is pressed, as a person would. Never
                     // on a wrapper's or a paste's page.
-                    press_download: hosts::presses_download(&url, lists),
+                    press_download: !walk && hosts::presses_download(&url, lists),
                     // A host's own page may lead to its file elsewhere; any
                     // other page shows what it has where it is.
                     keep_to_site: !hosts::page_passes(&url),
                     // A page Haul reads itself, once the browser is past the
                     // check in front of its site.
                     hand_clearance: engine.takes_clearance(&url),
+                    walk,
                 })
             });
             passes(&all).remove(&id);
@@ -262,6 +266,16 @@ impl Browser {
                 }
                 Ended::Page(chromium::Outcome::Listed) => {
                     tracing::info!("took the links {url} shows");
+                }
+                Ended::Page(chromium::Outcome::LedTo(to)) => {
+                    // Looking the link up starts tasks, which need the async
+                    // runtime this thread is outside of.
+                    let took =
+                        tauri::async_runtime::block_on(async { engine.page_led_to(&id, &to) });
+                    if !took {
+                        tracing::info!(item = %id, "{url} led back to itself");
+                        engine.page_failed(&id, &format!("{host}'s page led back to itself"));
+                    }
                 }
                 // A paste, or a copied page on trial, has nothing more to
                 // give; any other page may want a click on it.
@@ -559,6 +573,14 @@ fn run_tries(
             Next::Stop => return Ended::Stopped,
             Next::NotStarted(e) => return Ended::NotStarted(e),
             Next::Fail(reason) => return Ended::Browser(reason),
+            Next::Unreachable(why) => {
+                let host = hosts::host_of(url);
+                tracing::warn!(item = %id, "{host} did not answer the browser: it waits");
+                return Ended::Page(chromium::Outcome::Later {
+                    reason: format!("{host}: {why}"),
+                    seconds: Some(haul_core::pass_ends::UNREACHABLE_WAIT_SECS),
+                });
+            }
         }
     }
 }
@@ -772,15 +794,22 @@ const OVERLAYS: &str = include_str!("overlays.js");
 const HANDOFF: &str = include_str!("handoff.js");
 /// Tells `handoff.js` the page lists links, to hand over as they show.
 const LISTS: &str = "window.__haulLists = true;";
+/// Tells `handoff.js` the pass walks the page ([`chromium::Pass::walk`]),
+/// which presses and tells when it is over by itself.
+const WALKS: &str = "window.__haulWalks = true;";
 /// Tells `handoff.js` that `<site>.localhost` stands for `<site>`
 /// ([`hosts::reach`]).
 const STAND_IN: &str = "window.__haulStandIn = true;";
 
 /// The scripts a page passed out of sight runs before its own: the flags
-/// for `handoff.js` (stand-in mode, a page that lists links), then the two
-/// scripts.
-fn page_scripts(lists: bool) -> Vec<&'static str> {
-    let flags = [(hosts::stand_in().is_some(), STAND_IN), (lists, LISTS)];
+/// for `handoff.js` (stand-in mode, a page that lists links, a walk), then
+/// the two scripts.
+fn page_scripts(lists: bool, walk: bool) -> Vec<&'static str> {
+    let flags = [
+        (hosts::stand_in().is_some(), STAND_IN),
+        (lists, LISTS),
+        (walk, WALKS),
+    ];
     flags
         .into_iter()
         .filter_map(|(on, flag)| on.then_some(flag))

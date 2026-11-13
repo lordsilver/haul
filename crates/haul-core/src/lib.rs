@@ -26,6 +26,7 @@ mod store;
 pub mod throttle;
 pub mod update;
 pub mod vpn;
+pub mod walker;
 
 pub use config::{Config, Route, Theme};
 pub use engine::{

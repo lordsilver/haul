@@ -349,7 +349,9 @@
   // general way. What a person would press (the page's download, after any
   // countdown) is pressed, at most four times over the pages it leads to; a
   // link that names a file is handed over as it is. Nothing here knows a
-  // site: words, links and what can be pressed decide.
+  // site: words, links and what can be pressed decide. A walked page
+  // (chromium.rs sets __haulWalks) has its steps pressed by the walk
+  // instead, and only its file links are handed over here.
   if (window.__haulLists && window.__haulDevTools && !recipes.some((r) => r.site.test(site))) {
     const SAYS_DOWNLOAD =
       /\b(download|t[ée]l[ée]charger|herunterladen|descargar|scaricare|scarica|baixar|скачать|get (the )?file|free download|slow download|start download|generate (the )?link|continue to (the )?download)\b|下载|ダウンロード/i;
@@ -407,6 +409,7 @@
         return;
       }
       if (files.length === 1) return hand([{ url: files[0], name: decodeURIComponent(new URL(files[0]).pathname.split("/").pop()) || undefined }]);
+      if (window.__haulWalks) return;
       const best = [...document.querySelectorAll('a[href], button, input[type="submit"], input[type="button"], [role="button"]')]
         .filter(shown)
         .map((e) => ({ e, points: score(e) }))
@@ -423,8 +426,9 @@
 
   // Out of sight, a page past every check that shows nothing new for five
   // seconds has shown all it will (a paste holding only a host's name), so
-  // the pass can end rather than wait out its time for a person.
-  if (window.__haulLists && window.__haulDevTools) {
+  // the pass can end rather than wait out its time for a person. A walk
+  // tells when it is over by itself.
+  if (window.__haulLists && window.__haulDevTools && !window.__haulWalks) {
     let calm = 0;
     let seen = "";
     setInterval(() => {

@@ -140,16 +140,22 @@ async fn pixeldrain_file_list_and_captcha() {
         Err(ResolveError::gone("pixeldrain: HTTP 404"))
     );
     assert_eq!(
-        pixeldrain::probe(&cx, "https://pixeldrain.com/u/abc").await,
-        Some(Probed {
+        pixeldrain::look(&cx, "https://pixeldrain.com/u/abc").await,
+        Look::Found(Probed {
             name: "a.zip".into(),
             size: Some(1234),
             checksum: sha,
         })
     );
     assert_eq!(
-        pixeldrain::probe(&cx, "https://pixeldrain.com/l/xyz").await,
-        None
+        pixeldrain::look(&cx, "https://pixeldrain.com/l/xyz").await,
+        Look::Unknown
+    );
+    // A deleted file is gone before anyone starts it, as when it is
+    // downloaded.
+    assert_eq!(
+        pixeldrain::look(&cx, "https://pixeldrain.com/u/gone").await,
+        Look::Gone("pixeldrain: the file was deleted".into())
     );
 }
 
