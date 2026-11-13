@@ -45,6 +45,9 @@ pub struct Snapshot {
     pub counts: Counts,
     pub hosts: Vec<HostView>,
     pub paused: bool,
+    /// The live connection is on (its setting, or debug mode asked for at
+    /// the start): a tool on this computer may follow what Haul does.
+    pub live_debug: bool,
     /// Bytes per second over every transfer.
     pub speed: f64,
     pub max_total: usize,
@@ -749,6 +752,7 @@ impl Engine {
             counts,
             hosts,
             paused,
+            live_debug: crate::debug::enabled(),
             max_total,
             rate: self.0.limiter.rate(),
             proxy: has_proxy,

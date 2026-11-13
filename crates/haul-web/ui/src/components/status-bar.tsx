@@ -1,4 +1,14 @@
-import { ArrowDown, ChevronRight, ClipboardList, Gauge, LoaderCircle, Play, Shield, TriangleAlert } from 'lucide-react';
+import {
+  ArrowDown,
+  ChevronRight,
+  ClipboardList,
+  Gauge,
+  LoaderCircle,
+  Play,
+  Radio,
+  Shield,
+  TriangleAlert,
+} from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Hint } from '@/components/hint';
 import { SavingSwitch } from '@/components/saving-switch';
@@ -303,6 +313,18 @@ export function StatusBar({ state: s }: { state: State | null }) {
       ) : null}
       <span className="flex-1" />
       <UpdateEntry s={s} />
+      {s.live_debug ? (
+        <Hint text="A diagnosing tool on this computer can follow everything Haul does. Settings, About." side="top">
+          <button
+            type="button"
+            onClick={() => openSettings('about')}
+            className={cn(item, 'text-amber-600 hover:bg-accent dark:text-amber-400')}
+          >
+            <Radio aria-hidden className="size-3.5" />
+            Live connection on
+          </button>
+        </Hint>
+      ) : null}
       {clipboard ? (
         <Flyout
           version={s.config_version}

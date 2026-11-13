@@ -127,6 +127,12 @@ pub fn enabled() -> bool {
     bus().is_some()
 }
 
+/// Whether debug mode was asked for at the start (`HAUL_DEBUG=1`, `--debug`):
+/// on for the run, whatever the Live connection setting says.
+pub fn forced() -> bool {
+    BUS.get().is_some_and(|b| b.forced.load(Ordering::Relaxed))
+}
+
 impl Bus {
     pub fn subscribe(&self) -> broadcast::Receiver<Value> {
         self.tx.subscribe()

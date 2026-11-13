@@ -421,8 +421,19 @@ function Page({ s, d, tab }: { s: State; d: SettingsView; tab: OwnTab }) {
             />
             <SettingRow
               title="Live connection"
-              description="Lets a diagnosing tool on this computer follow everything Haul does as it happens, with a key Haul writes to its data folder."
-              controls={<SettingSwitch name="live_debug" on={d.live_debug} label="Live connection" />}
+              description={
+                d.live_debug_forced
+                  ? 'On for this run: Haul was started in debug mode. A diagnosing tool on this computer follows everything Haul does as it happens.'
+                  : 'Lets a diagnosing tool on this computer follow everything Haul does as it happens, with a key Haul writes to its data folder.'
+              }
+              controls={
+                <SettingSwitch
+                  name="live_debug"
+                  on={d.live_debug || d.live_debug_forced}
+                  disabled={d.live_debug_forced}
+                  label="Live connection"
+                />
+              }
             />
           </SettingCard>
         </>

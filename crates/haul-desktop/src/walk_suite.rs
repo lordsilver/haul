@@ -243,8 +243,8 @@ fn page(site: &str, method: &str, path: &str, body: &str, visit: u32) -> Respons
         ("articles.localhost", "GET", "/consent") => html(&format!(
             r#"<title>Ten things</title>
 <div id="consent" role="dialog" style="position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.6)">
-<div style="background:#fff;margin:20vh auto;width:420px;padding:20px"><p>We value your privacy. We and our partners store information on a device.</p>
-<button id="more">MORE OPTIONS</button> <button id="no">DISAGREE</button> <button id="yes">AGREE</button></div></div>
+<div style="background:#fff;margin:20vh auto;width:420px;padding:20px"><p>This made-up site keeps cookies. Agree to go on.</p>
+<button id="more">SETTINGS</button> <button id="no">DISAGREE</button> <button id="yes">AGREE</button></div></div>
 <button id="go" style="{BUTTON}" onclick="location.href='https://pixeldrain.com/u/consent01'">Continue</button>
 <script>
 // The dialog's focus trap: while it is up, and after its markup is taken
@@ -262,13 +262,13 @@ for (const id of ['yes', 'no']) document.getElementById(id).onclick = () => {{ t
         )),
         ("articles.localhost", "GET", "/countdown") => html(
             r#"<title>Ten things</title><h1>Ten things to know</h1>
-<a id="startButton" onclick="window.open('http://ads.localhost:{P}/pop', '_blank')"><p style="margin:9px"> Continue...</p></a>
+<a id="start" onclick="window.open('http://ads.localhost:{P}/pop', '_blank')"><p style="margin:9px"> Continue...</p></a>
 <div id="timer" style="display:none"></div>
 <p style="height:1600px">Made-up words about nothing in particular.</p>
-<form id="getmylink" style="display:none" action="http://short.localhost:{P}/countdown-last">
+<form id="foot" style="display:none" action="http://short.localhost:{P}/countdown-last">
 <button type="submit" onclick="window.open('http://ads.localhost:{P}/pop', '_blank')" style="height:45px">Get Link</button></form>
 <script>
-document.getElementById('startButton').addEventListener('click', function () {
+document.getElementById('start').addEventListener('click', function () {
   this.style.display = 'none';
   const timer = document.getElementById('timer');
   timer.style.display = 'block';
@@ -279,7 +279,7 @@ document.getElementById('startButton').addEventListener('click', function () {
     if (left > 0) return void (timer.innerText = `Please Wait ${left} Seconds...`);
     clearInterval(tick);
     timer.style.display = 'none';
-    document.getElementById('getmylink').style.display = 'block';
+    document.getElementById('foot').style.display = 'block';
   }, 1000);
 });
 </script>"#,
@@ -344,16 +344,16 @@ document.getElementById('go').onclick = function () {{
         // article links, whose words read like steps and lead away.
         ("articles.localhost", "GET", "/decoys") => html(
             r#"<title>Ten things</title><h1>Ten things to know</h1>
-<a id="startButton"><p style="margin:9px"> Continue...</p></a>
+<a id="start"><p style="margin:9px"> Continue...</p></a>
 <div id="timer" style="display:none"></div>
-<ul><li><a href="/lost">Your Go-to Guide To Hiring A Programmer</a></li>
+<ul><li><a href="/lost">Your Go-to Guide To Example Things</a></li>
 <li><a href="/lost">Continue reading</a></li>
 <li><a href="/lost">How to download videos</a></li>
 <li><a href="/lost">Next</a></li>
 <li><a href="/lost">Get link building tips</a></li></ul>
 <button id="get" style="display:none;font-size:20px;padding:10px 30px" onclick="location.href='https://pixeldrain.com/u/decoys001'">Get Link</button>
 <script>
-document.getElementById('startButton').addEventListener('click', function () {
+document.getElementById('start').addEventListener('click', function () {
   this.style.display = 'none';
   const timer = document.getElementById('timer');
   timer.style.display = 'block';
@@ -385,8 +385,8 @@ document.getElementById('startButton').addEventListener('click', function () {
 
         ("index.localhost", "GET", "/mirror") => html(&format!(
             r#"<title>Download archive.part1.rar</title>
-<form action="/mirror-list" method="post" target="1117492238" onsubmit="window.open('','1117492238')">
-<a href="http://ads.localhost:{{P}}/usenet" style="display:block;{BUTTON}"><strong>Download faster on USENET (ANONYMOUS &amp; UNLIMITED)</strong></a>
+<form action="/mirror-list" method="post" target="win12345" onsubmit="window.open('','win12345')">
+<a href="http://ads.localhost:{{P}}/plus" style="display:block;{BUTTON}"><strong>Download faster with Example Plus (NO LIMITS)</strong></a>
 <button id="download-button" type="submit" style="display:block;{BUTTON}"><strong>Download</strong></button></form>"#
         )),
         ("index.localhost", "POST", "/mirror-list") => html(
@@ -590,6 +590,7 @@ fn walk_one(
     exe: &Path,
     port: u16,
     profiles: &Path,
+    base: f32,
 ) -> (String, Option<String>, f32) {
     let url = format!(
         "http://{}",
@@ -611,7 +612,7 @@ fn walk_one(
         took
     };
     let scripts = crate::browser::page_scripts(scenario.lists, true);
-    let item = format!("walk{at}");
+    let item = format!("walk{at}-{}", (base * 10.0) as u32);
     let started = Instant::now();
     let outcome = pass(Pass {
         exe,
@@ -645,8 +646,10 @@ fn walk_one(
         (_, Ok(Outcome::WantsPerson(look))) => (false, format!("wants a person: {}", look.page)),
         (_, other) => (false, format!("{other:?}")),
     };
-    let in_time = took <= scenario.within as f32;
-    let over = (took - scenario.floor as f32).max(0.0);
+    // The limits are for a machine whose browser starts and stops in no
+    // time: this one's share is added, with room for four starting at once.
+    let in_time = took <= scenario.within as f32 + SLACK * base;
+    let over = (took - scenario.floor as f32 - base).max(0.0);
     let verdict = match (reached && in_time, scenario.gap) {
         (true, false) => "ok",
         (false, true) => "gap",
@@ -656,7 +659,7 @@ fn walk_one(
     };
     let fine = verdict == "ok" || verdict == "gap";
     let line = format!(
-        "{verdict:>10}  {took:>5.1} s  {:>2} s its pages  {over:>5.1} s the walk  (limit {:>2} s)  {}{}",
+        "{verdict:>10}  {took:>5.1} s  {:>2} s its pages  {over:>5.1} s the walk  (limit {:>2} s and the browser)  {}{}",
         scenario.floor,
         scenario.within,
         scenario.name,
@@ -688,6 +691,23 @@ fn every_scenario_is_walked_to_where_it_leads() {
     let port = serve();
     let profiles = std::env::temp_dir().join(format!("haul-walk-suite-{}", std::process::id()));
     let only = std::env::var("HAUL_WALK_ONLY").ok();
+    // What this machine's browser takes to start, show a page and close:
+    // the scenario with nothing to walk, alone. A walk's own time is told
+    // without it, so the scorecard compares across machines.
+    let nothing = SCENARIOS
+        .iter()
+        .position(|s| s.name == NOTHING_TO_WALK)
+        .expect("the scenario with nothing to walk");
+    let began = Instant::now();
+    walk_one(
+        nothing,
+        &SCENARIOS[nothing],
+        &found.exe,
+        port,
+        &profiles,
+        0.0,
+    );
+    let base = began.elapsed().as_secs_f32();
     let next = std::sync::atomic::AtomicUsize::new(0);
     let done: Mutex<Vec<Walked>> = Mutex::default();
     let started = Instant::now();
@@ -702,7 +722,8 @@ fn every_scenario_is_walked_to_where_it_leads() {
                     if only.as_ref().is_some_and(|o| !scenario.name.contains(o)) {
                         continue;
                     }
-                    let (line, wrong, over) = walk_one(at, scenario, &found.exe, port, &profiles);
+                    let (line, wrong, over) =
+                        walk_one(at, scenario, &found.exe, port, &profiles, base);
                     haul_core::lock::held(&done).push((at, line, wrong, over));
                 }
             });
@@ -716,7 +737,7 @@ fn every_scenario_is_walked_to_where_it_leads() {
     // own time, the known gaps left out.
     let over: f32 = done.iter().map(|(.., over)| over).sum();
     println!(
-        "\nwalk suite, in {}, {} s in all, {over:.1} s the walks' own:\n{}\n",
+        "\nwalk suite, in {}, {} s in all; the browser's start and stop {base:.1} s; {over:.1} s the walks' own:\n{}\n",
         found.name,
         started.elapsed().as_secs(),
         card.join("\n")
@@ -734,6 +755,13 @@ fn every_scenario_is_walked_to_where_it_leads() {
 
 /// Scenarios walked at once.
 const AT_ONCE: usize = 4;
+
+/// The scenario that only starts and stops the browser.
+const NOTHING_TO_WALK: &str = "a last page that links where it leads";
+
+/// How many times the browser's start and stop a scenario's limit allows
+/// for, with four browsers starting at once.
+const SLACK: f32 = 3.0;
 
 /// A scenario's place, its line of the scorecard, what went wrong, and the
 /// seconds its walk took beyond its pages' own.

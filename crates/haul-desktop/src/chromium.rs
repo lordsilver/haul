@@ -1835,8 +1835,20 @@ fn walk(cdp: &mut Cdp, s: Option<&str>, p: &Pass<'_>) -> Option<Outcome> {
     };
     match next {
         Next::Wait => None,
-        Next::Over if waits => Some(Outcome::WantsPerson(look(cdp, s))),
-        Next::Over => Some(Outcome::Settled),
+        Next::Over => {
+            // Where it ended, for whoever reads why (an error page, an ad's,
+            // a step no words told of).
+            let seen = look(cdp, s);
+            emit(
+                "nowhere",
+                json!({ "captcha": waits, "showed": serde_json::from_str::<Value>(&seen.page).unwrap_or(Value::Null) }),
+            );
+            Some(if waits {
+                Outcome::WantsPerson(seen)
+            } else {
+                Outcome::Settled
+            })
+        }
         Next::Reload => {
             emit("reload", json!({}));
             let _ = cdp.call("Page.reload", json!({}), s);

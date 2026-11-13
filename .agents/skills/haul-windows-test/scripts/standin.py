@@ -278,17 +278,17 @@ def article_page(alias):
     back = f"http://short.example.localhost:{PORT}/{alias}"
     return f"""<title>Ten things to know</title>
 <div id="consent" role="dialog" style="position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.6)">
-<div style="background:#fff;margin:20vh auto;width:420px;padding:20px"><p>We value your privacy. We and our partners store information on a device.</p>
+<div style="background:#fff;margin:20vh auto;width:420px;padding:20px"><p>This made-up site keeps cookies. Agree to go on.</p>
 <button onclick="document.getElementById('consent').remove()">DISAGREE</button>
 <button onclick="document.getElementById('consent').remove()">AGREE</button></div></div>
 <h1>Ten things to know</h1>
-<a id="startButton" onclick="window.open('{ad}', '_blank')"><p style="margin:9px"> Continue...</p></a>
+<a id="start" onclick="window.open('{ad}', '_blank')"><p style="margin:9px"> Continue...</p></a>
 <div id="timer" style="display:none"></div>
 <p style="height:1600px">Made-up words about nothing in particular.</p>
-<form id="getmylink" style="display:none" method="get" action="{back}"><input type="hidden" name="step" value="2">
+<form id="foot" style="display:none" method="get" action="{back}"><input type="hidden" name="step" value="2">
 <button type="submit" onclick="window.open('{ad}', '_blank')" style="height:45px">Get Link</button></form>
 <script>
-document.getElementById('startButton').addEventListener('click', function () {{
+document.getElementById('start').addEventListener('click', function () {{
   this.style.display = 'none';
   const timer = document.getElementById('timer');
   timer.style.display = 'block';
@@ -299,7 +299,7 @@ document.getElementById('startButton').addEventListener('click', function () {{
     if (left > 0) return void (timer.innerText = `Please Wait ${{left}} Seconds...`);
     clearInterval(tick);
     timer.style.display = 'none';
-    document.getElementById('getmylink').style.display = 'block';
+    document.getElementById('foot').style.display = 'block';
   }}, 1000);
 }});
 </script>"""

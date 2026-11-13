@@ -18,6 +18,11 @@ download_dir: string,
  */
 download_dir_fixed: boolean, 
 /**
+ * Debug mode was asked for when Haul started: the live connection is
+ * on for this run, whatever its setting says.
+ */
+live_debug_forced: boolean, 
+/**
  * Keys an environment variable set, with its name; read-only here.
  */
 from_env: { [key in string]: string }, config_file: string | null, 

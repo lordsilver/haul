@@ -94,7 +94,9 @@ static PATTERNS: LazyLock<Vec<Pattern>> = LazyLock::new(|| {
     };
     vec![
         p(
-            r"(?i)^(.+)\.(part|p)(\.?)(\d{1,3})((?:\..*?)?\.rar)$",
+            // `.dat` and `.bin`: volumes renamed for a host that takes no
+            // `.rar`, the same archive as the `.rar` names other hosts hold.
+            r"(?i)^(.+)\.(part|p)(\.?)(\d{1,3})((?:\..*?)?\.(?:rar|dat|bin))$",
             |c| {
                 part(
                     format!("{}.rar", &c[1]),
@@ -280,6 +282,8 @@ mod tests {
         let cases = [
             ("R.part1.rar", Some(("R.rar", Form::RarPart, 1))),
             ("R.part01.rar", Some(("R.rar", Form::RarPart, 1))),
+            ("R.part02.dat", Some(("R.rar", Form::RarPart, 2))),
+            ("R.part10.BIN", Some(("R.rar", Form::RarPart, 10))),
             ("R.PART12.RAR", Some(("R.rar", Form::RarPart, 12))),
             ("R.p3.rar", Some(("R.rar", Form::RarPart, 3))),
             ("R.part.2.rar", Some(("R.rar", Form::RarPart, 2))),
