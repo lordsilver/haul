@@ -188,6 +188,15 @@ const SCENARIOS: &[Scenario] = &[
         gap: false,
     },
     Scenario {
+        name: "a checkbox under an advert's frame, then a jigsaw",
+        start: "gate.localhost/jigsaw",
+        lists: true,
+        expect: Expect::LedTo(&["https://pixeldrain.com/u/jigsaw001"]),
+        floor: 9,
+        within: 50,
+        gap: false,
+    },
+    Scenario {
         name: "a step that is only a picture",
         start: "short.localhost/icon",
         lists: true,
@@ -436,6 +445,8 @@ const tick = setInterval(() => {{
 <svg width="40" height="24" viewBox="0 0 40 24"><path d="M2 12h30M24 4l10 8-10 8" fill="none" stroke="currentColor" stroke-width="3"/></svg></button>"#,
         ),
 
+        ("gate.localhost", "GET", "/jigsaw") => html(&jigsaw_page()),
+
         ("ads.localhost", ..) => html("<title>An ad</title><p>An ad.</p>"),
         _ => Response {
             status: 404,
@@ -443,6 +454,69 @@ const tick = setInterval(() => {{
             body: b"not found".to_vec(),
         },
     }
+}
+
+/// A page behind a stand-in for the CutCaptcha widget, built as the real
+/// one is (closed shadow roots, its parts under its class names) around a
+/// made-up puzzle: a checkbox that takes only a hand's click, under an
+/// advert's frame that covers the whole page; then a jigsaw whose pieces
+/// drag with the mouse and whose Verify gives the answer field its token
+/// when every piece is home. With the token the page shows its way on.
+fn jigsaw_page() -> String {
+    use haul_core::jigsaw::made_up;
+    let made = made_up::puzzle(7, 3);
+    let picture = made.picture_uri();
+    let pieces: Vec<String> = made
+        .piece_uris()
+        .into_iter()
+        .enumerate()
+        .map(|(at, (image, width, (left, top)))| {
+            format!(
+                r#"{{image: "{image}", w: {width}, left: {}, top: 335, ax: {left}, ay: {top}}}"#,
+                20 + at * 150,
+            )
+        })
+        .collect();
+    r##"<title>Gate</title><h1>Security check</h1>
+<form><div class="cutcaptcha"><input type="hidden" name="cutcaptcha-response" value=""><div id="host"></div></div></form>
+<iframe src="http://ads.localhost:{P}/pop" style="position:fixed;z-index:2147483647;left:0;top:0;width:100vw;height:100vh;border:0;opacity:0.02"></iframe>
+<div id="after" style="display:none"><button style="font-size:20px;padding:10px 30px" onclick="location.href='https://pixeldrain.com/u/jigsaw001'">Get Link</button></div>
+<script>
+const puzzle = {picture: "PICTURE", pieces: [PIECES]};
+const root = document.getElementById('host').attachShadow({mode: 'closed'});
+root.innerHTML = '<div class="cc"><div class="cc__box" role="checkbox" tabindex="0" style="width:300px;height:60px;border:1px solid #888;display:flex;align-items:center;padding-left:14px;font:16px sans-serif">No script here</div></div>';
+root.querySelector('.cc__box').addEventListener('click', (e) => { if (e.isTrusted) open(); }, {once: true});
+function open() {
+  const modal = document.createElement('div');
+  document.body.append(modal);
+  const m = modal.attachShadow({mode: 'closed'});
+  m.innerHTML = `<div class="ccm" style="position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.6)"><div class="ccm__panel" style="position:absolute;left:100px;top:20px;background:#222;padding:12px"><div class="ccm__stage" style="position:relative;width:480px;height:480px"><img class="ccm__pic" draggable="false" width="480" height="320" src="${puzzle.picture}"></div><button type="button" class="ccm__btn ccm__re">Reload</button> <button type="button" class="ccm__btn ccm__go">Verify</button></div></div>`;
+  const stage = m.querySelector('.ccm__stage');
+  for (const p of puzzle.pieces) {
+    const piece = document.createElement('div');
+    piece.className = 'ccm__piece';
+    piece.style.cssText = `position:absolute;left:${p.left}px;top:${p.top}px;width:${p.w}px;height:${p.w}px;`;
+    piece.innerHTML = `<img draggable="false" src="${p.image}" style="width:100%;height:100%">`;
+    stage.append(piece);
+    piece.addEventListener('mousedown', (down) => {
+      const [left, top] = [parseFloat(piece.style.left), parseFloat(piece.style.top)];
+      const move = (e) => { piece.style.left = `${left + e.clientX - down.clientX}px`; piece.style.top = `${top + e.clientY - down.clientY}px`; };
+      const up = () => { removeEventListener('mousemove', move); removeEventListener('mouseup', up); };
+      addEventListener('mousemove', move);
+      addEventListener('mouseup', up);
+    });
+  }
+  m.querySelector('.ccm__go').addEventListener('click', () => {
+    const home = [...m.querySelectorAll('.ccm__piece')].every((piece, at) => Math.abs(parseFloat(piece.style.left) - puzzle.pieces[at].ax) < 6 && Math.abs(parseFloat(piece.style.top) - puzzle.pieces[at].ay) < 6);
+    if (!home) return void (m.querySelector('.ccm__go').textContent = 'Not yet');
+    document.querySelector('[name=cutcaptcha-response]').value = 'made-up-token';
+    modal.remove();
+    document.getElementById('after').style.display = '';
+  });
+}
+</script>"##
+        .replace("PICTURE", &picture)
+        .replace("PIECES", &pieces.join(", "))
 }
 
 /// A page whose form carries a captcha's answer, which comes by itself

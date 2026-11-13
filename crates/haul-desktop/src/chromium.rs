@@ -569,6 +569,8 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
     let mut offered: Vec<String> = Vec::new();
     // Download buttons pressed, and those found to be ads'.
     let mut presser = Presser::default();
+    // The CutCaptcha widget on the page, when it has one.
+    let mut cut = cut::Widget::default();
     // Times the page was brought back from another site.
     let mut sent_back = 0;
     let mut refused = cdp.refused;
@@ -717,17 +719,30 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
                 continue;
             }
         }
+        // A CutCaptcha widget that does not pass by itself is ticked, and
+        // its jigsaw solved, here.
+        if let Some(did) = cut.step(&mut cdp, s) {
+            let mut signal =
+                json!({ "event": "gate", "id": p.item, "url": p.url, "gate": "CutCaptcha" });
+            if let (Value::Object(signal), Value::Object(did)) = (&mut signal, did) {
+                signal.extend(did);
+            }
+            haul_core::debug::emit("pass", signal);
+        }
         // A walk ends by its own clock ([`haul_core::walker`]), and by its
-        // longest here when the page never let it look (still loading).
+        // longest here when the page never let it look (still loading). A
+        // widget being answered gets the time that takes.
         let limit = if p.walk {
             Walker::LONGEST
         } else {
-            p.show_after
+            p.show_after + cut.takes()
         };
         if start.elapsed() >= limit {
             return Ok(Outcome::WantsPerson(look(&mut cdp, s)));
         }
+        // A walk leaves the page alone while its widget is being answered.
         if p.walk
+            && !cut.waits()
             && let Some(over) = walk(&mut cdp, s, p)
         {
             return Ok(over);
@@ -1725,7 +1740,7 @@ const WALK_STEPS: &str = r#"(() => {
     return [{ key: `${at} ${text}`, text, leads, rank, plain }];
   });
   steps.sort((a, b) => a.rank - b.rank);
-  const waits = [...document.querySelectorAll('[name=cf-turnstile-response], [name=g-recaptcha-response], [name=h-captcha-response]')].some((e) => !e.value);
+  const waits = [...document.querySelectorAll('[name=cf-turnstile-response], [name=g-recaptcha-response], [name=h-captcha-response], [name=cutcaptcha-response]')].some((e) => !e.value);
   return { url: location.href, waits, steps };
 })()"#;
 
@@ -2001,6 +2016,9 @@ mod download_tests {
         assert_eq!(download_in(&other), None);
     }
 }
+
+#[path = "cut.rs"]
+mod cut;
 
 #[cfg(test)]
 #[path = "walk_suite.rs"]

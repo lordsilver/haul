@@ -13,6 +13,7 @@ pub mod engine;
 pub mod extract;
 pub mod hosts;
 mod item;
+pub mod jigsaw;
 mod limiter;
 pub mod logging;
 mod names;
