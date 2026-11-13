@@ -45,6 +45,9 @@ struct Scenario {
     /// rather than one a release page listed.
     lists: bool,
     expect: Expect,
+    /// The seconds the pages themselves take: their countdowns, and what
+    /// else no walk can hurry. What a walk takes beyond it is its own.
+    floor: u64,
     /// The walk's time, at most, in seconds.
     within: u64,
     /// A known failure, told and not counted.
@@ -57,7 +60,8 @@ const SCENARIOS: &[Scenario] = &[
         start: "short.localhost/plain",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/plain001"]),
-        within: 25,
+        floor: 0,
+        within: 15,
         gap: false,
     },
     Scenario {
@@ -65,7 +69,8 @@ const SCENARIOS: &[Scenario] = &[
         start: "short.localhost/adlayer",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/adlayer01"]),
-        within: 30,
+        floor: 0,
+        within: 15,
         gap: false,
     },
     Scenario {
@@ -73,7 +78,8 @@ const SCENARIOS: &[Scenario] = &[
         start: "articles.localhost/consent",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/consent01"]),
-        within: 30,
+        floor: 0,
+        within: 15,
         gap: false,
     },
     Scenario {
@@ -81,7 +87,8 @@ const SCENARIOS: &[Scenario] = &[
         start: "short.localhost/countdown",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/countdown1"]),
-        within: 45,
+        floor: 8,
+        within: 25,
         gap: false,
     },
     Scenario {
@@ -89,7 +96,8 @@ const SCENARIOS: &[Scenario] = &[
         start: "short.localhost/late",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/latescript"]),
-        within: 30,
+        floor: 5,
+        within: 20,
         gap: false,
     },
     Scenario {
@@ -97,7 +105,8 @@ const SCENARIOS: &[Scenario] = &[
         start: "short.localhost/captcha",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/captcha001"]),
-        within: 30,
+        floor: 3,
+        within: 18,
         gap: false,
     },
     Scenario {
@@ -105,7 +114,8 @@ const SCENARIOS: &[Scenario] = &[
         start: "short.localhost/stall",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/stall0001"]),
-        within: 50,
+        floor: 1,
+        within: 40,
         gap: false,
     },
     Scenario {
@@ -113,7 +123,17 @@ const SCENARIOS: &[Scenario] = &[
         start: "articles.localhost/adredirect",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/adredirect"]),
-        within: 45,
+        floor: 21,
+        within: 35,
+        gap: false,
+    },
+    Scenario {
+        name: "an article's own links that read like steps",
+        start: "articles.localhost/decoys",
+        lists: true,
+        expect: Expect::LedTo(&["https://pixeldrain.com/u/decoys001"]),
+        floor: 6,
+        within: 20,
         gap: false,
     },
     Scenario {
@@ -121,7 +141,8 @@ const SCENARIOS: &[Scenario] = &[
         start: "short.localhost/words",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/words0001"]),
-        within: 30,
+        floor: 0,
+        within: 15,
         gap: false,
     },
     Scenario {
@@ -132,7 +153,8 @@ const SCENARIOS: &[Scenario] = &[
             "https://gofile.io/d/abc123",
             "https://1fichier.com/?abcdefghijklmnopqrst",
         ]),
-        within: 30,
+        floor: 0,
+        within: 12,
         gap: false,
     },
     Scenario {
@@ -143,7 +165,8 @@ const SCENARIOS: &[Scenario] = &[
             "https://gofile.io/d/abc123",
             "https://1fichier.com/?abcdefghijklmnopqrst",
         ]),
-        within: 30,
+        floor: 0,
+        within: 12,
         gap: false,
     },
     Scenario {
@@ -151,7 +174,8 @@ const SCENARIOS: &[Scenario] = &[
         start: "short.localhost/anchor",
         lists: false,
         expect: Expect::LedTo(&["https://mega.nz/file/abc123#AAAAAAAA"]),
-        within: 20,
+        floor: 0,
+        within: 10,
         gap: false,
     },
     Scenario {
@@ -159,7 +183,8 @@ const SCENARIOS: &[Scenario] = &[
         start: "files.localhost/f/abc123",
         lists: false,
         expect: Expect::File("/get/archive.part1.rar"),
-        within: 30,
+        floor: 3,
+        within: 15,
         gap: false,
     },
     Scenario {
@@ -167,6 +192,7 @@ const SCENARIOS: &[Scenario] = &[
         start: "short.localhost/icon",
         lists: true,
         expect: Expect::LedTo(&["https://pixeldrain.com/u/icononly1"]),
+        floor: 0,
         within: 70,
         gap: true,
     },
@@ -313,6 +339,39 @@ document.getElementById('go').onclick = function () {{
 }};
 </script>"#
         )),
+
+        // While its countdown runs the page offers nothing but its own
+        // article links, whose words read like steps and lead away.
+        ("articles.localhost", "GET", "/decoys") => html(
+            r#"<title>Ten things</title><h1>Ten things to know</h1>
+<a id="startButton"><p style="margin:9px"> Continue...</p></a>
+<div id="timer" style="display:none"></div>
+<ul><li><a href="/lost">Your Go-to Guide To Hiring A Programmer</a></li>
+<li><a href="/lost">Continue reading</a></li>
+<li><a href="/lost">How to download videos</a></li>
+<li><a href="/lost">Next</a></li>
+<li><a href="/lost">Get link building tips</a></li></ul>
+<button id="get" style="display:none;font-size:20px;padding:10px 30px" onclick="location.href='https://pixeldrain.com/u/decoys001'">Get Link</button>
+<script>
+document.getElementById('startButton').addEventListener('click', function () {
+  this.style.display = 'none';
+  const timer = document.getElementById('timer');
+  timer.style.display = 'block';
+  let left = 6;
+  timer.innerText = `Please Wait ${left} Seconds...`;
+  const tick = setInterval(() => {
+    left--;
+    if (left > 0) return void (timer.innerText = `Please Wait ${left} Seconds...`);
+    clearInterval(tick);
+    timer.style.display = 'none';
+    document.getElementById('get').style.display = '';
+  }, 1000);
+});
+</script>"#,
+        ),
+        ("articles.localhost", "GET", "/lost") => {
+            html("<title>Another article</title><p>Made-up words, and no way on.</p>")
+        }
 
         ("short.localhost", "GET", "/words") => html(&format!(
             r#"<title>Kurz</title><form action="/words-2"><button style="{BUTTON}">Weiter</button></form>"#
@@ -531,7 +590,7 @@ fn walk_one(
     exe: &Path,
     port: u16,
     profiles: &Path,
-) -> (String, Option<String>) {
+) -> (String, Option<String>, f32) {
     let url = format!(
         "http://{}",
         scenario.start.replacen('/', &format!(":{port}/"), 1)
@@ -570,7 +629,7 @@ fn walk_one(
         hand_clearance: false,
         walk: true,
     });
-    let took = started.elapsed().as_secs();
+    let took = started.elapsed().as_secs_f32();
     let taken = haul_core::lock::held(&taken).clone();
     let (reached, told) = match (&scenario.expect, &outcome) {
         (Expect::LedTo(want), Ok(Outcome::LedTo(got))) => (same(got, want), got.join(" ")),
@@ -586,7 +645,8 @@ fn walk_one(
         (_, Ok(Outcome::WantsPerson(look))) => (false, format!("wants a person: {}", look.page)),
         (_, other) => (false, format!("{other:?}")),
     };
-    let in_time = took <= scenario.within;
+    let in_time = took <= scenario.within as f32;
+    let over = (took - scenario.floor as f32).max(0.0);
     let verdict = match (reached && in_time, scenario.gap) {
         (true, false) => "ok",
         (false, true) => "gap",
@@ -596,7 +656,8 @@ fn walk_one(
     };
     let fine = verdict == "ok" || verdict == "gap";
     let line = format!(
-        "{verdict:>10}  {took:>3}s of {:>2}s  {}{}",
+        "{verdict:>10}  {took:>5.1} s  {:>2} s its pages  {over:>5.1} s the walk  (limit {:>2} s)  {}{}",
+        scenario.floor,
         scenario.within,
         scenario.name,
         if fine {
@@ -611,6 +672,7 @@ fn walk_one(
     (
         line,
         (!fine).then(|| format!("{}: {verdict}", scenario.name)),
+        if scenario.gap { 0.0 } else { over },
     )
 }
 
@@ -627,7 +689,7 @@ fn every_scenario_is_walked_to_where_it_leads() {
     let profiles = std::env::temp_dir().join(format!("haul-walk-suite-{}", std::process::id()));
     let only = std::env::var("HAUL_WALK_ONLY").ok();
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let done: Mutex<Vec<(usize, String, Option<String>)>> = Mutex::default();
+    let done: Mutex<Vec<Walked>> = Mutex::default();
     let started = Instant::now();
     std::thread::scope(|scope| {
         for _ in 0..AT_ONCE {
@@ -640,8 +702,8 @@ fn every_scenario_is_walked_to_where_it_leads() {
                     if only.as_ref().is_some_and(|o| !scenario.name.contains(o)) {
                         continue;
                     }
-                    let (line, wrong) = walk_one(at, scenario, &found.exe, port, &profiles);
-                    haul_core::lock::held(&done).push((at, line, wrong));
+                    let (line, wrong, over) = walk_one(at, scenario, &found.exe, port, &profiles);
+                    haul_core::lock::held(&done).push((at, line, wrong, over));
                 }
             });
         }
@@ -649,14 +711,20 @@ fn every_scenario_is_walked_to_where_it_leads() {
     let _ = std::fs::remove_dir_all(&profiles);
     let mut done = std::mem::take(&mut *haul_core::lock::held(&done));
     done.sort_by_key(|(at, ..)| *at);
-    let card: Vec<&str> = done.iter().map(|(_, line, _)| line.as_str()).collect();
+    let card: Vec<&str> = done.iter().map(|(_, line, ..)| line.as_str()).collect();
+    // The number to bring down: what the walks took beyond their pages'
+    // own time, the known gaps left out.
+    let over: f32 = done.iter().map(|(.., over)| over).sum();
     println!(
-        "\nwalk suite, in {}, {} s in all:\n{}\n",
+        "\nwalk suite, in {}, {} s in all, {over:.1} s the walks' own:\n{}\n",
         found.name,
         started.elapsed().as_secs(),
         card.join("\n")
     );
-    let wrong: Vec<&str> = done.iter().filter_map(|(.., w)| w.as_deref()).collect();
+    let wrong: Vec<&str> = done
+        .iter()
+        .filter_map(|(_, _, w, _)| w.as_deref())
+        .collect();
     assert!(
         wrong.is_empty(),
         "the walk suite (take the gap mark off a scenario that now passes):\n{}",
@@ -666,3 +734,7 @@ fn every_scenario_is_walked_to_where_it_leads() {
 
 /// Scenarios walked at once.
 const AT_ONCE: usize = 4;
+
+/// A scenario's place, its line of the scorecard, what went wrong, and the
+/// seconds its walk took beyond its pages' own.
+type Walked = (usize, String, Option<String>, f32);

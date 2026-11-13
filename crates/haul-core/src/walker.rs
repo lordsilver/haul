@@ -56,8 +56,10 @@ pub struct Walker {
     busy: Instant,
     started: Instant,
     last_press: Option<Instant>,
-    /// The page the walk is on, and since when its captcha waits.
+    /// The page the walk is on, since when, and since when its captcha
+    /// waits.
     page: String,
+    page_since: Instant,
     captcha_since: Option<Instant>,
     reloaded: HashMap<String, u32>,
 }
@@ -71,6 +73,10 @@ impl Walker {
     /// Between two presses: the page's next step (a countdown, a page
     /// loading) comes first.
     pub const EVERY: Duration = Duration::from_secs(3);
+    /// On the page a press led to, the next press waits only this long:
+    /// the press did its work, and three seconds a page add up over a walk
+    /// of ten pages.
+    pub const SETTLE: Duration = Duration::from_secs(1);
     /// A page that changes site this long after a press, or after the hop
     /// before it, goes where the press sent it.
     pub const AFTER_PRESS: Duration = Duration::from_secs(15);
@@ -95,6 +101,7 @@ impl Walker {
             started: now,
             last_press: None,
             page: String::new(),
+            page_since: now,
             captcha_since: None,
             reloaded: HashMap::new(),
         }
@@ -126,6 +133,7 @@ impl Walker {
         }
         if address != self.page {
             self.page = address.to_string();
+            self.page_since = now;
             self.captcha_since = None;
             self.busy = now;
         }
@@ -150,10 +158,13 @@ impl Walker {
         if self.captcha_since.take().is_some() {
             self.busy = now;
         }
-        if self
-            .last_press
-            .is_some_and(|at| now.duration_since(at) < Self::EVERY)
-        {
+        // The last press is still at work on the page it was made on; on
+        // the page it led to, a moment for the page to show its steps.
+        if self.last_press.is_some_and(|at| {
+            let moved_on =
+                self.page_since > at && now.duration_since(self.page_since) >= Self::SETTLE;
+            now.duration_since(at) < Self::EVERY && !moved_on
+        }) {
             return Next::Wait;
         }
         // The step pressed least, the page's first among equals: one that
@@ -306,6 +317,28 @@ mod tests {
         assert_eq!(w.next(PAGE, &page, false, at(1)), Next::Press(&page[0]));
         assert_eq!(w.next(PAGE, &page, false, at(2)), Next::Press(&page[1]));
         assert_eq!(w.next(PAGE, &page, false, at(3)), Next::Press(&page[0]));
+    }
+
+    /// On the page a press led to, the next step is pressed after a moment,
+    /// not after the wait between two presses on one page.
+    #[test]
+    fn a_new_page_is_pressed_after_a_moment() {
+        let t = Instant::now();
+        let mut w = Walker::new(t);
+        let page = steps(&["0 Continue"]);
+        let next = "https://short.example/next";
+        assert!(matches!(w.next(PAGE, &page, false, t), Next::Press(_)));
+        let arrived = t + Duration::from_millis(500);
+        assert_eq!(w.next(next, &page, false, arrived), Next::Wait);
+        assert!(matches!(
+            w.next(next, &page, false, arrived + Walker::SETTLE),
+            Next::Press(_)
+        ));
+        // On that page again, the full wait.
+        assert_eq!(
+            w.next(next, &page, false, arrived + Walker::SETTLE * 2),
+            Next::Wait
+        );
     }
 
     /// A press a dialog took instead does not count against its step.
