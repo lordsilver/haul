@@ -1254,6 +1254,13 @@ fn download_in(event: &Value) -> Option<Download> {
     })
 }
 
+/// Whether the file at `url`, offered on a page whose own site is `home`
+/// (a wrapper's or a paste's, which shows what it has where it is), is an
+/// advert's: one from any other site.
+fn advert_file(home: Option<&str>, url: &str) -> bool {
+    home.is_some_and(|home| hosts::site_of(url) != home)
+}
+
 /// A page kept on the site it landed on: its main frame is refused any
 /// other site once its first page has loaded there.
 struct Keep {
@@ -1265,6 +1272,9 @@ struct Keep {
     last: Option<String>,
     /// Where its first page loaded: set at the first load.
     site: Option<String>,
+    /// The page shows what it has where it is (a wrapper's, a paste's): a
+    /// file from another site is no answer of its.
+    owns: bool,
 }
 
 impl Cdp {
@@ -1315,6 +1325,7 @@ impl Cdp {
             item: item.to_string(),
             frame: frame.to_string(),
             last: home.clone(),
+            owns: home.is_some(),
             site: home,
         });
         self.call(
@@ -1328,7 +1339,40 @@ impl Cdp {
     /// Answers an event that waits for one: a paused navigation, let go or
     /// refused ([`Cdp::keep_to_site`]); and notes the first page's load.
     fn on_event(&mut self, event: &Value) {
+        // A dialog a page's script opens (an advert's alert, an "are you
+        // sure" on leaving) freezes the page until it is answered, and every
+        // question to the page with it: answered at once.
+        if event["method"].as_str() == Some("Page.javascriptDialogOpening") {
+            haul_core::debug::emit(
+                "pass",
+                json!({ "event": "dialog", "said": event["params"]["message"], "kind": event["params"]["type"] }),
+            );
+            self.next += 1;
+            let mut message = json!({ "id": self.next, "method": "Page.handleJavaScriptDialog", "params": { "accept": true } });
+            if let Some(session) = event["sessionId"].as_str() {
+                message["sessionId"] = json!(session);
+            }
+            let _ = self.ws.send(Message::text(message.to_string()));
+            return;
+        }
         if let Some(download) = download_in(event) {
+            // On a wrapper's or a paste's page a file from another site is
+            // an advert's (an installer its click set off), never what the
+            // page holds.
+            let home = self
+                .keep
+                .as_ref()
+                .filter(|k| k.owns)
+                .and_then(|k| k.site.as_deref());
+            if advert_file(home, &download.url) {
+                tracing::info!(url = %download.url, "a file from another site than the page's: an advert's, left");
+                self.refused += 1;
+                haul_core::debug::emit(
+                    "pass",
+                    json!({ "event": "refused", "url": download.url, "why": "a file from another site" }),
+                );
+                return;
+            }
             tracing::info!(url = %download.url, "the page's site answered with a file");
             self.download = Some(download);
             return;
@@ -2003,6 +2047,19 @@ mod download_tests {
             "params": { "url": "https://files.example/abc123", "suggestedFilename": "" },
         });
         assert_eq!(download_in(&unnamed).unwrap().name, None);
+    }
+
+    /// On a wrapper's page, a file from another site is an advert's; on a
+    /// host's page, the file may well be on another site.
+    #[test]
+    fn a_file_from_another_site_on_a_wrappers_page_is_an_adverts() {
+        let home = Some("filecrypt.cc");
+        assert!(advert_file(home, "https://downloads.example/setup.exe"));
+        assert!(!advert_file(
+            home,
+            "https://www.filecrypt.cc/DLC/abc123.dlc"
+        ));
+        assert!(!advert_file(None, "https://cdn.example/archive.part1.rar"));
     }
 
     #[test]

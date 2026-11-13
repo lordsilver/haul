@@ -137,6 +137,15 @@ const SCENARIOS: &[Scenario] = &[
         gap: false,
     },
     Scenario {
+        name: "an advert's dialog that freezes the page",
+        start: "short.localhost/alert",
+        lists: true,
+        expect: Expect::LedTo(&["https://pixeldrain.com/u/alert0001"]),
+        floor: 0,
+        within: 15,
+        gap: false,
+    },
+    Scenario {
         name: "steps in other languages",
         start: "short.localhost/words",
         lists: true,
@@ -382,6 +391,15 @@ document.getElementById('start').addEventListener('click', function () {
             html("<title>Another article</title><p>Made-up words, and no way on.</p>")
         }
 
+        ("short.localhost", "GET", "/alert") => html(&format!(
+            r#"<title>Short</title><button style="{BUTTON}" onclick="location.href='https://pixeldrain.com/u/alert0001'">Continue</button>
+<script>
+// A dialog as the page loads and on the first click, as an advert's.
+setTimeout(() => alert('A made-up prize is waiting.'), 300);
+document.addEventListener('click', () => confirm('Leave this made-up page?'), {{capture: true, once: true}});
+</script>"#
+        )),
+
         ("short.localhost", "GET", "/words") => html(&format!(
             r#"<title>Kurz</title><form action="/words-2"><button style="{BUTTON}">Weiter</button></form>"#
         )),
@@ -447,6 +465,17 @@ const tick = setInterval(() => {{
 
         ("gate.localhost", "GET", "/jigsaw") => html(&jigsaw_page()),
 
+        ("ads.localhost", "GET", "/setup.exe") => Response {
+            status: 200,
+            headers: vec![
+                ("Content-Type".into(), "application/octet-stream".into()),
+                (
+                    "Content-Disposition".into(),
+                    r#"attachment; filename="setup.exe""#.into(),
+                ),
+            ],
+            body: vec![0; 4096],
+        },
         ("ads.localhost", ..) => html("<title>An ad</title><p>An ad.</p>"),
         _ => Response {
             status: 404,
@@ -459,7 +488,8 @@ const tick = setInterval(() => {{
 /// A page behind a stand-in for the CutCaptcha widget, built as the real
 /// one is (closed shadow roots, its parts under its class names) around a
 /// made-up puzzle: a checkbox that takes only a hand's click, under an
-/// advert's frame that covers the whole page; then a jigsaw whose pieces
+/// advert's frame that covers the whole page and a layer whose click
+/// starts an advert's download; then a jigsaw whose pieces
 /// drag with the mouse and whose Verify gives the answer field its token
 /// when every piece is home. With the token the page shows its way on.
 fn jigsaw_page() -> String {
@@ -479,7 +509,8 @@ fn jigsaw_page() -> String {
         .collect();
     r##"<title>Gate</title><h1>Security check</h1>
 <form><div class="cutcaptcha"><input type="hidden" name="cutcaptcha-response" value=""><div id="host"></div></div></form>
-<iframe src="http://ads.localhost:{P}/pop" style="position:fixed;z-index:2147483647;left:0;top:0;width:100vw;height:100vh;border:0;opacity:0.02"></iframe>
+<iframe src="http://ads.localhost:{P}/pop" style="position:fixed;z-index:2147483646;left:0;top:0;width:100vw;height:100vh;border:0;opacity:0.02"></iframe>
+<div onclick="location.href='http://ads.localhost:{P}/setup.exe'" style="position:fixed;z-index:2147483647;left:0;top:0;width:100vw;height:260px"></div>
 <div id="after" style="display:none"><button style="font-size:20px;padding:10px 30px" onclick="location.href='https://pixeldrain.com/u/jigsaw001'">Get Link</button></div>
 <script>
 const puzzle = {picture: "PICTURE", pieces: [PIECES]};

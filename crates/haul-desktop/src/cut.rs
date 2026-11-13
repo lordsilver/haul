@@ -14,7 +14,10 @@
 //! from the widget, and drag each piece to the hole it came from when the
 //! solver is sure, or ask the widget for another picture when it is not.
 
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 
 use haul_core::jigsaw::{self, made_up::Dice};
 use serde_json::{Value, json};
@@ -31,6 +34,9 @@ pub struct Widget {
     ticks: u32,
     reloads: u32,
     verifies: u32,
+    /// Times the page did not answer the pointer: after a few the widget
+    /// is left alone.
+    stalls: u32,
 }
 
 /// The widget passes by itself within this, when it is going to.
@@ -45,6 +51,7 @@ const TICKS: u32 = 2;
 /// Other pictures asked for, and answers given, at most.
 const RELOADS: u32 = 5;
 const VERIFIES: u32 = 3;
+const STALLS: u32 = 3;
 
 /// Whether the page has the widget, still without its answer.
 const WAITS: &str = r"(() => {
@@ -52,17 +59,14 @@ const WAITS: &str = r"(() => {
   return Boolean(answer) && !answer.value;
 })()";
 
-/// Lets clicks through whatever frame lies over the page at `X`, `Y`: an
-/// advert's, laid over the widget to take the click meant for it.
+/// Lets clicks through the topmost thing at `X`, `Y` when it is not the
+/// widget's: an advert's frame or layer, laid over the widget to take the
+/// click meant for it. Whether it did.
 const UNCOVER: &str = r"((x, y) => {
-  let moved = 0;
-  for (let i = 0; i < 6; i++) {
-    const over = document.elementFromPoint(x, y);
-    if (!over || over.tagName !== 'IFRAME') break;
-    over.style.setProperty('pointer-events', 'none', 'important');
-    moved++;
-  }
-  return moved;
+  const over = document.elementFromPoint(x, y);
+  if (!over || over === document.documentElement || over === document.body) return false;
+  over.style.setProperty('pointer-events', 'none', 'important');
+  return true;
 })(X, Y)";
 
 /// A box on the page: left, top, width, height.
@@ -75,6 +79,9 @@ pub struct Seen {
     pub checkbox: Option<i64>,
     /// The jigsaw, when it is open.
     pub jigsaw: Option<Jigsaw>,
+    /// Every node of the widget, by DevTools' lasting number for it: what
+    /// its shadow roots hold, and their hosts.
+    pub nodes: HashSet<i64>,
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -140,9 +147,42 @@ fn pixels(style: &str, key: &str) -> Option<f32> {
     })
 }
 
+/// Every node under `node`, itself included, into `nodes`.
+fn all_under(node: &Value, nodes: &mut HashSet<i64>) {
+    nodes.extend(node["backendNodeId"].as_i64());
+    for key in ["children", "shadowRoots"] {
+        for child in node[key].as_array().into_iter().flatten() {
+            all_under(child, nodes);
+        }
+    }
+}
+
+/// The hosts of the widget's shadow roots under `node` (those that hold
+/// its checkbox or its jigsaw), with all they hold, into `nodes`.
+fn widget_nodes(node: &Value, nodes: &mut HashSet<i64>) {
+    let roots = node["shadowRoots"].as_array().into_iter().flatten();
+    if roots
+        .clone()
+        .any(|r| first(r, "cc").is_some() || first(r, "ccm").is_some())
+    {
+        all_under(node, nodes);
+        return;
+    }
+    for child in node["children"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(roots)
+    {
+        widget_nodes(child, nodes);
+    }
+}
+
 /// The widget in `document` (DevTools' `DOM.getDocument`, pierced).
 pub fn seen(document: &Value) -> Seen {
     let root = &document["root"];
+    let mut nodes = HashSet::new();
+    widget_nodes(root, &mut nodes);
     let checkbox = first(root, "cc__box").and_then(|n| n["nodeId"].as_i64());
     let jigsaw = (|| {
         let stage = first(root, "ccm__stage")?;
@@ -173,7 +213,11 @@ pub fn seen(document: &Value) -> Seen {
             pieces,
         })
     })();
-    Seen { checkbox, jigsaw }
+    Seen {
+        checkbox,
+        jigsaw,
+        nodes,
+    }
 }
 
 impl Widget {
@@ -196,7 +240,7 @@ impl Widget {
     /// what was done, for the signals.
     pub fn step(&mut self, cdp: &mut Cdp, s: Option<&str>) -> Option<Value> {
         let now = Instant::now();
-        if self.acted.is_some_and(|at| now.duration_since(at) < EVERY) {
+        if self.stalls >= STALLS || self.acted.is_some_and(|at| now.duration_since(at) < EVERY) {
             return None;
         }
         let waits = cdp
@@ -219,66 +263,101 @@ impl Widget {
             .call("DOM.getDocument", json!({ "depth": -1, "pierce": true }), s)
             .ok()?;
         let seen = seen(&document);
-        if let Some(jigsaw) = seen.jigsaw {
-            return self.answer(cdp, s, &jigsaw);
-        }
-        let again = self
-            .acted
-            .is_none_or(|at| now.duration_since(at) >= TICK_AGAIN);
-        if self.ticks >= TICKS || !again {
-            return None;
-        }
-        let (x, y, _, h) = area(cdp, s, seen.checkbox?)?;
-        let (x, y) = (x + 30.0, y + h / 2.0);
-        uncover(cdp, s, x, y);
         let mut dice = Dice::new(now.elapsed().as_nanos() as u64 ^ 0x51ed);
-        press(cdp, s, &mut dice, x, y);
+        let did = match &seen.jigsaw {
+            Some(jigsaw) => self.answer(cdp, s, &mut dice, jigsaw, &seen.nodes),
+            None => self.tick(cdp, s, &mut dice, &seen),
+        };
+        match did {
+            Ok(None) => None,
+            Ok(Some(done)) => {
+                self.acted = Some(Instant::now());
+                Some(done)
+            }
+            // The page did not take the pointer (frozen, or something in
+            // the way that would not move): later, and not for ever.
+            Err(why) => {
+                self.stalls += 1;
+                self.acted = Some(Instant::now());
+                Some(json!({ "step": "stalled", "why": why }))
+            }
+        }
+    }
+
+    /// The checkbox ticked, when its turn has come.
+    fn tick(
+        &mut self,
+        cdp: &mut Cdp,
+        s: Option<&str>,
+        dice: &mut Dice,
+        seen: &Seen,
+    ) -> Result<Option<Value>, String> {
+        let again = self.acted.is_none_or(|at| at.elapsed() >= TICK_AGAIN);
+        let Some(checkbox) = seen.checkbox.filter(|_| self.ticks < TICKS && again) else {
+            return Ok(None);
+        };
+        let (x, y, _, h) = area(cdp, s, checkbox)?;
+        press(cdp, s, dice, (x + 30.0, y + h / 2.0), &seen.nodes)?;
         self.ticks += 1;
-        self.acted = Some(Instant::now());
-        Some(json!({ "step": "checkbox", "try": self.ticks }))
+        Ok(Some(json!({ "step": "checkbox", "try": self.ticks })))
     }
 
     /// The open jigsaw: its pieces dragged home and Verify pressed, or
     /// another picture asked for.
-    fn answer(&mut self, cdp: &mut Cdp, s: Option<&str>, jigsaw: &Jigsaw) -> Option<Value> {
+    fn answer(
+        &mut self,
+        cdp: &mut Cdp,
+        s: Option<&str>,
+        dice: &mut Dice,
+        jigsaw: &Jigsaw,
+        widget: &HashSet<i64>,
+    ) -> Result<Option<Value>, String> {
         if jigsaw.pieces.is_empty() || self.verifies >= VERIFIES {
-            return None;
+            return Ok(None);
         }
-        let puzzle = jigsaw::Puzzle {
-            picture: jigsaw::data_uri(&jigsaw.picture)?,
-            width: jigsaw.width,
-            pieces: jigsaw
-                .pieces
-                .iter()
-                .map(|p| {
-                    Some(jigsaw::Piece {
-                        image: jigsaw::data_uri(&p.image)?,
-                        width: p.width,
+        let read = || -> Option<jigsaw::Puzzle> {
+            Some(jigsaw::Puzzle {
+                picture: jigsaw::data_uri(&jigsaw.picture)?,
+                width: jigsaw.width,
+                pieces: jigsaw
+                    .pieces
+                    .iter()
+                    .map(|p| {
+                        Some(jigsaw::Piece {
+                            image: jigsaw::data_uri(&p.image)?,
+                            width: p.width,
+                        })
                     })
-                })
-                .collect::<Option<_>>()?,
+                    .collect::<Option<_>>()?,
+            })
+        };
+        // Its pictures are still coming.
+        let Some(puzzle) = read() else {
+            return Ok(None);
         };
         let began = Instant::now();
         let answer = jigsaw::solve(&puzzle);
         let took = began.elapsed().as_millis() as u64;
-        let mut dice = Dice::new(began.elapsed().as_nanos() as u64 ^ 0x9d2c);
         let placed = match answer {
             Ok(jigsaw::Answer::Sure(placed)) => placed,
             Ok(jigsaw::Answer::Unsure(why)) | Err(why) => {
                 if self.reloads >= RELOADS {
-                    return None;
+                    return Ok(None);
                 }
                 let (x, y, w, h) = area(cdp, s, jigsaw.reload)?;
-                uncover(cdp, s, x + w / 2.0, y + h / 2.0);
-                press(cdp, s, &mut dice, x + w / 2.0, y + h / 2.0);
+                press(cdp, s, dice, (x + w / 2.0, y + h / 2.0), widget)?;
                 self.reloads += 1;
-                self.acted = Some(Instant::now());
-                return Some(json!({ "step": "another picture", "why": why, "solver_ms": took }));
+                return Ok(Some(
+                    json!({ "step": "another picture", "why": why, "solver_ms": took }),
+                ));
             }
         };
         let (stage_x, stage_y, _, _) = area(cdp, s, jigsaw.stage)?;
         for put in &placed {
-            let piece = jigsaw.pieces.get(put.piece)?;
+            let piece = jigsaw
+                .pieces
+                .get(put.piece)
+                .ok_or("a piece the jigsaw does not have")?;
             let from = (
                 stage_x + f64::from(piece.left + piece.width / 2.0),
                 stage_y + f64::from(piece.top + piece.height / 2.0),
@@ -287,51 +366,82 @@ impl Widget {
                 from.0 + f64::from(put.left - piece.left),
                 from.1 + f64::from(put.top - piece.top),
             );
-            uncover(cdp, s, from.0, from.1);
-            drag(cdp, s, &mut dice, from, to);
+            drag(cdp, s, dice, from, to, widget)?;
         }
         let (x, y, w, h) = area(cdp, s, jigsaw.verify)?;
-        uncover(cdp, s, x + w / 2.0, y + h / 2.0);
-        press(cdp, s, &mut dice, x + w / 2.0, y + h / 2.0);
+        press(cdp, s, dice, (x + w / 2.0, y + h / 2.0), widget)?;
         self.verifies += 1;
-        self.acted = Some(Instant::now());
-        Some(json!({
+        Ok(Some(json!({
             "step": "jigsaw",
             "try": self.verifies,
             "pieces": placed.len(),
             "fit": placed.iter().map(|p| (p.fit * 100.0).round() / 100.0).collect::<Vec<_>>(),
             "solver_ms": took,
-        }))
+        })))
     }
 }
 
 /// Where node `node` is drawn on the page.
-fn area(cdp: &mut Cdp, s: Option<&str>, node: i64) -> Option<Area> {
-    let model = cdp
-        .call("DOM.getBoxModel", json!({ "nodeId": node }), s)
-        .ok()?;
+fn area(cdp: &mut Cdp, s: Option<&str>, node: i64) -> Result<Area, String> {
+    let model = cdp.call("DOM.getBoxModel", json!({ "nodeId": node }), s)?;
     let q: Vec<f64> = model["model"]["border"]
-        .as_array()?
-        .iter()
+        .as_array()
+        .into_iter()
+        .flatten()
         .filter_map(Value::as_f64)
         .collect();
-    (q.len() == 8).then(|| (q[0], q[1], q[2] - q[0], q[5] - q[1]))
+    if q.len() == 8 {
+        Ok((q[0], q[1], q[2] - q[0], q[5] - q[1]))
+    } else {
+        Err("a part of the widget is not drawn".into())
+    }
 }
 
-fn uncover(cdp: &mut Cdp, s: Option<&str>, x: f64, y: f64) {
-    let script = UNCOVER
-        .replace('X', &x.to_string())
-        .replace('Y', &y.to_string());
-    let _ = cdp.call(
-        "Runtime.evaluate",
-        json!({ "expression": script, "returnByValue": true }),
-        s,
-    );
+/// Makes sure a click at `x`, `y` lands on the widget: whatever lies over
+/// it there (an advert's frame or layer) is made to let clicks through,
+/// and with something still in the way nothing is clicked.
+fn clear_way(
+    cdp: &mut Cdp,
+    s: Option<&str>,
+    (x, y): (f64, f64),
+    widget: &HashSet<i64>,
+) -> Result<(), String> {
+    for _ in 0..8 {
+        let at = cdp.call(
+            "DOM.getNodeForLocation",
+            json!({ "x": x.round() as i64, "y": y.round() as i64, "includeUserAgentShadowDOM": true }),
+            s,
+        )?;
+        if at["backendNodeId"]
+            .as_i64()
+            .is_some_and(|n| widget.contains(&n))
+        {
+            return Ok(());
+        }
+        let script = UNCOVER
+            .replace('X', &x.to_string())
+            .replace('Y', &y.to_string());
+        let moved = cdp.call(
+            "Runtime.evaluate",
+            json!({ "expression": script, "returnByValue": true }),
+            s,
+        )?;
+        if moved["result"]["value"].as_bool() != Some(true) {
+            break;
+        }
+    }
+    Err("something lies over the widget".into())
 }
 
-fn mouse(cdp: &mut Cdp, s: Option<&str>, kind: &str, x: f64, y: f64, held: bool) {
+fn mouse(
+    cdp: &mut Cdp,
+    s: Option<&str>,
+    kind: &str,
+    (x, y): (f64, f64),
+    held: bool,
+) -> Result<(), String> {
     let pressing = kind != "mouseMoved";
-    let _ = cdp.call(
+    cdp.call(
         "Input.dispatchMouseEvent",
         json!({
             "type": kind,
@@ -342,24 +452,33 @@ fn mouse(cdp: &mut Cdp, s: Option<&str>, kind: &str, x: f64, y: f64, held: bool)
             "clickCount": i32::from(pressing),
         }),
         s,
-    );
+    )
+    .map(|_| ())
 }
 
 fn rest(dice: &mut Dice, from_ms: f32, to_ms: f32) {
     std::thread::sleep(Duration::from_millis(dice.between(from_ms, to_ms) as u64));
 }
 
-/// The pointer comes to `x`, `y` from a little way off, and clicks.
-fn press(cdp: &mut Cdp, s: Option<&str>, dice: &mut Dice, x: f64, y: f64) {
+/// The pointer comes to `at` from a little way off, and clicks, once the
+/// way to the widget there is clear.
+fn press(
+    cdp: &mut Cdp,
+    s: Option<&str>,
+    dice: &mut Dice,
+    at: (f64, f64),
+    widget: &HashSet<i64>,
+) -> Result<(), String> {
+    clear_way(cdp, s, at, widget)?;
     let from = (
-        x + f64::from(dice.between(40.0, 140.0)),
-        y + f64::from(dice.between(20.0, 70.0)),
+        at.0 + f64::from(dice.between(40.0, 140.0)),
+        at.1 + f64::from(dice.between(20.0, 70.0)),
     );
-    glide(cdp, s, dice, from, (x, y), false);
+    glide(cdp, s, dice, from, at, false)?;
     rest(dice, 80.0, 180.0);
-    mouse(cdp, s, "mousePressed", x, y, true);
+    mouse(cdp, s, "mousePressed", at, true)?;
     rest(dice, 60.0, 120.0);
-    mouse(cdp, s, "mouseReleased", x, y, false);
+    mouse(cdp, s, "mouseReleased", at, false)
 }
 
 /// The pointer moves from `from` to `to` as a hand does: slow at both
@@ -371,39 +490,50 @@ fn glide(
     from: (f64, f64),
     to: (f64, f64),
     held: bool,
-) {
+) -> Result<(), String> {
     let steps = dice.between(16.0, 26.0) as u32;
     let bow = f64::from(dice.between(-16.0, 16.0));
     for step in 1..=steps {
         let t = f64::from(step) / f64::from(steps);
         let eased = t * t * (3.0 - 2.0 * t);
         let arc = (std::f64::consts::PI * t).sin() * bow;
-        let (mut x, mut y) = (
+        let mut at = (
             from.0 + (to.0 - from.0) * eased + arc * 0.3 + f64::from(dice.between(-0.6, 0.6)),
             from.1 + (to.1 - from.1) * eased + arc + f64::from(dice.between(-0.6, 0.6)),
         );
         if step == steps {
-            (x, y) = to;
+            at = to;
         }
-        mouse(cdp, s, "mouseMoved", x, y, held);
+        mouse(cdp, s, "mouseMoved", at, held)?;
         rest(dice, 10.0, 30.0);
     }
+    Ok(())
 }
 
-/// A piece taken at `from` and let go at `to`.
-fn drag(cdp: &mut Cdp, s: Option<&str>, dice: &mut Dice, from: (f64, f64), to: (f64, f64)) {
+/// A piece taken at `from` and let go at `to`, once the way to it is
+/// clear.
+fn drag(
+    cdp: &mut Cdp,
+    s: Option<&str>,
+    dice: &mut Dice,
+    from: (f64, f64),
+    to: (f64, f64),
+    widget: &HashSet<i64>,
+) -> Result<(), String> {
+    clear_way(cdp, s, from, widget)?;
     let near = (
         from.0 - f64::from(dice.between(20.0, 60.0)),
         from.1 + f64::from(dice.between(15.0, 40.0)),
     );
-    glide(cdp, s, dice, near, from, false);
+    glide(cdp, s, dice, near, from, false)?;
     rest(dice, 90.0, 200.0);
-    mouse(cdp, s, "mousePressed", from.0, from.1, true);
+    mouse(cdp, s, "mousePressed", from, true)?;
     rest(dice, 80.0, 160.0);
-    glide(cdp, s, dice, from, to, true);
+    glide(cdp, s, dice, from, to, true)?;
     rest(dice, 120.0, 260.0);
-    mouse(cdp, s, "mouseReleased", to.0, to.1, false);
+    mouse(cdp, s, "mouseReleased", to, false)?;
     rest(dice, 250.0, 500.0);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -468,6 +598,10 @@ mod tests {
         let document = json!({ "root": node(1, "#document", &[], vec![host, modal]) });
         let seen = seen(&document);
         assert_eq!(seen.checkbox, Some(13));
+        assert!(
+            seen.nodes.is_empty(),
+            "no lasting numbers in this made-up document"
+        );
         let jigsaw = seen.jigsaw.expect("the open jigsaw");
         assert_eq!((jigsaw.stage, jigsaw.verify, jigsaw.reload), (4, 11, 10));
         assert_eq!(jigsaw.width, 480.0);
