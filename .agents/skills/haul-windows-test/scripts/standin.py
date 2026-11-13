@@ -249,6 +249,83 @@ def file_page(name):
     return f'<title>{name}</title><h1>{name}</h1><span class="dk-dl-name" title="{name}"></span><p>Downloads are not stood in for here.</p>'
 
 
+def short_page(alias):
+    """A link shortener's first page: a captcha field that answers itself
+    after 2 s, and a Continue button under an ad's empty layer, which opens
+    a pop-up with the first click it gets."""
+    ad = f"http://ads.example.localhost:{PORT}/pop"
+    return f"""<title>Short</title><h1>Your link is almost ready</h1>
+<form method="post" action="/{alias}"><input type="hidden" name="cf-turnstile-response" value="">
+<button type="submit" id="go" style="font-size:20px;padding:10px 30px">Continue</button></form>
+<p><a href="http://ads.example.localhost:{PORT}/premium">Download faster with Premium</a></p>
+<script>
+setTimeout(() => {{ document.querySelector('[name=cf-turnstile-response]').value = 'made-up-answer'; }}, 2000);
+addEventListener('load', () => {{
+  const box = document.getElementById('go').getBoundingClientRect();
+  const layer = document.createElement('div');
+  layer.style.cssText = `position:fixed;z-index:2147483647;cursor:pointer;left:${{box.x}}px;top:${{box.y}}px;width:${{box.width}}px;height:${{box.height}}px`;
+  layer.onclick = () => {{ window.open('{ad}', '_blank'); layer.remove(); }};
+  document.body.append(layer);
+}});
+</script>"""
+
+
+def article_page(alias):
+    """The shortener's stop on another site: a cookie dialog over
+    everything, a Continue that starts a 4 s countdown, then a Get Link
+    at the foot of a long page, each opening an ad's pop-up too."""
+    ad = f"http://ads.example.localhost:{PORT}/pop"
+    back = f"http://short.example.localhost:{PORT}/{alias}"
+    return f"""<title>Ten things to know</title>
+<div id="consent" role="dialog" style="position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.6)">
+<div style="background:#fff;margin:20vh auto;width:420px;padding:20px"><p>We value your privacy. We and our partners store information on a device.</p>
+<button onclick="document.getElementById('consent').remove()">DISAGREE</button>
+<button onclick="document.getElementById('consent').remove()">AGREE</button></div></div>
+<h1>Ten things to know</h1>
+<a id="startButton" onclick="window.open('{ad}', '_blank')"><p style="margin:9px"> Continue...</p></a>
+<div id="timer" style="display:none"></div>
+<p style="height:1600px">Made-up words about nothing in particular.</p>
+<form id="getmylink" style="display:none" method="get" action="{back}"><input type="hidden" name="step" value="2">
+<button type="submit" onclick="window.open('{ad}', '_blank')" style="height:45px">Get Link</button></form>
+<script>
+document.getElementById('startButton').addEventListener('click', function () {{
+  this.style.display = 'none';
+  const timer = document.getElementById('timer');
+  timer.style.display = 'block';
+  let left = 4;
+  timer.innerText = `Please Wait ${{left}} Seconds...`;
+  const tick = setInterval(() => {{
+    left--;
+    if (left > 0) return void (timer.innerText = `Please Wait ${{left}} Seconds...`);
+    clearInterval(tick);
+    timer.style.display = 'none';
+    document.getElementById('getmylink').style.display = 'block';
+  }}, 1000);
+}});
+</script>"""
+
+
+def short_last_page():
+    """The shortener's last page: its button reads "Getting link..." for
+    3 s, then "Get Link", and goes to the container `GGGGGGGG`."""
+    to = f"http://filecrypt.cc.localhost:{PORT}/Container/GGGGGGGG.html"
+    return f"""<title>Short</title><h1>Your link is almost ready.</h1><p id="t">3 Seconds</p>
+<button id="get" disabled style="font-size:20px;padding:10px 30px">Getting link...</button>
+<script>
+let left = 3;
+const tick = setInterval(() => {{
+  left--;
+  document.getElementById('t').textContent = `${{left}} Seconds`;
+  if (left > 0) return;
+  clearInterval(tick);
+  const get = document.getElementById('get');
+  get.disabled = false;
+  get.textContent = 'Get Link';
+  get.onclick = () => {{ location.href = '{to}'; }};
+}}, 1000);
+</script>"""
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write(f"{self.command} {self.headers.get('Host', '')}{self.path}\n")
@@ -323,6 +400,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return False
 
     def site(self, site, path, query, body):
+        if site == "short.example" and path.startswith("/walk"):
+            alias = path[1:]
+            if self.command == "POST":
+                to = f"http://articles.test.localhost:{PORT}/ten-things?for={alias}"
+                return self.send(302, "", "text/plain", {"Location": to}, body)
+            if "step=2" in query:
+                return self.html(200, short_last_page(), body=body)
+            return self.html(200, short_page(alias), body=body)
+        if site == "articles.test" and path == "/ten-things":
+            alias = urllib.parse.parse_qs(query).get("for", ["walk"])[0]
+            return self.html(200, article_page(alias), body=body)
+        if site == "ads.example":
+            return self.html(200, "<title>An ad</title><p>An ad.</p>", body=body)
         if site == "releases.example" and path == "/example-set":
             return self.html(200, RELEASE, body=body)
         if site == "paste2.org" and path.startswith("/paste/") and path[7:] in PASTES:
