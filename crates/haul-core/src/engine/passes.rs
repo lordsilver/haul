@@ -52,6 +52,9 @@ struct Waiting {
     lookup: bool,
 }
 
+/// Pages passed out of sight at once, each on a site of its own.
+pub const PASSES_AT_ONCE: usize = 3;
+
 impl Engine {
     /// The browser's next step. A pass that fails to start should be told
     /// with [`Engine::page_wants_person`], which asks the person instead.
@@ -82,15 +85,26 @@ impl Engine {
             .filter(|id| !waiting.iter().any(|w| w.turn && w.id == **id))
             .cloned()
             .collect();
-        // One page at a time out of sight: two at once from one address made
-        // Cloudflare ask for a person on pages that pass one by one. Any pass
-        // still running counts, whatever became of its row, since its browser
-        // holds the site's profile until it closes; one shown to the person
-        // holds up no other.
-        let busy = !b.out_of_sight.is_empty()
-            || waiting
-                .iter()
-                .any(|w| w.turn && st.tried.contains(&key(w)) && (b.has_page)(&w.id));
+        // A few pages at a time out of sight, never two of one site: two at
+        // once on one site made Cloudflare ask for a person on pages that
+        // pass one by one, and a site's pages share its browser profile. A
+        // walk takes a minute or two, so links on different sites are not
+        // made to wait for each other. A pass still running whose row went
+        // counts for every site, since its browser holds a profile until it
+        // closes; one shown to the person holds up no other.
+        let running: Vec<&Waiting> = waiting
+            .iter()
+            .filter(|w| w.turn && st.tried.contains(&key(w)) && (b.has_page)(&w.id))
+            .collect();
+        let rowless = b
+            .out_of_sight
+            .iter()
+            .any(|id| !running.iter().any(|w| w.id == *id));
+        let sites: HashSet<String> = running
+            .iter()
+            .map(|w| crate::hosts::site_of(&w.page))
+            .collect();
+        let busy = rowless || running.len().max(b.out_of_sight.len()) >= PASSES_AT_ONCE;
         // A page opened only to look a file up waits for its host's turn
         // (plan LOOK-01).
         let due = |w: &Waiting| !w.lookup || st.budgets.ready(&crate::hosts::host_of(&w.page), now);
@@ -100,6 +114,7 @@ impl Engine {
                     w.turn
                         && !st.tried.contains(&key(w))
                         && !with_person.contains(&w.id.as_str())
+                        && !sites.contains(&crate::hosts::site_of(&w.page))
                         && due(w)
                 })
             })

@@ -582,11 +582,11 @@ async fn a_hosts_rate_limit_holds_its_pages_passes() {
     assert!(!engine.page_passes(&page), "no pass meanwhile");
 }
 
-/// The desktop app passes one page at a time, each once per wait: the engine
-/// plans the next pass, holds it while another runs or a person has the
-/// page, and stops a pass whose row stopped waiting.
+/// The desktop app passes each page once per wait: the engine plans the next
+/// pass, holds it while a person has the page, and stops a pass whose row
+/// stopped waiting.
 #[tokio::test]
-async fn passes_go_one_at_a_time_and_once_each() {
+async fn a_page_is_passed_once_per_wait() {
     use haul_core::Browsing;
 
     let t = Setup::new().await;
@@ -619,6 +619,53 @@ async fn passes_go_one_at_a_time_and_once_each() {
         engine.plan_passes(&idle(&running)).abandon,
         running,
         "paused: its pass stops"
+    );
+}
+
+/// Pages of different sites are passed at once, so a walk of a minute or
+/// two holds up no other site's; a site's own pages still go one at a time.
+#[tokio::test]
+async fn pages_of_different_sites_pass_at_once() {
+    use haul_core::Browsing;
+
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    let other = t.ip.replace("127.0.0.1", "localhost");
+    assert_ne!(other, t.ip);
+    engine.add_text(
+        &format!(
+            "{0}/blog/guarded {0}/blog/guarded-b {other}/blog/guarded",
+            t.ip
+        ),
+        "",
+    );
+    wait_for(&engine, "the three pages to wait their turn", |s| {
+        s.items.len() == 3 && s.items.iter().all(|i| i.status.as_str() == "passing")
+    })
+    .await;
+    let plan = |running: &[String]| {
+        engine
+            .plan_passes(&Browsing {
+                out_of_sight: running,
+                with_person: &|_| false,
+                has_page: &|id| running.iter().any(|r| r == id),
+            })
+            .start
+    };
+    let first = plan(&[]).expect("a page to pass");
+    let second = plan(std::slice::from_ref(&first.0)).expect("another site's page, at once");
+    assert_ne!(
+        first.1.contains("localhost"),
+        second.1.contains("localhost"),
+        "{} and {}",
+        first.1,
+        second.1
+    );
+    assert_eq!(
+        plan(&[first.0, second.0]),
+        None,
+        "the third is of a site whose page is being passed"
     );
 }
 
