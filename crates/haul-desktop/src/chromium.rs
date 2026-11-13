@@ -268,7 +268,9 @@ pub fn pass(p: Pass<'_>) -> Result<Outcome, String> {
         // its page (`visibilityState` "hidden"): it stops drawing, mouse
         // input never reaches it, and checks see a page no person looks
         // at. These keep it a visible page.
-        "--disable-features=CalculateNativeWinOcclusion".into(),
+        // Prerendering lets an ad's page be swapped in without a navigation
+        // the keep-to-site guard could refuse.
+        "--disable-features=CalculateNativeWinOcclusion,Prerender2,NoStatePrefetch".into(),
         "--disable-backgrounding-occluded-windows".into(),
         "--window-size=1100,800".into(),
         // A pass browser Haul had to end (an update, a crash) leaves no
@@ -566,6 +568,8 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
     let mut offered: Vec<String> = Vec::new();
     // Download buttons pressed, and those found to be ads'.
     let mut presser = Presser::default();
+    // Times the page was brought back from another site.
+    let mut sent_back = 0;
     let mut refused = cdp.refused;
     // A browser is alive while its DevTools answers, whatever became of the
     // process Haul started: a starter, or a browser that hands over to
@@ -610,6 +614,15 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
             return Ok(Outcome::Closed(Closed::NoDevTools(process(browser, port))));
         };
         let open = pages(&targets);
+        // Where the browser says the page is: what it shows, however it got
+        // there (a navigation, or a page swapped in without one).
+        let at = targets["targetInfos"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|t| t["targetId"] == target.as_str())
+            .and_then(|t| t["url"].as_str())
+            .map(str::to_string);
         if !open.contains(&target) {
             return Ok(Outcome::Closed(Closed::PageGone(process(browser, port))));
         }
@@ -674,6 +687,34 @@ fn drive(browser: &mut Browser, port: u16, p: &Pass<'_>) -> Result<Outcome, Stri
                 .ok()
                 .and_then(|a| a["result"]["value"].as_str().map(str::to_string));
             return Ok(Outcome::Cleared { cookies, agent });
+        }
+        // An ad that got the page off its site past the guard (a pop-under
+        // that moves the tab, a redirect the guard did not see): the page
+        // is sent back to where it belongs, a few times at most, rather than
+        // the pass ending on the ad as if the site wanted a person.
+        // Home is where the page loaded first, or, before it has, the site
+        // of its own address: an ad can move it before its first load ends.
+        // A walked page has no home: it leaves by its own steps, and its
+        // walk refuses what no press sent it to.
+        if !p.walk
+            && let Some(home) = cdp
+                .keep
+                .as_ref()
+                .map(|k| k.site.clone().unwrap_or_else(|| hosts::site_of(p.url)))
+            && let Some(href) = at.clone().or_else(|| current_address(&mut cdp, s))
+            && href.starts_with("http")
+            && hosts::site_of(&href) != home
+            && !hosts::names_a_file(&href)
+        {
+            sent_back += 1;
+            haul_core::debug::emit(
+                "pass",
+                json!({ "event": "sent back", "id": p.item, "url": href, "times": sent_back }),
+            );
+            if sent_back <= SEND_BACK_AT_MOST {
+                let _ = cdp.call("Page.navigate", json!({ "url": p.url }), s);
+                continue;
+            }
         }
         // A walk ends by its own clock ([`haul_core::walker`]), and by its
         // longest here when the page never let it look (still loading).
@@ -844,7 +885,11 @@ fn set_up(endpoint: &str, p: &Pass<'_>) -> Result<(Cdp, String, String), String>
     }
     // A walk decides where the page may go, which takes its navigations.
     if p.keep_to_site || p.walk {
-        cdp.keep_to_site(p.item, &target, s)?;
+        // A wrapper's or a paste's page belongs to its own site from the
+        // start; another page may first move to its real site, which then
+        // becomes its home.
+        let home = (hosts::wraps(p.url) || hosts::is_paste(p.url)).then(|| hosts::site_of(p.url));
+        cdp.keep_to_site(p.item, &target, home, s)?;
     }
     if p.walk {
         cdp.walk = Some(Walker::new(Instant::now()));
@@ -865,6 +910,22 @@ const EXITED_AT_START: Duration = Duration::from_secs(5);
 /// The browser's DevTools WebSocket, from its `/json/version` once it
 /// listens. (`DevToolsActivePort` in the profile is written only when the
 /// browser picks the port itself.)
+/// Times a pass brings its page back from another site before it lets the
+/// page be.
+const SEND_BACK_AT_MOST: u32 = 5;
+
+/// The address the page's main frame is at, as it says.
+fn current_address(cdp: &mut Cdp, s: Option<&str>) -> Option<String> {
+    cdp.call(
+        "Runtime.evaluate",
+        json!({ "expression": "location.href", "returnByValue": true }),
+        s,
+    )
+    .ok()?["result"]["value"]
+        .as_str()
+        .map(str::to_string)
+}
+
 /// Asks the browser on DevTools' `port` to close, and waits a little for the
 /// process Haul started to exit; what is left is killed as before.
 fn close_gently(browser: &mut Browser, port: u16) {
@@ -1229,13 +1290,16 @@ impl Cdp {
         &mut self,
         item: &str,
         frame: &str,
+        home: Option<String>,
         session: Option<&str>,
     ) -> Result<(), String> {
+        // Home is the page's own site from the start: an ad that moves the
+        // page before its first load ends would otherwise become it.
         self.keep = Some(Keep {
             item: item.to_string(),
             frame: frame.to_string(),
-            last: None,
-            site: None,
+            last: home.clone(),
+            site: home,
         });
         self.call(
             "Fetch.enable",

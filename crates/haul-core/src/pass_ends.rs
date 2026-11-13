@@ -158,7 +158,15 @@ pub enum Next {
     /// Gives up, as the browser failing rather than the page wanting a
     /// person: the page fails with this reason.
     Fail(String),
+    /// The page's site did not answer the browser at all (its navigation
+    /// never came back): no other try now; the host waits a while, as a
+    /// rate limit would have it, and the page is passed again after.
+    Unreachable(String),
 }
+
+/// How long a site that did not answer the browser is left alone before
+/// its pages are passed again.
+pub const UNREACHABLE_WAIT_SECS: u64 = 600;
 
 /// A page's tries in the browsers the desktop app found, in their order:
 /// the first, then the other.
@@ -205,6 +213,11 @@ impl Tries {
         {
             return Next::NotStarted(why.clone());
         }
+        if let Closed::SetUp { error, .. } = &how
+            && error.contains("no answer to Page.navigate")
+        {
+            return Next::Unreachable("the site did not answer the browser".into());
+        }
         if let Some(n) = self.ended.get_mut(self.browser) {
             *n += 1;
         }
@@ -238,6 +251,23 @@ impl Tries {
             "Haul's browser closed the page by itself, {}; the last time {cause}",
             tried.join(" and ")
         )
+    }
+}
+
+#[cfg(test)]
+mod unreachable_tests {
+    use super::{Closed, Next, Process, Tries};
+
+    /// A site that never answers the browser's navigation is not tried
+    /// over and over: one try, and the host waits.
+    #[test]
+    fn a_site_that_does_not_answer_is_left_to_wait() {
+        let mut tries = Tries::new(vec!["Edge".into(), "Chrome".into()]);
+        let how = Closed::SetUp {
+            error: "DevTools: no answer to Page.navigate".into(),
+            process: Process::default(),
+        };
+        assert!(matches!(tries.ended(how), Next::Unreachable(_)));
     }
 }
 

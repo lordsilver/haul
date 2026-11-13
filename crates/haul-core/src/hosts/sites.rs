@@ -131,7 +131,7 @@ impl Site for Pixeldrain {
     }
 
     fn look<'a>(&self, cx: &'a Cx<'a>, url: &'a str) -> Fut<'a, Look> {
-        Box::pin(async move { pixeldrain::probe(cx, url).await.into() })
+        Box::pin(pixeldrain::look(cx, url))
     }
 
     fn allowance<'a>(&self, cx: &'a Cx<'a>) -> Fut<'a, Option<Allowance>> {

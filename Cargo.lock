@@ -1903,7 +1903,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "haul-core"
-version = "0.12.4"
+version = "0.12.5"
 dependencies = [
  "aes",
  "axum",
@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "haul-desktop"
-version = "0.12.4"
+version = "0.12.5"
 dependencies = [
  "arboard",
  "base64 0.23.1",
@@ -1968,7 +1968,7 @@ dependencies = [
 
 [[package]]
 name = "haul-web"
-version = "0.12.4"
+version = "0.12.5"
 dependencies = [
  "axum",
  "clap",

@@ -156,16 +156,19 @@ impl Walker {
         {
             return Next::Wait;
         }
-        let left = |s: &&Step| {
+        // The step pressed least, the page's first among equals: one that
+        // changed nothing (a link that only scrolls) gives way to the next
+        // before it is pressed again.
+        let presses = |s: &Step| {
             self.pressed
                 .get(&(self.page.clone(), s.key.clone()))
                 .copied()
                 .unwrap_or(0)
-                < Self::AT_MOST
         };
         let Some(step) = steps
             .iter()
-            .find(left)
+            .filter(|s| presses(s) < Self::AT_MOST)
+            .min_by_key(|s| presses(s))
             .filter(|_| self.presses < Self::IN_ALL)
         else {
             return self.idle(now);
@@ -287,6 +290,19 @@ mod tests {
             Next::Press(_)
         ));
         assert_eq!(w.presses(), Walker::AT_MOST + 1);
+    }
+
+    /// A step that changed nothing gives way to the next one before it is
+    /// pressed again.
+    #[test]
+    fn the_step_pressed_least_goes_first() {
+        let t = Instant::now();
+        let mut w = Walker::new(t);
+        let page = steps(&["0 Continue", "1 Get Link"]);
+        let at = |n: u32| t + Walker::EVERY * n;
+        assert_eq!(w.next(PAGE, &page, false, at(1)), Next::Press(&page[0]));
+        assert_eq!(w.next(PAGE, &page, false, at(2)), Next::Press(&page[1]));
+        assert_eq!(w.next(PAGE, &page, false, at(3)), Next::Press(&page[0]));
     }
 
     /// A press a dialog took instead does not count against its step.

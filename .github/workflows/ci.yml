@@ -84,7 +84,7 @@ jobs:
       # spares. Pull requests restore it without saving.
       - uses: jdx/mr-boxington-action@v1
         with:
-          version: "1.24.0"
+          version: "1.30.0"
           cache-key: mbx-target-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
           restore-keys: mbx-target-${{ runner.os }}-rust-${{ steps.rust.outputs.version }}-
       - uses: actions/setup-node@v7

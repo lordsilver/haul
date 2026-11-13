@@ -3613,6 +3613,77 @@ fn sibling_parts(
     (!by_number.is_empty()).then_some(by_number)
 }
 
+/// Parts of one release whose link on a host failed as gone or missing
+/// before that host's copy is taken for dead on the release's other parts.
+const DEAD_COPY_AFTER: usize = 3;
+
+/// Row `id`'s link on `host` just failed (for good, or a failure such as a
+/// 404). When at least [`DEAD_COPY_AFTER`] parts of its
+/// release have that host's link failed this way and none of its links on
+/// that host has served a byte, the host's copy of the release is taken for
+/// dead: its links on the release's other files are set aside as failed, so
+/// they are tried after every other host rather than one part at a time.
+/// Returns how many links were set aside.
+fn release_host_dead(st: &mut State, id: &str, host: &str) -> usize {
+    let root = friction::release_of(&st.items, id);
+    let ours: Vec<String> = st
+        .items
+        .values()
+        .filter(|it| !it.wrapper && it.id != id)
+        .filter(|it| it.mirrors.iter().any(|m| *m.host == *host))
+        .filter(|it| friction::release_of(&st.items, &it.id) == root)
+        .map(|it| it.id.clone())
+        .collect();
+    let on_host = |it: &Item| {
+        it.mirrors
+            .iter()
+            .filter(|m| *m.host == *host)
+            .map(|m| m.url.clone())
+            .collect::<Vec<_>>()
+    };
+    let served = ours.iter().any(|o| {
+        let it = &st.items[o];
+        it.part_host.as_deref() == Some(host) || it.status == Status::Done && it.host == host
+    });
+    let failed = 1 + ours
+        .iter()
+        .filter(|o| {
+            let it = &st.items[o.as_str()];
+            on_host(it)
+                .iter()
+                .any(|u| it.gone.contains(u) || it.failed.contains(u))
+        })
+        .count();
+    if served || failed < DEAD_COPY_AFTER {
+        return 0;
+    }
+    let mut set_aside = 0;
+    for o in &ours {
+        let Some(it) = st.items.get_mut(o) else {
+            continue;
+        };
+        if it.running() && it.host == host {
+            continue;
+        }
+        // A file with no other host keeps its link: it is still its way.
+        let others = it.mirrors.iter().any(|m| {
+            *m.host != *host && !it.failed.contains(m.as_str()) && !it.gone.contains(m.as_str())
+        });
+        if !others {
+            continue;
+        }
+        for u in on_host(it) {
+            if !it.gone.contains(&u) && it.failed.insert(u) {
+                set_aside += 1;
+            }
+        }
+    }
+    if set_aside > 0 {
+        tracing::info!(item = %id, "{host}'s copy failed on {failed} parts of this release: its links on the others go last ({set_aside} set aside)");
+    }
+    set_aside
+}
+
 /// Whether row `it`, a file not started, named but with no size, has a link
 /// on a host that tells
 /// sizes: it is then looked up for its size (its name stays), and marked so.
@@ -3742,6 +3813,63 @@ fn wrapper_keys(st: &State) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::{HostStats, SPEED_MEMORY, store};
+
+    /// A host whose links failed on three parts of a release, none of
+    /// them having served a byte, goes last on the release's other parts;
+    /// a part with no other host keeps it, and other releases are left
+    /// alone.
+    #[test]
+    fn a_hosts_dead_copy_goes_last_on_the_other_parts() {
+        use super::{Item, State, release_host_dead};
+        let mut items = indexmap::IndexMap::new();
+        let mut w = Item::new(["https://site.example/release"], None, String::new());
+        w.wrapper = true;
+        let root = w.id.clone();
+        items.insert(root.clone(), w);
+        let mut ids = Vec::new();
+        for n in 1..=5 {
+            let mut it = Item::new(
+                [
+                    format!("https://dead.example/p{n}"),
+                    format!("https://live.example/p{n}"),
+                ],
+                Some(format!("Example.Set.part{n}.rar")),
+                String::new(),
+            );
+            it.source = Some(root.clone());
+            ids.push(it.id.clone());
+            items.insert(it.id.clone(), it);
+        }
+        // Only on the dead host.
+        let mut alone = Item::new(
+            ["https://dead.example/p6"],
+            Some("Example.Set.part6.rar".into()),
+            String::new(),
+        );
+        alone.source = Some(root.clone());
+        let alone_id = alone.id.clone();
+        items.insert(alone_id.clone(), alone);
+        let mut st = State::new(items, Default::default(), Default::default(), false, 4);
+        let fail = |st: &mut State, n: usize| {
+            let it = st.items.get_mut(&ids[n]).unwrap();
+            it.gone.insert(format!("https://dead.example/p{}", n + 1));
+        };
+        fail(&mut st, 0);
+        assert_eq!(
+            release_host_dead(&mut st, &ids[1], "dead.example"),
+            0,
+            "two are not yet a pattern"
+        );
+        fail(&mut st, 1);
+        assert!(release_host_dead(&mut st, &ids[2], "dead.example") > 0);
+        let it = &st.items[ids[4].as_str()];
+        assert!(it.failed.contains("https://dead.example/p5"), "set aside");
+        assert!(!it.failed.contains("https://live.example/p5"));
+        assert!(
+            st.items[alone_id.as_str()].failed.is_empty(),
+            "its only way stays"
+        );
+    }
 
     #[test]
     fn old_speeds_are_forgotten() {

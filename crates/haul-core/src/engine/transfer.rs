@@ -474,6 +474,9 @@ impl Engine {
         gone: bool,
     ) -> Option<Event> {
         st.host(host).penalize(Instant::now());
+        // Its copy of the release may be gone as a whole: seen on enough
+        // parts, the other parts stop trying it first.
+        super::release_host_dead(st, id, host);
         let it = st.items.get_mut(id)?;
         // Named next by the host it would try first, not this one.
         if it.host == host {

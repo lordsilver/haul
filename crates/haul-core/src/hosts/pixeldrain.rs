@@ -106,22 +106,33 @@ pub(super) async fn resolve(cx: &Cx<'_>, url: &str) -> Result<Vec<Entry>, Resolv
     }])
 }
 
-pub(super) async fn probe(cx: &Cx<'_>, url: &str) -> Option<Probed> {
-    let caps = LINK.captures(url).filter(|c| &c[1] == "u")?;
+/// What pixeldrain says of the file at `url` before a download: its name,
+/// size and checksum, or that it is gone (a 404 from its API: deleted).
+pub(super) async fn look(cx: &Cx<'_>, url: &str) -> super::Look {
+    let Some(caps) = LINK.captures(url).filter(|c| &c[1] == "u") else {
+        return super::Look::Unknown;
+    };
     let base = &cx.cfg.endpoints.pixeldrain;
-    let r = request(cx, format!("{base}/api/file/{}/info", &caps[2]), &auth(cx))
+    let Ok(r) = request(cx, format!("{base}/api/file/{}/info", &caps[2]), &auth(cx))
         .send()
         .await
-        .ok()?;
-    if r.status() != 200 {
-        return None;
+    else {
+        return super::Look::Unknown;
+    };
+    if r.status() == 404 {
+        return super::Look::Gone("pixeldrain: the file was deleted".into());
     }
-    let file: File = r.json().await.ok()?;
-    Some(Probed {
-        checksum: file.checksum(),
-        name: file.name,
-        size: Some(file.size),
-    })
+    if r.status() != 200 {
+        return super::Look::Unknown;
+    }
+    match r.json::<File>().await {
+        Ok(file) => super::Look::Found(Probed {
+            checksum: file.checksum(),
+            name: file.name,
+            size: Some(file.size),
+        }),
+        Err(_) => super::Look::Unknown,
+    }
 }
 
 /// The allowance of the address `cx` reaches pixeldrain from: 6 GB a day at
