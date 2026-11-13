@@ -1669,14 +1669,18 @@ fn click_at(cdp: &mut Cdp, s: Option<&str>, x: f64, y: f64) -> Result<(), String
 
 /// The steps a walked page offers ([`haul_core::walker`]), and whether its
 /// captcha still waits for its answer: what a person would press to go on
-/// (shown, enabled, a few words that say go on, get the link, verify or
-/// download, and not a paid tier's, an app's or a sign-up's), those in view
-/// and on the page's own site first. Each is keyed by its place among the
+/// (shown, enabled, a label of a few words that says go on, get the link,
+/// verify or download, and not a paid tier's, an app's or a sign-up's; a
+/// link to another page only when it is drawn as a button, since an
+/// article's own links use the same words), those in view and on the page's
+/// own site first. Each is keyed by its place among the
 /// page's buttons and its words, and says where it links when that is
 /// another site. `null` while the page loads.
 const WALK_STEPS: &str = r#"(() => {
   if (document.readyState === 'loading') return null;
-  const GO = /\b(continue|get\s*link|go\s*to\s*link|go\s*to\s*url|next|skip(\s*ad)?|verify|proceed|click\s*here|unlock|open\s*link|i'?m?\s*(am\s*)?not\s*a\s*robot|human|generate|show\s*link|visit\s*link|get\s*url|go|download|link)\b/i;
+  const GO = /\b(continue|get\s*(the\s*|your\s*)?link|go\s*to\s*(the\s*|your\s*)?(link|url|download)|skip\s*ad|verify|proceed|click\s*here|unlock|open\s*link|i'?m?\s*(am\s*)?not\s*a\s*robot|generate|show\s*link|visit\s*link|get\s*url|download|weiter|fortfahren|continuer|suivant|continuar|siguiente|continua|avanti|prosegui|t[ée]l[ée]charger|herunterladen|descargar|scarica(re)?|baixar)\b|далее|продолжить|скачать|继续|下一步|下载|ダウンロード/i;
+  // Words that are a step only as the whole label.
+  const ALONE = /^\W*(go|next|link|skip|human|start)\W*$/i;
   const AD = /\b(premium|usenet|vpn|install|sponsor|advert|sign\s*up|register|log\s*in|login|subscribe|notification|allow|app|extension|faster|high.?speed|payment|payout|proof|torrent)\b/i;
   const site = (host) => host.split('.').slice(-2).join('.');
   const shown = (el) => {
@@ -1689,10 +1693,21 @@ const WALK_STEPS: &str = r#"(() => {
     return true;
   };
   const words = (el) => (el.innerText || el.value || el.getAttribute('aria-label') || el.title || '').trim().replace(/\s+/g, ' ');
+  // A link drawn as a button: by its class, or a filled or framed box of
+  // its own or of what it holds.
+  const drawn = (el) => {
+    if (/btn|button/i.test(`${el.className} ${el.id}`)) return true;
+    return [el, ...el.children].some((n) => {
+      const s = getComputedStyle(n);
+      const filled = s.backgroundColor && !/rgba\(0, 0, 0, 0\)|transparent/.test(s.backgroundColor);
+      return filled || (parseFloat(s.borderTopWidth) > 0 && s.borderTopStyle !== 'none');
+    });
+  };
   const all = [...document.querySelectorAll('button, input[type=submit], input[type=button], a, [role=button], [onclick]')];
   const steps = all.flatMap((el, at) => {
     const text = words(el).slice(0, 50);
-    if (!text || text.length > 40 || !GO.test(text) || AD.test(text) || !shown(el)) return [];
+    if (!text || text.length > 40 || text.split(' ').length > 6 || AD.test(text) || !shown(el)) return [];
+    if (!GO.test(text) && !ALONE.test(text)) return [];
     if (el.disabled || el.getAttribute('aria-disabled') === 'true' || /\bdisabled\b/.test(el.className)) return [];
     let leads = null;
     const href = el.tagName === 'A' ? el.getAttribute('href') || '' : '';
@@ -1702,9 +1717,12 @@ const WALK_STEPS: &str = r#"(() => {
         if (/^https?:$/.test(to.protocol) && site(to.hostname) !== site(location.hostname)) leads = to.href;
       } catch {}
     }
+    // A link in the page's text that goes to another page is the page's
+    // own (an article's title, "Continue reading"), whatever its words.
+    const plain = el.tagName === 'A' && Boolean(href) && !/^javascript:/i.test(href) && el.getAttribute('role') !== 'button' && !el.hasAttribute('onclick') && !drawn(el);
     const box = el.getBoundingClientRect();
     const rank = (leads ? 2 : 0) + (box.top >= 0 && box.bottom <= innerHeight ? 0 : 1);
-    return [{ key: `${at} ${text}`, text, leads, rank }];
+    return [{ key: `${at} ${text}`, text, leads, rank, plain }];
   });
   steps.sort((a, b) => a.rank - b.rank);
   const waits = [...document.querySelectorAll('[name=cf-turnstile-response], [name=g-recaptcha-response], [name=h-captcha-response]')].some((e) => !e.value);
@@ -1776,10 +1794,17 @@ fn walk(cdp: &mut Cdp, s: Option<&str>, p: &Pass<'_>) -> Option<Outcome> {
         .as_array()?
         .iter()
         .filter_map(|c| {
+            let leads = c["leads"].as_str().map(|l| hosts::real(l).into_owned());
+            // A plain link is a step only as the way to a site Haul knows.
+            if c["plain"].as_bool() == Some(true)
+                && !leads.as_deref().is_some_and(hosts::walk_ends_at)
+            {
+                return None;
+            }
             Some(Step {
                 key: c["key"].as_str()?.to_string(),
                 text: c["text"].as_str().unwrap_or_default().to_string(),
-                leads: c["leads"].as_str().map(|l| hosts::real(l).into_owned()),
+                leads,
             })
         })
         .collect();
@@ -1810,8 +1835,20 @@ fn walk(cdp: &mut Cdp, s: Option<&str>, p: &Pass<'_>) -> Option<Outcome> {
     };
     match next {
         Next::Wait => None,
-        Next::Over if waits => Some(Outcome::WantsPerson(look(cdp, s))),
-        Next::Over => Some(Outcome::Settled),
+        Next::Over => {
+            // Where it ended, for whoever reads why (an error page, an ad's,
+            // a step no words told of).
+            let seen = look(cdp, s);
+            emit(
+                "nowhere",
+                json!({ "captcha": waits, "showed": serde_json::from_str::<Value>(&seen.page).unwrap_or(Value::Null) }),
+            );
+            Some(if waits {
+                Outcome::WantsPerson(seen)
+            } else {
+                Outcome::Settled
+            })
+        }
         Next::Reload => {
             emit("reload", json!({}));
             let _ = cdp.call("Page.reload", json!({}), s);
@@ -1964,6 +2001,10 @@ mod download_tests {
         assert_eq!(download_in(&other), None);
     }
 }
+
+#[cfg(test)]
+#[path = "walk_suite.rs"]
+mod walk_suite;
 
 #[cfg(test)]
 mod drive_tests {

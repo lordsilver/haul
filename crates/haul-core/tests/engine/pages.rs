@@ -257,6 +257,76 @@ async fn a_guarded_page_takes_the_links_its_window_shows() {
     assert!(s.items.iter().all(|i| i.package == "Pkg" && i.id != id));
 }
 
+/// A page that only leads elsewhere (a link shortener, walked out of sight
+/// by the desktop app) is no row once it has: the files it led to take its
+/// place, started as it was, and its site is no host to show.
+#[tokio::test]
+async fn a_page_that_led_elsewhere_gives_way_to_what_it_led_to() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let page = format!("{}/blog/guarded", t.ip);
+    engine.add_text(&page, "Pkg");
+    let s = wait_for(&engine, "the page to need a browser", |s| {
+        s.items.iter().any(|i| i.status.as_str() == "captcha")
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    let led = [
+        "https://pixeldrain.com/u/postone".to_string(),
+        "https://pixeldrain.com/u/posttwo".to_string(),
+    ];
+    assert!(engine.page_led_to(&id, &led));
+    let s = wait_for(&engine, "the files it led to, named", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.name.ends_with(".bin"))
+    })
+    .await;
+    assert!(
+        s.wrappers.is_empty(),
+        "no row for the page: {:?}",
+        s.wrappers
+    );
+    for i in &s.items {
+        assert!(i.id != id && i.source.is_none() && i.package == "Pkg");
+        assert_ne!(i.status.as_str(), "paused", "started, as the link was");
+    }
+    // Led only to its own address, nothing is taken.
+    assert!(!engine.page_led_to(&s.items[0].id, &[]));
+}
+
+/// A page that led only to links the list holds already just goes, as a
+/// duplicate does.
+#[tokio::test]
+async fn a_page_that_led_to_what_the_list_holds_goes() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://pixeldrain.com/u/postone", "");
+    wait_for(&engine, "the file, named", |s| {
+        s.items.len() == 1 && s.items[0].name.ends_with(".bin")
+    })
+    .await;
+    engine.add_text(&format!("{}/blog/guarded", t.ip), "");
+    let s = wait_for(&engine, "the page to need a browser", |s| {
+        s.items.iter().any(|i| i.status.as_str() == "captcha")
+    })
+    .await;
+    let id = s
+        .items
+        .iter()
+        .find(|i| i.status.as_str() == "captcha")
+        .unwrap()
+        .id
+        .clone();
+    assert!(engine.page_led_to(&id, &["https://pixeldrain.com/u/postone".to_string()]));
+    let s = engine.snapshot();
+    assert_eq!(s.items.len(), 1, "the file, once");
+    assert!(s.items[0].id != id && s.items[0].also_from.is_empty());
+    assert!(
+        s.wrappers.is_empty(),
+        "no row for the page: {:?}",
+        s.wrappers
+    );
+}
+
 /// A copied page behind a check the desktop app passes waits, out of the
 /// lists, for its pass; if the check wants a person after all, it goes.
 #[tokio::test]
@@ -512,11 +582,11 @@ async fn a_hosts_rate_limit_holds_its_pages_passes() {
     assert!(!engine.page_passes(&page), "no pass meanwhile");
 }
 
-/// The desktop app passes one page at a time, each once per wait: the engine
-/// plans the next pass, holds it while another runs or a person has the
-/// page, and stops a pass whose row stopped waiting.
+/// The desktop app passes each page once per wait: the engine plans the next
+/// pass, holds it while a person has the page, and stops a pass whose row
+/// stopped waiting.
 #[tokio::test]
-async fn passes_go_one_at_a_time_and_once_each() {
+async fn a_page_is_passed_once_per_wait() {
     use haul_core::Browsing;
 
     let t = Setup::new().await;
@@ -549,6 +619,53 @@ async fn passes_go_one_at_a_time_and_once_each() {
         engine.plan_passes(&idle(&running)).abandon,
         running,
         "paused: its pass stops"
+    );
+}
+
+/// Pages of different sites are passed at once, so a walk of a minute or
+/// two holds up no other site's; a site's own pages still go one at a time.
+#[tokio::test]
+async fn pages_of_different_sites_pass_at_once() {
+    use haul_core::Browsing;
+
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.set_pages_pass(true);
+    let other = t.ip.replace("127.0.0.1", "localhost");
+    assert_ne!(other, t.ip);
+    engine.add_text(
+        &format!(
+            "{0}/blog/guarded {0}/blog/guarded-b {other}/blog/guarded",
+            t.ip
+        ),
+        "",
+    );
+    wait_for(&engine, "the three pages to wait their turn", |s| {
+        s.items.len() == 3 && s.items.iter().all(|i| i.status.as_str() == "passing")
+    })
+    .await;
+    let plan = |running: &[String]| {
+        engine
+            .plan_passes(&Browsing {
+                out_of_sight: running,
+                with_person: &|_| false,
+                has_page: &|id| running.iter().any(|r| r == id),
+            })
+            .start
+    };
+    let first = plan(&[]).expect("a page to pass");
+    let second = plan(std::slice::from_ref(&first.0)).expect("another site's page, at once");
+    assert_ne!(
+        first.1.contains("localhost"),
+        second.1.contains("localhost"),
+        "{} and {}",
+        first.1,
+        second.1
+    );
+    assert_eq!(
+        plan(&[first.0, second.0]),
+        None,
+        "the third is of a site whose page is being passed"
     );
 }
 

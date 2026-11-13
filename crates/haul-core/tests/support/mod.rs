@@ -1267,7 +1267,7 @@ pub(super) async fn start_server() -> (Server, u16) {
                         <a href="https://filecrypt.cc/Container/ids-b.html">Mirror B</a>
                         </body></html>"#,
                     // Kept behind a check a browser passes (Cloudflare's).
-                    "guarded" => {
+                    "guarded" | "guarded-b" => {
                         return (
                             StatusCode::FORBIDDEN,
                             [(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::HeaderName::from_static("cf-mitigated"), "challenge")],

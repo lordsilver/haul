@@ -23,6 +23,11 @@ archives: Array<ArchiveView>, wrappers: Array<WrapperView>,
  */
 wrapper_cards: Array<WrapperCard>, counts: Counts, hosts: Array<HostView>, paused: boolean, 
 /**
+ * The live connection is on (its setting, or debug mode asked for at
+ * the start): a tool on this computer may follow what Haul does.
+ */
+live_debug: boolean, 
+/**
  * Bytes per second over every transfer.
  */
 speed: number, max_total: number, 

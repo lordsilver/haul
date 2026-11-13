@@ -284,6 +284,20 @@ impl Browser {
                 {
                     engine.page_gone(&id, &hosts::lists_nothing(&url));
                 }
+                // A walk that ended nowhere (the site's error page, an ad's)
+                // may get there next time: its own tries first, then the
+                // person.
+                Ended::Page(chromium::Outcome::Settled) if walk => {
+                    tracing::info!(item = %id, "the walk of {url} led nowhere this time");
+                    if engine.page_wants_person(&id) && first_ask_in_a_while(&host) {
+                        crate::notify_waiting(
+                            &app,
+                            std::slice::from_ref(&id),
+                            &format!("{host} wants you"),
+                            "Its pages led nowhere by themselves: open it in Haul and go on to its link.",
+                        );
+                    }
+                }
                 Ended::Page(chromium::Outcome::Settled) => {
                     tracing::info!(item = %id, "{url} passed its check but shows no links Haul takes");
                     if engine.page_needs_click(&id) && first_ask_in_a_while(&host) {
@@ -804,7 +818,7 @@ const STAND_IN: &str = "window.__haulStandIn = true;";
 /// The scripts a page passed out of sight runs before its own: the flags
 /// for `handoff.js` (stand-in mode, a page that lists links, a walk), then
 /// the two scripts.
-fn page_scripts(lists: bool, walk: bool) -> Vec<&'static str> {
+pub(crate) fn page_scripts(lists: bool, walk: bool) -> Vec<&'static str> {
     let flags = [
         (hosts::stand_in().is_some(), STAND_IN),
         (lists, LISTS),

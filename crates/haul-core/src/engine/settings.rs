@@ -32,6 +32,9 @@ pub struct SettingsView {
     pub download_dir: String,
     /// Given on the command line, so it cannot change here.
     pub download_dir_fixed: bool,
+    /// Debug mode was asked for when Haul started: the live connection is
+    /// on for this run, whatever its setting says.
+    pub live_debug_forced: bool,
     /// Keys an environment variable set, with its name; read-only here.
     pub from_env: BTreeMap<String, String>,
     pub config_file: Option<String>,
@@ -202,6 +205,7 @@ impl Engine {
             .is_some_and(|p| p.parent() == Some(self.0.data_dir.as_path()));
         SettingsView {
             config_inside_data_dir,
+            live_debug_forced: crate::debug::forced(),
             limits: NUMBERS
                 .iter()
                 .map(|(name, least, most, _)| {

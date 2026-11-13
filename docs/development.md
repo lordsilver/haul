@@ -14,6 +14,16 @@ Buttons say their rank by their look, the same everywhere: **primary** (filled, 
 
 `cargo test` regenerates the page's types from the Rust ones (`ui/src/lib/bindings`).
 
+## The walk suite
+
+`crates/haul-desktop/src/walk_suite.rs` walks made-up pages in a real browser, as the desktop app walks a page on a site Haul has no code for: one scenario per kind of obstacle (an ad's layer over the button, a pop-under, a cookie dialog that traps clicks, countdowns, a step that opens in a new tab, a script that loads late, an ad that moves the tab, a captcha that stalls, a mirror index, a file's page). It is part of `cargo test` and runs where Edge or Chrome is found (Windows, or `HAUL_CHROMIUM`), four scenarios at a time, in about a minute; elsewhere it is skipped. `HAUL_WALK_ONLY=<words>` keeps to the scenarios whose name holds them.
+
+It is also the benchmark of how fast Haul gets past what sites put in the way. Its scorecard (printed with `--nocapture`) tells, for each scenario, the time its pages force by themselves (`floor`: their countdowns), what the walk took beyond that and beyond what the machine's browser takes to start and stop (measured first, so a slow CI machine and a fast desktop tell the same story), and the scenario's limit; the total of the walks' own time is the number to bring down. A change that makes a walk faster lowers it, one that slows a scenario past its limit fails the suite. Lower a scenario's limit when a strategy makes it reliably faster, so the gain is kept.
+
+When a real page defeats the walk, add its obstacle as a scenario first, made up: the pages are served from the test itself on `<name>.localhost`, and a walk ends at an address on a host Haul knows, which is never loaded. A scenario marked `gap` is a known failure: it is run and told, and fails the suite once it passes, so the mark comes off with the fix.
+
+How real sites fare is not in the repository: the `haul-windows-test` skill's `scorecard.py` gives a private list of links to a test copy and compares the run with the one before.
+
 ## Dependencies
 
 CI checks the dependencies on Linux: `cargo deny check advisories bans sources` (settings in `deny.toml`) fails on a crate with a known vulnerability, a yanked one, or one from anywhere but crates.io, and `pnpm audit --prod` on a known vulnerability in what the page ships. Run the first in the repository root and the second in `crates/haul-web/ui` to check before pushing; a failure is usually fixed with `cargo update -p <crate>` or `pnpm update <package>`.
