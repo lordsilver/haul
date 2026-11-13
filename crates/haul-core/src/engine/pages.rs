@@ -639,8 +639,69 @@ impl Engine {
             return false;
         }
         tracing::info!(item = %id, "{page} leads to {}", links.join(", "));
+        // Whether the person had started the row: a row still waiting to
+        // be started is only walked to learn what it is.
+        let started = self
+            .lock()
+            .items
+            .get(id)
+            .is_some_and(|it| !it.unstarted && it.status != Status::Paused);
         self.take_unwrapped(id, &page, hosts::listed(None, links));
+        self.fold_redirect(id, &page, started);
         true
+    }
+
+    /// Row `id`, whose page at `page` only led elsewhere (a link shortener,
+    /// a mirror index), is no source of its own: the rows it led to take
+    /// its place under whatever it came from, and it leaves the list. So
+    /// containers reached through shorteners sit on one card by their
+    /// title, as when a release page links them, and no card or host is
+    /// shown for a link that held nothing. A file it led to goes on as the
+    /// row did: queued when the person had `started` it. A row that led
+    /// only to what the list holds already just goes, as a duplicate does.
+    fn fold_redirect(&self, id: &str, page: &str, started: bool) {
+        let mut st = self.lock();
+        let Some(row) = st.items.get(id) else {
+            return;
+        };
+        let (source, also) = (row.source.clone(), row.also_from.clone());
+        let led: Vec<String> = st
+            .items
+            .iter()
+            .filter(|(_, it)| {
+                it.source.as_deref() == Some(id) || it.also_from.iter().any(|w| w == id)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in &led {
+            let Some(it) = st.items.get_mut(key) else {
+                continue;
+            };
+            it.also_from.retain(|w| w != id);
+            if it.source.as_deref() == Some(id) {
+                it.source.clone_from(&source);
+                it.merge_wrappers(None, &also);
+            } else {
+                it.merge_wrappers(source.as_ref(), &also);
+            }
+            if started && !it.wrapper && it.unstarted {
+                it.queue_if_idle();
+                it.reset_retries();
+            }
+        }
+        st.items.shift_remove(id);
+        // Its site served no file and lists nothing: no host to show.
+        let host = hosts::host_of(page);
+        let linked = st
+            .items
+            .values()
+            .any(|it| it.mirrors.iter().any(|m| hosts::host_of(&m.url) == host));
+        if !linked {
+            st.hosts.shift_remove(&host);
+        }
+        self.touch(&mut st);
+        drop(st);
+        self.0.wake.notify_one();
     }
 
     /// Whether the links page `url` shows may stand in for row `id`

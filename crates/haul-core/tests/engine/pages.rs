@@ -257,6 +257,76 @@ async fn a_guarded_page_takes_the_links_its_window_shows() {
     assert!(s.items.iter().all(|i| i.package == "Pkg" && i.id != id));
 }
 
+/// A page that only leads elsewhere (a link shortener, walked out of sight
+/// by the desktop app) is no row once it has: the files it led to take its
+/// place, started as it was, and its site is no host to show.
+#[tokio::test]
+async fn a_page_that_led_elsewhere_gives_way_to_what_it_led_to() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    let page = format!("{}/blog/guarded", t.ip);
+    engine.add_text(&page, "Pkg");
+    let s = wait_for(&engine, "the page to need a browser", |s| {
+        s.items.iter().any(|i| i.status.as_str() == "captcha")
+    })
+    .await;
+    let id = s.items[0].id.clone();
+    let led = [
+        "https://pixeldrain.com/u/postone".to_string(),
+        "https://pixeldrain.com/u/posttwo".to_string(),
+    ];
+    assert!(engine.page_led_to(&id, &led));
+    let s = wait_for(&engine, "the files it led to, named", |s| {
+        s.items.len() == 2 && s.items.iter().all(|i| i.name.ends_with(".bin"))
+    })
+    .await;
+    assert!(
+        s.wrappers.is_empty(),
+        "no row for the page: {:?}",
+        s.wrappers
+    );
+    for i in &s.items {
+        assert!(i.id != id && i.source.is_none() && i.package == "Pkg");
+        assert_ne!(i.status.as_str(), "paused", "started, as the link was");
+    }
+    // Led only to its own address, nothing is taken.
+    assert!(!engine.page_led_to(&s.items[0].id, &[]));
+}
+
+/// A page that led only to links the list holds already just goes, as a
+/// duplicate does.
+#[tokio::test]
+async fn a_page_that_led_to_what_the_list_holds_goes() {
+    let t = Setup::new().await;
+    let engine = t.engine().await;
+    engine.add_text("https://pixeldrain.com/u/postone", "");
+    wait_for(&engine, "the file, named", |s| {
+        s.items.len() == 1 && s.items[0].name.ends_with(".bin")
+    })
+    .await;
+    engine.add_text(&format!("{}/blog/guarded", t.ip), "");
+    let s = wait_for(&engine, "the page to need a browser", |s| {
+        s.items.iter().any(|i| i.status.as_str() == "captcha")
+    })
+    .await;
+    let id = s
+        .items
+        .iter()
+        .find(|i| i.status.as_str() == "captcha")
+        .unwrap()
+        .id
+        .clone();
+    assert!(engine.page_led_to(&id, &["https://pixeldrain.com/u/postone".to_string()]));
+    let s = engine.snapshot();
+    assert_eq!(s.items.len(), 1, "the file, once");
+    assert!(s.items[0].id != id && s.items[0].also_from.is_empty());
+    assert!(
+        s.wrappers.is_empty(),
+        "no row for the page: {:?}",
+        s.wrappers
+    );
+}
+
 /// A copied page behind a check the desktop app passes waits, out of the
 /// lists, for its pass; if the check wants a person after all, it goes.
 #[tokio::test]
