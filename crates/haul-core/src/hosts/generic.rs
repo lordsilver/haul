@@ -282,6 +282,11 @@ pub(super) async fn look(cx: &Cx<'_>, url: &str) -> Look {
     if challenged(r.headers()) {
         return Look::Guarded;
     }
+    // Not found, or gone for good: the host says the file is no more.
+    let status = r.status().as_u16();
+    if matches!(status, 404 | 410) {
+        return Look::Gone(format!("{}: HTTP {status}", host_of(url)));
+    }
     if !is_html(&r) {
         return file_probed(&r).into();
     }

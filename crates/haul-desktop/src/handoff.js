@@ -19,6 +19,18 @@
   // The page's site, as the recipes name it.
   const site = new URL(real(location.href)).hostname;
   let handed = false;
+  // Cloudflare's own check page ("Just a moment..."), still up. Its script
+  // watches the page's lookups: one for a captcha's field or frame from any
+  // other script (`[name=cf-turnstile-response]`, `.g-recaptcha`) and it
+  // hands out its clearance, loads the page again and checks again, for
+  // ever. So nothing here looks for a captcha while it is up. The page past
+  // it may keep `_cf_chl_opt` (filecrypt.cc's does), so the answer's status
+  // tells, as in chromium.rs.
+  const checking = () => {
+    if (!window._cf_chl_opt) return false;
+    const status = performance.getEntriesByType("navigation")[0]?.responseStatus;
+    return status ? status >= 400 : /^just a moment/i.test(document.title);
+  };
   const send = (message, address) => {
     window.__haulHandoff = message;
     if (!window.__haulDevTools) location.href = address;
@@ -389,7 +401,7 @@
     let rest = 0;
     window.__haulPressing = false;
     setInterval(() => {
-      if (handed || Date.now() < rest) return;
+      if (handed || Date.now() < rest || checking()) return;
       // A gate only a person passes: nothing to press until they have.
       if (document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, .h-captcha')) {
         window.__haulPressing = false;

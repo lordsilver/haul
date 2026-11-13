@@ -1948,10 +1948,15 @@ impl Engine {
             self.lock().budgets.of(&url.host, Instant::now()).answered();
         }
         // The host deleted the file: that link is dead now, as it would be
-        // found on its turn, and the row goes on to its other hosts.
+        // found on its turn, and the row goes on to its other hosts: the
+        // next of its links is looked up in turn, so a file gone everywhere
+        // is found so before anyone starts it.
         if let (hosts::Look::Gone(message), Some(url)) = (&looked, &url) {
             drop(permit);
-            self.fail_unstarted(&id, url, message.clone(), true);
+            let next = self.fail_looked_up(&id, url, message.clone());
+            if next {
+                self.spawn_probe(id);
+            }
             self.0.wake.notify_one();
             return;
         }
@@ -1993,18 +1998,28 @@ impl Engine {
     /// The link of row `it` a lookup asks: for a row named already, which is
     /// looked up for its size, one on a host that tells it, the user's
     /// preferred first, whichever source brought the link (plan LOOK-02);
-    /// else its first on a host that is on.
+    /// else its first on a host that is on. A link found gone is asked no
+    /// more, and one set aside as failed only when no other is left.
     fn probe_url(&self, it: &Item) -> Option<Mirror> {
         let cfg = self.cfg();
-        let sizer = it
-            .mirrors
-            .iter()
-            .filter(|m| !cfg.is_disabled(&m.host) && hosts::tells_size(m))
-            .min_by_key(|m| cfg.preference(&m.host).unwrap_or(usize::MAX));
-        sizer
-            .filter(|_| it.named || it.name.is_some())
-            .or_else(|| it.mirrors.iter().find(|m| !cfg.is_disabled(&m.host)))
-            .cloned()
+        let pick = |failed_too: bool| {
+            let open = |m: &&Mirror| {
+                !cfg.is_disabled(&m.host)
+                    && !it.gone.contains(m.as_str())
+                    && (failed_too || !it.failed.contains(m.as_str()))
+            };
+            let sizer = it
+                .mirrors
+                .iter()
+                .filter(open)
+                .filter(|m| hosts::tells_size(m))
+                .min_by_key(|m| cfg.preference(&m.host).unwrap_or(usize::MAX));
+            sizer
+                .filter(|_| it.named || it.name.is_some())
+                .or_else(|| it.mirrors.iter().find(open))
+                .cloned()
+        };
+        pick(false).or_else(|| pick(true))
     }
 
     /// Takes what a lookup learned of row `id`'s file, if anything: its
@@ -2175,6 +2190,31 @@ impl Engine {
         self.touch(&mut st);
         drop(st);
         self.emit(event);
+    }
+
+    /// A lookup found row `id`'s link `url` gone ([`Engine::fail_unstarted`]).
+    /// True when the row has another link a lookup would ask (a host that
+    /// tells sizes, or a site Haul has no code for), not found gone or
+    /// failed yet: it is looked up next, and is not probed until then.
+    fn fail_looked_up(&self, id: &str, url: &str, message: String) -> bool {
+        self.fail_unstarted(id, url, message, true);
+        let cfg = self.cfg();
+        let mut st = self.lock();
+        let Some(it) = st.items.get_mut(id) else {
+            return false;
+        };
+        let next = !it.running()
+            && it.done == 0
+            && it.mirrors.iter().any(|m| {
+                !cfg.is_disabled(&m.host)
+                    && !it.gone.contains(m.as_str())
+                    && !it.failed.contains(m.as_str())
+                    && (hosts::tells_size(m) || hosts::known(&m.host).is_none())
+            });
+        if next {
+            it.probed = false;
+        }
+        next
     }
 
     /// Tells whoever listens, when there is something to tell.
@@ -3622,8 +3662,9 @@ const DEAD_COPY_AFTER: usize = 3;
 /// release have that host's link failed this way and none of its links on
 /// that host has served a byte, the host's copy of the release is taken for
 /// dead: its links on the release's other files are set aside as failed, so
-/// they are tried after every other host rather than one part at a time.
-/// Returns how many links were set aside.
+/// they are tried after every other host rather than one part at a time,
+/// and those its sources marked offline are taken as gone, as the host
+/// would say of each in its turn. Returns how many links were set aside.
 fn release_host_dead(st: &mut State, id: &str, host: &str) -> usize {
     let root = friction::release_of(&st.items, id);
     let ours: Vec<String> = st
@@ -3657,6 +3698,17 @@ fn release_host_dead(st: &mut State, id: &str, host: &str) -> usize {
     if served || failed < DEAD_COPY_AFTER {
         return 0;
     }
+    // The links on this host the release's sources marked offline.
+    let offline: HashSet<String> = st
+        .items
+        .values()
+        .filter(|w| w.wrapper && friction::release_of(&st.items, &w.id) == root)
+        .flat_map(|w| &w.listing)
+        .filter(|l| l.listed_alive == Some(false))
+        .flat_map(|l| l.urls.iter())
+        .filter(|u| hosts::host_of(u) == host)
+        .cloned()
+        .collect();
     let mut set_aside = 0;
     for o in &ours {
         let Some(it) = st.items.get_mut(o) else {
@@ -3664,6 +3716,14 @@ fn release_host_dead(st: &mut State, id: &str, host: &str) -> usize {
         };
         if it.running() && it.host == host {
             continue;
+        }
+        // Dead here, and marked so by its source: gone, whatever else it
+        // has.
+        for u in on_host(it) {
+            if offline.contains(&u) && it.gone.insert(u.clone()) {
+                it.failed.insert(u);
+                set_aside += 1;
+            }
         }
         // A file with no other host keeps its link: it is still its way.
         let others = it.mirrors.iter().any(|m| {
@@ -3817,13 +3877,23 @@ mod tests {
     /// A host whose links failed on three parts of a release, none of
     /// them having served a byte, goes last on the release's other parts;
     /// a part with no other host keeps it, and other releases are left
-    /// alone.
+    /// alone. Its links the release's source marked offline are gone,
+    /// a part's only way too.
     #[test]
     fn a_hosts_dead_copy_goes_last_on_the_other_parts() {
         use super::{Item, State, release_host_dead};
         let mut items = indexmap::IndexMap::new();
         let mut w = Item::new(["https://site.example/release"], None, String::new());
         w.wrapper = true;
+        w.listing = [5, 6]
+            .into_iter()
+            .map(|n| crate::hosts::Listed {
+                urls: vec![format!("https://dead.example/p{n}")],
+                at: n,
+                listed_alive: Some(false),
+                ..Default::default()
+            })
+            .collect();
         let root = w.id.clone();
         items.insert(root.clone(), w);
         let mut ids = Vec::new();
@@ -3862,12 +3932,21 @@ mod tests {
         );
         fail(&mut st, 1);
         assert!(release_host_dead(&mut st, &ids[2], "dead.example") > 0);
-        let it = &st.items[ids[4].as_str()];
-        assert!(it.failed.contains("https://dead.example/p5"), "set aside");
-        assert!(!it.failed.contains("https://live.example/p5"));
+        let it = &st.items[ids[3].as_str()];
+        assert!(it.failed.contains("https://dead.example/p4"), "set aside");
+        assert!(!it.gone.contains("https://dead.example/p4"), "not marked");
+        assert!(!it.failed.contains("https://live.example/p4"));
         assert!(
-            st.items[alone_id.as_str()].failed.is_empty(),
-            "its only way stays"
+            st.items[ids[4].as_str()]
+                .gone
+                .contains("https://dead.example/p5"),
+            "marked offline: gone"
+        );
+        assert!(
+            st.items[alone_id.as_str()]
+                .gone
+                .contains("https://dead.example/p6"),
+            "its only way, marked offline: gone"
         );
     }
 

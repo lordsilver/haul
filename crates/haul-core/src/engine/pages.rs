@@ -181,7 +181,13 @@ impl Engine {
         };
         tracing::info!(item = %id, "{page}: {reason}");
         it.gone.insert(page.clone());
-        it.failed.insert(page);
+        it.failed.insert(page.clone());
+        // Its copy of the release may be gone as a whole, as for a link
+        // that fails on its turn.
+        super::release_host_dead(&mut st, id, &hosts::host_of(&page));
+        let Some(it) = st.items.get(id) else {
+            return true;
+        };
         if it.mirrors.iter().all(|m| it.gone.contains(m.as_str())) {
             tracing::info!(item = %id, "every link of this file is gone: it leaves the list");
             st.items.shift_remove(id);

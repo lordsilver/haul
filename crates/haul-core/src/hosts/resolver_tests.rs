@@ -703,6 +703,16 @@ async fn generic_links_and_probes() {
         })
     );
     assert_eq!(generic::probe(&cx, &format!("{base}/missing")).await, None);
+    // A file's page the host answers 404 for is gone, not unknown; a file
+    // that answers is not.
+    assert!(matches!(
+        generic::look(&cx, &format!("{base}/missing")).await,
+        Look::Gone(_)
+    ));
+    assert!(!matches!(
+        generic::look(&cx, &format!("{base}/nohead/data.bin")).await,
+        Look::Gone(_)
+    ));
 }
 
 #[tokio::test]
